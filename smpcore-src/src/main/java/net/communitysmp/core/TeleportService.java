@@ -177,9 +177,25 @@ final class TeleportService {
             Location safe=safeRtp(world,x,z);int distance=Math.max(500,plugin.getConfig().getInt("rtp.protected-distance",500));
             if(safe==null||!insideBorder(border,safe)||plugin.spawnClaims().near(safe,distance)||plugin.factions().nearClaim(safe,distance)||plugin.bosses().nearActiveEvent(safe,distance)){searchRtpQueueMatch(a,b,world,attempt+1);return;}
             String label="random "+CoreUtil.pretty(world.getEnvironment().name())+" wilderness (RTP queue match with "+"%s"+")";
-            rtpQueuePartner.put(a.getUniqueId(),b.getUniqueId());rtpQueuePartner.put(b.getUniqueId(),a.getUniqueId());
+            /** warmup() unconditionally calls cancel() on itself first (to clear out any unrelated pending
+             *  teleport the player already had). If rtpQueuePartner were linked BEFORE calling warmup() here,
+             *  that very first self-cancel would immediately tear the fresh link back down again (cancel()
+             *  removes both directions of whatever partner link it finds) before the second warmup() even
+             *  ran — silently disabling the cross-cancel safety net for every single queue match. Linking
+             *  only after both warmups are already running avoids that self-destruction entirely. */
             warmup(a,safe.clone(),String.format(label,b.getName()),null,plugin.getConfig().getInt("rtp.warmup-seconds",3),cooldowns,plugin.getConfig().getLong("teleport.cooldown-seconds",10),false);
             warmup(b,safe.clone(),String.format(label,a.getName()),null,plugin.getConfig().getInt("rtp.warmup-seconds",3),cooldowns,plugin.getConfig().getLong("teleport.cooldown-seconds",10),false);
+            /** warmup() can silently decline to start (combat lock, cooldown) and already messages the
+             *  player why. Only link the pair if BOTH genuinely started counting down — linking a one-sided
+             *  "pair" would let the side that failed later falsely cancel the side that succeeded the next
+             *  time they touch any unrelated teleport. If only one side started, cancel that one too rather
+             *  than leaving them warming up toward a partner who was never coming. */
+            if(isPending(a)&&isPending(b)){
+                rtpQueuePartner.put(a.getUniqueId(),b.getUniqueId());rtpQueuePartner.put(b.getUniqueId(),a.getUniqueId());
+            }else{
+                if(isPending(a))cancel(a,"Your RTP queue match could not proceed because your partner wasn't ready. Use /rtp queue again.");
+                if(isPending(b))cancel(b,"Your RTP queue match could not proceed because your partner wasn't ready. Use /rtp queue again.");
+            }
         }));
     }
 
