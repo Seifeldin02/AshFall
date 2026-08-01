@@ -58,11 +58,16 @@ if (-not $builtJarPath -or -not (Test-Path $builtJarPath)) {
 $stagingPlugins = Join-Path $StagingRoot 'plugins'
 New-Item -ItemType Directory -Force -Path $stagingPlugins | Out-Null
 
-Get-ChildItem $stagingPlugins -Filter 'SMPCore-*.jar' -ErrorAction SilentlyContinue |
-    Remove-Item -Force
+try {
+    Get-ChildItem $stagingPlugins -Filter 'SMPCore-*.jar' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction Stop
 
-$destJar = Join-Path $stagingPlugins (Split-Path -Leaf $builtJarPath)
-Copy-Item -Path $builtJarPath -Destination $destJar -Force
+    $destJar = Join-Path $stagingPlugins (Split-Path -Leaf $builtJarPath)
+    Copy-Item -Path $builtJarPath -Destination $destJar -Force -ErrorAction Stop
+}
+catch {
+    throw "Could not replace the jar in $stagingPlugins - the staging server is still running and has it locked. Stop it first (type 'stop' in its console), then re-run this script. Build succeeded and is waiting at: $builtJarPath"
+}
 
 $marker = Join-Path $StagingRoot 'DEPLOYED_COMMIT.txt'
 @"
