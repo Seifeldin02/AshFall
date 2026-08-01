@@ -1,0 +1,88 @@
+# =============================================================================
+# Ashfall Concord — SMPCore development repository
+# Never commit anything that is production data, a secret, or a build artifact.
+# =============================================================================
+
+# --- Worlds / player data ---
+world/
+world_nether/
+world_the_end/
+*/world/
+*/world_nether/
+*/world_the_end/
+playerdata/
+stats/
+advancements/
+*.dat
+*.dat_old
+usercache.json
+ops.json
+whitelist.json
+banned-players.json
+banned-ips.json
+
+# --- Databases ---
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# --- Logs / backups ---
+logs/
+backups/
+*.log
+*.log.gz
+crash-reports/
+
+# --- Build artifacts ---
+target/
+*.jar
+!deploy/**/*.reference.txt
+
+# --- AuthMe data (credentials, password hashes, TOTP) ---
+plugins/AuthMe/
+AuthMe/
+
+# --- RCON ---
+rcon_password*
+*rcon*password*
+scratchpad/rcon.py
+
+# --- ReplayCore licence / API keys ---
+plugins/ReplayCore/config.yml
+plugins/ReplayCore/config-credential-v1
+plugins/ReplayCore/instance-id-v2
+plugins/ReplayCore/registered-server-binding-v1.json
+plugins/ReplayCore/managed-config-lkg-v2.json
+plugins/ReplayCore/.license-grace
+plugins/ReplayCore/recordings/
+plugins/ReplayCore/wal/
+plugins/ReplayCore/cache/
+replaycore_config.txt
+*.replaycore
+
+# --- Dynu / DDNS credentials ---
+*dynu*
+*ddns*credential*
+
+# --- Discord secrets / webhooks ---
+*webhook*
+*discord*secret*
+*discord*token*
+
+# --- Other private production credentials ---
+server.properties
+*.env
+*credentials*
+*secret*
+!config-templates/**
+session.lock
+*.tmp
+
+# --- Editor / OS noise ---
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store

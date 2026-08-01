@@ -1,0 +1,7 @@
+# ReplayCore server connection — TEMPLATE.
+# Copy to plugins/ReplayCore/config.yml on the real server and fill in the
+# real recording key from replaycore.com -> Settings -> Recording key.
+# Never commit the real file — it carries a signing secret.
+
+license-key: "CHANGE_ME"
+server-name: "CHANGE_ME"

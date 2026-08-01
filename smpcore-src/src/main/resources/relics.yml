@@ -1,0 +1,66 @@
+lifecycle:
+  exploration-chance: 0.0002
+  inactive-owner-days: 60
+  lost-reentry-days: 14
+
+relics:
+  crown_of_ash:
+    name: Crown of Ash
+    material: NETHERITE_HELMET
+    lore:
+      - "The embers remember their first king."
+      - "Worn: Fire Resistance and Resistance."
+      - "Reduces damage dealt by elites and bosses."
+  wayfinder:
+    name: The Wayfinder
+    material: COMPASS
+    lore:
+      - "Its needle trembles toward forgotten roads."
+      - "Held: Speed and Night Vision."
+  oathblade:
+    name: Oathblade
+    material: DIAMOND_SWORD
+    lore:
+      - "Deals 25% more damage to elites and bosses."
+      - "Steals a trace of life from powered enemies."
+  ashen_reprisal:
+    name: Ashen Reprisal
+    material: BLAZE_ROD
+    lore:
+      - "A shard of the Ashen Knight's own judgment strike."
+      - "Right-click: unleash a searing line strike."
+      - "Scorches and launches every foe in a cone before you."
+  colossus_core:
+    name: Colossus Core
+    material: CONDUIT
+    lore:
+      - "The still-warm heart of the Warded Colossus."
+      - "Right-click: brace like iron and hurl back all who press in."
+      - "Grants a brief shield of resistance and a shockwave of force."
+  warlords_ember:
+    name: Warlord's Ember
+    material: FIRE_CHARGE
+    lore:
+      - "A coal plucked from the Cinder Warlord's own hearth."
+      - "Right-click: charge forward in a blazing dash."
+      - "Scorches anything caught in your path."
+
+buffs:
+  crown-of-ash:
+    elite-damage-multiplier: 0.80
+  oathblade:
+    elite-damage-multiplier: 1.25
+    lifesteal-percent: 10.0
+  ashen-reprisal:
+    cooldown-seconds: 25
+    damage: 6.0
+    range: 4.5
+  colossus-core:
+    cooldown-seconds: 45
+    brace-seconds: 3.0
+    radius: 5.0
+    knockback: 1.4
+  warlords-ember:
+    cooldown-seconds: 20
+    power: 2.1
+    radius: 2.2

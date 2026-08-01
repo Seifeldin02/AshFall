@@ -1,0 +1,87 @@
+package net.communitysmp.core;
+
+import fr.xephi.authme.events.LoginEvent;
+import fr.xephi.authme.events.RestoreSessionEvent;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.permissions.PermissionAttachment;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+final class TrustedAdminService implements Listener {
+    private final SMPCore plugin;
+    private final Set<UUID> authenticated=ConcurrentHashMap.newKeySet();
+    private final Map<UUID,PermissionAttachment> attachments=new ConcurrentHashMap<>();
+
+    TrustedAdminService(SMPCore plugin){
+        this.plugin=plugin;
+    }
+
+    boolean isAdmin(Player player){return authenticated.contains(player.getUniqueId())&&realAccount(player);}
+
+    @EventHandler(priority=EventPriority.LOWEST)
+    public void join(PlayerJoinEvent event){
+        Player player=event.getPlayer();
+        if(realAccount(player))player.setOp(false);
+    }
+
+    @EventHandler(priority=EventPriority.MONITOR)
+    public void authenticated(LoginEvent event){
+        Player player=event.getPlayer();
+        if(!realAccount(player))return;
+        authenticated.add(player.getUniqueId());
+        player.setOp(true);
+        grantGamemode(player);
+        plugin.getLogger().info("Administrator authenticated: "+player.getName()+".");
+        player.updateCommands();
+    }
+
+    private void grantGamemode(Player player){
+        PermissionAttachment attachment=player.addAttachment(plugin);
+        attachment.setPermission("minecraft.command.gamemode",true);
+        attachment.setPermission("minecraft.command.gamemode.other",true);
+        attachments.put(player.getUniqueId(),attachment);
+    }
+    private void revokeGamemode(Player player){
+        PermissionAttachment attachment=attachments.remove(player.getUniqueId());
+        if(attachment!=null)player.removeAttachment(attachment);
+    }
+
+    @EventHandler(priority=EventPriority.LOWEST)
+    public void requirePassword(RestoreSessionEvent event){
+        if(!realAccount(event.getPlayer()))return;
+        event.setCancelled(true);
+        authenticated.remove(event.getPlayer().getUniqueId());
+        event.getPlayer().setOp(false);
+        revokeGamemode(event.getPlayer());
+    }
+
+    @EventHandler
+    public void quit(PlayerQuitEvent event){
+        UUID id=event.getPlayer().getUniqueId();
+        authenticated.remove(id);
+        if(realAccount(event.getPlayer())){event.getPlayer().setOp(false);revokeGamemode(event.getPlayer());}
+    }
+
+    void shutdown(){
+        for(Player player:plugin.getServer().getOnlinePlayers())if(realAccount(player)){player.setOp(false);revokeGamemode(player);}
+        authenticated.clear();
+    }
+
+    private boolean realAccount(Player player){return accounts().contains(player.getName().toLowerCase(Locale.ROOT));}
+    private Set<String> accounts(){
+        List<String> configured=plugin.getConfig().getStringList("trusted-admin.accounts");
+        if(configured.isEmpty()){String legacy=plugin.getConfig().getString("trusted-admin.account","");return legacy.isBlank()?Set.of():Set.of(legacy.toLowerCase(Locale.ROOT));}
+        Set<String> lower=new java.util.HashSet<>();for(String name:configured)if(!name.isBlank())lower.add(name.toLowerCase(Locale.ROOT));return lower;
+    }
+    String accountList(){return String.join(", ",plugin.getConfig().getStringList("trusted-admin.accounts"));}
+}

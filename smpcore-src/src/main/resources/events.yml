@@ -1,0 +1,59 @@
+tiers:
+  micro:
+    interval-active-hours-min: 3
+    interval-active-hours-max: 3
+    minimum-online-players: 1
+    duration-minutes: 30
+    resource-rush:
+      radius: 48
+      ore-money: 6.0
+      double-drop-chance: 0.10
+    treasure:
+      finder-money: 2500
+    koth:
+      radius: 10
+      winner-faction: 0
+  major:
+    interval-active-hours-min: 12
+    interval-active-hours-max: 16
+    minimum-online-players: 1
+    duration-minutes: 45
+    resource-rush:
+      radius: 90
+      ore-money: 8.0
+      double-drop-chance: 0.14
+    treasure:
+      finder-money: 3000
+    koth:
+      radius: 12
+      winner-faction: 10000
+  rare:
+    interval-active-hours-min: 72
+    interval-active-hours-max: 120
+    minimum-online-players: 1
+    duration-minutes: 120
+    resource-rush:
+      radius: 130
+      ore-money: 12.0
+      double-drop-chance: 0.20
+    treasure:
+      finder-money: 100000
+    koth:
+      radius: 14
+      winner-faction: 250000
+resource-rush:
+  radius: 80
+  ore-money: 8.0
+  double-drop-chance: 0.12
+koth:
+  radius: 12
+  tick-seconds: 5
+  winner-personal: 2000
+  winner-faction: 3000
+treasure:
+  finder-money: 1500
+  radius-min: 800
+  radius-max: 3500
+hunt:
+  participation-pool-percent: 20
+landmarks-enabled: true

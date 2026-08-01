@@ -1,0 +1,544 @@
+package net.communitysmp.core;
+
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.enchantments.Enchantment;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.EnchantmentStorageMeta;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.plugin.Plugin;
+import org.geysermc.cumulus.form.CustomForm;
+import org.geysermc.cumulus.form.SimpleForm;
+import org.geysermc.geyser.api.GeyserApi;
+import org.geysermc.geyser.api.connection.GeyserConnection;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+
+/** Front end for DonutOrders' /orders buy-order marketplace.
+ *  DonutOrders' own GUI is a textured-sprite Java inventory Geyser cannot render for Bedrock, so /orders
+ *  itself is still intercepted and replaced with Geyser forms for Bedrock players only (unchanged).
+ *  /myorders is new: a dedicated, SMPCore-owned "view and claim my orders" screen for BOTH platforms,
+ *  replacing reliance on DonutOrders' own collection GUI, which was confirmed to have a real bug (the
+ *  claim option was only reachable through an unlabelled filler slot, and reported "nothing to collect"
+ *  even with delivered items sitting in the order's stash). Drives DonutOrders' own OrderManager/
+ *  StorageManager (via reflection, since DonutOrders exposes no public API) so behavior and economy stay
+ *  identical to whatever DonutOrders itself would have done. */
+final class OrdersService implements Listener {
+    private record YourOrdersHolder(int page) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
+    private record OrderDetailHolder(String orderId,int returnPage) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
+    private static final int PER_PAGE=45;
+
+    private final SMPCore plugin;
+    private Boolean available;
+    private Object orderManager,storageManager,allowedItemsManager;
+    private Method createOrder,fulfillOrder,cancelOrder,collectStash;
+    private Method getAllActiveOrders,getPlayerOrders,getOrderById,getAllowedMaterials;
+    private Method orderId,buyerUUID,buyerName,itemTemplate,amountRequested,amountFulfilled,amountRemaining,pricePerItem,orderStatus,formattedExpiry,claimedAt;
+
+    OrdersService(SMPCore plugin){this.plugin=plugin;}
+
+    @EventHandler(priority=EventPriority.LOW,ignoreCancelled=true)
+    public void command(PlayerCommandPreprocessEvent e){
+        Player player=e.getPlayer();
+        String[] parts=e.getMessage().substring(1).split(" ",2);
+        String cmd=parts[0].toLowerCase(Locale.ROOT);
+        if(cmd.equals("myorders")){
+            if(!ensureReady())return;
+            e.setCancelled(true);
+            if(plugin.isBedrock(player))openYourOrdersForm(player,0);else openYourOrdersChest(player,0);
+            return;
+        }
+        if(!Set.of("orders","order","market","donutorders").contains(cmd))return;
+        if(!plugin.isBedrock(player))return;
+        if(!ensureReady())return;
+        e.setCancelled(true);
+        openMain(player);
+    }
+
+    private boolean ensureReady(){
+        if(available!=null)return available;
+        try{
+            Plugin donut=Bukkit.getPluginManager().getPlugin("DonutOrders");
+            if(donut==null||!donut.isEnabled())return available=false;
+            Class<?> donutClass=Class.forName("com.donutorders.DonutOrders");
+            Object instance=donutClass.getMethod("getInstance").invoke(null);
+            Field orderManagerField=donutClass.getDeclaredField("orderManager");orderManagerField.setAccessible(true);orderManager=orderManagerField.get(instance);
+            Field storageManagerField=donutClass.getDeclaredField("storageManager");storageManagerField.setAccessible(true);storageManager=storageManagerField.get(instance);
+            allowedItemsManager=donutClass.getMethod("getAllowedItemsManager").invoke(instance);
+
+            Class<?> orderManagerClass=Class.forName("com.donutorders.manager.OrderManager");
+            Class<?> storageManagerClass=Class.forName("com.donutorders.storage.StorageManager");
+            Class<?> allowedItemsClass=Class.forName("com.donutorders.manager.AllowedItemsManager");
+            Class<?> orderClass=Class.forName("com.donutorders.model.Order");
+
+            createOrder=orderManagerClass.getMethod("createOrder",Player.class,ItemStack.class,int.class,double.class,BiConsumer.class);
+            fulfillOrder=orderManagerClass.getMethod("fulfillOrder",Player.class,UUID.class,ItemStack[].class,BiConsumer.class);
+            cancelOrder=orderManagerClass.getMethod("cancelOrder",Player.class,UUID.class,Consumer.class);
+            collectStash=orderManagerClass.getMethod("collectStash",Player.class,UUID.class,Consumer.class);
+            getAllActiveOrders=storageManagerClass.getMethod("getAllActiveOrders");
+            getPlayerOrders=storageManagerClass.getMethod("getPlayerOrders",UUID.class);
+            getOrderById=storageManagerClass.getMethod("getOrder",UUID.class);
+            getAllowedMaterials=allowedItemsClass.getMethod("getAllowedMaterials");
+
+            orderId=orderClass.getMethod("getOrderId");buyerUUID=orderClass.getMethod("getBuyerUUID");buyerName=orderClass.getMethod("getBuyerName");
+            itemTemplate=orderClass.getMethod("getItemTemplate");amountRequested=orderClass.getMethod("getAmountRequested");amountFulfilled=orderClass.getMethod("getAmountFulfilled");
+            amountRemaining=orderClass.getMethod("getAmountRemaining");pricePerItem=orderClass.getMethod("getPricePerItem");orderStatus=orderClass.getMethod("getStatus");formattedExpiry=orderClass.getMethod("getFormattedExpiry");claimedAt=orderClass.getMethod("getClaimedAt");
+            return available=true;
+        }catch(Throwable error){
+            plugin.getLogger().warning("Orders bridge unavailable: "+error.getClass().getSimpleName()+(error.getMessage()!=null?": "+error.getMessage():""));
+            return available=false;
+        }
+    }
+
+    // ───────────────────────── shared item/description helpers ─────────────────────────
+
+    /** Both stored enchants (an actual ENCHANTED_BOOK order) and direct enchants (an enchanted-gear order)
+     *  need to be visible — DonutOrders' own display didn't surface either reliably. */
+    private List<String> enchantLines(ItemStack item){
+        if(item==null||!item.hasItemMeta())return List.of();
+        ItemMeta meta=item.getItemMeta();
+        Map<Enchantment,Integer> enchants;
+        if(meta instanceof EnchantmentStorageMeta esm&&esm.hasStoredEnchants())enchants=esm.getStoredEnchants();
+        else if(meta.hasEnchants())enchants=meta.getEnchants();
+        else return List.of();
+        List<String> lines=new ArrayList<>();
+        for(var entry:enchants.entrySet())lines.add(CoreUtil.pretty(entry.getKey().getKey().getKey())+" "+roman(entry.getValue()));
+        return lines;
+    }
+    private String roman(int value){return switch(value){case 1->"I";case 2->"II";case 3->"III";case 4->"IV";case 5->"V";default->Integer.toString(value);};}
+    private Object safeInvoke(Method method,Object target){try{return method.invoke(target);}catch(Exception e){return "?";}}
+    private String itemLabel(ItemStack template){
+        List<String> ench=enchantLines(template);
+        return CoreUtil.pretty(template.getType().name())+(ench.isEmpty()?"":" ("+String.join(", ",ench)+")");
+    }
+
+    // ───────────────────────── Bedrock: /orders (public browse/create/fulfill — unchanged) ─────────────────────────
+
+    private boolean openMain(Player player){
+        try{
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return false;
+            SimpleForm.Builder form=SimpleForm.builder().title("Ashfall Orders").content("Player-driven buy-order marketplace.");
+            form.button("Browse Public Orders");form.button("Create New Order");form.button("Your Orders");
+            form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                int clicked=response.clickedButtonId();
+                if(clicked==0)openPublicOrders(player,0);else if(clicked==1)openNewOrderPicker(player);else if(clicked==2)openYourOrdersForm(player,0);
+            }));
+            return connection.sendForm(form);
+        }catch(Throwable error){return false;}
+    }
+
+    private void openPublicOrders(Player player,int page){
+        try{
+            List<Object> all=new ArrayList<>((Collection<?>)getAllActiveOrders.invoke(storageManager));
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
+            int perPage=20,from=page*perPage,to=Math.min(all.size(),from+perPage);
+            List<Object> slice=from<all.size()?all.subList(from,to):List.of();
+            SimpleForm.Builder form=SimpleForm.builder().title("Public Orders").content(all.isEmpty()?"No active buy orders right now.":"Page "+(page+1)+" • tap an order for details.");
+            List<UUID> ids=new ArrayList<>();
+            for(Object order:slice){form.button(describeOrder(order));ids.add((UUID)orderId.invoke(order));}
+            boolean hasPrev=page>0,hasNext=to<all.size();
+            if(hasPrev)form.button("« Previous Page");
+            if(hasNext)form.button("Next Page »");
+            form.button("Back");
+            form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                int clicked=response.clickedButtonId();
+                if(clicked<ids.size()){openOrderDetailForm(player,ids.get(clicked),()->openPublicOrders(player,page));return;}
+                int extra=clicked-ids.size();
+                if(hasPrev){if(extra==0){openPublicOrders(player,page-1);return;}extra--;}
+                if(hasNext&&extra==0){openPublicOrders(player,page+1);return;}
+                openMain(player);
+            }));
+            connection.sendForm(form);
+        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
+    }
+
+    private String describeOrder(Object order) throws Exception{
+        ItemStack template=(ItemStack)itemTemplate.invoke(order);
+        return itemLabel(template)+" x"+amountRemaining.invoke(order)+"\n"+CoreUtil.money((double)pricePerItem.invoke(order))+"/ea • "+buyerName.invoke(order);
+    }
+
+    private void openNewOrderPicker(Player player){
+        try{
+            @SuppressWarnings("unchecked")
+            List<Material> materials=(List<Material>)getAllowedMaterials.invoke(allowedItemsManager);
+            if(materials.isEmpty()){CoreUtil.error(player,"No items are currently orderable.");return;}
+            List<String> names=materials.stream().map(m->CoreUtil.pretty(m.name())).toList();
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
+            CustomForm form=CustomForm.builder().title("Create New Order")
+                    .dropdown("Item",names)
+                    .input("Quantity","e.g. 64","64")
+                    .input("Price per item","e.g. 5.0","1.0")
+                    .validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                        Material material=materials.get(response.asDropdown(0));
+                        int quantity;double price;
+                        try{quantity=Integer.parseInt(response.asInput(1).trim());}catch(NumberFormatException ex){CoreUtil.error(player,"Quantity must be a whole number.");return;}
+                        try{price=Double.parseDouble(response.asInput(2).trim());}catch(NumberFormatException ex){CoreUtil.error(player,"Price must be a number.");return;}
+                        if(quantity<=0||price<=0){CoreUtil.error(player,"Quantity and price must be greater than zero.");return;}
+                        confirmNewOrder(player,material,quantity,price);
+                    })).build();
+            connection.sendForm(form);
+        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
+    }
+    private void confirmNewOrder(Player player,Material material,int quantity,double price){
+        try{
+            BiConsumer<Boolean,String> callback=(ok,message)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                if(online!=null&&message!=null)CoreUtil.msg(online,message);
+            });
+            createOrder.invoke(orderManager,player,new ItemStack(material),quantity,price,callback);
+        }catch(Exception error){CoreUtil.error(player,"Could not create that order.");}
+    }
+
+    private void openOrderDetailForm(Player player,UUID id,Runnable back){
+        try{
+            Object order=getOrderById.invoke(storageManager,id);
+            if(order==null){CoreUtil.error(player,"That order is no longer available.");back.run();return;}
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
+            ItemStack template=(ItemStack)itemTemplate.invoke(order);
+            String statusName=orderStatus.invoke(order).toString();
+            boolean own=player.getUniqueId().equals(buyerUUID.invoke(order));
+            int fulfilled=(int)amountFulfilled.invoke(order);
+            long claimedAtMillis=(long)claimedAt.invoke(order);
+            String content="Item: "+itemLabel(template)+"\nRequested: "+amountRequested.invoke(order)+" • Fulfilled: "+fulfilled
+                    +"\nPrice: "+CoreUtil.money((double)pricePerItem.invoke(order))+" each\nBuyer: "+buyerName.invoke(order)
+                    +"\nStatus: "+CoreUtil.pretty(statusName)+"\nExpires: "+formattedExpiry.invoke(order);
+            SimpleForm.Builder form=SimpleForm.builder().title("Order Detail").content(content);
+            List<Runnable> actions=new ArrayList<>();
+            if(own&&statusName.equals("ACTIVE")){form.button("Cancel Order");actions.add(()->confirmCancel(player,id,back));}
+            else if(!own&&statusName.equals("ACTIVE")){form.button("Fulfill Order");actions.add(()->confirmFulfill(player,id,order,back));}
+            if(own&&fulfilled>0&&claimedAtMillis==0){form.button("Claim "+fulfilled+" Delivered");actions.add(()->confirmClaim(player,id,back));}
+            form.button("Back");actions.add(back);
+            form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                int clicked=response.clickedButtonId();
+                if(clicked>=0&&clicked<actions.size())actions.get(clicked).run();
+            }));
+            connection.sendForm(form);
+        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");back.run();}
+    }
+
+    private void confirmFulfill(Player player,UUID id,Object order,Runnable back){
+        try{
+            ItemStack template=(ItemStack)itemTemplate.invoke(order);
+            Material material=template.getType();
+            int remaining=(int)amountRemaining.invoke(order);
+            int have=0;for(ItemStack stack:player.getInventory().getStorageContents())if(stack!=null&&stack.getType()==material)have+=stack.getAmount();
+            int deliver=Math.min(have,remaining);
+            if(deliver<=0){CoreUtil.error(player,"You have no "+CoreUtil.pretty(material.name())+" to deliver.");back.run();return;}
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
+            SimpleForm.Builder form=SimpleForm.builder().title("Confirm Delivery")
+                    .content("Deliver "+deliver+" "+CoreUtil.pretty(material.name())+" toward this order?\nPrice: "+CoreUtil.money((double)pricePerItem.invoke(order))+" each.");
+            form.button("Deliver "+deliver);form.button("Cancel");
+            form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                if(response.clickedButtonId()!=0){back.run();return;}
+                ItemStack[] items=takeForDelivery(player,material,deliver);
+                try{
+                    BiConsumer<Boolean,String> callback=(ok,message)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                        if(!Boolean.TRUE.equals(ok))refund(player,items);
+                        Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                        if(online!=null){if(message!=null)CoreUtil.msg(online,message);back.run();}
+                    });
+                    fulfillOrder.invoke(orderManager,player,id,items,callback);
+                }catch(Exception error){refund(player,items);CoreUtil.error(player,"Delivery failed; your items were returned.");}
+            }));
+            connection.sendForm(form);
+        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
+    }
+
+    private ItemStack[] takeForDelivery(Player player,Material material,int amount){
+        List<ItemStack> taken=new ArrayList<>();
+        ItemStack[] contents=player.getInventory().getStorageContents();
+        for(int i=0;i<contents.length&&amount>0;i++){
+            ItemStack stack=contents[i];
+            if(stack==null||stack.getType()!=material)continue;
+            int take=Math.min(amount,stack.getAmount());
+            ItemStack piece=stack.clone();piece.setAmount(take);taken.add(piece);
+            int remain=stack.getAmount()-take;
+            player.getInventory().setItem(i,remain>0?withAmount(stack,remain):null);
+            amount-=take;
+        }
+        return taken.toArray(new ItemStack[0]);
+    }
+    private ItemStack withAmount(ItemStack source,int amount){ItemStack clone=source.clone();clone.setAmount(amount);return clone;}
+    private void refund(Player player,ItemStack[] items){for(ItemStack item:items)if(item!=null)CoreUtil.give(player,item);}
+
+    private void confirmCancel(Player player,UUID id,Runnable back){
+        try{
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
+            SimpleForm.Builder form=SimpleForm.builder().title("Cancel Order").content("Cancel this order and refund remaining funds?\nAnything already delivered stays claimable via /myorders.");
+            form.button("Yes, Cancel");form.button("No");
+            form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                if(response.clickedButtonId()!=0){back.run();return;}
+                try{
+                    Consumer<Boolean> callback=ok->plugin.getServer().getScheduler().runTask(plugin,()->{
+                        Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                        if(online!=null){CoreUtil.msg(online,Boolean.TRUE.equals(ok)?"Order cancelled.":"That order could not be cancelled.");openYourOrdersForm(online,0);}
+                    });
+                    cancelOrder.invoke(orderManager,player,id,callback);
+                }catch(Exception error){CoreUtil.error(player,"Could not cancel that order.");}
+            }));
+            connection.sendForm(form);
+        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
+    }
+
+    private void confirmClaim(Player player,UUID id,Runnable back){
+        try{
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
+            SimpleForm.Builder form=SimpleForm.builder().title("Claim Delivered Items").content("Claim everything delivered so far?\nIf the order isn't fully filled yet, the remainder is re-listed as a new order so future deliveries stay claimable.");
+            form.button("Claim");form.button("Cancel");
+            form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                if(response.clickedButtonId()!=0){back.run();return;}
+                claimPartial(player,id,back);
+            }));
+            connection.sendForm(form);
+        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
+    }
+
+    // ───────────────────────── Bedrock: /myorders form (list) ─────────────────────────
+
+    private void openYourOrdersForm(Player player,int page){
+        try{
+            List<Object> all=new ArrayList<>((Collection<?>)getPlayerOrders.invoke(storageManager,player.getUniqueId()));
+            GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
+            int perPage=20,from=page*perPage,to=Math.min(all.size(),from+perPage);
+            List<Object> slice=from<all.size()?all.subList(from,to):List.of();
+            SimpleForm.Builder form=SimpleForm.builder().title("Your Orders").content(all.isEmpty()?"You have no orders yet.":"Page "+(page+1));
+            List<UUID> ids=new ArrayList<>();
+            for(Object order:slice){
+                ItemStack template=(ItemStack)itemTemplate.invoke(order);
+                int fulfilled=(int)amountFulfilled.invoke(order);
+                long claimedAtMillis=(long)claimedAt.invoke(order);
+                String claimTag=fulfilled>0&&claimedAtMillis==0?" • CLAIM "+fulfilled+" READY":"";
+                form.button(itemLabel(template)+" x"+amountRequested.invoke(order)+"\n"+CoreUtil.pretty(orderStatus.invoke(order).toString())+" • "+fulfilled+"/"+amountRequested.invoke(order)+" filled"+claimTag);
+                ids.add((UUID)orderId.invoke(order));
+            }
+            boolean hasPrev=page>0,hasNext=to<all.size();
+            if(hasPrev)form.button("« Previous Page");
+            if(hasNext)form.button("Next Page »");
+            form.button("Close");
+            form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
+                int clicked=response.clickedButtonId();
+                if(clicked<ids.size()){openOrderDetailForm(player,ids.get(clicked),()->openYourOrdersForm(player,page));return;}
+                int extra=clicked-ids.size();
+                if(hasPrev){if(extra==0){openYourOrdersForm(player,page-1);return;}extra--;}
+                if(hasNext&&extra==0){openYourOrdersForm(player,page+1);}
+            }));
+            connection.sendForm(form);
+        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
+    }
+
+    // ───────────────────────── Java: /myorders chest GUI ─────────────────────────
+
+    private void openYourOrdersChest(Player player,int page){
+        List<Object> all;
+        try{all=new ArrayList<>((Collection<?>)getPlayerOrders.invoke(storageManager,player.getUniqueId()));}
+        catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");return;}
+        int pages=Math.max(1,(all.size()+PER_PAGE-1)/PER_PAGE),safePage=Math.max(0,Math.min(page,pages-1));
+        int from=safePage*PER_PAGE,to=Math.min(all.size(),from+PER_PAGE);
+        Inventory inv=plugin.getServer().createInventory(new YourOrdersHolder(safePage),54,Component.text("Your Orders"+(pages>1?" • "+(safePage+1)+"/"+pages:""),NamedTextColor.DARK_GREEN));
+        int slot=0;
+        for(int i=from;i<to;i++){
+            Object order=all.get(i);
+            try{
+                ItemStack template=((ItemStack)itemTemplate.invoke(order)).clone();
+                int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
+                long claimedAtMillis=(long)claimedAt.invoke(order);
+                boolean canClaim=fulfilled>0&&claimedAtMillis==0;
+                ItemMeta meta=template.getItemMeta();
+                meta.displayName(Component.text(itemLabel(template)+" x"+requested,NamedTextColor.GOLD));
+                List<Component> lore=new ArrayList<>();
+                lore.add(Component.text(CoreUtil.pretty(orderStatus.invoke(order).toString())+" • "+fulfilled+"/"+requested+" filled",NamedTextColor.GRAY));
+                lore.add(Component.text(CoreUtil.money((double)pricePerItem.invoke(order))+" each",NamedTextColor.GRAY));
+                if(canClaim)lore.add(Component.text("CLAIM "+fulfilled+" READY — click to open",NamedTextColor.GREEN));
+                else lore.add(Component.text("Click for details",NamedTextColor.DARK_GRAY));
+                meta.lore(lore);
+                template.setItemMeta(meta);
+                inv.setItem(slot,template);
+            }catch(Exception ignored){}
+            slot++;
+        }
+        for(int s=slot;s<45;s++)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,all.isEmpty()?"You have no orders yet":"",List.of()));
+        if(safePage>0)inv.setItem(45,CoreUtil.named(Material.ARROW,"Previous Page",List.of()));
+        for(int s=46;s<49;s++)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+        inv.setItem(49,CoreUtil.named(Material.BARRIER,"Close",List.of()));
+        for(int s=50;s<53;s++)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+        if(safePage+1<pages)inv.setItem(53,CoreUtil.named(Material.ARROW,"Next Page",List.of()));
+        this.currentListIds.put(player.getUniqueId(),ids(all,from,to));
+        player.openInventory(inv);
+    }
+    private final Map<UUID,List<UUID>> currentListIds=new HashMap<>();
+    private List<UUID> ids(List<Object> orders,int from,int to){
+        List<UUID> out=new ArrayList<>();
+        for(int i=from;i<to;i++)try{out.add((UUID)orderId.invoke(orders.get(i)));}catch(Exception ignored){out.add(null);}
+        return out;
+    }
+
+    private void openOrderDetailChest(Player player,UUID id,int returnPage){
+        Object order;
+        try{order=getOrderById.invoke(storageManager,id);}catch(Exception error){order=null;}
+        if(order==null){CoreUtil.error(player,"That order is no longer available.");openYourOrdersChest(player,returnPage);return;}
+        try{
+            ItemStack template=((ItemStack)itemTemplate.invoke(order)).clone();
+            String statusName=orderStatus.invoke(order).toString();
+            int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
+            long claimedAtMillis=(long)claimedAt.invoke(order);
+            boolean canClaim=fulfilled>0&&claimedAtMillis==0;
+            Inventory inv=plugin.getServer().createInventory(new OrderDetailHolder(id.toString(),returnPage),27,Component.text("Order Detail",NamedTextColor.DARK_GREEN));
+            ItemMeta meta=template.getItemMeta();
+            meta.displayName(Component.text(itemLabel(template),NamedTextColor.GOLD));
+            List<Component> lore=new ArrayList<>();
+            lore.add(Component.text("Requested: "+requested+" • Fulfilled: "+fulfilled,NamedTextColor.GRAY));
+            lore.add(Component.text("Price: "+CoreUtil.money((double)pricePerItem.invoke(order))+" each",NamedTextColor.GRAY));
+            lore.add(Component.text("Status: "+CoreUtil.pretty(statusName),NamedTextColor.GRAY));
+            lore.add(Component.text("Expires: "+formattedExpiry.invoke(order),NamedTextColor.GRAY));
+            meta.lore(lore);template.setItemMeta(meta);
+            inv.setItem(13,template);
+            for(int s=0;s<27;s++)if(s!=13&&s!=11&&s!=15&&s!=22)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+            if(canClaim)inv.setItem(11,CoreUtil.named(Material.LIME_DYE,"Claim "+fulfilled+" Delivered",List.of("If not fully filled yet, the remainder","is re-listed so future deliveries","stay claimable the same way.")));
+            else inv.setItem(11,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+            if(statusName.equals("ACTIVE"))inv.setItem(15,CoreUtil.named(Material.RED_DYE,"Cancel Order",List.of("Refunds unspent escrow.","Anything delivered stays claimable.")));
+            else inv.setItem(15,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+            inv.setItem(22,CoreUtil.named(Material.ARROW,"Back",List.of()));
+            player.openInventory(inv);
+        }catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");openYourOrdersChest(player,returnPage);}
+    }
+
+    @EventHandler public void click(InventoryClickEvent event){
+        InventoryHolder raw=event.getInventory().getHolder(false);
+        if(!(raw instanceof YourOrdersHolder)&&!(raw instanceof OrderDetailHolder))return;
+        event.setCancelled(true);
+        if(!(event.getWhoClicked() instanceof Player player))return;
+        if(raw instanceof YourOrdersHolder holder){
+            int slot=event.getRawSlot();
+            if(slot<0||slot>=54)return;
+            List<UUID> ids=currentListIds.getOrDefault(player.getUniqueId(),List.of());
+            if(slot<ids.size()&&ids.get(slot)!=null){openOrderDetailChest(player,ids.get(slot),holder.page());return;}
+            if(slot==45&&holder.page()>0){openYourOrdersChest(player,holder.page()-1);return;}
+            if(slot==53){openYourOrdersChest(player,holder.page()+1);return;}
+            if(slot==49)player.closeInventory();
+            return;
+        }
+        OrderDetailHolder holder=(OrderDetailHolder)raw;
+        int slot=event.getRawSlot();
+        UUID id;try{id=UUID.fromString(holder.orderId());}catch(Exception ignored){return;}
+        if(slot==11){
+            player.closeInventory();
+            claimPartial(player,id,()->openYourOrdersChest(player,holder.returnPage()));
+        }else if(slot==15){
+            player.closeInventory();
+            try{
+                Consumer<Boolean> callback=ok->plugin.getServer().getScheduler().runTask(plugin,()->{
+                    Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                    if(online!=null){CoreUtil.msg(online,Boolean.TRUE.equals(ok)?"Order cancelled.":"That order could not be cancelled.");openYourOrdersChest(online,holder.returnPage());}
+                });
+                cancelOrder.invoke(orderManager,player,id,callback);
+            }catch(Exception error){CoreUtil.error(player,"Could not cancel that order.");}
+        }else if(slot==22){
+            openYourOrdersChest(player,holder.returnPage());
+        }
+    }
+
+    // ───────────────────────── safe partial claim (shared by both platforms) ─────────────────────────
+
+    /** DonutOrders' own collectStash() hard-refuses while an order is ACTIVE — confirmed via bytecode as a
+     *  deliberate anti-replay design, not a bug, and not something safe to patch around. But cancelOrder()
+     *  (also public) refunds the buyer's UNSPENT escrow for whatever hasn't been delivered yet and flips the
+     *  order to PENDING — one of the statuses collectStash() DOES accept. Chaining these two already-public,
+     *  already-safe methods claims exactly what's been delivered without ever touching DonutOrders' internals
+     *  or its database directly. If anything remains undelivered afterward, a fresh order for the remainder
+     *  is created at the same price so future deliveries stay claimable the same way. */
+    /** Temporary diagnostic — invokes the exact same claim path as /myorders' claim button, server-side,
+     *  without needing a GUI click, so a stuck real order can be reproduced and logged directly. */
+    /** Temporary diagnostic — isolates just the createOrder() reflection call, bypassing cancelOrder/
+     *  collectStash entirely, to see its exact accept/reject reason without needing a real partial order. */
+    void debugCreate(org.bukkit.command.CommandSender admin,String playerName,String materialName,int qty,double price){
+        if(!ensureReady()){CoreUtil.error(admin,"Orders bridge unavailable.");return;}
+        Player target=plugin.getServer().getPlayerExact(playerName);
+        if(target==null){CoreUtil.error(admin,"That player must be online.");return;}
+        Material material=Material.matchMaterial(materialName);
+        if(material==null){CoreUtil.error(admin,"Unknown material.");return;}
+        BiConsumer<Boolean,String> callback=(created,message)->plugin.getServer().getScheduler().runTask(plugin,()->{
+            plugin.getLogger().info("[OrdersDebug] debugCreate callback: player="+playerName+" material="+materialName+" qty="+qty+" price="+price+" created="+created+" message="+message);
+            CoreUtil.msg(admin,"debugCreate result: created="+created+" message="+message);
+        });
+        try{createOrder.invoke(orderManager,target,new ItemStack(material),qty,price,callback);CoreUtil.msg(admin,"Invoked createOrder — watch console/chat for the callback result.");}
+        catch(Exception ex){plugin.getLogger().log(java.util.logging.Level.WARNING,"[OrdersDebug] debugCreate invoke threw",ex);CoreUtil.error(admin,"createOrder invoke threw: "+ex);}
+    }
+    void debugClaim(org.bukkit.command.CommandSender admin,String playerName,String orderIdRaw){
+        if(!ensureReady()){CoreUtil.error(admin,"Orders bridge unavailable.");return;}
+        Player target=plugin.getServer().getPlayerExact(playerName);
+        if(target==null){CoreUtil.error(admin,"That player must be online.");return;}
+        UUID id;try{id=UUID.fromString(orderIdRaw);}catch(Exception e){CoreUtil.error(admin,"Bad order id.");return;}
+        CoreUtil.msg(admin,"Triggering claimPartial for "+playerName+" / "+id+" — watch console.");
+        claimPartial(target,id,()->CoreUtil.msg(admin,"claimPartial finished — check console log."));
+    }
+    private void claimPartial(Player player,UUID id,Runnable onDone){
+        try{
+            Object order=getOrderById.invoke(storageManager,id);
+            if(order==null){CoreUtil.error(player,"That order is no longer available.");onDone.run();return;}
+            String statusName=orderStatus.invoke(order).toString();
+            int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
+            int remaining=requested-fulfilled;
+            ItemStack template=((ItemStack)itemTemplate.invoke(order)).clone();
+            double price=(double)pricePerItem.invoke(order);
+            if(fulfilled<=0){CoreUtil.error(player,"Nothing has been delivered on this order yet.");onDone.run();return;}
+            plugin.getLogger().info("[OrdersDebug] claimPartial start: player="+player.getName()+" order="+id+" status="+statusName+" fulfilled="+fulfilled+" requested="+requested+" remaining="+remaining);
+            Runnable doCollect=()->{
+                try{
+                    Consumer<Boolean> callback=ok->plugin.getServer().getScheduler().runTask(plugin,()->{
+                        Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                        Object recheck=null;try{recheck=getOrderById.invoke(storageManager,id);}catch(Exception ignored){}
+                        plugin.getLogger().info("[OrdersDebug] collectStash callback: order="+id+" ok="+ok+" statusNow="+(recheck==null?"null":safeInvoke(orderStatus,recheck)));
+                        if(online==null)return;
+                        if(!Boolean.TRUE.equals(ok)){CoreUtil.error(online,"Nothing was available to collect.");onDone.run();return;}
+                        CoreUtil.msg(online,"Claimed "+fulfilled+" "+itemLabel(template)+".");
+                        if(remaining>0){
+                            BiConsumer<Boolean,String> createCallback=(created,message)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                                plugin.getLogger().info("[OrdersDebug] createOrder(remainder) callback: order="+id+" created="+created+" message="+message);
+                                Player p2=plugin.getServer().getPlayer(player.getUniqueId());
+                                if(p2!=null){
+                                    if(Boolean.TRUE.equals(created))CoreUtil.msg(p2,"The remaining "+remaining+" were re-listed as a new order — future deliveries stay claimable the same way.");
+                                    else CoreUtil.error(p2,"Could not re-list the remaining "+remaining+" (insufficient balance?); recreate that order manually via /orders.");
+                                }
+                                onDone.run();
+                            });
+                            plugin.getLogger().info("[OrdersDebug] invoking createOrder for remainder: order="+id+" remaining="+remaining+" price="+price);
+                            try{createOrder.invoke(orderManager,player,template.clone(),remaining,price,createCallback);}
+                            catch(Exception ex){plugin.getLogger().log(java.util.logging.Level.WARNING,"[OrdersDebug] re-list of remainder failed for order "+id,ex);CoreUtil.error(online,"Could not re-list the remainder.");onDone.run();}
+                        }else onDone.run();
+                    });
+                    collectStash.invoke(orderManager,player,id,callback);
+                }catch(Exception ex){plugin.getLogger().log(java.util.logging.Level.WARNING,"[OrdersDebug] collectStash invoke threw for order "+id,ex);CoreUtil.error(player,"Could not collect that stash.");onDone.run();}
+            };
+            if(statusName.equals("ACTIVE")){
+                Consumer<Boolean> cancelCallback=ok->plugin.getServer().getScheduler().runTask(plugin,()->{
+                    Object recheck=null;try{recheck=getOrderById.invoke(storageManager,id);}catch(Exception ignored){}
+                    plugin.getLogger().info("[OrdersDebug] cancelOrder callback: order="+id+" ok="+ok+" statusNow="+(recheck==null?"null":safeInvoke(orderStatus,recheck)));
+                    if(!Boolean.TRUE.equals(ok)){CoreUtil.error(player,"Could not prepare that order for claiming.");onDone.run();return;}
+                    doCollect.run();
+                });
+                cancelOrder.invoke(orderManager,player,id,cancelCallback);
+            }else doCollect.run();
+        }catch(Exception error){plugin.getLogger().log(java.util.logging.Level.WARNING,"[OrdersDebug] claimPartial threw for order "+id,error);CoreUtil.error(player,"Could not claim that order.");onDone.run();}
+    }
+}

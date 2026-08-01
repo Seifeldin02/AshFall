@@ -1,0 +1,120 @@
+name: SMPCore
+version: 1.7.0
+main: net.communitysmp.core.SMPCore
+api-version: '26.2'
+authors: [ServerOwner]
+description: Lightweight factions, economy, travel, markets, bosses, events and exploration.
+depend: [Vault]
+softdepend: [AuthMe, floodgate, Geyser-Spigot, TAB, SkinsRestorer, GrimAC, Nicked, ReplayCore]
+loadbefore: [DonutOrders]
+commands:
+  f:
+    description: Faction commands
+    aliases: [faction]
+  balance:
+    description: View your balance
+    aliases: [bal, money]
+  pay:
+    description: Pay another player
+  home:
+    description: Teleport to a personal home
+  sethome:
+    description: Set a personal home
+  delhome:
+    description: Delete a personal home
+  renamehome:
+    description: Rename a personal home
+  homes:
+    description: List personal homes
+  buyhome:
+    description: Buy the next personal home slot
+  tpa:
+    description: Request teleport to a player
+  tpaccept:
+    description: Accept a teleport request
+  tpdeny:
+    description: Deny a teleport request
+  spawn:
+    description: Teleport to server spawn
+  back:
+    description: "Admin: return to your previous teleport origin or death location"
+  rtp:
+    description: Teleport to safe distant wilderness
+    aliases: [wild, wilderness]
+  msg:
+    description: Privately message an online player
+    aliases: [w, tell]
+  reply:
+    description: Reply to your most recent private conversation
+    aliases: [r]
+  shop:
+    description: Open the server shop
+  luxuryshop:
+    description: Open the Luxury Shop
+  shardshop:
+    description: Open the Shard Shop
+  settings:
+    description: Open Ashen Settings
+  ah:
+    description: Open or manage the auction house
+    aliases: [auction, auctionhouse]
+  bounty:
+    description: Place a bounty
+  bounties:
+    description: List active bounties
+  events:
+    description: View the current world event
+  relics:
+    description: View relic discoveries
+  leaderboards:
+    description: View server rankings
+    aliases: [leaderboard, top]
+  guide:
+    description: Receive the server handbook
+  smphelp:
+    description: Show the concise server help
+    aliases: [serverhelp]
+  role:
+    description: View your ADMIN or MEMBER role
+  sidebar:
+    description: Toggle the persistent HUD
+  feedback:
+    description: Submit a suggestion or bug report
+  stats:
+    description: View public player statistics
+  progress:
+    description: View your adventure progression
+  history:
+    description: Read the server chronicle
+  graves:
+    description: Select and track active graves
+  enderchest:
+    description: Open and upgrade persistent Ender storage
+    aliases: [ec]
+  warn:
+    description: Issue a staff warning to a player
+  warnings:
+    description: View a player's warning/punishment history
+  myorders:
+    description: View and claim your DonutOrders buy orders, including partial deliveries
+  ashfall:
+    description: Ashfall administration
+    aliases: [smp, smpcore]
+  nickname:
+    description: Apply an administrator disguise
+    aliases: [disguise]
+  discord:
+    description: Show the Ashfall Discord invite
+  afk:
+    description: Toggle AFK status
+  admin:
+    description: Console-only SMPCore admin management
+  shout:
+    description: Send a prominent server-wide announcement
+permissions:
+  smpcore.admin:
+    description: Full SMPCore administration
+    default: op
+  smpcore.play:
+    description: Normal SMPCore gameplay
+    default: true

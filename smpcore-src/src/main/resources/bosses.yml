@@ -1,0 +1,298 @@
+natural-elites:
+  uncommon-chance: 0.0025
+  rare-chance: 0.0004
+  epic-chance: 0.00006
+  legendary-chance: 0.0000015
+
+elite-health-cap: 1000
+tiers:
+  uncommon:
+    health-multiplier: 3.5
+    damage-multiplier: 1.5
+    reward-min: 200
+    reward-max: 400
+    equipment-drop-chance: 0.58
+    despawn-minutes: 30
+  rare:
+    health-multiplier: 7.0
+    damage-multiplier: 2.2
+    reward-min: 750
+    reward-max: 1500
+    equipment-drop-chance: 0.72
+    despawn-minutes: 45
+  epic:
+    health-multiplier: 12.0
+    damage-multiplier: 2.8
+    reward-min: 2500
+    reward-max: 4500
+    equipment-drop-chance: 0.82
+    mechanic-interval-seconds: 11
+    idle-heal-percent: 0.06
+    despawn-minutes: 75
+  legendary:
+    health-multiplier: 20.0
+    damage-multiplier: 3.6
+    reward-min: 7500
+    reward-max: 12000
+    equipment-drop-chance: 0.72
+    mechanic-interval-seconds: 8
+    idle-heal-percent: 0.08
+    despawn-minutes: 120
+  miniboss:
+    health-multiplier: 14.0
+    damage-multiplier: 3.1
+    reward-min: 3000
+    reward-max: 6500
+    equipment-drop-chance: 0.85
+    despawn-minutes: 60
+
+elite-despawn:
+  combat-grace-seconds: 120
+  nearby-player-radius: 32
+
+capsule-drops:
+  legendary:
+    disposable: 0.08
+    reusable: 0.006
+  miniboss:
+    disposable: 0.04
+    reusable: 0.002
+  worldboss:
+    disposable: 0.15
+    reusable: 0.01
+
+abilities:
+  bulwark-damage-multiplier: 0.65
+
+reward-splitting:
+  minimum-damage-percent: 0.02
+
+health-bars:
+  view-distance: 40
+
+anti-cheese:
+  catch-up-distance: 16
+  vertical-distance: 5
+  ranged-distance: 18
+  ranged-hits-before-catch-up: 3
+  catch-up-cooldown-seconds: 8
+  blocked-trigger-seconds: 5
+  idle-heal-seconds: 12
+  idle-heal-percent: 0.05
+
+boss-participation:
+  vanilla-types: [ENDER_DRAGON, WITHER]
+  active-radius: 50
+  active-seconds: 60
+  reward-radius: 100
+  reward-extra-player-factor: 0.25
+  loot:
+    ENDER_DRAGON: ["DRAGON_BREATH:4", "EXPERIENCE_BOTTLE:16"]
+    WITHER: ["EXPERIENCE_BOTTLE:12", "SOUL_SAND:8"]
+    worldboss: ["GOLDEN_APPLE:1", "EXPERIENCE_BOTTLE:8"]
+    worldboss_ashen: ["GOLDEN_APPLE:1", "EXPERIENCE_BOTTLE:8"]
+    worldboss_iron: ["GOLDEN_APPLE:1", "EXPERIENCE_BOTTLE:8", "IRON_INGOT:16"]
+    worldboss_piglin: ["GOLDEN_APPLE:1", "EXPERIENCE_BOTTLE:8", "GOLD_INGOT:16"]
+    miniboss: ["EXPERIENCE_BOTTLE:4"]
+
+world-boss:
+  name: The Ashen Knight
+  health: 3750.0
+  damage: 18.0
+  scale: 1.35
+  reward-min: 126562.5
+  reward-max: 253125
+  active-radius: 50
+  active-seconds: 60
+  mechanic-interval-seconds: 13
+  judgment-damage: 7.0
+  disengage-regen-percent: 0.01
+  reward-extra-player-factor: 0.35
+  event-duration-minutes: 120
+  spawn-radius-min: 1200
+  spawn-radius-max: 4000
+  first-hint-minutes: 10
+  second-hint-minutes: 20
+
+iron-golem-boss:
+  name: The Warded Colossus
+  health: 5250.0
+  damage: 22.0
+  scale: 1.5
+  reward-min: 126562.5
+  reward-max: 253125
+  reward-iron-blocks: 128
+  active-radius: 50
+  active-seconds: 60
+  mechanic-interval-seconds: 12
+  overload-interval-seconds: 35
+  overload-damage: 10.0
+  disengage-regen-percent: 0.01
+  reward-extra-player-factor: 0.35
+  event-duration-minutes: 120
+  spawn-radius-min: 1200
+  spawn-radius-max: 4000
+  first-hint-minutes: 10
+  second-hint-minutes: 20
+
+piglin-brute-boss:
+  name: The Cinder Warlord
+  health: 3000.0
+  damage: 24.0
+  scale: 1.8
+  reward-min: 126562.5
+  reward-max: 253125
+  reward-gold-blocks: 64
+  excavator-drop-chance: 0.18
+  active-radius: 50
+  active-seconds: 60
+  mechanic-interval-seconds: 9
+  storm-interval-seconds: 25
+  storm-damage: 4.0
+  disengage-regen-percent: 0.01
+  reward-extra-player-factor: 0.35
+  event-duration-minutes: 120
+  spawn-radius-min: 1200
+  spawn-radius-max: 4000
+  first-hint-minutes: 10
+  second-hint-minutes: 20
+
+legendary-sigil-drop-chance: 0.08
+
+dimension-content:
+  nether:
+    elite-chance-multiplier: 1.45
+    reward-multiplier: 1.20
+  end:
+    elite-chance-multiplier: 1.80
+    reward-multiplier: 1.40
+
+default-mob-reward: [0.05, 0.35]
+cure-zombie-villager:
+  reward: 1000
+  max-per-day: 2
+
+major-rewards:
+  WITHER:
+    cooldown-hours: 24
+    repeat-multiplier: 0.10
+  ENDER_DRAGON:
+    cooldown-hours: 168
+    repeat-multiplier: 0.10
+    first-killer-reward: 100000
+
+mob-penalties:
+  VILLAGER: 50
+  WANDERING_TRADER: 25
+  CAT: 30
+  WOLF: 30
+  PARROT: 30
+  ALLAY: 40
+
+mob-rewards:
+  ALLAY: [0.10, 0.40]
+  ARMADILLO: [0.10, 0.40]
+  AXOLOTL: [0.10, 0.40]
+  BAT: [0.05, 0.20]
+  BEE: [0.10, 0.40]
+  COW: [0.05, 1.0]
+  PIG: [0.05, 1.0]
+  SHEEP: [0.05, 1.0]
+  CHICKEN: [0.05, 1.0]
+  BLAZE: [8.0, 15.0]
+  BOGGED: [4.0, 7.0]
+  BREEZE: [7.0, 12.0]
+  CAMEL: [0.10, 0.50]
+  CAMEL_HUSK: [5.0, 9.0]
+  CAT: [0.10, 0.40]
+  CAVE_SPIDER: [3.0, 5.0]
+  COD: [0.05, 0.20]
+  COPPER_GOLEM: [0.20, 0.70]
+  CREAKING: [5.0, 8.0]
+  CREEPER: [5.0, 7.0]
+  DOLPHIN: [0.10, 0.40]
+  DONKEY: [0.10, 0.50]
+  DROWNED: [3.0, 5.0]
+  ELDER_GUARDIAN: [150.0, 250.0]
+  ENDER_DRAGON: [75000.0, 100000.0]
+  ENDERMAN: [8.0, 12.0]
+  ENDERMITE: [3.0, 5.0]
+  EVOKER: [10.0, 16.0]
+  FOX: [0.10, 0.40]
+  FROG: [0.05, 0.25]
+  GHAST: [12.0, 20.0]
+  GIANT: [10.0, 20.0]
+  GLOW_SQUID: [0.10, 0.40]
+  GOAT: [0.20, 0.80]
+  GUARDIAN: [6.0, 10.0]
+  HAPPY_GHAST: [0.20, 0.80]
+  HOGLIN: [6.0, 10.0]
+  HORSE: [0.10, 0.50]
+  ZOMBIE: [2.0, 4.0]
+  HUSK: [2.0, 5.0]
+  ILLUSIONER: [12.0, 20.0]
+  IRON_GOLEM: [0.5, 1.5]
+  LLAMA: [0.10, 0.50]
+  MAGMA_CUBE: [4.0, 7.0]
+  MOOSHROOM: [0.05, 1.0]
+  MULE: [0.10, 0.50]
+  NAUTILUS: [0.20, 0.80]
+  OCELOT: [0.10, 0.40]
+  PANDA: [0.10, 0.50]
+  PARCHED: [4.0, 7.0]
+  PARROT: [0.10, 0.40]
+  PHANTOM: [5.0, 8.0]
+  PIGLIN: [3.0, 6.0]
+  PIGLIN_BRUTE: [14.0, 22.0]
+  PILLAGER: [4.0, 7.0]
+  POLAR_BEAR: [1.0, 3.0]
+  PUFFERFISH: [0.10, 0.40]
+  RABBIT: [0.05, 0.30]
+  RAVAGER: [12.0, 20.0]
+  SALMON: [0.05, 0.20]
+  SKELETON: [2.0, 4.0]
+  SKELETON_HORSE: [0.50, 1.50]
+  SHULKER: [12.0, 18.0]
+  SLIME: [1.0, 3.0]
+  SNIFFER: [0.10, 0.50]
+  SNOW_GOLEM: [0.20, 0.70]
+  SPIDER: [2.0, 4.0]
+  SQUID: [0.10, 0.40]
+  STRAY: [3.0, 5.0]
+  STRIDER: [0.20, 0.70]
+  SULFUR_CUBE: [0.25, 0.75]
+  TADPOLE: [0.05, 0.20]
+  TRADER_LLAMA: [0.10, 0.50]
+  TROPICAL_FISH: [0.05, 0.20]
+  TURTLE: [0.10, 0.40]
+  VEX: [4.0, 7.0]
+  VILLAGER: [0.10, 0.40]
+  VINDICATOR: [7.0, 12.0]
+  WANDERING_TRADER: [0.10, 0.40]
+  WARDEN: [750.0, 1200.0]
+  WITCH: [7.0, 12.0]
+  WITHER: [10000.0, 15000.0]
+  WITHER_SKELETON: [10.0, 18.0]
+  WOLF: [0.10, 0.40]
+  ZOGLIN: [8.0, 13.0]
+  ZOMBIE_HORSE: [3.0, 5.0]
+  ZOMBIE_NAUTILUS: [6.0, 10.0]
+  ZOMBIE_VILLAGER: [3.0, 5.0]
+  ZOMBIFIED_PIGLIN: [1.0, 3.0]
+  SILVERFISH: [1.0, 1.0]
+
+dimension-mob-rewards:
+  NETHER:
+    ZOMBIFIED_PIGLIN: [2.0, 4.0]
+    PIGLIN: [4.0, 7.0]
+    MAGMA_CUBE: [6.0, 10.0]
+    BLAZE: [12.0, 18.0]
+    HOGLIN: [8.0, 13.0]
+    ZOGLIN: [10.0, 16.0]
+    PIGLIN_BRUTE: [18.0, 28.0]
+    GHAST: [18.0, 30.0]
+    WITHER_SKELETON: [16.0, 25.0]
+  THE_END:
+    ENDERMAN: [14.0, 20.0]
+    ENDERMITE: [8.0, 12.0]
+    SHULKER: [22.0, 35.0]

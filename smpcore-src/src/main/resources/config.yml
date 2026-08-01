@@ -1,0 +1,360 @@
+server-name: Ashfall Concord
+starting-balance: 250.0
+
+maintenance:
+  enabled: false
+
+roles:
+  admin-player: ""
+
+trusted-admin:
+  accounts: [MacoCT, Asserto]
+
+nickname:
+  random-names:
+    - WandererAsh
+    - CinderScout
+    - QuietNomad
+    - EmberVale
+    - LostMiner
+
+ui:
+  update-ticks: 40
+  snapshot-update-ticks: 100
+performance:
+  tab-refresh-ticks: 100
+  spawner-hover-ticks: 10
+  world-borders:
+    enabled: true
+    warning-distance: 32
+    sizes:
+      overworld: 225000
+      nether: 57000
+      end: 175000
+  health-below-name: true
+
+rate-limits:
+  commands:
+    minimum-interval-ms: 500
+  chat:
+    cooldown-seconds: 10
+
+pvp:
+  drop-player-head: true
+
+death:
+  balance-loss-percent: 10.0
+  balance-loss-cap: 10000.0
+
+factions:
+  max-members: 3
+  max-alliances: 2
+  invite-seconds: 120
+  friendly-fire: false
+  border-view-distance: 48
+
+claims:
+  world: world
+  starting-size: 50
+  sizes: [50, 70, 90, 110, 130, 150]
+  expansion-costs: [50000, 150000, 500000, 1500000, 5000000]
+  prevent-faction-explosions: false
+
+homes:
+  faction:
+    free: 1
+    upgrades:
+      2: 10000
+      3: 30000
+  personal:
+    free: 1
+    upgrades:
+      2: 2500
+      3: 8000
+      4: 20000
+      5: 50000
+      6: 125000
+      7: 300000
+      8: 750000
+      9: 2000000
+      10: 5000000
+
+spawner-breaking:
+  money-reward: 25
+  exp-min: 15
+  exp-max: 43
+  relocated-break-seconds: 10
+  relocated-durability-cost: 512
+
+spawners:
+  max-stack: 10
+
+graves:
+  lifetime-hours: 48
+
+ender-chest:
+  max-upgrades: 2
+  upgrades:
+    2: 200000
+
+random-spawn:
+  enabled: true
+  radius: 5000
+  attempts: 16
+
+teleport:
+  warmup-seconds: 3
+  pvp-lock-seconds: 60
+  cooldown-seconds: 10
+  move-tolerance: 0.35
+  request-seconds: 60
+
+rtp:
+  radius: 5000
+  request-throttle-seconds: 4
+  warmup-seconds: 3
+  protected-distance: 1000
+  attempts: 32
+  radii:
+    overworld: 5000
+    nether: 4000
+    end: 5000
+
+bounties:
+  minimum: 100
+  large-announcement: 10000
+  repeat-pair-days: 7
+  placement-fee-percent: 2.0
+  claim-tax-percent: 3.0
+  admin-approval-threshold: 10000
+  auto:
+    window-hours: 72
+    distinct-victims-threshold: 4
+    cooldown-hours: 24
+    base-amount: 5000
+    treasury-percent-cap: 0.02
+
+auctions:
+  listing-fee-percent: 3.0
+  sale-tax-percent: 5.0
+  expiry-hours: 72
+  max-active-per-player: 30
+  minimum-price: 10
+
+bank:
+  overdue-high-value-threshold: 25000
+  shop:
+    nonsellable-margin-percent: 10
+  loans:
+    minimum-amount: 500
+    base-limit: 500
+    per-milestone-limit: 750
+    maximum-limit: 0
+    daily-interest-percent: 1.0
+    maximum-interest-percent: 25.0
+    due-days: 7
+    overdue-garnish-percent: 25.0
+    input-timeout-seconds: 30
+
+mob-money:
+  anti-farm-window-minutes: 10
+  full-reward-kills: 20
+  soft-reward-kills: 50
+  hard-reward-kills: 100
+  soft-multiplier: 0.5
+  minimum-multiplier: 0.25
+  farm-weights:
+    ZOMBIFIED_PIGLIN: 2.0
+    MAGMA_CUBE: 1.5
+    BLAZE: 1.25
+    ENDERMAN: 2.0
+
+shop:
+  sell-control:
+    default-full-quantity: 256
+    reduced-multiplier: 0.50
+
+merchants:
+  boss-scroll-price: 1000000
+  boss-sigil-count: 8
+  boss-sigil-price: 250000
+  boss-legendary-sigil-count: 2
+  boss-chosen-price: 2000000
+  event-cooldowns-minutes:
+    micro: 30
+    major: 180
+    rare: 1440
+  events:
+    micro:
+      resource: { price: 10000 }
+      treasure: { price: 8000 }
+      elitehunt: { price: 15000 }
+    major:
+      resource: { price: 100000 }
+      elitehunt: { price: 120000 }
+      koth: { price: 150000 }
+    rare:
+      treasure: { price: 750000 }
+      koth: { price: 1000000 }
+      worldboss: { price: 1500000 }
+  shop:
+    buy-multiplier: 0.925
+    sell-multiplier: 1.075
+  auction-fee-multiplier: 0.5
+
+net-worth:
+  recalculate-minutes: 2
+  reconcile-chunks-per-tick: 4
+  relic-value: 500000
+  market:
+    window-days: 30
+    minimum-sales: 5
+    max-change-per-refresh: 0.20
+  villagers:
+    per-villager-cap: 125000
+    legacy-capsule-value: 2000
+    full-value-up-to: 200000
+    excess-multiplier: 0.20
+    maximum-contribution: 500000
+  base-values:
+    DIAMOND: 200
+    DIAMOND_BLOCK: 1800
+    EMERALD: 20
+    EMERALD_BLOCK: 180
+    GOLD_INGOT: 5
+    GOLD_BLOCK: 45
+    NETHERITE_INGOT: 2500
+    NETHERITE_SCRAP: 600
+    NETHERITE_BLOCK: 22500
+    ANCIENT_DEBRIS: 600
+    NETHERITE_SWORD: 15000
+    NETHERITE_PICKAXE: 15000
+    NETHERITE_HELMET: 15000
+    NETHERITE_CHESTPLATE: 20000
+    NETHERITE_LEGGINGS: 18000
+    NETHERITE_BOOTS: 15000
+    DIAMOND_SWORD: 1200
+    DIAMOND_PICKAXE: 1200
+    DIAMOND_HELMET: 1000
+    DIAMOND_CHESTPLATE: 1600
+    DIAMOND_LEGGINGS: 1400
+    DIAMOND_BOOTS: 1000
+    ELYTRA: 250000
+    TOTEM_OF_UNDYING: 50000
+    ENCHANTED_GOLDEN_APPLE: 100000
+    DRAGON_EGG: 1000000
+    NETHER_STAR: 30000
+    WITHER_SKELETON_SKULL: 15000
+    BEACON: 60000
+    TRIDENT: 25000
+    MACE: 75000
+    HEAVY_CORE: 50000
+    SHULKER_SHELL: 12000
+    SHULKER_BOX: 25000
+    ECHO_SHARD: 5000
+  spawners:
+    default: 25000
+    ZOMBIE: 30000
+    SKELETON: 40000
+    SPIDER: 30000
+    CAVE_SPIDER: 45000
+    ZOMBIFIED_PIGLIN: 35000
+    MAGMA_CUBE: 55000
+    BLAZE: 100000
+    PIGLIN_BRUTE: 110000
+    GHAST: 90000
+    ENDERMAN: 125000
+    WITHER_SKELETON: 200000
+    SHULKER: 175000
+    CREEPER: 65000
+    SILVERFISH: 20000
+
+events:
+  automatic: true
+  protected-area-radius: 100
+
+settings:
+  native-dialogs: true
+  natural-spawn-influence-radius: 128
+
+confirmations:
+  mandatory-luxury-price: 2000000
+
+marketplace:
+  sounds:
+    purchase: ENTITY_EXPERIENCE_ORB_PICKUP
+    sale: BLOCK_NOTE_BLOCK_CHIME
+    failed: BLOCK_NOTE_BLOCK_BASS
+    confirm: UI_BUTTON_CLICK
+    cancel: UI_BUTTON_CLICK
+    shard: BLOCK_AMETHYST_BLOCK_RESONATE
+
+weekly-dragon:
+  enabled: true
+  day: FRIDAY
+  time: "16:00"
+  timezone: Asia/Riyadh
+
+progression:
+  vanguard-economic-target: 250000
+  requirement-multipliers:
+    diamond: 0.08
+    faction-member: 0.04
+    faction-land: 0.05
+    faction-home: 0.03
+    nether-combat: 0.10
+    enter-end: 0.10
+    elytra: 0.15
+    ancient-debris: 0.05
+    dragon: 0.10
+    wither: 0.10
+    epic: 0.20
+    three-events: 0.20
+    economic-activity: 0.25
+    netherite-armor: 0.35
+    netherite-tools: 0.25
+    faction-spawner: 0.40
+    netherite-full-gear: 0.45
+    netherite-sword-bow: 0.40
+    netherite-tools-maxed: 0.40
+    relic-ownership: 0.50
+    hoe-bonus: 0.05
+  rank-rewards:
+    TRAILBLAZER: 5000
+    RIFTWALKER: 25000
+    CONQUEROR: 150000
+    VANGUARD: 1000000
+
+bulletin:
+  refresh-seconds: 40
+
+milestones:
+  rewards:
+    ADVENTURE_DIAMOND: 250
+    ADVENTURE_NETHER: 500
+    ANCIENT_DEBRIS_MINED: 750
+    ENTER_NETHER: 500
+    ENTER_END: 1500
+    BLAZE_ROD: 200
+    ENDER_EYE: 300
+    NETHERITE_INGOT: 750
+    ELYTRA: 2000
+    WITHER_SKULL: 350
+    DEFEAT_WITHER: 4000
+    DEFEAT_DRAGON: 6000
+    ADVENTURE_MASTER: 7500
+
+authentication:
+  auto-authenticate-floodgate: true
+
+tab-integration:
+  # Neutral SkinsRestorer texture used only until an assigned skin is available.
+  default-head-texture: c10591e6909e6a281b371836e462d67a2c78fa0952e910f32b41a26c48c1757c
+
+discord-reminder:
+  enabled: true
+  interval-minutes: 60
+  message: "Join the Ashfall Discord for announcements, server updates, and feedback: https://discord.gg/G2FfuXjz8"
+
+database:
+  file: smpcore.db

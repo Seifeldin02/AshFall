@@ -1,0 +1,208 @@
+package net.communitysmp.core;
+
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.*;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
+import org.bukkit.event.inventory.*;
+import org.bukkit.inventory.*;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
+
+import java.io.File;
+import java.time.LocalDate;
+import java.util.*;
+
+final class ShopService {
+    record Price(double buy,double sell,int dailyFull,int dailyLimit,double reduced,String display,boolean luxury){}
+    static final class SellHolder implements InventoryHolder {
+        final double multiplier; boolean finalized;
+        SellHolder(double multiplier){this.multiplier=multiplier;} @Override public Inventory getInventory(){return null;}
+    }
+    private record SaleQuote(double earned,int sellable,int unsupported){}
+
+    private static final int INPUT_END=45;
+    private final SMPCore plugin; private final Database db; private final NamespacedKey luxuryKey,capsuleKey;
+    private final LinkedHashMap<Material,Price> prices=new LinkedHashMap<>();
+
+    ShopService(SMPCore plugin){this.plugin=plugin;db=plugin.db();luxuryKey=new NamespacedKey(plugin,"shop_luxury");capsuleKey=new NamespacedKey(plugin,"villager_capsule");reload();}
+
+    void reload(){prices.clear();YamlConfiguration yaml=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"shop.yml"));loadSection(yaml.getConfigurationSection("items"),false);loadSection(yaml.getConfigurationSection("luxuries"),true);}
+    private void loadSection(ConfigurationSection section,boolean luxury){
+        if(section==null)return;
+        for(String key:section.getKeys(false)){
+            Material material=Material.matchMaterial(key);if(material==null)continue;
+            double buy=section.getDouble(key+".buy",-1),sell=luxury?-1:section.getDouble(key+".sell",-1);if(buy<=0||sell>=buy)continue;
+            int full=section.getInt(key+".daily-full",plugin.getConfig().getInt("shop.sell-control.default-full-quantity",256));
+            int limit=Integer.MAX_VALUE;
+            double reduced=plugin.getConfig().getDouble("shop.sell-control.reduced-multiplier",.5);
+            String display=section.getString(key+".display",CoreUtil.pretty(key));
+            prices.put(material,new Price(buy,sell,Math.max(0,full),Math.max(full,limit),Math.max(0,Math.min(1,reduced)),display,luxury));
+        }
+    }
+
+    void open(Player p){plugin.marketplace().open(p,MarketplaceService.Section.SHOP);}
+    void open(Player p,boolean luxury){plugin.marketplace().open(p,luxury?MarketplaceService.Section.LUXURY:MarketplaceService.Section.SHOP);}
+    void openPremium(Player p){plugin.marketplace().openPremium(p);}
+
+    private ItemStack luxuryItem(Material material,Price price){
+        ItemStack item=new ItemStack(material);if(material==Material.WIND_CHARGE)return item;ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(price.display(),NamedTextColor.LIGHT_PURPLE));meta.getPersistentDataContainer().set(luxuryKey,PersistentDataType.BYTE,(byte)1);
+        if(material==Material.TRIAL_KEY){meta.getPersistentDataContainer().set(capsuleKey,PersistentDataType.STRING,"DISPOSABLE");meta.setMaxStackSize(1);meta.lore(List.of(Component.text("Captures one villager.",NamedTextColor.GRAY)));}
+        else if(material==Material.OMINOUS_TRIAL_KEY){meta.getPersistentDataContainer().set(capsuleKey,PersistentDataType.STRING,"REUSABLE");meta.setMaxStackSize(1);meta.lore(List.of(Component.text("Reusable villager transport.",NamedTextColor.GRAY)));}
+        item.setItemMeta(meta);return item;
+    }
+    private ItemStack purchaseItem(Material material,Price price,int amount){ItemStack item=price.luxury()?luxuryItem(material,price):new ItemStack(material);item.setAmount(amount);return item;}
+
+    void click(InventoryClickEvent event){if(event.getInventory().getHolder(false) instanceof SellHolder holder)sellClick(event,holder);}
+
+    void openSellBasket(Player p,boolean premium){
+        double multiplier=premium?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1;
+        SellHolder holder=new SellHolder(multiplier);Inventory inv=plugin.getServer().createInventory(holder,54,Component.text("Sell Basket",NamedTextColor.DARK_GREEN));
+        inv.setItem(47,CoreUtil.named(Material.BARRIER,"Cancel",List.of("Return every item.")));
+        inv.setItem(49,totalIcon(new SaleQuote(0,0,0)));
+        inv.setItem(51,CoreUtil.named(Material.LIME_CONCRETE,"Confirm Sale",List.of("Only supported ordinary items will be sold.")));
+        p.openInventory(inv);
+    }
+
+    void requestQuickSell(Player p,boolean premium,Runnable returnToShop){
+        double multiplier=premium?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1;
+        SaleQuote quote=inventoryQuote(p,multiplier);
+        if(quote.sellable()<=0){CoreUtil.error(p,"No supported ordinary items were found in your inventory.");plugin.settings().marketSound(p,"failed");return;}
+        plugin.confirmations().request(p,SettingsService.ConfirmationKind.SHOP,false,"Quick Sell Inventory",
+                List.of(quote.sellable()+" item"+(quote.sellable()==1?"":"s"),"Total: "+CoreUtil.money(quote.earned())),
+                ()->{quickSell(p,multiplier);returnToShop.run();},returnToShop);
+    }
+
+    private void sellClick(InventoryClickEvent e,SellHolder holder){
+        if(!(e.getWhoClicked() instanceof Player p))return;int raw=e.getRawSlot();
+        if(raw>=0&&raw<INPUT_END){plugin.getServer().getScheduler().runTask(plugin,()->refreshBasket(e.getInventory(),p));return;}
+        if(raw>=INPUT_END&&raw<e.getInventory().getSize()){
+            e.setCancelled(true);
+            if(raw==47){holder.finalized=true;returnItems(p,e.getInventory());p.closeInventory();}
+            else if(raw==51)confirmBasket(p,e.getInventory(),holder);
+            return;
+        }
+        if(e.isShiftClick()&&e.getCurrentItem()!=null&&!e.getCurrentItem().getType().isAir()){
+            e.setCancelled(true);ItemStack moving=e.getCurrentItem().clone();int remaining=moveIntoInputs(e.getInventory(),moving);int moved=moving.getAmount()-remaining;e.getCurrentItem().setAmount(e.getCurrentItem().getAmount()-moved);plugin.getServer().getScheduler().runTask(plugin,()->refreshBasket(e.getInventory(),p));
+        }
+    }
+
+    void drag(InventoryDragEvent e){if(e.getInventory().getHolder(false) instanceof SellHolder&&e.getRawSlots().stream().anyMatch(slot->slot>=INPUT_END&&slot<54))e.setCancelled(true);if(e.getInventory().getHolder(false) instanceof SellHolder&&e.getWhoClicked() instanceof Player p)plugin.getServer().getScheduler().runTask(plugin,()->refreshBasket(e.getInventory(),p));}
+    void close(InventoryCloseEvent e){if(e.getInventory().getHolder(false) instanceof SellHolder holder&&!holder.finalized&&e.getPlayer() instanceof Player p){holder.finalized=true;returnItems(p,e.getInventory());}}
+
+    private void refreshBasket(Inventory inv,Player p){if(!(inv.getHolder(false) instanceof SellHolder holder)||holder.finalized)return;inv.setItem(49,totalIcon(quote(inv,p,holder.multiplier)));}
+    private ItemStack totalIcon(SaleQuote quote){List<String> lore=new ArrayList<>();lore.add("Total: "+CoreUtil.money(quote.earned()));lore.add(quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" accepted");if(quote.unsupported()>0)lore.add(quote.unsupported()+" item"+(quote.unsupported()==1?"":"s")+" will be returned");return CoreUtil.named(Material.GOLD_INGOT,"Sale Total",lore);}
+    private SaleQuote quote(Inventory inv,Player p,double multiplier){
+        Map<Material,Integer> counts=new LinkedHashMap<>();int unsupported=0;
+        for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir())continue;Price price=prices.get(item.getType());if(price==null||price.luxury()||price.sell()<0||!item.isSimilar(new ItemStack(item.getType()))){unsupported+=item.getAmount();continue;}counts.merge(item.getType(),item.getAmount(),Integer::sum);}
+        String day=LocalDate.now().toString();double earned=0;int sellable=0;
+        for(var entry:counts.entrySet()){Price price=prices.get(entry.getKey());int sold=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day),amount=entry.getValue();int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;earned+=(full*price.sell()+reduced*price.sell()*price.reduced())*multiplier;sellable+=amount;}
+        return new SaleQuote(Math.round(earned*100)/100.0,sellable,unsupported);
+    }
+
+    private SaleQuote inventoryQuote(Player p,double multiplier){
+        Map<Material,Integer> counts=inventorySellable(p);String day=LocalDate.now().toString();double earned=0;int sellable=0;
+        for(var entry:counts.entrySet()){Price price=prices.get(entry.getKey());int amount=entry.getValue(),sold=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day);int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;earned+=(full*price.sell()+reduced*price.sell()*price.reduced())*multiplier;sellable+=amount;}
+        return new SaleQuote(Math.round(earned*100)/100.0,sellable,0);
+    }
+
+    private Map<Material,Integer> inventorySellable(Player p){return sellableFrom(p.getInventory().getStorageContents());}
+    private Map<Material,Integer> sellableFrom(ItemStack[] contents){
+        Map<Material,Integer> counts=new LinkedHashMap<>();
+        for(ItemStack item:contents){
+            if(item==null||item.getType().isAir()||!item.isSimilar(new ItemStack(item.getType())))continue;
+            Price price=prices.get(item.getType());if(price!=null&&!price.luxury()&&price.sell()>=0)counts.merge(item.getType(),item.getAmount(),Integer::sum);
+        }
+        return counts;
+    }
+    private SaleQuote containerQuote(Inventory inv,Player p){
+        Map<Material,Integer> counts=sellableFrom(inv.getContents());String day=LocalDate.now().toString();double earned=0;int sellable=0;
+        for(var entry:counts.entrySet()){Price price=prices.get(entry.getKey());int amount=entry.getValue(),sold=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day);int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;earned+=full*price.sell()+reduced*price.sell()*price.reduced();sellable+=amount;}
+        return new SaleQuote(Math.round(earned*100)/100.0,sellable,0);
+    }
+    boolean sellAllChest(Player player){
+        org.bukkit.util.RayTraceResult ray=player.rayTraceBlocks(6);
+        if(ray==null||ray.getHitBlock()==null||!(ray.getHitBlock().getState() instanceof org.bukkit.block.Container container)){CoreUtil.error(player,"Look at a chest, barrel, or shulker box within 6 blocks.");return true;}
+        Location location=container.getBlock().getLocation();
+        if(plugin.spawnClaims().contains(location)&&!plugin.isAdmin(player)){CoreUtil.error(player,"This storage is protected by spawn.");return true;}
+        FactionService.Claim claim=plugin.factions().claimAt(location);
+        if(claim!=null&&!plugin.factions().isMember(player,claim.faction())&&!plugin.privileged(player)){CoreUtil.error(player,"This storage is protected by "+claim.faction().name()+".");return true;}
+        SaleQuote preview=containerQuote(container.getInventory(),player);
+        if(preview.sellable()<=0){CoreUtil.error(player,"No supported ordinary items were found in that container.");plugin.settings().marketSound(player,"failed");return true;}
+        plugin.confirmations().request(player,SettingsService.ConfirmationKind.SHOP,false,"Sell Container Contents",
+                List.of(preview.sellable()+" item"+(preview.sellable()==1?"":"s"),"Estimated total: "+CoreUtil.money(preview.earned())),
+                ()->sellContainerNow(player,location),()->{});
+        return true;
+    }
+    private void sellContainerNow(Player player,Location location){
+        if(!(location.getBlock().getState() instanceof org.bukkit.block.Container container)){CoreUtil.error(player,"That container is no longer there.");plugin.settings().marketSound(player,"failed");return;}
+        if(plugin.spawnClaims().contains(location)&&!plugin.isAdmin(player)){CoreUtil.error(player,"This storage is protected by spawn.");return;}
+        FactionService.Claim claim=plugin.factions().claimAt(location);
+        if(claim!=null&&!plugin.factions().isMember(player,claim.faction())&&!plugin.privileged(player)){CoreUtil.error(player,"This storage is protected by "+claim.faction().name()+".");return;}
+        Inventory inv=container.getInventory();
+        Map<Material,Integer> counts=sellableFrom(inv.getContents());
+        SaleQuote quote=containerQuote(inv,player);
+        if(quote.sellable()<=0){CoreUtil.error(player,"Nothing left to sell in that container.");plugin.settings().marketSound(player,"failed");return;}
+        if(!plugin.bank().payShopSeller(player,quote.earned(),"CONTAINER_SELLALL")){CoreUtil.error(player,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(player,"failed");return;}
+        String day=LocalDate.now().toString();
+        for(var entry:counts.entrySet()){
+            Material material=entry.getKey();Price price=prices.get(material);int amount=entry.getValue(),sold=db.dailySold(CoreUtil.id(player),material.name(),day);int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*100)/100.0;
+            int remaining=amount;for(int slot=0;slot<inv.getSize()&&remaining>0;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType()!=material||!item.isSimilar(new ItemStack(material)))continue;int take=Math.min(remaining,item.getAmount());if(take>=item.getAmount())inv.setItem(slot,null);else{item.setAmount(item.getAmount()-take);inv.setItem(slot,item);}remaining-=take;}
+            db.recordSale(CoreUtil.id(player),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(player),"SHOP_SELL",earned,material.name());
+        }
+        CoreUtil.msg(player,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" from the container for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(player,"sale");
+    }
+
+    private void quickSell(Player p,double multiplier){
+        Map<Material,Integer> counts=inventorySellable(p);SaleQuote quote=inventoryQuote(p,multiplier);
+        if(quote.sellable()<=0){CoreUtil.error(p,"No supported ordinary items were found in your inventory.");plugin.settings().marketSound(p,"failed");return;}
+        if(!plugin.bank().payShopSeller(p,quote.earned(),"QUICK_SELL")){CoreUtil.error(p,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(p,"failed");return;}
+        String day=LocalDate.now().toString();
+        for(var entry:counts.entrySet()){
+            Material material=entry.getKey();Price price=prices.get(material);int amount=entry.getValue(),sold=db.dailySold(CoreUtil.id(p),material.name(),day);int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*multiplier*100)/100.0;
+            int remaining=amount;for(ItemStack item:p.getInventory().getStorageContents())if(item!=null&&item.getType()==material&&item.isSimilar(new ItemStack(material))){int take=Math.min(remaining,item.getAmount());item.setAmount(item.getAmount()-take);remaining-=take;if(remaining==0)break;}
+            db.recordSale(CoreUtil.id(p),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,material.name());
+        }
+        CoreUtil.msg(p,"Quick-sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(p,"sale");
+    }
+
+    private void confirmBasket(Player p,Inventory inv,SellHolder holder){
+        SaleQuote quote=quote(inv,p,holder.multiplier);if(quote.sellable()<=0){CoreUtil.error(p,"No supported items are currently sellable.");plugin.settings().marketSound(p,"failed");refreshBasket(inv,p);return;}
+        String day=LocalDate.now().toString();Map<Material,Integer> remaining=new HashMap<>(),soldAmounts=new HashMap<>();Map<Material,Double> earnings=new HashMap<>();
+        for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir()||!item.isSimilar(new ItemStack(item.getType())))continue;Price price=prices.get(item.getType());if(price!=null&&!price.luxury()&&price.sell()>=0)remaining.merge(item.getType(),item.getAmount(),Integer::sum);}
+        for(var entry:remaining.entrySet()){Price price=prices.get(entry.getKey());int already=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day),amount=entry.getValue();int full=Math.min(amount,Math.max(0,price.dailyFull()-already)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*holder.multiplier*100)/100.0;soldAmounts.put(entry.getKey(),amount);earnings.put(entry.getKey(),earned);}
+        if(!plugin.bank().payShopSeller(p,quote.earned(),"BASKET")){CoreUtil.error(p,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(p,"failed");refreshBasket(inv,p);return;}
+        for(var entry:soldAmounts.entrySet()){int remove=entry.getValue();for(int slot=0;slot<INPUT_END&&remove>0;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType()!=entry.getKey()||!item.isSimilar(new ItemStack(entry.getKey())))continue;int take=Math.min(remove,item.getAmount());item.setAmount(item.getAmount()-take);remove-=take;}double earned=earnings.get(entry.getKey());db.recordSale(CoreUtil.id(p),entry.getKey().name(),day,entry.getValue(),earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,entry.getKey().name());}
+        holder.finalized=true;returnItems(p,inv);p.closeInventory();CoreUtil.msg(p,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(p,"sale");
+    }
+
+    private void returnItems(Player p,Inventory inv){for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir())continue;inv.setItem(slot,null);CoreUtil.give(p,item);}}
+    private int moveIntoInputs(Inventory inv,ItemStack moving){int remaining=moving.getAmount();for(int slot=0;slot<INPUT_END&&remaining>0;slot++){ItemStack current=inv.getItem(slot);if(current==null||!current.isSimilar(moving))continue;int add=Math.min(remaining,current.getMaxStackSize()-current.getAmount());current.setAmount(current.getAmount()+add);remaining-=add;}for(int slot=0;slot<INPUT_END&&remaining>0;slot++){ItemStack current=inv.getItem(slot);if(current!=null&&!current.getType().isAir())continue;int add=Math.min(remaining,moving.getMaxStackSize());ItemStack placed=moving.clone();placed.setAmount(add);inv.setItem(slot,placed);remaining-=add;}return remaining;}
+
+    boolean command(Player p,String[] args){
+        if(args.length==0){open(p);return true;}if(args[0].equalsIgnoreCase("luxury")||args[0].equalsIgnoreCase("luxuries")){open(p,true);return true;}
+        if(args[0].equalsIgnoreCase("sell")&&args.length==1){openSellBasket(p,false);return true;}
+        if(args[0].equalsIgnoreCase("sellall")&&args.length>1&&args[1].equalsIgnoreCase("chest")){sellAllChest(p);return true;}
+        if(args[0].equalsIgnoreCase("sellall")||args[0].equalsIgnoreCase("quicksell")){requestQuickSell(p,false,()->{});return true;}
+        if(args.length<2||!(args[0].equalsIgnoreCase("buy")||args[0].equalsIgnoreCase("sell"))){CoreUtil.error(p,"Usage: /shop [luxury|sellall|buy|sell] <item> [amount]");return true;}
+        Material material=Material.matchMaterial(args[1]);Price price=material==null?null:prices.get(material);if(price==null){CoreUtil.error(p,"That item is not in the server shop.");return true;}
+        int amount=1;if(args.length>2)try{amount=Math.min(2304,Math.max(1,Integer.parseInt(args[2])));}catch(NumberFormatException ignored){}
+        if(args[0].equalsIgnoreCase("buy"))buy(p,material,amount,1);else sell(p,material,amount,1);return true;
+    }
+
+    List<String> itemNames(boolean selling,String prefix){String lower=prefix.toLowerCase(Locale.ROOT);return prices.entrySet().stream().filter(e->!selling||(!e.getValue().luxury()&&e.getValue().sell()>=0)).map(e->e.getKey().name().toLowerCase(Locale.ROOT)).filter(n->n.startsWith(lower)).toList();}
+    void buy(Player p,Material material,int amount,double multiplier){Price price=prices.get(material);if(price==null)return;if(price.luxury()){amount=1;if(!plugin.bank().allowNonessential(p,"luxury purchases")){plugin.settings().marketSound(p,"failed");return;}}ItemStack wanted=purchaseItem(material,price,amount);double cost=Math.round(price.buy()*amount*multiplier*100)/100.0;if(!canFit(p,wanted)){CoreUtil.error(p,"Make enough inventory space first.");plugin.settings().marketSound(p,"failed");return;}if(!plugin.bank().payServer(p,cost,"SHOP_PURCHASE",material.name())){CoreUtil.error(p,"You need "+CoreUtil.money(cost)+" to buy "+amount+" "+price.display()+".");plugin.settings().marketSound(p,"failed");return;}db.recordEconomy(CoreUtil.id(p),"SHOP_BUY",-cost,material.name());p.getInventory().addItem(wanted);CoreUtil.msg(p,"Bought "+amount+" "+price.display()+" for "+CoreUtil.money(cost)+".");boolean specialSound=material==Material.ELYTRA||material==Material.DRAGON_EGG||material==Material.WIND_CHARGE;if(!price.luxury()||!specialSound)plugin.settings().marketSound(p,"purchase");if(price.luxury())celebrateLuxury(p,material,price);}
+    void sell(Player p,Material material,int wanted,double multiplier){Price price=prices.get(material);if(price==null||price.luxury()||price.sell()<0){CoreUtil.error(p,"That item cannot be sold to the server.");plugin.settings().marketSound(p,"failed");return;}ItemStack vanilla=new ItemStack(material);int available=0;for(ItemStack item:p.getInventory().getStorageContents())if(item!=null&&item.isSimilar(vanilla))available+=item.getAmount();int amount=Math.min(wanted,available);if(amount<=0){CoreUtil.error(p,"Only ordinary, unmodified "+CoreUtil.pretty(material.name())+" can be sold.");plugin.settings().marketSound(p,"failed");return;}String day=LocalDate.now().toString();int sold=db.dailySold(CoreUtil.id(p),material.name(),day),full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*multiplier*100)/100.0;if(!plugin.bank().payShopSeller(p,earned,material.name())){CoreUtil.error(p,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(p,"failed");return;}int remaining=amount;for(ItemStack item:p.getInventory().getStorageContents())if(item!=null&&item.isSimilar(vanilla)){int take=Math.min(remaining,item.getAmount());item.setAmount(item.getAmount()-take);remaining-=take;if(remaining==0)break;}db.recordSale(CoreUtil.id(p),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,material.name());CoreUtil.msg(p,"Sold "+amount+" "+CoreUtil.pretty(material.name())+" for "+CoreUtil.money(earned)+(reduced>0?" (50% rate applied after today's threshold)":"")+".");plugin.settings().marketSound(p,"sale");}
+
+    List<Map.Entry<Material,Price>> entries(boolean luxury){return prices.entrySet().stream().filter(entry->entry.getValue().luxury()==luxury).map(entry->Map.entry(entry.getKey(),entry.getValue())).toList();}
+    Price price(Material material){return prices.get(material);}
+    ItemStack displayItem(Material material){Price price=prices.get(material);return price!=null&&price.luxury()?luxuryItem(material,price):new ItemStack(material);}
+
+    double configuredSell(Material material){Price price=prices.get(material);return price==null||price.luxury()?0:Math.max(0,price.sell());}
+    boolean selfTest(){Price shell=prices.get(Material.SHULKER_SHELL),stone=prices.get(Material.COBBLESTONE),wind=prices.get(Material.WIND_CHARGE),dirt=prices.get(Material.DIRT),cane=prices.get(Material.SUGAR_CANE),tag=prices.get(Material.NAME_TAG),egg=prices.get(Material.DRAGON_EGG),single=prices.get(Material.TRIAL_KEY),reusable=prices.get(Material.OMINOUS_TRIAL_KEY);if(shell==null||Math.abs(shell.buy()-40000)>.001||stone==null||wind==null||Math.abs(wind.buy()-5000)>.001||dirt==null||Math.abs(dirt.buy()-.50)>.001||Math.abs(dirt.sell()-.05)>.001||cane==null||Math.abs(cane.buy()-12)>.001||Math.abs(cane.sell()-1.10)>.001||tag==null||tag.buy()!=10000||!tag.luxury()||egg==null||egg.buy()!=50000000||single==null||single.buy()!=100000||reusable==null||reusable.buy()!=1000000||dirt.reduced()!=.5||dirt.dailyLimit()!=Integer.MAX_VALUE)return false;ItemStack purchase=purchaseItem(Material.COBBLESTONE,stone,32),charge=purchaseItem(Material.WIND_CHARGE,wind,1),capsule=purchaseItem(Material.TRIAL_KEY,single,1);return purchase.getAmount()==32&&!purchase.hasItemMeta()&&!charge.hasItemMeta()&&capsule.getItemMeta().getPersistentDataContainer().has(capsuleKey)&&itemNames(true,"cobble").contains("cobblestone");}
+    private void celebrateLuxury(Player buyer,Material material,Price price){String shown=plugin.nicknames().displayName(buyer);if(material==Material.WIND_CHARGE){if(plugin.settings().sounds(buyer))buyer.playSound(buyer.getLocation(),Sound.ENTITY_BREEZE_SHOOT,.7f,1.15f);return;}if(material==Material.ELYTRA){plugin.getServer().broadcast(Component.text("✦ THE SKY OPENS",NamedTextColor.AQUA));plugin.getServer().broadcast(Component.text(shown+" has earned the Veteran Explorer's Wings.",NamedTextColor.GOLD));celebrationSounds(Sound.ENTITY_FIREWORK_ROCKET_LAUNCH,Sound.ENTITY_FIREWORK_ROCKET_BLAST,Sound.UI_TOAST_CHALLENGE_COMPLETE);buyer.getWorld().spawnParticle(Particle.END_ROD,buyer.getLocation().add(0,1,0),80,1.5,1.2,1.5,.08);}else if(material==Material.DRAGON_EGG){plugin.getServer().broadcast(Component.text("AN END-BORN TREASURE CHANGES HANDS",NamedTextColor.DARK_PURPLE));plugin.getServer().broadcast(Component.text(shown+" acquired a Dragon Egg.",NamedTextColor.GOLD));celebrationSounds(Sound.ENTITY_ENDER_DRAGON_GROWL,Sound.BLOCK_END_PORTAL_SPAWN,Sound.UI_TOAST_CHALLENGE_COMPLETE);buyer.getWorld().spawnParticle(Particle.DRAGON_BREATH,buyer.getLocation().add(0,1,0),100,1.5,1.3,1.5,.05);}else plugin.getServer().broadcast(Component.text("✦ "+shown+" acquired "+price.display()+" from the Ashfall luxury market.",NamedTextColor.LIGHT_PURPLE));}
+    private void celebrationSounds(Sound first,Sound second,Sound third){Sound[] sounds={first,second,third};for(int i=0;i<sounds.length;i++){int index=i;plugin.getServer().getScheduler().runTaskLater(plugin,()->{for(Player online:plugin.getServer().getOnlinePlayers())if(plugin.settings().sounds(online))online.playSound(online.getLocation(),sounds[index],.8f,1f);},i*10L);}}
+    static boolean canFit(Player p,ItemStack wanted){int remaining=wanted.getAmount(),max=wanted.getMaxStackSize();for(ItemStack slot:p.getInventory().getStorageContents()){if(slot==null||slot.getType().isAir())remaining-=max;else if(slot.isSimilar(wanted))remaining-=Math.max(0,max-slot.getAmount());if(remaining<=0)return true;}return false;}
+}
