@@ -72,6 +72,22 @@ final class TrustedAdminService implements Listener {
         if(realAccount(event.getPlayer())){event.getPlayer().setOp(false);revokeGamemode(event.getPlayer());}
     }
 
+    /** Immediate live grant/revoke for the /admin console command, mirroring vanilla /op and /deop:
+     *  config.yml is always the source of truth, but an already-online target shouldn't have to
+     *  relog to see the change take effect. */
+    void forceGrant(Player player){
+        authenticated.add(player.getUniqueId());
+        player.setOp(true);
+        grantGamemode(player);
+        player.updateCommands();
+    }
+    void forceRevoke(Player player){
+        authenticated.remove(player.getUniqueId());
+        player.setOp(false);
+        revokeGamemode(player);
+        player.updateCommands();
+    }
+
     void shutdown(){
         for(Player player:plugin.getServer().getOnlinePlayers())if(realAccount(player)){player.setOp(false);revokeGamemode(player);}
         authenticated.clear();
