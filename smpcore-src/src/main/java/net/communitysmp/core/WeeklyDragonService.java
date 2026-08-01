@@ -20,13 +20,22 @@ import java.util.concurrent.CompletableFuture;
 final class WeeklyDragonService {
     private static final DateTimeFormatter ID=DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm");
     private final SMPCore plugin;private final Database db;private final NamespacedKey weeklyKey;
-    private BukkitTask task;
+    private BukkitTask task,bossBarTask;
+    /** loadPillarArea() is async (chunk loading), and the existing activeDragon() check only catches a
+     *  dragon that has already fully spawned — it says nothing about a respawn sequence that's already been
+     *  kicked off but hasn't produced an entity yet. Without this flag, a slow chunk load could let a second
+     *  tick() (every 20s) or an admin /ashfall dragon start race in underneath and kick off a second
+     *  initiateRespawn() before the first one's dragon exists to be detected. Set the instant a spawn
+     *  sequence begins, cleared on every terminal branch below (success or failure) so it can never get
+     *  stuck true. */
+    private volatile boolean spawning=false;
 
     WeeklyDragonService(SMPCore plugin){
         this.plugin=plugin;db=plugin.db();weeklyKey=new NamespacedKey(plugin,"weekly_dragon");
         task=plugin.getServer().getScheduler().runTaskTimer(plugin,this::tick,100L,400L);
+        bossBarTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::syncBossBar,40L,40L);
     }
-    void shutdown(){if(task!=null)task.cancel();}
+    void shutdown(){if(task!=null)task.cancel();if(bossBarTask!=null)bossBarTask.cancel();}
 
     private void tick(){
         if(!plugin.getConfig().getBoolean("weekly-dragon.enabled",true))return;ZonedDateTime now=ZonedDateTime.now(zone()),target=currentTarget(now);String occurrence=ID.format(target);
@@ -35,11 +44,29 @@ final class WeeklyDragonService {
         if(seconds>0&&seconds<=600)announceOnce("weekly_dragon:announce10:"+occurrence,"⚔ The weekly Ender Dragon awakens in about ten minutes.");
         if(!now.isBefore(target)&&now.isBefore(target.plusHours(6))&&!occurrence.equals(db.state("weekly_dragon:last_started")))start(occurrence);
     }
+    /** Vanilla's own EnderDragonFight only adds players to the boss bar as a side effect of its normal tick
+     *  progression, which — per the note on attemptRespawn() below — does nothing at all while the boss bar
+     *  has no players tracked yet. That's a real chicken-and-egg for a fight started programmatically rather
+     *  than by a player walking in fresh: anyone already standing in the End when this service (re)starts
+     *  the fight never gets a PlayerChangedWorldEvent to trigger vanilla's own add-to-bar step, so the bar
+     *  never appears and the fight never progresses. Managing membership directly here sidesteps needing
+     *  vanilla's own population path to work at all — every player in the dragon's world is guaranteed onto
+     *  the bar, and everyone else guaranteed off it, twice a second, independent of how they got there. */
+    private void syncBossBar(){
+        World world=endWorld();if(world==null)return;
+        EnderDragon dragon=activeDragon(world);if(dragon==null)return;
+        org.bukkit.boss.BossBar bar=dragon.getBossBar();if(bar==null)return;
+        List<org.bukkit.entity.Player> present=world.getPlayers();
+        for(org.bukkit.entity.Player player:present)if(!bar.getPlayers().contains(player))bar.addPlayer(player);
+        for(org.bukkit.entity.Player tracked:new ArrayList<>(bar.getPlayers()))if(!present.contains(tracked))bar.removePlayer(tracked);
+    }
     private void start(String occurrence){
         World world=endWorld();if(world==null)return;
+        if(spawning)return;
         EnderDragon existing=activeDragon(world);if(existing!=null){db.state("weekly_dragon:last_started",occurrence);broadcast("⚔ The End already has an active Dragon fight.",NamedTextColor.DARK_PURPLE);return;}
+        spawning=true;
         loadPillarArea(world).thenAccept(v->plugin.getServer().getScheduler().runTask(plugin,()->{
-            if(activeDragon(world)!=null){db.state("weekly_dragon:last_started",occurrence);releasePillarArea(world);return;}
+            if(activeDragon(world)!=null){spawning=false;db.state("weekly_dragon:last_started",occurrence);releasePillarArea(world);return;}
             spawnDragon(world,occurrence);
         }));
     }
@@ -47,10 +74,14 @@ final class WeeklyDragonService {
      *  (/ashfall dragon start). Kills any existing dragon first (even a non-weekly one) via damage rather
      *  than remove() — a raw remove() bypasses the normal death event DragonBattle listens for and can leave
      *  its internal state thinking a dragon is still alive, silently refusing to respawn one. A real kill
-     *  needs a tick to fully process before initiateRespawn() is safe to call. */
+     *  needs a tick to fully process before initiateRespawn() is safe to call.
+     *  Sets spawning unconditionally (not gated behind !spawning like start() — this is an explicit admin
+     *  override, meant to work even to recover from a stuck state) so a concurrent scheduled tick() can't
+     *  race a second respawn sequence in underneath this one. */
     String forceStart(){
         World world=endWorld();if(world==null)return"No End world is loaded.";
         String occurrence=ID.format(ZonedDateTime.now(zone()));
+        spawning=true;
         EnderDragon existing=activeDragon(world);
         if(existing!=null){
             existing.setHealth(0);
@@ -108,7 +139,7 @@ final class WeeklyDragonService {
      *  short distance above the portal itself, which is unaffected by whatever happened to the outer ring. */
     private void spawnDragon(World world,String occurrence){
         DragonBattle battle=world.getEnderDragonBattle();
-        if(battle==null){plugin.getLogger().warning("Could not start the weekly Ender Dragon: no DragonBattle available for "+world.getName()+".");return;}
+        if(battle==null){spawning=false;plugin.getLogger().warning("Could not start the weekly Ender Dragon: no DragonBattle available for "+world.getName()+".");return;}
         /** A prior attempt (floating, unanchored crystals) got as far as respawnPhase=START before stalling,
          *  and this state is persisted in the End's own saved dragon-fight data — it survives server
          *  restarts, which is why it kept reappearing on every subsequent attempt in this session.
@@ -125,6 +156,7 @@ final class WeeklyDragonService {
     private void attemptRespawn(World world,DragonBattle battle,String occurrence){
         List<org.bukkit.entity.EnderCrystal> crystals=summonRespawnCrystals(world,battle.getEndPortalLocation());
         if(crystals.size()<4){
+            spawning=false;
             plugin.getLogger().warning("Weekly Ender Dragon: only found "+crystals.size()+" valid crystal mount points near the portal (need 4) — aborting this attempt.");
             for(org.bukkit.entity.EnderCrystal crystal:crystals)crystal.remove();
             releasePillarArea(world);
@@ -133,6 +165,7 @@ final class WeeklyDragonService {
         ensureDragonKilledFlag(battle);
         boolean started=battle.initiateRespawn(crystals);
         if(!started){
+            spawning=false;
             plugin.getLogger().warning("Weekly Ender Dragon: initiateRespawn(crystals) returned false — respawnPhase was "+battle.getRespawnPhase()+" at call time.");
             for(org.bukkit.entity.EnderCrystal crystal:crystals)crystal.remove();
             releasePillarArea(world);
@@ -224,11 +257,12 @@ final class WeeklyDragonService {
     private void pollForSpawnedDragon(DragonBattle battle,String occurrence,int attempt){
         EnderDragon dragon=battle.getEnderDragon();
         if(dragon!=null&&!dragon.isDead()){
-            dragon.setPersistent(true);dragon.getPersistentDataContainer().set(weeklyKey,PersistentDataType.STRING,occurrence);dragon.customName(Component.text("Weekly Ender Dragon",NamedTextColor.DARK_PURPLE));dragon.setCustomNameVisible(true);
+            spawning=false;
+            dragon.setPersistent(true);dragon.getPersistentDataContainer().set(weeklyKey,PersistentDataType.STRING,occurrence);dragon.customName(Component.text("Ender Dragon",NamedTextColor.DARK_PURPLE));dragon.setCustomNameVisible(true);
             db.state("weekly_dragon:active",dragon.getUniqueId().toString());db.history("SERVER",null,"DRAGON","The weekly Ender Dragon awakened.");
             return;
         }
-        if(attempt>=40){plugin.getLogger().warning("Weekly Ender Dragon respawn did not produce a dragon entity after 20s of polling.");return;}
+        if(attempt>=40){spawning=false;plugin.getLogger().warning("Weekly Ender Dragon respawn did not produce a dragon entity after 20s of polling.");return;}
         plugin.getServer().getScheduler().runTaskLater(plugin,()->pollForSpawnedDragon(battle,occurrence,attempt+1),10L);
     }
     /** Radius 8 (17x17 chunks) matches — not just "covers" — the exact grid Paper's EnderDragonFight.isArenaLoaded()
