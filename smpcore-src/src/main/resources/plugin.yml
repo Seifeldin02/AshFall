@@ -108,7 +108,7 @@ commands:
   afk:
     description: Toggle AFK status
   admin:
-    description: Console-only SMPCore admin management
+    description: "Console-only SMPCore admin management: list | add <player> | remove <player>"
   shout:
     description: Send a prominent server-wide announcement
 permissions:
