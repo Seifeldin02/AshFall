@@ -1,7 +1,13 @@
 lifecycle:
   exploration-chance: 0.0002
+  # Real days a player must be absent (never logged in) before their relic starts the lost cycle.
   inactive-owner-days: 60
-  lost-reentry-days: 14
+  # Minecraft (in-game) days, not real days, before a LOST relic becomes eligible to resurface.
+  lost-reentry-mc-days: 7
+  # Minecraft (in-game) days a relic can sit unused before it's reclaimed even if still carried.
+  # "Used" = the ability actually fired for ashen_reprisal/colossus_core/warlords_ember, or simply
+  # being carried for the passive relics (crown_of_ash/wayfinder/oathblade).
+  unused-mc-days: 7
 
 relics:
   crown_of_ash:

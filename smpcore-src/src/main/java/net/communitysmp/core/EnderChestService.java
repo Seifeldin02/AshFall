@@ -103,6 +103,14 @@ final class EnderChestService implements Listener {
         if(holder instanceof Page1Holder ph)return ph.target().equals(CoreUtil.id(player));
         return inventory.getType()==org.bukkit.event.inventory.InventoryType.ENDER_CHEST&&holder instanceof Player owner&&owner.equals(player);
     }
+    /** Any Ender Storage page — this player's own or (via admin inspect) someone else's, and either the
+     *  paged SMPCore GUI or the raw vanilla fallback. Ownership-agnostic on purpose: used to block a whole
+     *  category of item (relics) from Ender Storage entirely, not to check who it belongs to. */
+    boolean isEnderChestStorage(Inventory inventory){
+        if(inventory==null)return false;
+        InventoryHolder holder=inventory.getHolder(false);
+        return holder instanceof ChunkHolder||holder instanceof Page1Holder||inventory.getType()==org.bukkit.event.inventory.InventoryType.ENDER_CHEST;
+    }
 
     boolean command(Player player,String[] args){
         if(args.length>=2&&args[0].equalsIgnoreCase("inspect")){
