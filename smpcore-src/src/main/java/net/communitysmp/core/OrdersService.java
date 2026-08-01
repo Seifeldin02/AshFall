@@ -48,17 +48,15 @@ import java.util.function.Consumer;
 final class OrdersService implements Listener {
     private record YourOrdersHolder(int page) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private record OrderDetailHolder(String orderId,int returnPage) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
-    private record MainMenuHolder() implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private static final int PER_PAGE=45;
 
     private final SMPCore plugin;
     private Boolean available;
-    private Object orderManager,storageManager,allowedItemsManager,guiManager;
+    private Object orderManager,storageManager,allowedItemsManager;
     private Method createOrder,fulfillOrder,cancelOrder;
     private Method getAllActiveOrders,getPlayerOrders,getOrderById,getAllowedMaterials;
     private Method orderId,buyerUUID,buyerName,itemTemplate,amountRequested,amountFulfilled,amountRemaining,pricePerItem,orderStatus,formattedExpiry,claimedAt;
     private Method loadStash,clearStash;
-    private Method openPublicOrdersNative,openNewOrderPickerNative;
     private final Set<UUID> claimInFlight=ConcurrentHashMap.newKeySet();
 
     OrdersService(SMPCore plugin){this.plugin=plugin;}
@@ -75,9 +73,15 @@ final class OrdersService implements Listener {
             return;
         }
         if(!Set.of("orders","order","market","donutorders").contains(cmd))return;
+        /** Java players are deliberately NOT intercepted here — /orders falls straight through to
+         *  DonutOrders' own native command, exactly as if this handler didn't exist. That native GUI
+         *  (browse/create/manage, every allowed item, search) is DonutOrders' own and was never something
+         *  SMPCore needs to rebuild — a prior attempt at wrapping it in an SMPCore-built landing menu was
+         *  explicitly rejected as not matching the real thing, so there is nothing else here on purpose. */
+        if(!plugin.isBedrock(player))return;
         if(!ensureReady())return;
         e.setCancelled(true);
-        if(plugin.isBedrock(player))openMain(player);else openMainChest(player);
+        openMain(player);
     }
 
     private boolean ensureReady(){
@@ -89,14 +93,12 @@ final class OrdersService implements Listener {
             Object instance=donutClass.getMethod("getInstance").invoke(null);
             Field orderManagerField=donutClass.getDeclaredField("orderManager");orderManagerField.setAccessible(true);orderManager=orderManagerField.get(instance);
             Field storageManagerField=donutClass.getDeclaredField("storageManager");storageManagerField.setAccessible(true);storageManager=storageManagerField.get(instance);
-            Field guiManagerField=donutClass.getDeclaredField("guiManager");guiManagerField.setAccessible(true);guiManager=guiManagerField.get(instance);
             allowedItemsManager=donutClass.getMethod("getAllowedItemsManager").invoke(instance);
 
             Class<?> orderManagerClass=Class.forName("com.donutorders.manager.OrderManager");
             Class<?> storageManagerClass=Class.forName("com.donutorders.storage.StorageManager");
             Class<?> allowedItemsClass=Class.forName("com.donutorders.manager.AllowedItemsManager");
             Class<?> orderClass=Class.forName("com.donutorders.model.Order");
-            Class<?> guiManagerClass=Class.forName("com.donutorders.manager.GUIManager");
 
             createOrder=orderManagerClass.getMethod("createOrder",Player.class,ItemStack.class,int.class,double.class,BiConsumer.class);
             fulfillOrder=orderManagerClass.getMethod("fulfillOrder",Player.class,UUID.class,ItemStack[].class,BiConsumer.class);
@@ -107,8 +109,6 @@ final class OrdersService implements Listener {
             getAllowedMaterials=allowedItemsClass.getMethod("getAllowedMaterials");
             loadStash=storageManagerClass.getMethod("loadStash",UUID.class,Consumer.class);
             clearStash=storageManagerClass.getMethod("clearStash",UUID.class,Runnable.class);
-            openPublicOrdersNative=guiManagerClass.getMethod("openPublicOrders",Player.class,int.class);
-            openNewOrderPickerNative=guiManagerClass.getMethod("openNewOrderPicker",Player.class);
 
             orderId=orderClass.getMethod("getOrderId");buyerUUID=orderClass.getMethod("getBuyerUUID");buyerName=orderClass.getMethod("getBuyerName");
             itemTemplate=orderClass.getMethod("getItemTemplate");amountRequested=orderClass.getMethod("getAmountRequested");amountFulfilled=orderClass.getMethod("getAmountFulfilled");
@@ -354,20 +354,6 @@ final class OrdersService implements Listener {
         }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
     }
 
-    // ───────────────────────── Java: /orders chest menu (browse/manage only) ─────────────────────────
-
-    /** Landing menu for Java's /orders. Browsing and "Your Orders" stay SMPCore-owned chests (Your Orders
-     *  specifically because DonutOrders' own collection GUI has the confirmed claim-slot bug noted above),
-     *  but "New Order" opens DonutOrders' own real NewOrderGUI directly via GUIManager — no SMPCore-built
-     *  creation flow exists here at all, so there's nothing chest-based to accidentally show instead. */
-    private void openMainChest(Player player){
-        Inventory inv=plugin.getServer().createInventory(new MainMenuHolder(),9,Component.text("Ashfall Orders",NamedTextColor.DARK_GREEN));
-        for(int s=0;s<9;s++)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
-        inv.setItem(2,CoreUtil.named(Material.CHEST,"Browse Public Orders",List.of("See what other players are buying.")));
-        inv.setItem(4,CoreUtil.named(Material.EMERALD,"New Order",List.of("Opens the item/quantity/price creation screen.")));
-        inv.setItem(6,CoreUtil.named(Material.WRITABLE_BOOK,"Your Orders",List.of("View, claim, or cancel your own orders.")));
-        player.openInventory(inv);
-    }
 
     // ───────────────────────── Java: /myorders chest GUI ─────────────────────────
 
@@ -445,18 +431,9 @@ final class OrdersService implements Listener {
 
     @EventHandler public void click(InventoryClickEvent event){
         InventoryHolder raw=event.getInventory().getHolder(false);
-        if(!(raw instanceof YourOrdersHolder)&&!(raw instanceof OrderDetailHolder)&&!(raw instanceof MainMenuHolder))return;
+        if(!(raw instanceof YourOrdersHolder)&&!(raw instanceof OrderDetailHolder))return;
         event.setCancelled(true);
         if(!(event.getWhoClicked() instanceof Player player))return;
-        if(raw instanceof MainMenuHolder){
-            int slot=event.getRawSlot();
-            try{
-                if(slot==2)openPublicOrdersNative.invoke(guiManager,player,0);
-                else if(slot==4)openNewOrderPickerNative.invoke(guiManager,player);
-                else if(slot==6)openYourOrdersChest(player,0);
-            }catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-            return;
-        }
         if(raw instanceof YourOrdersHolder holder){
             int slot=event.getRawSlot();
             if(slot<0||slot>=54)return;

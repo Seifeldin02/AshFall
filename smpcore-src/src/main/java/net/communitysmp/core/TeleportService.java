@@ -117,8 +117,10 @@ final class TeleportService {
         if(partnerId!=null){
             rtpQueuePartner.remove(partnerId);
             Player partner=plugin.getServer().getPlayer(partnerId);
+            plugin.getLogger().info("[RtpDebug] cancel("+p.getName()+",\""+reason+"\"): had partner link to "+partnerId+" (online="+(partner!=null)+")");
             if(partner!=null){
                 Pending partnerPending=pending.remove(partnerId);
+                plugin.getLogger().info("[RtpDebug] partner "+partner.getName()+" had pending="+(partnerPending!=null)+" -> cross-cancelling");
                 if(partnerPending!=null){partnerPending.task.cancel();CoreUtil.error(partner,"Your RTP queue match was cancelled because the other player left or cancelled. Use /rtp queue to try again.");}
             }
         }
@@ -192,7 +194,9 @@ final class TeleportService {
              *  than leaving them warming up toward a partner who was never coming. */
             if(isPending(a)&&isPending(b)){
                 rtpQueuePartner.put(a.getUniqueId(),b.getUniqueId());rtpQueuePartner.put(b.getUniqueId(),a.getUniqueId());
+                plugin.getLogger().info("[RtpDebug] linked "+a.getName()+" <-> "+b.getName()+" destination="+safe.getWorld().getName()+" "+safe.getBlockX()+","+safe.getBlockY()+","+safe.getBlockZ());
             }else{
+                plugin.getLogger().info("[RtpDebug] one side failed to start: "+a.getName()+" pending="+isPending(a)+", "+b.getName()+" pending="+isPending(b));
                 if(isPending(a))cancel(a,"Your RTP queue match could not proceed because your partner wasn't ready. Use /rtp queue again.");
                 if(isPending(b))cancel(b,"Your RTP queue match could not proceed because your partner wasn't ready. Use /rtp queue again.");
             }
