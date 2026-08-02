@@ -170,13 +170,17 @@ final class OrdersService implements Listener {
      *  OrderManager.collectStash() itself only ever accepts terminal statuses.
      *  This is entirely inside a sealed DonutOrders class with no source available — cannot be patched
      *  directly. DonutOrders' own click listener runs at EventPriority.HIGH with ignoreCancelled=false
-     *  (bytecode-confirmed), so simply cancelling this click does nothing; it processes the click and opens
-     *  the Collect Stash screen regardless. Instead: observe the click here (any priority before HIGH is
-     *  fine — GUIManager.getState(player).contextOrderId identifies exactly which order is open, no title
-     *  parsing needed for that part), and if it's slot 11 on this player's ACTIVE order, mark that the very
-     *  next inventory this player opens should be blocked. openCollectStash() loads the stash asynchronously
-     *  before actually opening anything (bytecode-confirmed lambda/callback pattern), so the resulting
-     *  InventoryOpenEvent always fires on a later tick — well after this flag is set, no ordering race. */
+     *  (bytecode-confirmed), so cancelling this click doesn't stop it from processing the click and opening
+     *  the Collect Stash screen regardless — cancelling here is still worth doing anyway (prevents vanilla's
+     *  own default click behavior, e.g. picking up whatever's actually sitting in that slot), it just isn't
+     *  sufficient on its own. The actual block is on the follow-up: observe the click here (any priority
+     *  before HIGH is fine — GUIManager.getState(player).contextOrderId identifies exactly which order is
+     *  open, no title parsing needed for that part), and if it's slot 11 on this player's ACTIVE order, mark
+     *  that the very next inventory this player opens should be silently blocked — no error message, so the
+     *  slot behaves as a true no-op, exactly like the ordinary filler glass around it. openCollectStash()
+     *  loads the stash asynchronously before actually opening anything (bytecode-confirmed lambda/callback
+     *  pattern), so the resulting InventoryOpenEvent always fires on a later tick — well after this flag is
+     *  set, no ordering race. */
     @EventHandler(priority=EventPriority.LOW)
     public void watchDonutOrderDetailClick(InventoryClickEvent event){
         if(event.getRawSlot()!=11||!(event.getWhoClicked() instanceof Player player))return;
@@ -188,7 +192,10 @@ final class OrdersService implements Listener {
             if(contextOrderId==null)return;
             Object order=getOrderById.invoke(storageManager,contextOrderId);
             if(order==null)return;
-            if("ACTIVE".equals(orderStatus.invoke(order).toString()))blockNextStashOpen.add(player.getUniqueId());
+            if("ACTIVE".equals(orderStatus.invoke(order).toString())){
+                event.setCancelled(true);
+                blockNextStashOpen.add(player.getUniqueId());
+            }
         }catch(Exception ignored){}
     }
     @EventHandler(priority=EventPriority.LOWEST)
@@ -197,8 +204,10 @@ final class OrdersService implements Listener {
         if(!blockNextStashOpen.remove(player.getUniqueId()))return;
         String title=event.getView().getTitle();
         if(title==null||!title.contains("ᴄᴏʟʟᴇᴄᴛ"))return;
+        /** Silent — no error message. The goal is for this slot to behave exactly like the ordinary filler
+         *  glass around it, which does nothing at all when clicked; a message here would still read as "this
+         *  did something" even though the intent is a true no-op. */
         event.setCancelled(true);
-        CoreUtil.error(player,"This order is still active — anything delivered so far is already safely held; check back with /myorders once it's ready to claim.");
     }
 
     // ───────────────────────── shared item/description helpers ─────────────────────────
