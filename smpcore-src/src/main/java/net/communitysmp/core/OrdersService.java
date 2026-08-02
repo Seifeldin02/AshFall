@@ -173,14 +173,21 @@ final class OrdersService implements Listener {
      *  (bytecode-confirmed), so cancelling this click doesn't stop it from processing the click and opening
      *  the Collect Stash screen regardless — cancelling here is still worth doing anyway (prevents vanilla's
      *  own default click behavior, e.g. picking up whatever's actually sitting in that slot), it just isn't
-     *  sufficient on its own. The actual block is on the follow-up: observe the click here (any priority
-     *  before HIGH is fine — GUIManager.getState(player).contextOrderId identifies exactly which order is
-     *  open, no title parsing needed for that part), and if it's slot 11 on this player's ACTIVE order, mark
-     *  that the very next inventory this player opens should be silently blocked — no error message, so the
-     *  slot behaves as a true no-op, exactly like the ordinary filler glass around it. openCollectStash()
-     *  loads the stash asynchronously before actually opening anything (bytecode-confirmed lambda/callback
-     *  pattern), so the resulting InventoryOpenEvent always fires on a later tick — well after this flag is
-     *  set, no ordering race. */
+     *  sufficient on its own. GUIManager.getState(player).contextOrderId identifies exactly which order is
+     *  open here, no title parsing needed for that part.
+     *  First attempt cancelled the resulting InventoryOpenEvent outright — live-confirmed that's actively
+     *  dangerous: cancelling the OPEN stops the client from ever seeing the new inventory, but DonutOrders'
+     *  own PlayerGUIState still gets updated to "viewing Collect Stash" inside the same async callback,
+     *  desyncing what the client is actually looking at (still OrderDetailGUI) from what DonutOrders thinks
+     *  is open. The next click then gets routed through the wrong GUI's handleClick(), corrupting the whole
+     *  screen — reported live as "double-click breaks the chest GUI and makes it unusable." Fixed by letting
+     *  the Collect Stash screen open for real (keeps DonutOrders' own state consistent with what's shown),
+     *  then immediately closing it back out next tick — a normal close is something DonutOrders' own
+     *  MONITOR-priority onClose handler (also bytecode-confirmed) already handles correctly, since that's
+     *  the same path a player closing it themselves takes. Costs a brief visual flash instead of a silent
+     *  no-op, but doesn't corrupt state; blockNextStashOpen entries auto-expire after 2s (not consumed on
+     *  first match) so a rapid double/triple-click, which can fire openCollectStash more than once, closes
+     *  every resulting open rather than only the first. */
     @EventHandler(priority=EventPriority.LOW)
     public void watchDonutOrderDetailClick(InventoryClickEvent event){
         if(event.getRawSlot()!=11||!(event.getWhoClicked() instanceof Player player))return;
@@ -194,20 +201,22 @@ final class OrdersService implements Listener {
             if(order==null)return;
             if("ACTIVE".equals(orderStatus.invoke(order).toString())){
                 event.setCancelled(true);
-                blockNextStashOpen.add(player.getUniqueId());
+                UUID playerId=player.getUniqueId();
+                blockNextStashOpen.add(playerId);
+                plugin.getServer().getScheduler().runTaskLater(plugin,()->blockNextStashOpen.remove(playerId),40L);
             }
         }catch(Exception ignored){}
     }
-    @EventHandler(priority=EventPriority.LOWEST)
-    public void blockDonutStashOpenForActiveOrder(InventoryOpenEvent event){
+    @EventHandler(priority=EventPriority.MONITOR)
+    public void closeDonutStashOpenForActiveOrder(InventoryOpenEvent event){
         if(!(event.getPlayer() instanceof Player player))return;
-        if(!blockNextStashOpen.remove(player.getUniqueId()))return;
+        if(!blockNextStashOpen.contains(player.getUniqueId()))return;
         String title=event.getView().getTitle();
         if(title==null||!title.contains("ᴄᴏʟʟᴇᴄᴛ"))return;
-        /** Silent — no error message. The goal is for this slot to behave exactly like the ordinary filler
-         *  glass around it, which does nothing at all when clicked; a message here would still read as "this
-         *  did something" even though the intent is a true no-op. */
-        event.setCancelled(true);
+        plugin.getServer().getScheduler().runTask(plugin,()->{
+            Player online=plugin.getServer().getPlayer(player.getUniqueId());
+            if(online!=null)online.closeInventory();
+        });
     }
 
     // ───────────────────────── shared item/description helpers ─────────────────────────
