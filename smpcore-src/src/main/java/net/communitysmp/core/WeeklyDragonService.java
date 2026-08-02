@@ -52,8 +52,37 @@ final class WeeklyDragonService {
      *  never appears and the fight never progresses. Managing membership directly here sidesteps needing
      *  vanilla's own population path to work at all — every player in the dragon's world is guaranteed onto
      *  the bar, and everyone else guaranteed off it, twice a second, independent of how they got there. */
+    /** The in-memory "spawning" flag above only guards races within a single plugin uptime — it resets to
+     *  false on every restart, so a crystal-beam sequence still in flight when the server restarts (its
+     *  state lives in the world's own saved DragonBattle data, not in this Java field) has no way to warn a
+     *  post-restart respawn attempt that one is already underway. Rather than try to make every possible
+     *  race impossible to create, this detects and corrects the result directly and continuously: at most
+     *  one live EnderDragon is allowed to exist in the End at any time, checked here on the same twice-a-
+     *  second cadence as the boss bar sync (and once at startup, for whatever the previous session left
+     *  behind). Prefers keeping whichever entity matches weekly_dragon:active in the database, since that's
+     *  the one everything else (status, /ashfall dragon commands) already thinks is "the" dragon; falls
+     *  back to the first found if that UUID isn't among the survivors. Extras are removed silently
+     *  (Entity.remove(), not damage) — these are accidental duplicates, not a real kill, so no death event,
+     *  no "the dragon has been defeated" broadcast, and no kill rewards should fire for them. */
+    private void deduplicateDragons(World world){
+        List<EnderDragon> dragons=new ArrayList<>();
+        for(EnderDragon dragon:world.getEntitiesByClass(EnderDragon.class))if(!dragon.isDead())dragons.add(dragon);
+        if(dragons.size()<=1)return;
+        String activeId=db.state("weekly_dragon:active");
+        EnderDragon keep=dragons.stream().filter(d->d.getUniqueId().toString().equals(activeId)).findFirst().orElse(dragons.get(0));
+        int removed=0;
+        for(EnderDragon dragon:dragons){
+            if(dragon.equals(keep))continue;
+            dragon.remove();
+            removed++;
+        }
+        plugin.getLogger().warning("Weekly Ender Dragon: removed "+removed+" duplicate dragon entity/entities, kept "+keep.getUniqueId()+".");
+        db.state("weekly_dragon:active",keep.getUniqueId().toString());
+        db.history("SERVER",null,"DRAGON","Removed "+removed+" duplicate Ender Dragon entity/entities.");
+    }
     private void syncBossBar(){
         World world=endWorld();if(world==null)return;
+        deduplicateDragons(world);
         EnderDragon dragon=activeDragon(world);if(dragon==null)return;
         org.bukkit.boss.BossBar bar=dragon.getBossBar();if(bar==null)return;
         List<org.bukkit.entity.Player> present=world.getPlayers();
