@@ -68,11 +68,11 @@ final class OrdersService implements Listener {
     private Method getAllActiveOrders,getPlayerOrders,getOrderById,getAllowedMaterials;
     private Method orderId,buyerUUID,buyerName,itemTemplate,amountRequested,amountFulfilled,amountRemaining,pricePerItem,orderStatus,formattedExpiry,claimedAt;
     private Method loadStash,clearStash;
-    private Method openPublicOrdersNative,openOrderPlacement;
+    private Method openPublicOrdersNative,openOrderPlacement,openDonutOrderDetail;
     private Method getGuiState;
     private Field contextOrderIdField;
     private final Set<UUID> claimInFlight=ConcurrentHashMap.newKeySet();
-    private final Set<UUID> blockNextStashOpen=ConcurrentHashMap.newKeySet();
+    private final Map<UUID,UUID> blockNextStashOpen=new ConcurrentHashMap<>();
 
     OrdersService(SMPCore plugin){this.plugin=plugin;}
 
@@ -145,6 +145,7 @@ final class OrdersService implements Listener {
             openPublicOrdersNative=guiManagerClass.getMethod("openPublicOrders",Player.class,int.class);
             openOrderPlacement=guiManagerClass.getMethod("openOrderPlacement",Player.class);
             getGuiState=guiManagerClass.getMethod("getState",UUID.class);
+            openDonutOrderDetail=guiManagerClass.getMethod("openOrderDetail",Player.class,UUID.class);
             Class<?> playerGuiStateClass=Class.forName("com.donutorders.manager.GUIManager$PlayerGUIState");
             contextOrderIdField=playerGuiStateClass.getField("contextOrderId");
 
@@ -180,14 +181,22 @@ final class OrdersService implements Listener {
      *  own PlayerGUIState still gets updated to "viewing Collect Stash" inside the same async callback,
      *  desyncing what the client is actually looking at (still OrderDetailGUI) from what DonutOrders thinks
      *  is open. The next click then gets routed through the wrong GUI's handleClick(), corrupting the whole
-     *  screen — reported live as "double-click breaks the chest GUI and makes it unusable." Fixed by letting
-     *  the Collect Stash screen open for real (keeps DonutOrders' own state consistent with what's shown),
-     *  then immediately closing it back out next tick — a normal close is something DonutOrders' own
-     *  MONITOR-priority onClose handler (also bytecode-confirmed) already handles correctly, since that's
-     *  the same path a player closing it themselves takes. Costs a brief visual flash instead of a silent
-     *  no-op, but doesn't corrupt state; blockNextStashOpen entries auto-expire after 2s (not consumed on
-     *  first match) so a rapid double/triple-click, which can fire openCollectStash more than once, closes
-     *  every resulting open rather than only the first. */
+     *  screen — reported live as "double-click breaks the chest GUI and makes it unusable."
+     *  Second attempt let the Collect Stash screen open for real, then closed it back out — no more
+     *  corruption, but that closes the *entire* GUI (kicks the player out to no inventory at all), reported
+     *  live as worse than doing nothing: the requirement is that this slot behaves exactly like the ordinary
+     *  filler glass around it, i.e. truly nothing happens.
+     *  Landed on: let it open for real (still keeps DonutOrders' state consistent, avoiding the original
+     *  corruption bug), then immediately reopen the *same* Order Detail screen via DonutOrders' own
+     *  GUIManager.openOrderDetail(Player,UUID) instead of closing. This both restores DonutOrders' own state
+     *  to what it actually was (OrderDetailGUI, matching contextOrderId, not left pointing at Collect Stash)
+     *  and returns the player to exactly where they were — a brief screen swap rather than a silent no-op
+     *  (DonutOrders unconditionally opens something new on every slot-11 click, bytecode-confirmed no early
+     *  exit exists to intercept before that happens — no code here can prevent that first open from
+     *  occurring at all, only react once it has), but the net effect the player experiences is "the glass
+     *  didn't do anything," not "the whole screen closed." blockNextStashOpen entries auto-expire after 2s
+     *  (not consumed on first match) so a rapid double/triple-click, which can fire openCollectStash more
+     *  than once, catches every resulting open, not just the first. */
     @EventHandler(priority=EventPriority.LOW)
     public void watchDonutOrderDetailClick(InventoryClickEvent event){
         if(event.getRawSlot()!=11||!(event.getWhoClicked() instanceof Player player))return;
@@ -202,7 +211,7 @@ final class OrdersService implements Listener {
             if("ACTIVE".equals(orderStatus.invoke(order).toString())){
                 event.setCancelled(true);
                 UUID playerId=player.getUniqueId();
-                blockNextStashOpen.add(playerId);
+                blockNextStashOpen.put(playerId,contextOrderId);
                 plugin.getServer().getScheduler().runTaskLater(plugin,()->blockNextStashOpen.remove(playerId),40L);
             }
         }catch(Exception ignored){}
@@ -210,12 +219,15 @@ final class OrdersService implements Listener {
     @EventHandler(priority=EventPriority.MONITOR)
     public void closeDonutStashOpenForActiveOrder(InventoryOpenEvent event){
         if(!(event.getPlayer() instanceof Player player))return;
-        if(!blockNextStashOpen.contains(player.getUniqueId()))return;
+        UUID orderId=blockNextStashOpen.get(player.getUniqueId());
+        if(orderId==null)return;
         String title=event.getView().getTitle();
         if(title==null||!title.contains("ᴄᴏʟʟᴇᴄᴛ"))return;
         plugin.getServer().getScheduler().runTask(plugin,()->{
             Player online=plugin.getServer().getPlayer(player.getUniqueId());
-            if(online!=null)online.closeInventory();
+            if(online==null)return;
+            try{openDonutOrderDetail.invoke(guiManager,online,orderId);}
+            catch(Exception error){online.closeInventory();}
         });
     }
 
@@ -522,34 +534,60 @@ final class OrdersService implements Listener {
         return out;
     }
 
+    /** Was a synchronous render using hasPendingStash() (fulfilled minus a locally-tracked claimed-so-far
+     *  counter) — live-confirmed that leaves every order claimed before that counter existed permanently
+     *  showing as pending, since nothing ever updates the counter for a claim it never saw happen. This is
+     *  the actual per-order decision point ("View/Claim Stash" button vs plain filler), so it needs to be
+     *  right every time, not just after one extra click into the stash screen specifically. Now loads the
+     *  real live stash first (same loadStash() call the stash screen and claimPartial() both already trust)
+     *  and recomputes order_claimed_total directly from ground truth (fulfilled minus what's still actually
+     *  sitting in the stash) on every view, rather than incrementally maintaining a counter that can drift
+     *  or start out stale. */
     private void openOrderDetailChest(Player player,UUID id,int returnPage){
-        Object order;
-        try{order=getOrderById.invoke(storageManager,id);}catch(Exception error){order=null;}
-        if(order==null){CoreUtil.error(player,"That order is no longer available.");openYourOrdersChest(player,returnPage);return;}
+        Object orderLookup;
+        try{orderLookup=getOrderById.invoke(storageManager,id);}catch(Exception error){orderLookup=null;}
+        if(orderLookup==null){CoreUtil.error(player,"That order is no longer available.");openYourOrdersChest(player,returnPage);return;}
+        final Object order=orderLookup;
         try{
-            ItemStack template=((ItemStack)itemTemplate.invoke(order)).clone();
-            String statusName=orderStatus.invoke(order).toString();
-            int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
-            boolean canClaim=hasPendingStash(order);
-            Inventory inv=plugin.getServer().createInventory(new OrderDetailHolder(id.toString(),returnPage),27,Component.text("Order Detail",NamedTextColor.DARK_GREEN));
-            ItemMeta meta=template.getItemMeta();
-            meta.displayName(Component.text(itemLabel(template),NamedTextColor.GOLD));
-            List<Component> lore=new ArrayList<>();
-            lore.add(Component.text("Requested: "+requested+" • Fulfilled: "+fulfilled,NamedTextColor.GRAY));
-            lore.add(Component.text("Price: "+CoreUtil.money((double)pricePerItem.invoke(order))+" each",NamedTextColor.GRAY));
-            lore.add(Component.text("Status: "+CoreUtil.pretty(statusName),NamedTextColor.GRAY));
-            lore.add(Component.text("Expires: "+formattedExpiry.invoke(order),NamedTextColor.GRAY));
-            meta.lore(lore);template.setItemMeta(meta);
-            inv.setItem(13,template);
-            for(int s=0;s<27;s++)if(s!=13&&s!=11&&s!=15&&s!=22)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
-            if(canClaim)inv.setItem(11,CoreUtil.named(Material.LIME_DYE,"View/Claim Stash",List.of("Opens the delivered items waiting","in escrow. The order stays active","for the rest.")));
-            else inv.setItem(11,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
-            if(statusName.equals("ACTIVE"))inv.setItem(15,CoreUtil.named(Material.RED_DYE,"Cancel Order",List.of("Refunds unspent escrow.","Anything delivered stays claimable.")));
-            else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED"))inv.setItem(15,CoreUtil.named(Material.HOPPER,"Remove from My Orders",List.of("Archives this order permanently.","Only allowed once its stash is empty.")));
-            else inv.setItem(15,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
-            inv.setItem(22,CoreUtil.named(Material.ARROW,"Back",List.of()));
-            player.openInventory(inv);
+            @SuppressWarnings("unchecked")
+            Consumer<ItemStack[]> stashConsumer=stash->plugin.getServer().getScheduler().runTask(plugin,()->{
+                Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                if(online==null)return;
+                int stashTotal=0;
+                if(stash!=null)for(ItemStack item:stash)if(item!=null)stashTotal+=item.getAmount();
+                try{
+                    int fulfilled=(int)amountFulfilled.invoke(order);
+                    int correctClaimed=Math.max(0,fulfilled-stashTotal);
+                    if(correctClaimed!=claimedTotal(id))plugin.db().state("order_claimed_total:"+id,Integer.toString(correctClaimed));
+                }catch(Exception ignored){}
+                try{renderOrderDetailChest(online,order,id,returnPage,stashTotal>0);}
+                catch(Exception error){CoreUtil.error(online,"The orders marketplace is temporarily unavailable.");openYourOrdersChest(online,returnPage);}
+            });
+            loadStash.invoke(storageManager,id,stashConsumer);
         }catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");openYourOrdersChest(player,returnPage);}
+    }
+    private void renderOrderDetailChest(Player player,Object order,UUID id,int returnPage,boolean canClaim) throws Exception{
+        ItemStack template=((ItemStack)itemTemplate.invoke(order)).clone();
+        String statusName=orderStatus.invoke(order).toString();
+        int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
+        Inventory inv=plugin.getServer().createInventory(new OrderDetailHolder(id.toString(),returnPage),27,Component.text("Order Detail",NamedTextColor.DARK_GREEN));
+        ItemMeta meta=template.getItemMeta();
+        meta.displayName(Component.text(itemLabel(template),NamedTextColor.GOLD));
+        List<Component> lore=new ArrayList<>();
+        lore.add(Component.text("Requested: "+requested+" • Fulfilled: "+fulfilled,NamedTextColor.GRAY));
+        lore.add(Component.text("Price: "+CoreUtil.money((double)pricePerItem.invoke(order))+" each",NamedTextColor.GRAY));
+        lore.add(Component.text("Status: "+CoreUtil.pretty(statusName),NamedTextColor.GRAY));
+        lore.add(Component.text("Expires: "+formattedExpiry.invoke(order),NamedTextColor.GRAY));
+        meta.lore(lore);template.setItemMeta(meta);
+        inv.setItem(13,template);
+        for(int s=0;s<27;s++)if(s!=13&&s!=11&&s!=15&&s!=22)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+        if(canClaim)inv.setItem(11,CoreUtil.named(Material.LIME_DYE,"View/Claim Stash",List.of("Opens the delivered items waiting","in escrow. The order stays active","for the rest.")));
+        else inv.setItem(11,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+        if(statusName.equals("ACTIVE"))inv.setItem(15,CoreUtil.named(Material.RED_DYE,"Cancel Order",List.of("Refunds unspent escrow.","Anything delivered stays claimable.")));
+        else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED"))inv.setItem(15,CoreUtil.named(Material.HOPPER,"Remove from My Orders",List.of("Archives this order permanently.","Only allowed once its stash is empty.")));
+        else inv.setItem(15,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+        inv.setItem(22,CoreUtil.named(Material.ARROW,"Back",List.of()));
+        player.openInventory(inv);
     }
     /** The stash-viewing screen for both claiming and simply checking what's waiting. Items shown here are
      *  read directly from the same loadStash() claimPartial() itself drains — "Collect All" cannot say
@@ -575,14 +613,11 @@ final class OrdersService implements Listener {
                     if(slot<18)inv.setItem(slot++,item.clone());
                 }
                 if(total>0)inv.setItem(22,CoreUtil.named(Material.LIME_DYE,"Collect All ("+total+")",List.of("Give all of this to your inventory.","The order stays active for the rest.")));
-                else{
-                    inv.setItem(22,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"Nothing to collect right now",List.of()));
-                    /** Self-heal orders claimed before order_claimed_total existed: if the real stash is
-                     *  genuinely empty but claimedTotal is still behind fulfilled (never having gone through
-                     *  claimPartial() since this tracking was added), catch it up here so this order stops
-                     *  showing as falsely pending everywhere else going forward. */
-                    try{int fulfilled=(int)amountFulfilled.invoke(order);if(fulfilled>claimedTotal(id))plugin.db().state("order_claimed_total:"+id,Integer.toString(fulfilled));}catch(Exception ignored){}
-                }
+                else inv.setItem(22,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"Nothing to collect right now",List.of()));
+                /** Same ground-truth reconciliation as openOrderDetailChest — recompute order_claimed_total
+                 *  from fulfilled minus what's actually still in the stash, every time this screen loads,
+                 *  rather than only correcting the empty case. */
+                try{int fulfilled=(int)amountFulfilled.invoke(order);int correctClaimed=Math.max(0,fulfilled-total);if(correctClaimed!=claimedTotal(id))plugin.db().state("order_claimed_total:"+id,Integer.toString(correctClaimed));}catch(Exception ignored){}
                 inv.setItem(26,CoreUtil.named(Material.ARROW,"Back",List.of()));
                 online.openInventory(inv);
             });
