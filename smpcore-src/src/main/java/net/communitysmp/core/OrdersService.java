@@ -68,7 +68,7 @@ final class OrdersService implements Listener {
     private Method getAllActiveOrders,getPlayerOrders,getOrderById,getAllowedMaterials;
     private Method orderId,buyerUUID,buyerName,itemTemplate,amountRequested,amountFulfilled,amountRemaining,pricePerItem,orderStatus,formattedExpiry,claimedAt;
     private Method loadStash,clearStash;
-    private Method openPublicOrdersNative,openOrderPlacement,openDonutOrderDetail;
+    private Method openPublicOrdersNative,openOrderPlacement,openDonutOrderDetail,openNewOrderPickerFallback;
     private Method getGuiState;
     private Field contextOrderIdField;
     private final Set<UUID> claimInFlight=ConcurrentHashMap.newKeySet();
@@ -103,7 +103,10 @@ final class OrdersService implements Listener {
             if(!ensureReady())return;
             e.setCancelled(true);
             if(plugin.isBedrock(player)){openMain(player);return;}
-            try{openOrderPlacement.invoke(guiManager,player);}
+            try{
+                if(openOrderPlacement!=null)openOrderPlacement.invoke(guiManager,player);
+                else openNewOrderPickerFallback.invoke(guiManager,player);
+            }
             catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
             return;
         }
@@ -143,11 +146,25 @@ final class OrdersService implements Listener {
             loadStash=storageManagerClass.getMethod("loadStash",UUID.class,Consumer.class);
             clearStash=storageManagerClass.getMethod("clearStash",UUID.class,Runnable.class);
             openPublicOrdersNative=guiManagerClass.getMethod("openPublicOrders",Player.class,int.class);
-            openOrderPlacement=guiManagerClass.getMethod("openOrderPlacement",Player.class);
-            getGuiState=guiManagerClass.getMethod("getState",UUID.class);
-            openDonutOrderDetail=guiManagerClass.getMethod("openOrderDetail",Player.class,UUID.class);
-            Class<?> playerGuiStateClass=Class.forName("com.donutorders.manager.GUIManager$PlayerGUIState");
-            contextOrderIdField=playerGuiStateClass.getField("contextOrderId");
+            openNewOrderPickerFallback=guiManagerClass.getMethod("openNewOrderPicker",Player.class);
+            /** openOrderPlacement(Player) — the PlatformOrdersUI-backed rich native creation flow — only
+             *  exists on the branded 1.3.0 build manually kept on this server; a generic upstream 1.5.0 jar
+             *  (bytecode-confirmed, e.g. what production currently runs) has no com.donutorders.ui package
+             *  at all and never had this method. Version-specific reflection stays in its own try/catch so a
+             *  missing method here degrades /order to the plain chest picker instead of aborting the entire
+             *  bridge — /orders and /myorders (the actual partial-claim fix) do not depend on this at all and
+             *  must keep working regardless of which DonutOrders build is present. Same reasoning for
+             *  getState/openOrderDetail/contextOrderId below: present on both versions as far as verified,
+             *  but the active/claimed-order stash-click protection is a nice-to-have, not core functionality,
+             *  so it degrades to a no-op (see the null checks in watchDonutOrderDetailClick) rather than
+             *  ever blocking ensureReady() from succeeding. */
+            try{openOrderPlacement=guiManagerClass.getMethod("openOrderPlacement",Player.class);}catch(Exception ignored){openOrderPlacement=null;}
+            try{
+                getGuiState=guiManagerClass.getMethod("getState",UUID.class);
+                openDonutOrderDetail=guiManagerClass.getMethod("openOrderDetail",Player.class,UUID.class);
+                Class<?> playerGuiStateClass=Class.forName("com.donutorders.manager.GUIManager$PlayerGUIState");
+                contextOrderIdField=playerGuiStateClass.getField("contextOrderId");
+            }catch(Exception ignored){getGuiState=null;openDonutOrderDetail=null;contextOrderIdField=null;}
 
             orderId=orderClass.getMethod("getOrderId");buyerUUID=orderClass.getMethod("getBuyerUUID");buyerName=orderClass.getMethod("getBuyerName");
             itemTemplate=orderClass.getMethod("getItemTemplate");amountRequested=orderClass.getMethod("getAmountRequested");amountFulfilled=orderClass.getMethod("getAmountFulfilled");
