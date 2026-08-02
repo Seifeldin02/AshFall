@@ -172,6 +172,22 @@ final class OrdersService implements Listener {
         List<String> ench=enchantLines(template);
         return CoreUtil.pretty(template.getType().name())+(ench.isEmpty()?"":" ("+String.join(", ",ench)+")");
     }
+    /** amountFulfilled on the order itself is DonutOrders' own cumulative-forever counter — it never
+     *  decreases once items are claimed via claimPartial() (which deliberately never touches it, see that
+     *  method's own comment), so "fulfilled>0" alone stays true forever after a single delivery, long after
+     *  everything has actually been collected. That showed up as two live bugs: /myorders listing an order
+     *  as having claimable items when its stash was genuinely empty, and the "View/Claim Stash" button in
+     *  the detail screen staying lit (and openable, to an empty stash) for an ACTIVE order indefinitely.
+     *  order_claimed_total tracks what claimPartial() has actually paid out so far, the same lightweight
+     *  per-order state-table pattern already used for order_hidden — "fulfilled minus claimed so far" is
+     *  the true pending amount, and is what every "can this be claimed right now" check should use instead
+     *  of the raw cumulative counter. */
+    private int claimedTotal(UUID id){try{return Integer.parseInt(plugin.db().state("order_claimed_total:"+id));}catch(Exception ignored){return 0;}}
+    private boolean hasPendingStash(Object order) throws Exception{
+        int fulfilled=(int)amountFulfilled.invoke(order);
+        UUID id=(UUID)orderId.invoke(order);
+        return fulfilled-claimedTotal(id)>0;
+    }
 
     // ───────────────────────── Bedrock: /orders (public browse/create/fulfill — unchanged) ─────────────────────────
 
@@ -266,7 +282,7 @@ final class OrdersService implements Listener {
             List<Runnable> actions=new ArrayList<>();
             if(own&&statusName.equals("ACTIVE")){form.button("Cancel Order");actions.add(()->confirmCancel(player,id,back));}
             else if(!own&&statusName.equals("ACTIVE")){form.button("Fulfill Order");actions.add(()->confirmFulfill(player,id,order,back));}
-            if(own&&fulfilled>0){form.button("Claim Delivered Items");actions.add(()->confirmClaim(player,id,back));}
+            if(own&&hasPendingStash(order)){form.button("Claim Delivered Items");actions.add(()->confirmClaim(player,id,back));}
             form.button("Back");actions.add(back);
             form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
                 int clicked=response.clickedButtonId();
@@ -367,7 +383,7 @@ final class OrdersService implements Listener {
             for(Object order:slice){
                 ItemStack template=(ItemStack)itemTemplate.invoke(order);
                 int fulfilled=(int)amountFulfilled.invoke(order);
-                String claimTag=fulfilled>0?" • tap for claim options":"";
+                String claimTag=hasPendingStash(order)?" • tap for claim options":"";
                 form.button(itemLabel(template)+" x"+amountRequested.invoke(order)+"\n"+CoreUtil.pretty(orderStatus.invoke(order).toString())+" • "+fulfilled+"/"+amountRequested.invoke(order)+" filled"+claimTag);
                 ids.add((UUID)orderId.invoke(order));
             }
@@ -408,7 +424,7 @@ final class OrdersService implements Listener {
             try{
                 ItemStack template=((ItemStack)itemTemplate.invoke(order)).clone();
                 int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
-                boolean canClaim=fulfilled>0;
+                boolean canClaim=hasPendingStash(order);
                 ItemMeta meta=template.getItemMeta();
                 meta.displayName(Component.text(itemLabel(template)+" x"+requested,NamedTextColor.GOLD));
                 List<Component> lore=new ArrayList<>();
@@ -446,7 +462,7 @@ final class OrdersService implements Listener {
             ItemStack template=((ItemStack)itemTemplate.invoke(order)).clone();
             String statusName=orderStatus.invoke(order).toString();
             int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
-            boolean canClaim=fulfilled>0;
+            boolean canClaim=hasPendingStash(order);
             Inventory inv=plugin.getServer().createInventory(new OrderDetailHolder(id.toString(),returnPage),27,Component.text("Order Detail",NamedTextColor.DARK_GREEN));
             ItemMeta meta=template.getItemMeta();
             meta.displayName(Component.text(itemLabel(template),NamedTextColor.GOLD));
@@ -619,6 +635,7 @@ final class OrdersService implements Listener {
                     }
                     if(online!=null)for(ItemStack s:stash)if(s!=null)CoreUtil.give(online,s);
                     int claimedCount=count;
+                    plugin.db().state("order_claimed_total:"+id,Integer.toString(claimedTotal(id)+claimedCount));
                     Runnable afterClear=()->plugin.getServer().getScheduler().runTask(plugin,()->{
                         claimInFlight.remove(id);
                         Player p2=plugin.getServer().getPlayer(player.getUniqueId());
