@@ -10,6 +10,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
@@ -68,7 +69,10 @@ final class OrdersService implements Listener {
     private Method orderId,buyerUUID,buyerName,itemTemplate,amountRequested,amountFulfilled,amountRemaining,pricePerItem,orderStatus,formattedExpiry,claimedAt;
     private Method loadStash,clearStash;
     private Method openPublicOrdersNative,openOrderPlacement;
+    private Method getGuiState;
+    private Field contextOrderIdField;
     private final Set<UUID> claimInFlight=ConcurrentHashMap.newKeySet();
+    private final Set<UUID> blockNextStashOpen=ConcurrentHashMap.newKeySet();
 
     OrdersService(SMPCore plugin){this.plugin=plugin;}
 
@@ -140,6 +144,9 @@ final class OrdersService implements Listener {
             clearStash=storageManagerClass.getMethod("clearStash",UUID.class,Runnable.class);
             openPublicOrdersNative=guiManagerClass.getMethod("openPublicOrders",Player.class,int.class);
             openOrderPlacement=guiManagerClass.getMethod("openOrderPlacement",Player.class);
+            getGuiState=guiManagerClass.getMethod("getState",UUID.class);
+            Class<?> playerGuiStateClass=Class.forName("com.donutorders.manager.GUIManager$PlayerGUIState");
+            contextOrderIdField=playerGuiStateClass.getField("contextOrderId");
 
             orderId=orderClass.getMethod("getOrderId");buyerUUID=orderClass.getMethod("getBuyerUUID");buyerName=orderClass.getMethod("getBuyerName");
             itemTemplate=orderClass.getMethod("getItemTemplate");amountRequested=orderClass.getMethod("getAmountRequested");amountFulfilled=orderClass.getMethod("getAmountFulfilled");
@@ -149,6 +156,49 @@ final class OrdersService implements Listener {
             plugin.getLogger().warning("Orders bridge unavailable: "+error.getClass().getSimpleName()+(error.getMessage()!=null?": "+error.getMessage():""));
             return available=false;
         }
+    }
+
+    // ───────────────────────── DonutOrders' own native GUI: block a real bug in it ─────────────────────────
+
+    /** DonutOrders' own OrderDetailGUI.build() (bytecode-confirmed via javap) only puts a real "Collect"
+     *  chest icon at slot 11 for terminal orders (PENDING/COMPLETED/CANCELLED/EXPIRED); for an ACTIVE order
+     *  it leaves slot 11 as an ordinary filler pane, visually identical to the rest of the gray glass. But
+     *  its handleClick() checks the slot number ONLY — bipush 11 → GUIManager.openCollectStash(...)
+     *  unconditionally, with no order-status check at all — so that "ordinary" pane is still fully
+     *  clickable and opens the (bytecode-confirmed-broken-for-ACTIVE) Collect Stash screen anyway. That
+     *  screen can show real items and still be unable to actually collect them, since
+     *  OrderManager.collectStash() itself only ever accepts terminal statuses.
+     *  This is entirely inside a sealed DonutOrders class with no source available — cannot be patched
+     *  directly. DonutOrders' own click listener runs at EventPriority.HIGH with ignoreCancelled=false
+     *  (bytecode-confirmed), so simply cancelling this click does nothing; it processes the click and opens
+     *  the Collect Stash screen regardless. Instead: observe the click here (any priority before HIGH is
+     *  fine — GUIManager.getState(player).contextOrderId identifies exactly which order is open, no title
+     *  parsing needed for that part), and if it's slot 11 on this player's ACTIVE order, mark that the very
+     *  next inventory this player opens should be blocked. openCollectStash() loads the stash asynchronously
+     *  before actually opening anything (bytecode-confirmed lambda/callback pattern), so the resulting
+     *  InventoryOpenEvent always fires on a later tick — well after this flag is set, no ordering race. */
+    @EventHandler(priority=EventPriority.LOW)
+    public void watchDonutOrderDetailClick(InventoryClickEvent event){
+        if(event.getRawSlot()!=11||!(event.getWhoClicked() instanceof Player player))return;
+        if(guiManager==null||getGuiState==null)return;
+        try{
+            Object state=getGuiState.invoke(guiManager,player.getUniqueId());
+            if(state==null)return;
+            UUID contextOrderId=(UUID)contextOrderIdField.get(state);
+            if(contextOrderId==null)return;
+            Object order=getOrderById.invoke(storageManager,contextOrderId);
+            if(order==null)return;
+            if("ACTIVE".equals(orderStatus.invoke(order).toString()))blockNextStashOpen.add(player.getUniqueId());
+        }catch(Exception ignored){}
+    }
+    @EventHandler(priority=EventPriority.LOWEST)
+    public void blockDonutStashOpenForActiveOrder(InventoryOpenEvent event){
+        if(!(event.getPlayer() instanceof Player player))return;
+        if(!blockNextStashOpen.remove(player.getUniqueId()))return;
+        String title=event.getView().getTitle();
+        if(title==null||!title.contains("ᴄᴏʟʟᴇᴄᴛ"))return;
+        event.setCancelled(true);
+        CoreUtil.error(player,"This order is still active — anything delivered so far is already safely held; check back with /myorders once it's ready to claim.");
     }
 
     // ───────────────────────── shared item/description helpers ─────────────────────────
