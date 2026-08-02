@@ -174,18 +174,21 @@ final class RelicService implements Listener {
         plugin.getLogger().info("[RelicAutoVerify] "+relicKey+" auto-detected as lost — owner "+row.ownerName()+" ("+(online!=null?"online":"offline")+"), not found in inventory, Ender Storage, faction claim, graves, or loaded world entities.");
         db.history("SERVER",null,"RELIC",displayName(relicKey)+" was automatically detected as lost (last owner: "+row.ownerName()+").");
     }
-    /** Admin removal of the physical item(s) — not a permanent retirement. deactivateRelic() sets a
-     *  terminal 'RETIRED' status lifecycleTick() never revisits, which silently deleted the relic from the
-     *  chronicle forever. markRelicLost() (the same call organic loss uses) puts it through the normal
-     *  LOST -> eligible -> resurfacing cycle instead, so it comes back into circulation like any other lost
-     *  relic after lifecycle.lost-reentry-days. */
+    /** Admin removal of the physical item(s) — not a permanent retirement. deactivateRelic() (still present
+     *  in Database.java but deliberately never called from anywhere) sets a terminal 'RETIRED' status
+     *  lifecycleTick() never revisits, which silently deleted the relic from the chronicle forever.
+     *  markRelicLost() (the same call organic loss uses) puts it through the normal LOST -> eligible ->
+     *  resurfacing cycle instead. Must use the same Minecraft-tick eligible_at basis lifecycleTick() checks
+     *  against (mcTicksNow(), not System.currentTimeMillis()) — using wall-clock millis here produced a
+     *  number so far beyond any real tick count that the LOST -> eligible transition could never trigger,
+     *  leaving anything removed this way stuck in LOST forever regardless of the status name being correct. */
     boolean remove(String relicKey){
         if(db.relic(relicKey)==null)return false;
-        db.markRelicLost(relicKey,System.currentTimeMillis()+config.getLong("lifecycle.lost-reentry-days",14)*86400000L);
+        db.markRelicLost(relicKey,mcTicksNow()+config.getLong("lifecycle.lost-reentry-mc-days",7)*MC_DAY_TICKS);
         for(Player player:plugin.getServer().getOnlinePlayers())for(ItemStack item:player.getInventory().getContents())if(relicKey.equals(keyOf(item)))item.setAmount(0);
         return true;
     }
-    long lostReentryDays(){return config.getLong("lifecycle.lost-reentry-days",14);}
+    long lostReentryDays(){return config.getLong("lifecycle.lost-reentry-mc-days",7);}
     void list(Player p){List<Database.RelicLifecycleRow> rows=db.relicLifecycles();if(rows.isEmpty()){CoreUtil.msg(p,"No relics have entered the chronicle yet.");return;}CoreUtil.msg(p,"Relic chronicle:");for(Database.RelicLifecycleRow row:rows)CoreUtil.msg(p,"• "+displayName(row.key())+" — "+plugin.nicknames().displayName(row.ownerName())+" ["+CoreUtil.pretty(row.status())+"]");}
     boolean activeItem(ItemStack item,String relicKey){return relicKey.equals(keyOf(item))&&isActive(relicKey);}
 
