@@ -280,7 +280,14 @@ final class WeeklyDragonService {
      *  over several seconds (pillar beams converge before the dragon actually appears), so checking
      *  battle.getEnderDragon() in the same tick was simply too early and always found null, logging a false
      *  "did not produce a dragon entity" warning even on a fully successful respawn. Poll instead, twice a
-     *  second for up to 20s (the animation is normally done well within that).
+     *  second.
+     *  Originally gave up after 20s ("normally done well within that") — live-confirmed 2026-08-02 that this
+     *  was actively wrong, not just a rare edge case: the animation twice took ~40-50s on this server, so
+     *  polling gave up right before the dragon actually appeared. The dragon still spawned moments later, but
+     *  with nothing left listening for it, it silently never got the weeklyKey tag at all — the actual root
+     *  cause of "weekly dragon gives no egg/no full XP" this whole time, separate from (and in addition to)
+     *  the reward-gating bugs fixed earlier. Extended to 3 minutes; the cost of polling a little longer for a
+     *  once-a-week (or admin-triggered) event is negligible.
      *  battle.getEnderDragon() resolves the fight's dragonUUID with no liveness check of its own — require
      *  !isDead() too, the same bar activeDragon() already holds every other dragon lookup in this file to. */
     private void pollForSpawnedDragon(DragonBattle battle,String occurrence,int attempt){
@@ -289,9 +296,10 @@ final class WeeklyDragonService {
             spawning=false;
             dragon.setPersistent(true);dragon.getPersistentDataContainer().set(weeklyKey,PersistentDataType.STRING,occurrence);dragon.customName(Component.text("Ender Dragon",NamedTextColor.DARK_PURPLE));dragon.setCustomNameVisible(true);
             db.state("weekly_dragon:active",dragon.getUniqueId().toString());db.history("SERVER",null,"DRAGON","The weekly Ender Dragon awakened.");
+            plugin.getLogger().info("[WeeklyDragon] tagged "+dragon.getUniqueId()+" as weekly after "+(attempt*0.5)+"s of polling.");
             return;
         }
-        if(attempt>=40){spawning=false;plugin.getLogger().warning("Weekly Ender Dragon respawn did not produce a dragon entity after 20s of polling.");return;}
+        if(attempt>=360){spawning=false;plugin.getLogger().warning("Weekly Ender Dragon respawn did not produce a dragon entity after 3 minutes of polling.");return;}
         plugin.getServer().getScheduler().runTaskLater(plugin,()->pollForSpawnedDragon(battle,occurrence,attempt+1),10L);
     }
     /** Radius 8 (17x17 chunks) matches — not just "covers" — the exact grid Paper's EnderDragonFight.isArenaLoaded()
