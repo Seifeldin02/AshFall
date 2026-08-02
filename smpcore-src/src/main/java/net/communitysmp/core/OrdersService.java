@@ -539,9 +539,10 @@ final class OrdersService implements Listener {
      *  exact same call. All display slots are inert (click() cancels unconditionally and only acts on the
      *  two named button slots), so nothing can be dragged out except through Collect All. */
     private void openStashChest(Player player,UUID id,int returnPage){
-        Object order;
-        try{order=getOrderById.invoke(storageManager,id);}catch(Exception error){order=null;}
-        if(order==null){CoreUtil.error(player,"That order is no longer available.");openYourOrdersChest(player,returnPage);return;}
+        Object orderLookup;
+        try{orderLookup=getOrderById.invoke(storageManager,id);}catch(Exception error){orderLookup=null;}
+        if(orderLookup==null){CoreUtil.error(player,"That order is no longer available.");openYourOrdersChest(player,returnPage);return;}
+        final Object order=orderLookup;
         try{
             @SuppressWarnings("unchecked")
             Consumer<ItemStack[]> stashConsumer=stash->plugin.getServer().getScheduler().runTask(plugin,()->{
@@ -556,7 +557,14 @@ final class OrdersService implements Listener {
                     if(slot<18)inv.setItem(slot++,item.clone());
                 }
                 if(total>0)inv.setItem(22,CoreUtil.named(Material.LIME_DYE,"Collect All ("+total+")",List.of("Give all of this to your inventory.","The order stays active for the rest.")));
-                else inv.setItem(22,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"Nothing to collect right now",List.of()));
+                else{
+                    inv.setItem(22,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"Nothing to collect right now",List.of()));
+                    /** Self-heal orders claimed before order_claimed_total existed: if the real stash is
+                     *  genuinely empty but claimedTotal is still behind fulfilled (never having gone through
+                     *  claimPartial() since this tracking was added), catch it up here so this order stops
+                     *  showing as falsely pending everywhere else going forward. */
+                    try{int fulfilled=(int)amountFulfilled.invoke(order);if(fulfilled>claimedTotal(id))plugin.db().state("order_claimed_total:"+id,Integer.toString(fulfilled));}catch(Exception ignored){}
+                }
                 inv.setItem(26,CoreUtil.named(Material.ARROW,"Back",List.of()));
                 online.openInventory(inv);
             });
