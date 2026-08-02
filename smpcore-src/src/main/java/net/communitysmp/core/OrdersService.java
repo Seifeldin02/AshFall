@@ -36,16 +36,24 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-/** Front end for DonutOrders' /orders buy-order marketplace. DonutOrders' own GUI (browse/create, native
- *  Dialog-rendered on Java via its internal PlatformOrdersUI, Geyser forms on Bedrock) is DonutOrders' own
- *  and is driven directly via GUIManager reflection — never rebuilt here. /orders opens straight to
- *  browsing, /order opens straight to creation (no SMPCore-built landing menu router; a prior attempt at
- *  wrapping these in one was explicitly rejected as not matching the real thing). The one part DonutOrders
- *  itself cannot do correctly: its bundled OrderManager.collectStash() only ever accepts
- *  PENDING/COMPLETED/CANCELLED/EXPIRED orders (bytecode-confirmed, no source available to patch it), so its
- *  native "Collect All" permanently reports "nothing to collect" for a partially fulfilled ACTIVE order.
- *  /myorders is SMPCore's own dedicated claim-safe screen for both platforms, reading directly from
- *  DonutOrders' own escrow stash (loadStash/clearStash) without touching order status at all. */
+/** Front end for DonutOrders' /orders buy-order marketplace. This build bundles TWO separate GUI systems
+ *  under com.donutorders — the older chest-based com.donutorders.gui.* classes (PublicOrdersGUI,
+ *  NewOrderGUI, OrderDetailGUI, YourOrdersGUI, ...) and the newer native-Dialog-rendered
+ *  com.donutorders.ui.PlatformOrdersUI (full item catalog, search, enchantment/level selection) — and
+ *  GUIManager is the one stable facade in front of both, chosen per-call, not per-class:
+ *  openPublicOrders(Player,int) always opens the chest PublicOrdersGUI (bytecode-confirmed) — that IS the
+ *  "clean chest GUI" /orders is meant to show. openOrderPlacement(Player) delegates to
+ *  PlatformOrdersUI.openPlacement() when GUIManager's platformUI field is set (it is, on this branded
+ *  build) — that IS the native catalog/search/enchantment creation flow /order is meant to show.
+ *  openNewOrderPicker(Player), despite the similar name, always opens the plain chest NewOrderGUI with no
+ *  catalog search or enchantment step — it looks like the right method and is not; do not use it for
+ *  /order. None of this is rebuilt here, only invoked via GUIManager reflection, since DonutOrders exposes
+ *  no public API. The one part DonutOrders itself cannot do correctly: its bundled
+ *  OrderManager.collectStash() only ever accepts PENDING/COMPLETED/CANCELLED/EXPIRED orders
+ *  (bytecode-confirmed, no source available to patch it), so its native "Collect All" permanently reports
+ *  "nothing to collect" for a partially fulfilled ACTIVE order. /myorders is SMPCore's own dedicated
+ *  claim-safe screen for both platforms, reading directly from DonutOrders' own escrow stash
+ *  (loadStash/clearStash) without touching order status at all. */
 final class OrdersService implements Listener {
     private record YourOrdersHolder(int page) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private record OrderDetailHolder(String orderId,int returnPage) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
@@ -59,7 +67,7 @@ final class OrdersService implements Listener {
     private Method getAllActiveOrders,getPlayerOrders,getOrderById,getAllowedMaterials;
     private Method orderId,buyerUUID,buyerName,itemTemplate,amountRequested,amountFulfilled,amountRemaining,pricePerItem,orderStatus,formattedExpiry,claimedAt;
     private Method loadStash,clearStash;
-    private Method openPublicOrdersNative,openNewOrderPickerNative;
+    private Method openPublicOrdersNative,openOrderPlacement;
     private final Set<UUID> claimInFlight=ConcurrentHashMap.newKeySet();
 
     OrdersService(SMPCore plugin){this.plugin=plugin;}
@@ -79,12 +87,19 @@ final class OrdersService implements Listener {
          *  DonutOrders' own native screens instead of a combined command that shows a menu first. Both
          *  still just call straight into GUIManager; Bedrock keeps going through the existing combined
          *  Geyser form since nothing there was reported broken. market/donutorders alias to browse, matching
-         *  DonutOrders' own most common usage for those names. */
+         *  DonutOrders' own most common usage for those names.
+         *  openOrderPlacement(Player), not openNewOrderPicker(Player), is the real entry point for the rich
+         *  native creation screen — bytecode-confirmed (javap -c against the deployed 1.3.0 jar):
+         *  openNewOrderPicker() unconditionally opens the old chest-based NewOrderGUI, no catalog search or
+         *  enchantment step at all. openOrderPlacement() checks GUIManager's own platformUI field and, when
+         *  set (it is, on this branded build), delegates to PlatformOrdersUI.openPlacement() — the actual
+         *  native root→categories→search→results→configure→enchantments→levels→confirm flow — only falling
+         *  back to the plain chest picker if platformUI were ever null. */
         if(cmd.equals("order")){
             if(!ensureReady())return;
             e.setCancelled(true);
             if(plugin.isBedrock(player)){openMain(player);return;}
-            try{openNewOrderPickerNative.invoke(guiManager,player);}
+            try{openOrderPlacement.invoke(guiManager,player);}
             catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
             return;
         }
@@ -124,7 +139,7 @@ final class OrdersService implements Listener {
             loadStash=storageManagerClass.getMethod("loadStash",UUID.class,Consumer.class);
             clearStash=storageManagerClass.getMethod("clearStash",UUID.class,Runnable.class);
             openPublicOrdersNative=guiManagerClass.getMethod("openPublicOrders",Player.class,int.class);
-            openNewOrderPickerNative=guiManagerClass.getMethod("openNewOrderPicker",Player.class);
+            openOrderPlacement=guiManagerClass.getMethod("openOrderPlacement",Player.class);
 
             orderId=orderClass.getMethod("getOrderId");buyerUUID=orderClass.getMethod("getBuyerUUID");buyerName=orderClass.getMethod("getBuyerName");
             itemTemplate=orderClass.getMethod("getItemTemplate");amountRequested=orderClass.getMethod("getAmountRequested");amountFulfilled=orderClass.getMethod("getAmountFulfilled");
