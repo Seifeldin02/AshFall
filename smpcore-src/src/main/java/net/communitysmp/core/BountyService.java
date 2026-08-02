@@ -31,7 +31,12 @@ final class BountyService implements Listener {
     private final NamespacedKey claimIdKey;
     BountyService(SMPCore plugin,FactionService factions){this.plugin=plugin;this.db=plugin.db();this.factions=factions;this.claimIdKey=new NamespacedKey(plugin,"bounty_claim_id");}
 
+    /** placement-enabled defaults to true — a per-server config flag, not a code path removal, so it can be
+     *  flipped back the moment a real anti-cheating/verification approach is ready without touching this
+     *  class again. Deliberately only gates placing NEW bounties: viewing, claiming, and the existing bounty
+     *  GUI are all untouched, since the concern is new placements specifically, not the feature as a whole. */
     boolean place(Player placer,String targetName,double amount){
+        if(!plugin.getConfig().getBoolean("bounties.placement-enabled",true)){CoreUtil.error(placer,"Placing new bounties is temporarily disabled.");return true;}
         Player visibleTarget=plugin.nicknames().findVisiblePlayer(targetName);String resolved=visibleTarget==null?targetName:visibleTarget.getName();
         double min=plugin.getConfig().getDouble("bounties.minimum",100);String target=CoreUtil.id(resolved),source=CoreUtil.id(placer);
         if(amount<min){CoreUtil.error(placer,"Minimum bounty is "+CoreUtil.money(min)+".");return true;}

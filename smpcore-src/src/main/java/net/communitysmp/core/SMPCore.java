@@ -31,6 +31,18 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
 
     @Override public void onEnable(){
         saveDefaultConfig();
+        /** Config-driven, not a jar removal — stays revertible with a one-line config edit instead of a
+         *  server file change, and travels with the codebase through the normal merge/deploy process rather
+         *  than needing a manual step on every server it should apply to. Empty by default in the shipped
+         *  config.yml resource, so this is inert unless a specific server's own live config.yml opts a
+         *  plugin in. Runs this early so it fires before this plugin does anything that might depend on the
+         *  target being present; the target itself may already be mid/post its own onEnable() by the time
+         *  this runs, since Bukkit's load order isn't otherwise controlled here — this stops it from staying
+         *  active afterward, not from ever initializing at all. */
+        for(String name:getConfig().getStringList("integrations.disabled-plugins")){
+            org.bukkit.plugin.Plugin target=getServer().getPluginManager().getPlugin(name);
+            if(target!=null&&target.isEnabled()){getServer().getPluginManager().disablePlugin(target);getLogger().info("Disabled "+name+" per config (integrations.disabled-plugins).");}
+        }
         for(String resource:List.of("shop.yml","bosses.yml","events.yml","relics.yml","shards.yml"))
             if(!new File(getDataFolder(),resource).exists())saveResource(resource,false);
         db=new Database(this);
