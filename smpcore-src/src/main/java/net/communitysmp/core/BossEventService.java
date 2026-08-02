@@ -291,11 +291,24 @@ final class BossEventService {
         if(participants.isEmpty()&&killer!=null)participants=Map.of(CoreUtil.id(killer),Math.max(1,boss.getAttribute(Attribute.MAX_HEALTH).getValue()));
         if(participants.isEmpty())return;List<Double> range=bosses.getDoubleList("mob-rewards."+boss.getType().name());if(range.size()<2)return;
         double pool=random(range.get(0),range.get(1))*participantRewardMultiplier(participants.size());double total=participants.values().stream().mapToDouble(Double::doubleValue).sum();
-        for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double share=pool*entry.getValue()/Math.max(1,total);boolean firstDragonKiller=boss.getType()==EntityType.ENDER_DRAGON&&killer!=null&&killer.getUniqueId().equals(player.getUniqueId())&&!db.hasMilestone(entry.getKey(),"DEFEAT_DRAGON");boolean full=majorRewardAvailable(entry.getKey(),boss.getType());if(!full)share*=bosses.getDouble("major-rewards."+boss.getType().name()+".repeat-multiplier",.1);if(firstDragonKiller)share=Math.max(share,bosses.getDouble("major-rewards.ENDER_DRAGON.first-killer-reward",100000));share*=plugin.progress().mobIncomeMultiplier(player);share=Math.round(share*100)/100.0;
+        boolean weeklyKill=boss instanceof EnderDragon&&plugin.weeklyDragon().isWeekly(boss);
+        for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double share=pool*entry.getValue()/Math.max(1,total);boolean firstDragonKiller=boss.getType()==EntityType.ENDER_DRAGON&&killer!=null&&killer.getUniqueId().equals(player.getUniqueId())&&weeklyKill&&!db.hasMilestone(entry.getKey(),"DEFEAT_DRAGON");boolean full=majorRewardAvailable(entry.getKey(),boss.getType());if(!full)share*=bosses.getDouble("major-rewards."+boss.getType().name()+".repeat-multiplier",.1);if(firstDragonKiller)share=Math.max(share,bosses.getDouble("major-rewards.ENDER_DRAGON.first-killer-reward",100000));share*=plugin.progress().mobIncomeMultiplier(player);share=Math.round(share*100)/100.0;
             if(share>0){plugin.creditEarned(entry.getKey(),share,"BOSS_"+boss.getType().name());db.recordEconomy(entry.getKey(),"BOSS",share,boss.getType().name());CoreUtil.msg(player,"Your boss participation earned "+CoreUtil.money(share)+".");}
-            db.incrementStat(entry.getKey(),"boss_kills");plugin.progress().majorKill(player,boss.getType());plugin.shards().rewardBoss(player,boss.getType(),boss instanceof EnderDragon&&plugin.weeklyDragon().isWeekly(boss));if(full)giveParticipationLoot(player,boss.getType().name());
+            db.incrementStat(entry.getKey(),"boss_kills");plugin.progress().majorKill(player,boss.getType());plugin.shards().rewardBoss(player,boss.getType(),weeklyKill);if(full)giveParticipationLoot(player,boss.getType().name());
         }
-        if(boss instanceof EnderDragon dragon)plugin.weeklyDragon().defeated(dragon);
+        /** Vanilla only ever grants the real first-kill reward (dragon egg + 12000 XP instead of the
+         *  reduced 500) once per world, on the true first-ever kill — and this world's dragon was already
+         *  killed before the weekly system existed, so hasBeenPreviouslyKilled() is permanently true and
+         *  vanilla's own logic will never grant either again, weekly or manual. Restoring both, but only for
+         *  a weekly-tagged kill (isWeekly(boss), the same flag shards.rewardBoss() above already gates on) —
+         *  a manually /ashfall dragon start'd fight keeps vanilla's own reduced default untouched. */
+        if(boss instanceof EnderDragon dragon){
+            if(weeklyKill){
+                event.getDrops().add(new ItemStack(Material.DRAGON_EGG));
+                event.setDroppedExp(12000);
+            }
+            plugin.weeklyDragon().defeated(dragon);
+        }
     }
     private void rewardWardenShards(LivingEntity warden,Player killer){Map<String,Double> participants=meaningfulParticipants(warden,damage.remove(warden.getUniqueId()),lastContribution.remove(warden.getUniqueId()));if(participants.isEmpty()&&killer!=null)participants=Map.of(CoreUtil.id(killer),1.0);for(String id:participants.keySet()){Player player=find(id);if(player!=null)plugin.shards().rewardBoss(player,EntityType.WARDEN,false);}}
     private boolean majorRewardAvailable(String player,EntityType type){String path="major-rewards."+type.name(),key="major:"+player+":"+type.name();long last=parseLong(db.state(key),0),cooldown=bosses.getLong(path+".cooldown-hours",type==EntityType.WITHER?24:168)*3600000L;if(System.currentTimeMillis()-last<cooldown)return false;db.state(key,Long.toString(System.currentTimeMillis()));return true;}
