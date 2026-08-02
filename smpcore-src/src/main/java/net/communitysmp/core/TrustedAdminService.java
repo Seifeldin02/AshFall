@@ -93,6 +93,14 @@ final class TrustedAdminService implements Listener {
         authenticated.clear();
     }
 
+    /** isAdmin() requires being in the live `authenticated` set, which is populated by AuthMe's LoginEvent
+     *  (fires well after PlayerJoinEvent, once a password is entered) and cleared by quit()/requirePassword()
+     *  the instant a session ends. That makes isAdmin() unreliable at exactly the two moments spectator-
+     *  visibility messaging needs a stable admin-account check: at join, before login has happened yet, and
+     *  at quit, after this class's own quit() has already cleared it. This checks only whether the account
+     *  NAME is configured as trusted — no live-session dependency — for callers that need "is this account
+     *  an admin" independent of whether they happen to be authenticated at this exact instant. */
+    boolean isConfiguredAdminAccount(Player player){return realAccount(player);}
     private boolean realAccount(Player player){return accounts().contains(player.getName().toLowerCase(Locale.ROOT));}
     private Set<String> accounts(){
         List<String> configured=plugin.getConfig().getStringList("trusted-admin.accounts");

@@ -99,15 +99,27 @@ final class AdminToolsService implements Listener {
      *  exit from spectator — a real reconnect/disconnect that happens while they're STILL in that state must
      *  not ALSO show the genuine message, or it doubles up: fake "left" on entering spectator, then a second,
      *  real "left" when they actually disconnect (since the old vanished/spectating check alone doesn't cover
-     *  an admin who got to spectator via a plain /gamemode spectator rather than /smp spectate). */
-    private boolean currentlyHidden(Player player){return vanished.contains(player.getUniqueId())||spectating.containsKey(player.getUniqueId())||(plugin.isAdmin(player)&&player.getGameMode()==GameMode.SPECTATOR);}
+     *  an admin who got to spectator via a plain /gamemode spectator rather than /smp spectate).
+     *  Deliberately checks isConfiguredAdminAccount() here, not plugin.isAdmin() — isAdmin() requires the
+     *  live `authenticated` flag, which AuthMe's LoginEvent only sets well after PlayerJoinEvent (so a
+     *  reconnecting admin still shows as "not admin" at the exact moment this runs) and which this class's
+     *  own quit() / TrustedAdminService's quit() clear before this had a chance to see it — the account-name
+     *  check has no such timing dependency, since it's just a static config lookup. */
+    private boolean currentlyHidden(Player player){return vanished.contains(player.getUniqueId())||spectating.containsKey(player.getUniqueId())||(plugin.trustedAdmins().isConfiguredAdminAccount(player)&&player.getGameMode()==GameMode.SPECTATOR);}
     @EventHandler(priority=EventPriority.HIGH) public void join(PlayerJoinEvent event){
         Player joined = event.getPlayer();
         if(currentlyHidden(joined))event.joinMessage(null);
         for(UUID id:vanished){Player admin=plugin.getServer().getPlayer(id);if(admin!=null&&!admin.equals(joined))joined.hidePlayer(plugin,admin);}
     }
 
-    @EventHandler(priority=EventPriority.HIGH) public void quitMessage(PlayerQuitEvent event){
+    /** Must run before ANY quit-time cleanup — including this class's own quit() below, which unconditionally
+     *  un-spectates (resets gamemode) and clears vanished/spectating the instant a disconnect happens, and
+     *  TrustedAdminService's quit() (also unprioritised = NORMAL), which clears the authenticated flag
+     *  isAdmin() depends on. At HIGH (its previous value) this ran AFTER both of those on every quit,
+     *  checking already-torn-down state and always finding "not hidden" — so a disconnecting hidden admin's
+     *  real leave message showed every time regardless of vanish/spectate state. LOWEST guarantees this
+     *  captures the true pre-disconnect state before anything else can clear it. */
+    @EventHandler(priority=EventPriority.LOWEST) public void quitMessage(PlayerQuitEvent event){
         if(currentlyHidden(event.getPlayer()))event.quitMessage(null);
     }
 
