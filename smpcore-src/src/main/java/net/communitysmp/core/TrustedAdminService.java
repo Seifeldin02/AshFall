@@ -56,13 +56,46 @@ final class TrustedAdminService implements Listener {
         if(attachment!=null)player.removeAttachment(attachment);
     }
 
+    /** Admin accounts normally never get AuthMe's own same-IP session skip (below, unconditionally, until
+     *  this exception) — a stolen or spoofed session shouldn't be enough to hand out admin without a real
+     *  password. trusted-admin.same-machine-autologin carves out one narrow exception to that: if the
+     *  connection is literally from this same physical machine (the case every time when developing and
+     *  testing on the box that also runs the server), let AuthMe's own session restore go through instead of
+     *  forcing a fresh password — the exact same mechanism a non-admin account like MacoCT already benefits
+     *  from unconditionally, just no longer blocked here for an admin account when the connection can't have
+     *  come from anywhere but this machine. Defaults to false and is deliberately never set in the shipped
+     *  config.yml resource — only staging's own live config.yml (outside git, never copied by any deploy
+     *  script) sets it, so this exact jar stays fully locked down on production regardless of build. */
     @EventHandler(priority=EventPriority.LOWEST)
     public void requirePassword(RestoreSessionEvent event){
-        if(!realAccount(event.getPlayer()))return;
+        Player player=event.getPlayer();
+        if(!realAccount(player))return;
+        if(plugin.getConfig().getBoolean("trusted-admin.same-machine-autologin",false)&&isThisMachine(player)){
+            authenticated.add(player.getUniqueId());
+            player.setOp(true);
+            grantGamemode(player);
+            plugin.getLogger().info("Administrator auto-logged in via same-machine session: "+player.getName()+".");
+            player.updateCommands();
+            return;
+        }
         event.setCancelled(true);
-        authenticated.remove(event.getPlayer().getUniqueId());
-        event.getPlayer().setOp(false);
-        revokeGamemode(event.getPlayer());
+        authenticated.remove(player.getUniqueId());
+        player.setOp(false);
+        revokeGamemode(player);
+    }
+    private boolean isThisMachine(Player player){
+        if(!(player.getAddress() instanceof java.net.InetSocketAddress socket))return false;
+        java.net.InetAddress address=socket.getAddress();
+        if(address==null)return false;
+        if(address.isLoopbackAddress())return true;
+        try{
+            java.util.Enumeration<java.net.NetworkInterface> interfaces=java.net.NetworkInterface.getNetworkInterfaces();
+            while(interfaces.hasMoreElements()){
+                java.util.Enumeration<java.net.InetAddress> addresses=interfaces.nextElement().getInetAddresses();
+                while(addresses.hasMoreElements())if(addresses.nextElement().equals(address))return true;
+            }
+        }catch(Exception ignored){}
+        return false;
     }
 
     @EventHandler
