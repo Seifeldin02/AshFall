@@ -52,7 +52,34 @@ final class RelicService implements Listener {
     }
     private boolean canMint(String relicKey){Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);return row==null||"ELIGIBLE".equals(row.status());}
     boolean mint(String relicKey,String owner,String ownerName){if(!keys().contains(relicKey)||!canMint(relicKey))return false;db.registerRelic(relicKey,owner,ownerName);return true;}
-    boolean give(Player player,String relicKey){if(!mint(relicKey,CoreUtil.id(player),player.getName()))return false;CoreUtil.give(player,create(relicKey));markUsed(relicKey);discovery(player,relicKey,"found");return true;}
+    /** Admin-only entry point (the only caller is /ashfall relic give / /smp relic give) - deliberately does
+     *  NOT go through mint()/canMint(), which only allows ELIGIBLE and exists to gate organic discovery
+     *  (hideInLoot()). An admin handing out a relic should work regardless of whether it's currently LOST,
+     *  RETIRED, or has never existed - only a genuinely ACTIVE copy (someone already holding it) should
+     *  refuse, since that's the one case that would create a real duplicate. registerRelic() is a single
+     *  atomic UPSERT that already does exactly "cancel any pending lost/recycling state, set ACTIVE, mark
+     *  this owner" in one statement - the read-then-write here has no real race window since admin commands
+     *  only ever run synchronously on the main thread. */
+    boolean give(Player player,String relicKey){
+        if(!keys().contains(relicKey))return false;
+        Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);
+        if(row!=null&&"ACTIVE".equals(row.status()))return false;
+        db.registerRelic(relicKey,CoreUtil.id(player),player.getName());
+        CoreUtil.give(player,create(relicKey));
+        markUsed(relicKey);
+        discovery(player,relicKey,"found");
+        return true;
+    }
+    /** Admin override for the resurface wait - ends a LOST relic's timer immediately, reaching the exact
+     *  same ELIGIBLE end state lifecycleTick() would arrive at on its own once eligible_at passes. */
+    boolean forceEligible(String relicKey){
+        Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);
+        if(row==null||!"LOST".equals(row.status()))return false;
+        db.makeRelicEligible(relicKey);
+        plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(relicKey)+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
+        db.history("SERVER",null,"RELIC",displayName(relicKey)+" was forced to become eligible to resurface by an admin.");
+        return true;
+    }
     void discover(Player player,ItemStack item){
         String relicKey=keyOf(item);if(relicKey==null)return;Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);if(row==null)return;
         markUsed(relicKey);
@@ -189,7 +216,26 @@ final class RelicService implements Listener {
         return true;
     }
     long lostReentryDays(){return config.getLong("lifecycle.lost-reentry-mc-days",7);}
-    void list(Player p){List<Database.RelicLifecycleRow> rows=db.relicLifecycles();if(rows.isEmpty()){CoreUtil.msg(p,"No relics have entered the chronicle yet.");return;}CoreUtil.msg(p,"Relic chronicle:");for(Database.RelicLifecycleRow row:rows)CoreUtil.msg(p,"• "+displayName(row.key())+" — "+plugin.nicknames().displayName(row.ownerName())+" ["+CoreUtil.pretty(row.status())+"]");}
+    void list(Player p){
+        List<Database.RelicLifecycleRow> rows=db.relicLifecycles();
+        if(rows.isEmpty()){CoreUtil.msg(p,"No relics have entered the chronicle yet.");return;}
+        CoreUtil.msg(p,"Relic chronicle:");
+        long nowTicks=mcTicksNow();
+        for(Database.RelicLifecycleRow row:rows){
+            String suffix="";
+            if("LOST".equals(row.status())&&row.eligibleAt()>0)suffix=" — resurfaces in "+formatTicks(row.eligibleAt()-nowTicks);
+            CoreUtil.msg(p,"• "+displayName(row.key())+" — "+plugin.nicknames().displayName(row.ownerName())+" ["+CoreUtil.pretty(row.status())+"]"+suffix);
+        }
+    }
+    /** Minecraft time, not real time - 1000 ticks per "hour" (24000/day), matching the tick-based lifecycle
+     *  this whole rework runs on. */
+    private String formatTicks(long ticks){
+        if(ticks<=0)return "any moment now";
+        long totalHours=ticks/1000,days=totalHours/24,hours=totalHours%24;
+        if(days>0)return days+"d "+hours+"h";
+        if(hours>0)return hours+"h";
+        return "under an hour";
+    }
     boolean activeItem(ItemStack item,String relicKey){return relicKey.equals(keyOf(item))&&isActive(relicKey);}
 
     /** Self-service trace for a relic's CURRENT recorded owner: checks their own inventory/Ender Storage,
