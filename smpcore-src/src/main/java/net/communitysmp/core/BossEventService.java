@@ -315,13 +315,23 @@ final class BossEventService {
         if(boss instanceof EnderDragon dragon){
             plugin.getLogger().info("[WeeklyDragon] death: weeklyKill="+weeklyKill+" participants="+participants.size()+" killer="+(killer==null?"null":killer.getName()));
             if(weeklyKill){
-                dragon.getWorld().getBlockAt(0,65,0).setType(Material.DRAGON_EGG);
-                Location dropAt=dragon.getLocation();
+                World endWorld=dragon.getWorld();
+                /** Scattering orbs around the dragon's own death LOCATION (as opposed to a fixed safe spot)
+                 *  live-confirmed a real loss: the dragon usually dies mid-air, sometimes near the island's
+                 *  edge, so a wide ±3-block scatter routinely dropped a chunk of the 60 orbs straight into
+                 *  the void before anyone could reach them (one full test only reached level 19 instead of
+                 *  the expected ~69). Anchored on the same fixed, solid platform the egg appears on instead,
+                 *  with a tight scatter that can't roll off it. */
+                Location safeSpot=new Location(endWorld,0.5,66,0.5);
                 int totalXp=12000,orbCount=60,perOrb=totalXp/orbCount;
                 for(int i=0;i<orbCount;i++){
-                    Location orbLoc=dropAt.clone().add(ThreadLocalRandom.current().nextDouble(-3,3),ThreadLocalRandom.current().nextDouble(0,2),ThreadLocalRandom.current().nextDouble(-3,3));
-                    dragon.getWorld().spawn(orbLoc,ExperienceOrb.class,orb->orb.setExperience(perOrb));
+                    Location orbLoc=safeSpot.clone().add(ThreadLocalRandom.current().nextDouble(-2,2),ThreadLocalRandom.current().nextDouble(0,1.5),ThreadLocalRandom.current().nextDouble(-2,2));
+                    endWorld.spawn(orbLoc,ExperienceOrb.class,orb->orb.setExperience(perOrb));
                 }
+                /** The egg used to appear the instant the death event fired — essentially the moment health
+                 *  hit zero, well before the dragon's ~10s death animation/explosion actually finishes
+                 *  playing out. Delayed to land after it. */
+                plugin.getServer().getScheduler().runTaskLater(plugin,()->endWorld.getBlockAt(0,65,0).setType(Material.DRAGON_EGG),200L);
             }
             plugin.weeklyDragon().defeated(dragon);
         }
