@@ -48,6 +48,7 @@ import java.util.function.Consumer;
 final class OrdersService implements Listener {
     private record YourOrdersHolder(int page) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private record OrderDetailHolder(String orderId,int returnPage) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
+    private record StashHolder(String orderId,int returnPage) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private static final int PER_PAGE=45;
 
     private final SMPCore plugin;
@@ -327,6 +328,7 @@ final class OrdersService implements Listener {
     private void openYourOrdersForm(Player player,int page){
         try{
             List<Object> all=new ArrayList<>((Collection<?>)getPlayerOrders.invoke(storageManager,player.getUniqueId()));
+            all.removeIf(this::isHidden);
             GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return;
             int perPage=20,from=page*perPage,to=Math.min(all.size(),from+perPage);
             List<Object> slice=from<all.size()?all.subList(from,to):List.of();
@@ -357,10 +359,16 @@ final class OrdersService implements Listener {
 
     // ───────────────────────── Java: /myorders chest GUI ─────────────────────────
 
+    /** DonutOrders exposes no delete/archive of its own, so "removed" orders are never actually deleted —
+     *  just hidden from these listings via a plain key in SMPCore's own state table (same generic store
+     *  already used for relic cooldowns/last-used tracking, no schema migration needed). archiveOrder()
+     *  below is the only writer; both listings filter reads. */
+    private boolean isHidden(Object order){try{return "true".equals(plugin.db().state("order_hidden:"+orderId.invoke(order)));}catch(Exception ignored){return false;}}
     private void openYourOrdersChest(Player player,int page){
         List<Object> all;
         try{all=new ArrayList<>((Collection<?>)getPlayerOrders.invoke(storageManager,player.getUniqueId()));}
         catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");return;}
+        all.removeIf(this::isHidden);
         int pages=Math.max(1,(all.size()+PER_PAGE-1)/PER_PAGE),safePage=Math.max(0,Math.min(page,pages-1));
         int from=safePage*PER_PAGE,to=Math.min(all.size(),from+PER_PAGE);
         Inventory inv=plugin.getServer().createInventory(new YourOrdersHolder(safePage),54,Component.text("Your Orders"+(pages>1?" • "+(safePage+1)+"/"+pages:""),NamedTextColor.DARK_GREEN));
@@ -420,18 +428,68 @@ final class OrdersService implements Listener {
             meta.lore(lore);template.setItemMeta(meta);
             inv.setItem(13,template);
             for(int s=0;s<27;s++)if(s!=13&&s!=11&&s!=15&&s!=22)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
-            if(canClaim)inv.setItem(11,CoreUtil.named(Material.LIME_DYE,"Claim Delivered Items",List.of("Claims whatever is currently","waiting in escrow. The order","stays active for the rest.")));
+            if(canClaim)inv.setItem(11,CoreUtil.named(Material.LIME_DYE,"View/Claim Stash",List.of("Opens the delivered items waiting","in escrow. The order stays active","for the rest.")));
             else inv.setItem(11,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
             if(statusName.equals("ACTIVE"))inv.setItem(15,CoreUtil.named(Material.RED_DYE,"Cancel Order",List.of("Refunds unspent escrow.","Anything delivered stays claimable.")));
+            else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED"))inv.setItem(15,CoreUtil.named(Material.HOPPER,"Remove from My Orders",List.of("Archives this order permanently.","Only allowed once its stash is empty.")));
             else inv.setItem(15,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
             inv.setItem(22,CoreUtil.named(Material.ARROW,"Back",List.of()));
             player.openInventory(inv);
         }catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");openYourOrdersChest(player,returnPage);}
     }
+    /** The stash-viewing screen for both claiming and simply checking what's waiting. Items shown here are
+     *  read directly from the same loadStash() claimPartial() itself drains — "Collect All" cannot say
+     *  "nothing to collect" while items are visibly sitting in the grid above it, because both read the
+     *  exact same call. All display slots are inert (click() cancels unconditionally and only acts on the
+     *  two named button slots), so nothing can be dragged out except through Collect All. */
+    private void openStashChest(Player player,UUID id,int returnPage){
+        Object order;
+        try{order=getOrderById.invoke(storageManager,id);}catch(Exception error){order=null;}
+        if(order==null){CoreUtil.error(player,"That order is no longer available.");openYourOrdersChest(player,returnPage);return;}
+        try{
+            @SuppressWarnings("unchecked")
+            Consumer<ItemStack[]> stashConsumer=stash->plugin.getServer().getScheduler().runTask(plugin,()->{
+                Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                if(online==null)return;
+                Inventory inv=plugin.getServer().createInventory(new StashHolder(id.toString(),returnPage),27,Component.text("Stash Contents",NamedTextColor.DARK_GREEN));
+                for(int s=0;s<27;s++)inv.setItem(s,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+                int slot=0,total=0;
+                if(stash!=null)for(ItemStack item:stash){
+                    if(item==null||item.getAmount()<=0)continue;
+                    total+=item.getAmount();
+                    if(slot<18)inv.setItem(slot++,item.clone());
+                }
+                if(total>0)inv.setItem(22,CoreUtil.named(Material.LIME_DYE,"Collect All ("+total+")",List.of("Give all of this to your inventory.","The order stays active for the rest.")));
+                else inv.setItem(22,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"Nothing to collect right now",List.of()));
+                inv.setItem(26,CoreUtil.named(Material.ARROW,"Back",List.of()));
+                online.openInventory(inv);
+            });
+            loadStash.invoke(storageManager,id,stashConsumer);
+        }catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");openOrderDetailChest(player,id,returnPage);}
+    }
+    /** "Remove from My Orders" for a terminal (completed/cancelled) order — DonutOrders exposes no delete,
+     *  so this just hides it going forward (see isHidden()/openYourOrdersChest()). Re-checks the stash live
+     *  rather than trusting the detail screen's earlier canClaim snapshot, since that could be stale by the
+     *  time this click lands. */
+    private void archiveOrder(Player player,UUID id,int returnPage){
+        try{
+            @SuppressWarnings("unchecked")
+            Consumer<ItemStack[]> stashConsumer=stash->plugin.getServer().getScheduler().runTask(plugin,()->{
+                Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                if(online==null)return;
+                int total=0;if(stash!=null)for(ItemStack item:stash)if(item!=null)total+=item.getAmount();
+                if(total>0){CoreUtil.error(online,"Claim the "+total+" item(s) still in its stash before removing this order.");openOrderDetailChest(online,id,returnPage);return;}
+                plugin.db().state("order_hidden:"+id,"true");
+                CoreUtil.msg(online,"Order removed from My Orders.");
+                openYourOrdersChest(online,returnPage);
+            });
+            loadStash.invoke(storageManager,id,stashConsumer);
+        }catch(Exception error){CoreUtil.error(player,"Could not remove that order right now.");}
+    }
 
     @EventHandler public void click(InventoryClickEvent event){
         InventoryHolder raw=event.getInventory().getHolder(false);
-        if(!(raw instanceof YourOrdersHolder)&&!(raw instanceof OrderDetailHolder))return;
+        if(!(raw instanceof YourOrdersHolder)&&!(raw instanceof OrderDetailHolder)&&!(raw instanceof StashHolder))return;
         event.setCancelled(true);
         if(!(event.getWhoClicked() instanceof Player player))return;
         if(raw instanceof YourOrdersHolder holder){
@@ -444,21 +502,33 @@ final class OrdersService implements Listener {
             if(slot==49)player.closeInventory();
             return;
         }
+        if(raw instanceof StashHolder stashHolder){
+            int slot=event.getRawSlot();
+            UUID id;try{id=UUID.fromString(stashHolder.orderId());}catch(Exception ignored){return;}
+            if(slot==22)claimPartial(player,id,()->openStashChest(player,id,stashHolder.returnPage()));
+            else if(slot==26)openOrderDetailChest(player,id,stashHolder.returnPage());
+            return;
+        }
         OrderDetailHolder holder=(OrderDetailHolder)raw;
         int slot=event.getRawSlot();
         UUID id;try{id=UUID.fromString(holder.orderId());}catch(Exception ignored){return;}
         if(slot==11){
-            player.closeInventory();
-            claimPartial(player,id,()->openYourOrdersChest(player,holder.returnPage()));
+            openStashChest(player,id,holder.returnPage());
         }else if(slot==15){
-            player.closeInventory();
-            try{
-                Consumer<Boolean> callback=ok->plugin.getServer().getScheduler().runTask(plugin,()->{
-                    Player online=plugin.getServer().getPlayer(player.getUniqueId());
-                    if(online!=null){CoreUtil.msg(online,Boolean.TRUE.equals(ok)?"Order cancelled.":"That order could not be cancelled.");openYourOrdersChest(online,holder.returnPage());}
-                });
-                cancelOrder.invoke(orderManager,player,id,callback);
-            }catch(Exception error){CoreUtil.error(player,"Could not cancel that order.");}
+            Object order;try{order=getOrderById.invoke(storageManager,id);}catch(Exception ex){order=null;}
+            String statusName;try{statusName=order==null?"":orderStatus.invoke(order).toString();}catch(Exception ex){statusName="";}
+            if(statusName.equals("ACTIVE")){
+                player.closeInventory();
+                try{
+                    Consumer<Boolean> callback=ok->plugin.getServer().getScheduler().runTask(plugin,()->{
+                        Player online=plugin.getServer().getPlayer(player.getUniqueId());
+                        if(online!=null){CoreUtil.msg(online,Boolean.TRUE.equals(ok)?"Order cancelled.":"That order could not be cancelled.");openYourOrdersChest(online,holder.returnPage());}
+                    });
+                    cancelOrder.invoke(orderManager,player,id,callback);
+                }catch(Exception error){CoreUtil.error(player,"Could not cancel that order.");}
+            }else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED")){
+                archiveOrder(player,id,holder.returnPage());
+            }
         }else if(slot==22){
             openYourOrdersChest(player,holder.returnPage());
         }
