@@ -172,8 +172,10 @@ final class ShardService implements Listener {
         if("rare".equalsIgnoreCase(tier)){if(Math.random()>=config.getDouble("earning.rare-chance",.12))return;amount=1;}
         if(amount>0)award(player,amount,"ELITE_"+tier.toUpperCase(Locale.ROOT),0);
     }
+    /** weekly is only meaningful for ENDER_DRAGON — a manually crystal-revived dragon keeps its reduced
+     *  vanilla respawn rewards and gives no Shards at all, only the weekly-designated encounter does. */
     void rewardBoss(Player player,org.bukkit.entity.EntityType type,boolean weekly){
-        if(type==org.bukkit.entity.EntityType.ENDER_DRAGON)award(player,10,"DRAGON",config.getLong("earning.dragon-cooldown-hours",168)*3600000L);
+        if(type==org.bukkit.entity.EntityType.ENDER_DRAGON){if(weekly)award(player,10,"DRAGON",config.getLong("earning.dragon-cooldown-hours",168)*3600000L);}
         else if(type==org.bukkit.entity.EntityType.WITHER)award(player,10,"WITHER",config.getLong("earning.wither-cooldown-hours",24)*3600000L);
         else if(type==org.bukkit.entity.EntityType.WARDEN)award(player,ThreadLocalRandom.current().nextInt(3,6),"WARDEN",config.getLong("earning.warden-cooldown-hours",24)*3600000L);
     }

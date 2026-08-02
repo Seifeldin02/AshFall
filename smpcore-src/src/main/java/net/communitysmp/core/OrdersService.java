@@ -1,12 +1,6 @@
 package net.communitysmp.core;
 
-import io.papermc.paper.dialog.Dialog;
-import io.papermc.paper.registry.data.dialog.ActionButton;
-import io.papermc.paper.registry.data.dialog.DialogBase;
-import io.papermc.paper.registry.data.dialog.action.DialogAction;
-import io.papermc.paper.registry.data.dialog.type.DialogType;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.event.ClickCallback;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -42,17 +36,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-/** Front end for DonutOrders' /orders buy-order marketplace — fully replaces DonutOrders' own /orders
- *  command on both platforms. DonutOrders' bundled OrderManager.collectStash() only ever accepts
- *  PENDING/COMPLETED/CANCELLED/EXPIRED orders (bytecode-confirmed on the deployed jar, no source available
- *  to patch), so its native "Collect All" permanently reports "nothing to collect" for a partially
- *  fulfilled ACTIVE order — there is no way to fix that from outside a sealed, unmodifiable jar. Every
- *  screen here (browse/create/fulfill/cancel for Java via Paper's native Dialog API, the equivalent via
- *  Geyser forms for Bedrock, plus /myorders' claim-safe stash view for both) drives DonutOrders' own
- *  OrderManager/StorageManager directly via reflection, since DonutOrders exposes no public API — so
- *  behavior and economy stay identical to whatever DonutOrders itself would have done. This is the only
- *  /orders entry point; DonutOrders' own command is unconditionally cancelled in command() below so there
- *  are never two competing systems. */
+/** Front end for DonutOrders' /orders buy-order marketplace. DonutOrders' own GUI (browse/create, native
+ *  Dialog-rendered on Java via its internal PlatformOrdersUI, Geyser forms on Bedrock) is DonutOrders' own
+ *  and is driven directly via GUIManager reflection — never rebuilt here. /orders opens straight to
+ *  browsing, /order opens straight to creation (no SMPCore-built landing menu router; a prior attempt at
+ *  wrapping these in one was explicitly rejected as not matching the real thing). The one part DonutOrders
+ *  itself cannot do correctly: its bundled OrderManager.collectStash() only ever accepts
+ *  PENDING/COMPLETED/CANCELLED/EXPIRED orders (bytecode-confirmed, no source available to patch it), so its
+ *  native "Collect All" permanently reports "nothing to collect" for a partially fulfilled ACTIVE order.
+ *  /myorders is SMPCore's own dedicated claim-safe screen for both platforms, reading directly from
+ *  DonutOrders' own escrow stash (loadStash/clearStash) without touching order status at all. */
 final class OrdersService implements Listener {
     private record YourOrdersHolder(int page) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private record OrderDetailHolder(String orderId,int returnPage) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
@@ -61,11 +54,12 @@ final class OrdersService implements Listener {
 
     private final SMPCore plugin;
     private Boolean available;
-    private Object orderManager,storageManager,allowedItemsManager;
+    private Object orderManager,storageManager,allowedItemsManager,guiManager;
     private Method createOrder,fulfillOrder,cancelOrder;
     private Method getAllActiveOrders,getPlayerOrders,getOrderById,getAllowedMaterials;
     private Method orderId,buyerUUID,buyerName,itemTemplate,amountRequested,amountFulfilled,amountRemaining,pricePerItem,orderStatus,formattedExpiry,claimedAt;
     private Method loadStash,clearStash;
+    private Method openPublicOrdersNative,openNewOrderPickerNative;
     private final Set<UUID> claimInFlight=ConcurrentHashMap.newKeySet();
 
     OrdersService(SMPCore plugin){this.plugin=plugin;}
@@ -81,10 +75,25 @@ final class OrdersService implements Listener {
             if(plugin.isBedrock(player))openYourOrdersForm(player,0);else openYourOrdersChest(player,0);
             return;
         }
-        if(!Set.of("orders","order","market","donutorders").contains(cmd))return;
+        /** /order (create) is deliberately split from /orders (browse) — two direct entry points into
+         *  DonutOrders' own native screens instead of a combined command that shows a menu first. Both
+         *  still just call straight into GUIManager; Bedrock keeps going through the existing combined
+         *  Geyser form since nothing there was reported broken. market/donutorders alias to browse, matching
+         *  DonutOrders' own most common usage for those names. */
+        if(cmd.equals("order")){
+            if(!ensureReady())return;
+            e.setCancelled(true);
+            if(plugin.isBedrock(player)){openMain(player);return;}
+            try{openNewOrderPickerNative.invoke(guiManager,player);}
+            catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
+            return;
+        }
+        if(!Set.of("orders","market","donutorders").contains(cmd))return;
         if(!ensureReady())return;
         e.setCancelled(true);
-        if(plugin.isBedrock(player))openMain(player);else openMainNative(player);
+        if(plugin.isBedrock(player)){openMain(player);return;}
+        try{openPublicOrdersNative.invoke(guiManager,player,0);}
+        catch(Exception error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
     }
 
     private boolean ensureReady(){
@@ -96,12 +105,14 @@ final class OrdersService implements Listener {
             Object instance=donutClass.getMethod("getInstance").invoke(null);
             Field orderManagerField=donutClass.getDeclaredField("orderManager");orderManagerField.setAccessible(true);orderManager=orderManagerField.get(instance);
             Field storageManagerField=donutClass.getDeclaredField("storageManager");storageManagerField.setAccessible(true);storageManager=storageManagerField.get(instance);
+            Field guiManagerField=donutClass.getDeclaredField("guiManager");guiManagerField.setAccessible(true);guiManager=guiManagerField.get(instance);
             allowedItemsManager=donutClass.getMethod("getAllowedItemsManager").invoke(instance);
 
             Class<?> orderManagerClass=Class.forName("com.donutorders.manager.OrderManager");
             Class<?> storageManagerClass=Class.forName("com.donutorders.storage.StorageManager");
             Class<?> allowedItemsClass=Class.forName("com.donutorders.manager.AllowedItemsManager");
             Class<?> orderClass=Class.forName("com.donutorders.model.Order");
+            Class<?> guiManagerClass=Class.forName("com.donutorders.manager.GUIManager");
 
             createOrder=orderManagerClass.getMethod("createOrder",Player.class,ItemStack.class,int.class,double.class,BiConsumer.class);
             fulfillOrder=orderManagerClass.getMethod("fulfillOrder",Player.class,UUID.class,ItemStack[].class,BiConsumer.class);
@@ -112,6 +123,8 @@ final class OrdersService implements Listener {
             getAllowedMaterials=allowedItemsClass.getMethod("getAllowedMaterials");
             loadStash=storageManagerClass.getMethod("loadStash",UUID.class,Consumer.class);
             clearStash=storageManagerClass.getMethod("clearStash",UUID.class,Runnable.class);
+            openPublicOrdersNative=guiManagerClass.getMethod("openPublicOrders",Player.class,int.class);
+            openNewOrderPickerNative=guiManagerClass.getMethod("openNewOrderPicker",Player.class);
 
             orderId=orderClass.getMethod("getOrderId");buyerUUID=orderClass.getMethod("getBuyerUUID");buyerName=orderClass.getMethod("getBuyerName");
             itemTemplate=orderClass.getMethod("getItemTemplate");amountRequested=orderClass.getMethod("getAmountRequested");amountFulfilled=orderClass.getMethod("getAmountFulfilled");
@@ -322,207 +335,6 @@ final class OrdersService implements Listener {
                 claimPartial(player,id,back);
             }));
             connection.sendForm(form);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-    }
-
-    // ───────────────────────── Java: /orders native dialog flow ─────────────────────────
-
-    /** Mirrors AccountService's own nativeSupported() check — native Dialogs are an UnstableApiUsage,
-     *  client-version-dependent feature, and this server does not run a multi-version proxy, so a mismatch
-     *  should only ever happen against a stale client. No chest-based fallback is built for the full
-     *  browse/create/fulfill flow (unlike /myorders, which already has one) since that would duplicate this
-     *  entire section a second time for a case that shouldn't occur in practice. */
-    private boolean nativeOrdersSupported(Player player){return plugin.getConfig().getBoolean("settings.native-dialogs",true)&&player.getProtocolVersion()==Bukkit.getUnsafe().getProtocolVersion();}
-
-    private ActionButton nativeRun(String label,NamedTextColor color,Runnable action){
-        return ActionButton.create(Component.text(label,color),Component.empty(),260,DialogAction.customClick(
-                (response,audience)->plugin.getServer().getScheduler().runTask(plugin,action),
-                ClickCallback.Options.builder().uses(1).build()));
-    }
-    private List<io.papermc.paper.registry.data.dialog.body.DialogBody> bodyLines(List<String> lines){
-        List<io.papermc.paper.registry.data.dialog.body.DialogBody> out=new ArrayList<>();
-        for(String line:lines)out.add(io.papermc.paper.registry.data.dialog.body.DialogBody.plainMessage(Component.text(line,NamedTextColor.GRAY),300));
-        return out;
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void openMainNative(Player player){
-        if(!nativeOrdersSupported(player)){CoreUtil.error(player,"Please update your Minecraft client to use /orders.");return;}
-        try{
-            List<ActionButton> buttons=List.of(
-                    nativeRun("Browse Public Orders",NamedTextColor.AQUA,()->openPublicOrdersNative(player,0)),
-                    nativeRun("Create New Order",NamedTextColor.GREEN,()->openNewOrderSearchNative(player)),
-                    nativeRun("Your Orders",NamedTextColor.GOLD,()->openYourOrdersChest(player,0)));
-            Dialog dialog=Dialog.create(builder->builder.empty()
-                    .base(DialogBase.builder(Component.text("Ashfall Orders",NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).build())
-                    .type(DialogType.multiAction(buttons,null,1)));
-            player.showDialog(dialog);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void openNewOrderSearchNative(Player player){
-        try{
-            ActionButton apply=ActionButton.create(Component.text("Search"),Component.empty(),180,DialogAction.customClick((response,audience)->{
-                String query=response.getText("query");
-                plugin.getServer().getScheduler().runTask(plugin,()->openNewOrderResultsNative(player,query==null?"":query.trim(),0));
-            },ClickCallback.Options.builder().uses(1).build()));
-            Dialog dialog=Dialog.create(builder->builder.empty().base(DialogBase.builder(Component.text("Create New Order",NamedTextColor.GOLD))
-                    .body(bodyLines(List.of("Search for an item, or leave blank to browse the full catalog.")))
-                    .inputs(List.of(io.papermc.paper.registry.data.dialog.input.DialogInput.text("query",Component.text("Item search")).maxLength(40).width(280).build()))
-                    .canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).build())
-                    .type(DialogType.confirmation(apply,nativeRun("Back",NamedTextColor.GRAY,()->openMainNative(player)))));
-            player.showDialog(dialog);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void openNewOrderResultsNative(Player player,String query,int page){
-        try{
-            @SuppressWarnings("unchecked")
-            List<Material> all=(List<Material>)getAllowedMaterials.invoke(allowedItemsManager);
-            String needle=query.toLowerCase(Locale.ROOT);
-            List<Material> matches=needle.isBlank()?all:all.stream()
-                    .filter(m->m.name().toLowerCase(Locale.ROOT).contains(needle.replace(' ','_'))||CoreUtil.pretty(m.name()).toLowerCase(Locale.ROOT).contains(needle))
-                    .toList();
-            if(matches.isEmpty()){CoreUtil.error(player,"No items match \""+query+"\".");openNewOrderSearchNative(player);return;}
-            int perPage=15,from=page*perPage,to=Math.min(matches.size(),from+perPage);
-            List<Material> slice=matches.subList(from,to);
-            List<ActionButton> buttons=new ArrayList<>();
-            for(Material material:slice)buttons.add(nativeRun(CoreUtil.pretty(material.name()),NamedTextColor.WHITE,()->openNewOrderAmountNative(player,material,query,page)));
-            boolean hasPrev=page>0,hasNext=to<matches.size();
-            if(hasPrev)buttons.add(nativeRun("« Previous Page",NamedTextColor.GRAY,()->openNewOrderResultsNative(player,query,page-1)));
-            if(hasNext)buttons.add(nativeRun("Next Page »",NamedTextColor.GRAY,()->openNewOrderResultsNative(player,query,page+1)));
-            buttons.add(nativeRun("New Search",NamedTextColor.YELLOW,()->openNewOrderSearchNative(player)));
-            buttons.add(nativeRun("Back",NamedTextColor.GRAY,()->openMainNative(player)));
-            Dialog dialog=Dialog.create(builder->builder.empty()
-                    .base(DialogBase.builder(Component.text("Results"+(query.isBlank()?"":" • \""+query+"\""),NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).build())
-                    .type(DialogType.multiAction(buttons,null,1)));
-            player.showDialog(dialog);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void openNewOrderAmountNative(Player player,Material material,String query,int page){
-        try{
-            ActionButton apply=ActionButton.create(Component.text("Create Order",NamedTextColor.GREEN),Component.empty(),200,DialogAction.customClick((response,audience)->{
-                String qtyText=response.getText("quantity"),priceText=response.getText("price");
-                plugin.getServer().getScheduler().runTask(plugin,()->{
-                    int quantity;double price;
-                    try{quantity=Integer.parseInt(qtyText.trim());}catch(Exception ex){CoreUtil.error(player,"Quantity must be a whole number.");return;}
-                    try{price=Double.parseDouble(priceText.trim());}catch(Exception ex){CoreUtil.error(player,"Price must be a number.");return;}
-                    if(quantity<=0||price<=0){CoreUtil.error(player,"Quantity and price must be greater than zero.");return;}
-                    confirmNewOrder(player,material,quantity,price);
-                });
-            },ClickCallback.Options.builder().uses(1).build()));
-            Dialog dialog=Dialog.create(builder->builder.empty().base(DialogBase.builder(Component.text(CoreUtil.pretty(material.name()),NamedTextColor.GOLD))
-                    .inputs(List.of(
-                            io.papermc.paper.registry.data.dialog.input.DialogInput.text("quantity",Component.text("Quantity")).initial("64").maxLength(6).width(260).build(),
-                            io.papermc.paper.registry.data.dialog.input.DialogInput.text("price",Component.text("Price per item")).initial("1.0").maxLength(10).width(260).build()))
-                    .canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).build())
-                    .type(DialogType.confirmation(apply,nativeRun("Back",NamedTextColor.GRAY,()->openNewOrderResultsNative(player,query,page)))));
-            player.showDialog(dialog);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void openPublicOrdersNative(Player player,int page){
-        try{
-            List<Object> all=new ArrayList<>((Collection<?>)getAllActiveOrders.invoke(storageManager));
-            int perPage=12,from=page*perPage,to=Math.min(all.size(),from+perPage);
-            List<Object> slice=from<all.size()?all.subList(from,to):List.of();
-            List<ActionButton> buttons=new ArrayList<>();
-            for(Object order:slice){
-                UUID oid=(UUID)orderId.invoke(order);
-                String label=describeOrder(order).replace('\n',' ');
-                buttons.add(nativeRun(label,NamedTextColor.WHITE,()->openOrderDetailNative(player,oid,()->openPublicOrdersNative(player,page))));
-            }
-            boolean hasPrev=page>0,hasNext=to<all.size();
-            if(hasPrev)buttons.add(nativeRun("« Previous Page",NamedTextColor.GRAY,()->openPublicOrdersNative(player,page-1)));
-            if(hasNext)buttons.add(nativeRun("Next Page »",NamedTextColor.GRAY,()->openPublicOrdersNative(player,page+1)));
-            buttons.add(nativeRun("Back",NamedTextColor.GRAY,()->openMainNative(player)));
-            Dialog dialog=Dialog.create(builder->builder.empty()
-                    .base(DialogBase.builder(Component.text(all.isEmpty()?"No active orders":"Public Orders • "+(page+1),NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).build())
-                    .type(DialogType.multiAction(buttons,null,1)));
-            player.showDialog(dialog);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void openOrderDetailNative(Player player,UUID id,Runnable back){
-        try{
-            Object order=getOrderById.invoke(storageManager,id);
-            if(order==null){CoreUtil.error(player,"That order is no longer available.");back.run();return;}
-            ItemStack template=(ItemStack)itemTemplate.invoke(order);
-            String statusName=orderStatus.invoke(order).toString();
-            boolean own=player.getUniqueId().equals(buyerUUID.invoke(order));
-            int fulfilled=(int)amountFulfilled.invoke(order),requested=(int)amountRequested.invoke(order);
-            List<String> lines=new ArrayList<>(List.of(
-                    "Item: "+itemLabel(template),
-                    "Requested: "+requested+" • Fulfilled: "+fulfilled,
-                    "Price: "+CoreUtil.money((double)pricePerItem.invoke(order))+" each",
-                    "Buyer: "+buyerName.invoke(order),
-                    "Status: "+CoreUtil.pretty(statusName),
-                    "Expires: "+formattedExpiry.invoke(order)));
-            if(own&&fulfilled>0)lines.add("Use /myorders to view or claim delivered items.");
-            List<ActionButton> buttons=new ArrayList<>();
-            if(own&&statusName.equals("ACTIVE"))buttons.add(nativeRun("Cancel Order",NamedTextColor.RED,()->confirmCancelNative(player,id,back)));
-            else if(!own&&statusName.equals("ACTIVE"))buttons.add(nativeRun("Fulfill Order",NamedTextColor.GREEN,()->confirmFulfillNative(player,id,order,back)));
-            buttons.add(nativeRun("Back",NamedTextColor.GRAY,back));
-            Dialog dialog=Dialog.create(builder->builder.empty().base(DialogBase.builder(Component.text("Order Detail",NamedTextColor.GOLD))
-                    .body(bodyLines(lines))
-                    .canCloseWithEscape(true).pause(false).build())
-                    .type(DialogType.multiAction(buttons,null,1)));
-            player.showDialog(dialog);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");back.run();}
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void confirmFulfillNative(Player player,UUID id,Object order,Runnable back){
-        try{
-            ItemStack template=(ItemStack)itemTemplate.invoke(order);
-            Material material=template.getType();
-            int remaining=(int)amountRemaining.invoke(order);
-            int have=0;for(ItemStack stack:player.getInventory().getStorageContents())if(stack!=null&&stack.getType()==material)have+=stack.getAmount();
-            int deliver=Math.min(have,remaining);
-            if(deliver<=0){CoreUtil.error(player,"You have no "+CoreUtil.pretty(material.name())+" to deliver.");back.run();return;}
-            double pricePer=(double)pricePerItem.invoke(order);
-            ActionButton apply=ActionButton.create(Component.text("Deliver "+deliver,NamedTextColor.GREEN),Component.empty(),200,DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
-                ItemStack[] items=takeForDelivery(player,material,deliver);
-                try{
-                    BiConsumer<Boolean,String> callback=(ok,message)->plugin.getServer().getScheduler().runTask(plugin,()->{
-                        if(!Boolean.TRUE.equals(ok))refund(player,items);
-                        Player online=plugin.getServer().getPlayer(player.getUniqueId());
-                        if(online!=null){if(message!=null)CoreUtil.msg(online,message);back.run();}
-                    });
-                    fulfillOrder.invoke(orderManager,player,id,items,callback);
-                }catch(Exception error){refund(player,items);CoreUtil.error(player,"Delivery failed; your items were returned.");}
-            }),ClickCallback.Options.builder().uses(1).build()));
-            Dialog dialog=Dialog.create(builder->builder.empty().base(DialogBase.builder(Component.text("Confirm Delivery",NamedTextColor.GOLD))
-                    .body(bodyLines(List.of("Deliver "+deliver+" "+CoreUtil.pretty(material.name())+" toward this order?","Price: "+CoreUtil.money(pricePer)+" each.")))
-                    .canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).build())
-                    .type(DialogType.confirmation(apply,nativeRun("Cancel",NamedTextColor.GRAY,back))));
-            player.showDialog(dialog);
-        }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
-    }
-
-    @SuppressWarnings("UnstableApiUsage")
-    private void confirmCancelNative(Player player,UUID id,Runnable back){
-        try{
-            ActionButton apply=ActionButton.create(Component.text("Yes, Cancel",NamedTextColor.RED),Component.empty(),200,DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
-                try{
-                    Consumer<Boolean> callback=ok->plugin.getServer().getScheduler().runTask(plugin,()->{
-                        Player online=plugin.getServer().getPlayer(player.getUniqueId());
-                        if(online!=null){CoreUtil.msg(online,Boolean.TRUE.equals(ok)?"Order cancelled.":"That order could not be cancelled.");openMainNative(online);}
-                    });
-                    cancelOrder.invoke(orderManager,player,id,callback);
-                }catch(Exception error){CoreUtil.error(player,"Could not cancel that order.");}
-            }),ClickCallback.Options.builder().uses(1).build()));
-            Dialog dialog=Dialog.create(builder->builder.empty().base(DialogBase.builder(Component.text("Cancel Order",NamedTextColor.GOLD))
-                    .body(bodyLines(List.of("Cancel this order and refund remaining funds?","Anything already delivered stays claimable via /myorders.")))
-                    .canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).build())
-                    .type(DialogType.confirmation(apply,nativeRun("No",NamedTextColor.GRAY,back))));
-            player.showDialog(dialog);
         }catch(Throwable error){CoreUtil.error(player,"The orders marketplace is temporarily unavailable.");}
     }
 
