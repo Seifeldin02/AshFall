@@ -208,7 +208,17 @@ final class OrdersService implements Listener {
             if(contextOrderId==null)return;
             Object order=getOrderById.invoke(storageManager,contextOrderId);
             if(order==null)return;
-            if("ACTIVE".equals(orderStatus.invoke(order).toString())){
+            /** CLAIMED (a real 6th OrderStatus value alongside ACTIVE/PENDING/COMPLETED/CANCELLED/EXPIRED,
+             *  confirmed via the enum — easy to miss since nothing else in this class checked for it) is
+             *  DonutOrders' own one-shot terminal marker set the moment its native collectStash() actually
+             *  succeeds once. A second slot-11 click on an already-CLAIMED order live-confirmed DonutOrders'
+             *  own "[Security] ... already claimed ... Replay attack blocked" rejection — functioning
+             *  correctly, but with a client-side message that can still read as success despite nothing
+             *  being given, which is confusing and was never something ACTIVE-only blocking here protected
+             *  against. Same redirect-back applies: there's never anything useful to do by re-entering
+             *  Collect Stash on an order DonutOrders itself already considers fully resolved. */
+            String orderStatusName=orderStatus.invoke(order).toString();
+            if("ACTIVE".equals(orderStatusName)||"CLAIMED".equals(orderStatusName)){
                 event.setCancelled(true);
                 UUID playerId=player.getUniqueId();
                 blockNextStashOpen.put(playerId,contextOrderId);
@@ -584,7 +594,7 @@ final class OrdersService implements Listener {
         if(canClaim)inv.setItem(11,CoreUtil.named(Material.LIME_DYE,"View/Claim Stash",List.of("Opens the delivered items waiting","in escrow. The order stays active","for the rest.")));
         else inv.setItem(11,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
         if(statusName.equals("ACTIVE"))inv.setItem(15,CoreUtil.named(Material.RED_DYE,"Cancel Order",List.of("Refunds unspent escrow.","Anything delivered stays claimable.")));
-        else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED"))inv.setItem(15,CoreUtil.named(Material.HOPPER,"Remove from My Orders",List.of("Archives this order permanently.","Only allowed once its stash is empty.")));
+        else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED")||statusName.equals("CLAIMED"))inv.setItem(15,CoreUtil.named(Material.HOPPER,"Remove from My Orders",List.of("Archives this order permanently.","Only allowed once its stash is empty.")));
         else inv.setItem(15,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
         inv.setItem(22,CoreUtil.named(Material.ARROW,"Back",List.of()));
         player.openInventory(inv);
@@ -683,7 +693,7 @@ final class OrdersService implements Listener {
                     });
                     cancelOrder.invoke(orderManager,player,id,callback);
                 }catch(Exception error){CoreUtil.error(player,"Could not cancel that order.");}
-            }else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED")){
+            }else if(statusName.equals("COMPLETED")||statusName.equals("CANCELLED")||statusName.equals("CLAIMED")){
                 archiveOrder(player,id,holder.returnPage());
             }
         }else if(slot==22){
