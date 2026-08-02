@@ -304,14 +304,24 @@ final class BossEventService {
          *  None of that should ever depend on whether a money split can be computed, so it now runs
          *  unconditionally for every real dragon death. Also: EntityDeathEvent#setDroppedExp() is a known
          *  no-op for EnderDragon specifically — vanilla spawns its death XP via its own hardcoded orb-spawn
-         *  path, not through the generic droppedExp field every other mob honors — so the XP is granted by
-         *  spawning a real ExperienceOrb directly at the boss's location instead of trusting the event field. */
+         *  path, not through the generic droppedExp field every other mob honors — so the XP is granted
+         *  directly instead of trusting the event field.
+         *  Live-confirmed 2026-08-02 (real kill, egg + XP both landed): the egg should be placed as a block
+         *  on the bedrock at the center of the main End island (0,65,0, matching vanilla's own first-kill
+         *  placement) rather than dropped as an item — and the XP needs to be many small orbs, not one
+         *  12000-value orb, since a single giant orb only ever gets picked up by whichever participant
+         *  happens to be nearest, handing them the entire encounter's XP alone (confirmed: one player jumped
+         *  50 levels from it) instead of letting every nearby participant collect a fair share. */
         if(boss instanceof EnderDragon dragon){
             plugin.getLogger().info("[WeeklyDragon] death: weeklyKill="+weeklyKill+" participants="+participants.size()+" killer="+(killer==null?"null":killer.getName()));
             if(weeklyKill){
-                event.getDrops().add(new ItemStack(Material.DRAGON_EGG));
+                dragon.getWorld().getBlockAt(0,65,0).setType(Material.DRAGON_EGG);
                 Location dropAt=dragon.getLocation();
-                dragon.getWorld().spawn(dropAt,ExperienceOrb.class,orb->orb.setExperience(12000));
+                int totalXp=12000,orbCount=60,perOrb=totalXp/orbCount;
+                for(int i=0;i<orbCount;i++){
+                    Location orbLoc=dropAt.clone().add(ThreadLocalRandom.current().nextDouble(-3,3),ThreadLocalRandom.current().nextDouble(0,2),ThreadLocalRandom.current().nextDouble(-3,3));
+                    dragon.getWorld().spawn(orbLoc,ExperienceOrb.class,orb->orb.setExperience(perOrb));
+                }
             }
             plugin.weeklyDragon().defeated(dragon);
         }
