@@ -296,18 +296,26 @@ final class WeeklyDragonService {
      *  already vanished). Tagging on the very first successful read was the actual root cause of "weekly
      *  dragon gives no egg/no full XP" — the encounter did get tagged, just on an entity that didn't end up
      *  being the real one. Fixed by requiring the same UUID to still be reported, alive, two full seconds
-     *  later before committing the tag; if it changed or vanished, polling resumes from scratch. */
+     *  later before committing the tag; if it changed or vanished, polling resumes from scratch.
+     *  Stabilization pass (still 2026-08-02): the "resumes from scratch" above was literal — a destabilized
+     *  candidate always restarted pollForSpawnedDragon at attempt 0 rather than continuing the count, so the
+     *  3-minute cap could never actually trigger if the dragon's identity kept destabilizing repeatedly
+     *  (each restart reset the clock before it ever reached 360). Low-probability, but a genuine unbounded
+     *  loop that would also leave spawning=true forever, permanently blocking every future dragon start.
+     *  attempt now accumulates across both methods without ever resetting, and the timeout check moved to
+     *  the top of pollForSpawnedDragon so it's re-evaluated on every cycle, including ones resumed after a
+     *  failed confirmation. */
     private void pollForSpawnedDragon(DragonBattle battle,String occurrence,int attempt){
+        if(attempt>=360){spawning=false;plugin.getLogger().warning("Weekly Ender Dragon respawn did not stabilise on a dragon entity after 3 minutes of polling.");return;}
         EnderDragon dragon=battle.getEnderDragon();
         if(dragon!=null&&!dragon.isDead()){
             UUID candidate=dragon.getUniqueId();
-            plugin.getServer().getScheduler().runTaskLater(plugin,()->confirmAndTagDragon(battle,occurrence,candidate,0),40L);
+            plugin.getServer().getScheduler().runTaskLater(plugin,()->confirmAndTagDragon(battle,occurrence,candidate,attempt+4),40L);
             return;
         }
-        if(attempt>=360){spawning=false;plugin.getLogger().warning("Weekly Ender Dragon respawn did not produce a dragon entity after 3 minutes of polling.");return;}
         plugin.getServer().getScheduler().runTaskLater(plugin,()->pollForSpawnedDragon(battle,occurrence,attempt+1),10L);
     }
-    private void confirmAndTagDragon(DragonBattle battle,String occurrence,UUID candidate,int restartAttempt){
+    private void confirmAndTagDragon(DragonBattle battle,String occurrence,UUID candidate,int attempt){
         EnderDragon dragon=battle.getEnderDragon();
         if(dragon!=null&&!dragon.isDead()&&dragon.getUniqueId().equals(candidate)){
             spawning=false;
@@ -317,8 +325,7 @@ final class WeeklyDragonService {
             return;
         }
         plugin.getLogger().info("[WeeklyDragon] candidate "+candidate+" was not stable (changed or vanished) — resuming poll.");
-        if(restartAttempt>=360){spawning=false;plugin.getLogger().warning("Weekly Ender Dragon respawn never stabilised on a single dragon after repeated attempts.");return;}
-        plugin.getServer().getScheduler().runTaskLater(plugin,()->pollForSpawnedDragon(battle,occurrence,restartAttempt),10L);
+        plugin.getServer().getScheduler().runTaskLater(plugin,()->pollForSpawnedDragon(battle,occurrence,attempt),10L);
     }
     /** Radius 8 (17x17 chunks) matches — not just "covers" — the exact grid Paper's EnderDragonFight.isArenaLoaded()
      *  itself checks around the arena origin (confirmed by disassembly: it scans chunk offsets -8..+8 on both
