@@ -52,11 +52,13 @@ final class Database implements AutoCloseable {
     }
     record ShardAccount(String player,int balance,long activeSeconds,long afkSeconds,long updatedAt) {}
     record RelationRow(long lowFaction,long highFaction,String type,String pendingType,long requestedBy,
-                       boolean storageLow,boolean storageHigh,long updatedAt) {
+                       boolean storageLow,boolean storageHigh,long updatedAt,boolean homesLow,boolean homesHigh) {
         long other(long faction){return faction==lowFaction?highFaction:lowFaction;}
         boolean active(){return type!=null&&!type.isBlank();}
         boolean sharedStorage(){return "ALLIANCE".equals(type)&&storageLow&&storageHigh;}
         boolean storageApproval(long faction){return faction==lowFaction?storageLow:storageHigh;}
+        boolean sharedHomes(){return "ALLIANCE".equals(type)&&homesLow&&homesHigh;}
+        boolean homesApproval(long faction){return faction==lowFaction?homesLow:homesHigh;}
     }
     record CosmeticRow(String cosmetic,String player,long unlockedAt,boolean active) {}
 
@@ -183,6 +185,8 @@ final class Database implements AutoCloseable {
         ensureColumn("central_bank","sink_revenue","REAL NOT NULL DEFAULT 0");
         ensureColumn("central_bank","shop_payouts","REAL NOT NULL DEFAULT 0");
         ensureColumn("faction_members","joined_at","INTEGER NOT NULL DEFAULT 0");
+        ensureColumn("faction_relations","homes_low","INTEGER NOT NULL DEFAULT 0");
+        ensureColumn("faction_relations","homes_high","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("graves","owner_uuid","TEXT");
         ensureColumn("graves","public_name","TEXT");
         ensureColumn("graves","skin_value","TEXT");
@@ -379,11 +383,14 @@ final class Database implements AutoCloseable {
         long low=Math.min(first,second),high=Math.max(first,second);update("INSERT INTO faction_relations(faction_low,faction_high,pending_type,requested_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(faction_low,faction_high) DO UPDATE SET pending_type=excluded.pending_type,requested_by=excluded.requested_by,updated_at=excluded.updated_at",low,high,requested,requester,System.currentTimeMillis());
     }
     synchronized void acceptRelation(long first,long second,String type){
-        long low=Math.min(first,second),high=Math.max(first,second);update("UPDATE faction_relations SET relation_type=?,pending_type=NULL,requested_by=0,storage_low=0,storage_high=0,updated_at=? WHERE faction_low=? AND faction_high=?",type,System.currentTimeMillis(),low,high);
+        long low=Math.min(first,second),high=Math.max(first,second);update("UPDATE faction_relations SET relation_type=?,pending_type=NULL,requested_by=0,storage_low=0,storage_high=0,homes_low=0,homes_high=0,updated_at=? WHERE faction_low=? AND faction_high=?",type,System.currentTimeMillis(),low,high);
     }
     synchronized void clearRelation(long first,long second){long low=Math.min(first,second),high=Math.max(first,second);update("DELETE FROM faction_relations WHERE faction_low=? AND faction_high=?",low,high);}
     synchronized void storageApproval(long first,long second,long faction,boolean enabled){
         long low=Math.min(first,second),high=Math.max(first,second);String column=faction==low?"storage_low":"storage_high";update("UPDATE faction_relations SET "+column+"=?,updated_at=? WHERE faction_low=? AND faction_high=? AND relation_type='ALLIANCE'",enabled?1:0,System.currentTimeMillis(),low,high);
+    }
+    synchronized void homesApproval(long first,long second,long faction,boolean enabled){
+        long low=Math.min(first,second),high=Math.max(first,second);String column=faction==low?"homes_low":"homes_high";update("UPDATE faction_relations SET "+column+"=?,updated_at=? WHERE faction_low=? AND faction_high=? AND relation_type='ALLIANCE'",enabled?1:0,System.currentTimeMillis(),low,high);
     }
     synchronized void incrementFactionStat(long faction,String column){if(!Set.of("event_wins","boss_kills","miniboss_kills","relics","bounties_claimed","milestones").contains(column))throw new IllegalArgumentException("faction stat");update("INSERT OR IGNORE INTO faction_stats(faction_id) VALUES(?)",faction);update("UPDATE faction_stats SET "+column+"="+column+"+1 WHERE faction_id=?",faction);}
     synchronized List<PrestigeRow> factionPrestige(){String sql="SELECT f.id,f.name,f.tier,f.balance,COALESCE(s.event_wins,0) event_wins,COALESCE(s.boss_kills,0) boss_kills,COALESCE(s.miniboss_kills,0) miniboss_kills,COALESCE(s.relics,0) relics,COALESCE(s.bounties_claimed,0) bounties_claimed,COALESCE(s.milestones,0) milestones,(CASE WHEN f.tier<0 THEN 0 ELSE 250+f.tier*1000 END)+MIN(f.balance/100.0,2500)+COALESCE(s.event_wins,0)*500+COALESCE(s.boss_kills,0)*750+COALESCE(s.miniboss_kills,0)*300+COALESCE(s.relics,0)*600+COALESCE(s.bounties_claimed,0)*250+COALESCE(s.milestones,0)*150 prestige FROM factions f LEFT JOIN faction_stats s ON s.faction_id=f.id ORDER BY prestige DESC,f.name LIMIT 10";return list(sql,rs->new PrestigeRow(rs.getLong("id"),rs.getString("name"),rs.getDouble("prestige"),rs.getInt("tier"),rs.getDouble("balance"),rs.getInt("event_wins"),rs.getInt("boss_kills"),rs.getInt("miniboss_kills"),rs.getInt("relics"),rs.getInt("bounties_claimed"),rs.getInt("milestones")));}
@@ -712,7 +719,7 @@ final class Database implements AutoCloseable {
     private static LoanRow mapLoan(ResultSet rs)throws SQLException{return new LoanRow(rs.getLong("id"),rs.getString("player"),rs.getDouble("principal"),rs.getDouble("original_amount"),rs.getDouble("interest"),rs.getDouble("rate_daily"),rs.getLong("issued_at"),rs.getLong("due_at"),rs.getLong("last_accrual"),rs.getString("status"));}
     private static GraveRow mapGrave(ResultSet rs)throws SQLException{return new GraveRow(rs.getLong("id"),rs.getString("owner"),column(rs,"owner_uuid"),rs.getString("owner_name"),column(rs,"public_name"),column(rs,"skin_value"),column(rs,"skin_signature"),rs.getString("world"),rs.getDouble("x"),rs.getDouble("y"),rs.getDouble("z"),rs.getLong("created_at"),rs.getLong("expires_at"),rs.getString("marker_uuid"));}
     private static String column(ResultSet rs,String name)throws SQLException{try{return rs.getString(name);}catch(SQLException ignored){return null;}}
-    private static RelationRow mapRelation(ResultSet rs)throws SQLException{return new RelationRow(rs.getLong("faction_low"),rs.getLong("faction_high"),rs.getString("relation_type"),rs.getString("pending_type"),rs.getLong("requested_by"),rs.getInt("storage_low")!=0,rs.getInt("storage_high")!=0,rs.getLong("updated_at"));}
+    private static RelationRow mapRelation(ResultSet rs)throws SQLException{return new RelationRow(rs.getLong("faction_low"),rs.getLong("faction_high"),rs.getString("relation_type"),rs.getString("pending_type"),rs.getLong("requested_by"),rs.getInt("storage_low")!=0,rs.getInt("storage_high")!=0,rs.getLong("updated_at"),rs.getInt("homes_low")!=0,rs.getInt("homes_high")!=0);}
     private static double roundMoney(double value){return Math.round(value*100.0)/100.0;}
 
     private int update(String sql,Object... args) { try(PreparedStatement ps=connection.prepareStatement(sql)){ bind(ps,args); return ps.executeUpdate(); }catch(SQLException e){throw fail(e);} }
