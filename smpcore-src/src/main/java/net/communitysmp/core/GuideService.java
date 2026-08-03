@@ -71,6 +71,7 @@ final class GuideService implements Listener {
         player.sendMessage(Component.text(arabic?"مسموح:":"ALLOWED:",NamedTextColor.GREEN));
         for(String line:allowed(arabic))player.sendMessage(Component.text("• "+line,NamedTextColor.GRAY));
         player.sendMessage(Component.text(distinction(arabic),NamedTextColor.DARK_GRAY));
+        if(!arabic)player.sendMessage(Component.text("Use /rules arabic to view the rules in Arabic.",NamedTextColor.DARK_GRAY));
         return true;
     }
 

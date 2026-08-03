@@ -17,6 +17,8 @@ import org.bukkit.event.vehicle.VehicleEntityCollisionEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.scoreboard.Scoreboard;
+import org.bukkit.scoreboard.Team;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -111,14 +113,27 @@ final class SpawnClaimService implements Listener {
      *  aggroed toward someone just inside can simply walk straight back in before the next sweep, which reads
      *  as "stuck"/oscillating rather than actually being cleaned up. Non-hostile entities (villagers, tamed
      *  pets, named mobs) keep the original bounce-out behavior — removing those would be destructive. */
+    private static final String COLLISION_TEAM="ashfallnocollide";
+    /** Entity#setCollidable(false) does NOT stop player-vs-player pushing — the client predicts that
+     *  collision locally regardless of the server-side flag, a well-documented Bukkit/Paper limitation
+     *  (confirmed against PaperMC/Paper#376 and the Bukkit forums). The only mechanism that actually works
+     *  for players is a Scoreboard Team with COLLISION_RULE=NEVER. Teams live on a specific Scoreboard
+     *  object, and UIService hands sidebar-enabled players their own per-player Scoreboard (not the shared
+     *  main one) — so the team has to be looked up/created on whichever board the player is CURRENTLY
+     *  displaying, every sweep, not just on the main scoreboard once. */
+    private void applyCollision(Player player,boolean inside){
+        Scoreboard board=player.getScoreboard();if(board==null)return;
+        Team team=board.getTeam(COLLISION_TEAM);
+        if(team==null){team=board.registerNewTeam(COLLISION_TEAM);team.setOption(Team.Option.COLLISION_RULE,Team.OptionStatus.NEVER);}
+        boolean has=team.hasEntry(player.getName());
+        if(inside&&!has)team.addEntry(player.getName());
+        else if(!inside&&has)team.removeEntry(player.getName());
+    }
     private void ejectUnmarked(){
-        /** Vanilla entity-to-entity collision (the gentle shove you get just from standing near someone) still
-         *  applies even with all the movement/knockback/vehicle protections elsewhere — over many small shoves
-         *  from a crowd it can still walk someone to the edge. Runs on this same 5s sweep across ALL online
-         *  players (not just those currently in the spawn world, and even with no region set at all) so
-         *  anyone who leaves the region — or the world, or has protection cleared entirely — reliably gets
-         *  collision back rather than being stuck non-collidable. */
-        for(Player player:plugin.getServer().getOnlinePlayers())player.setCollidable(region==null||!region.contains(player.getLocation()));
+        /** Runs on this same 5s sweep across ALL online players (not just those currently in the spawn world,
+         *  and even with no region set at all) so anyone who leaves the region — or the world, or has
+         *  protection cleared entirely — reliably gets collision back rather than being stuck non-collidable. */
+        for(Player player:plugin.getServer().getOnlinePlayers())applyCollision(player,region!=null&&region.contains(player.getLocation()));
         if(region==null)return;org.bukkit.World world=plugin.getServer().getWorld(region.world());if(world==null)return;
         for(LivingEntity entity:world.getLivingEntities()){
             if(entity instanceof Player||!region.contains(entity.getLocation())||allowed(entity))continue;

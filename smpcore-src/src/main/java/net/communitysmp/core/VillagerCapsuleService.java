@@ -7,6 +7,7 @@ import org.bukkit.entity.*;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.MerchantRecipe;
+import org.bukkit.inventory.meta.EnchantmentStorageMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 
@@ -58,16 +59,45 @@ final class VillagerCapsuleService {
      *  fake two-tier hover, the trade list is always appended below the basic info — the only way "viewable
      *  without holding, no clicks, no GUI" (auctions, trade previews, anywhere a tooltip renders) is actually
      *  achievable, and it keeps the same "basic summary, then full trade detail" structure the user wanted. */
+    /** MerchantRecipe.getAdjustedIngredient1() is the game's own live-computed price for the first ingredient
+     *  — it already bakes in the villager's current demand AND any reputation-driven special_price discount,
+     *  so reading it right here at capture time (while the villager is still real) captures the true current
+     *  price, not the base/undiscounted one. This is provably exact, not an approximation: the discount is a
+     *  property stored ON the recipe itself (getSpecialPrice()/getDemand()), which EntitySnapshot captures in
+     *  full — the exact same recipe state gets restored on release, so the frozen price shown here is exactly
+     *  what the restored villager will actually charge. There's no "current reputation" to go stale, because
+     *  the entity stops existing the moment it's captured — the discount was locked in at that instant either
+     *  way. The second ingredient, when present, is never demand/reputation-adjusted in vanilla, so it's
+     *  shown as-is. getIngredients().get(0) is the base (pre-discount) price, shown alongside when it differs.
+     */
     private List<Component> tradeLoreLines(Villager villager){
         List<Component> lines=new ArrayList<>();lines.add(Component.text("Trades (current prices):",NamedTextColor.GOLD));
         for(MerchantRecipe recipe:villager.getRecipes()){
-            List<ItemStack> ingredients=recipe.getIngredients();
-            String cost=ingredients.stream().filter(i->i!=null&&!i.getType().isAir()).map(i->i.getAmount()+" "+CoreUtil.pretty(i.getType().name())).collect(Collectors.joining(" + "));
-            ItemStack result=recipe.getResult();String sold=result.getAmount()+" "+CoreUtil.pretty(result.getType().name());
+            List<ItemStack> base=recipe.getIngredients();
+            ItemStack adjusted=recipe.getAdjustedIngredient1();
+            String first=adjusted.getAmount()+" "+CoreUtil.pretty(adjusted.getType().name());
+            if(!base.isEmpty()&&base.get(0).getAmount()!=adjusted.getAmount())first+=" (was "+base.get(0).getAmount()+")";
+            String cost=first;
+            if(base.size()>1&&base.get(1)!=null&&!base.get(1).getType().isAir())cost+=" + "+base.get(1).getAmount()+" "+CoreUtil.pretty(base.get(1).getType().name());
+            ItemStack result=recipe.getResult();String sold=result.getAmount()+" "+resultName(result);
             lines.add(Component.text("  "+cost+" → "+sold,NamedTextColor.GRAY));
         }
         return lines;
     }
+    /** Skips the generic "Enchanted Book" name in favor of the actual upgrade — EnchantmentStorageMeta is the
+     *  specific ItemMeta subtype enchanted books use (stored enchants, not regular getEnchants()). Multiple
+     *  stored enchantments (not normally offered by a single librarian trade, but possible in principle) are
+     *  joined so nothing is silently dropped. */
+    private String resultName(ItemStack result){
+        if(result.getType()==Material.ENCHANTED_BOOK&&result.getItemMeta() instanceof EnchantmentStorageMeta meta&&meta.hasStoredEnchants()){
+            return meta.getStoredEnchants().entrySet().stream()
+                    .map(entry->CoreUtil.pretty(entry.getKey().getKey().getKey())+" "+roman(entry.getValue()))
+                    .collect(Collectors.joining(", "));
+        }
+        return CoreUtil.pretty(result.getType().name());
+    }
+    private static final String[] ROMAN={"","I","II","III","IV","V","VI","VII","VIII","IX","X"};
+    private String roman(int level){return level>=0&&level<ROMAN.length?ROMAN[level]:Integer.toString(level);}
 
     private void captureNow(Player player,Villager villager,EquipmentSlot hand,ItemStack held,String kind){
         try{

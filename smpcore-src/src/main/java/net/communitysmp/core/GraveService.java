@@ -62,11 +62,48 @@ final class GraveService implements Listener {
         double y=Math.min(Math.max(location.getY(),world.getMinHeight()),world.getMaxHeight()-1);
         return new Location(world,location.getX(),y,location.getZ(),location.getYaw(),location.getPitch());
     }
+    private static final int GRAVE_SEARCH_RADIUS=8;
+    /** A marker armor stand needs 2 clear vertical blocks like any entity — liquids (water, lava) don't
+     *  block that (no collision hitbox, matching isPassable()'s existing use for exactly this purpose
+     *  elsewhere in the codebase, e.g. villager capsule placement), only solid terrain does. */
+    private boolean isValidGraveSpot(Location location){
+        World world=location.getWorld();
+        if(location.getY()<world.getMinHeight()||location.getY()>=world.getMaxHeight()-1)return false;
+        return location.getBlock().isPassable()&&location.clone().add(0,1,0).getBlock().isPassable();
+    }
+    /** Death locations can land inside solid terrain (suffocation in a wall, a low ceiling, dense stone) or
+     *  below the world entirely (void deaths — see clampToWorld). Rather than only clamping Y, this searches
+     *  outward for the nearest 2-block-clear spot, capped at GRAVE_SEARCH_RADIUS so a grave never ends up far
+     *  from where the player actually died. If nothing within that radius works (fully enclosed in stone with
+     *  no nearby opening), a straight-up scan from the same X/Z is a guaranteed fallback — normal terrain
+     *  generation always has open sky eventually. Items are never at risk either way: the DB row already
+     *  exists before this runs, and spawnMarker()'s existing retry loop keeps trying if even that fails. */
+    private Location findSafeGraveLocation(Location death){
+        Location clamped=clampToWorld(death);
+        if(isValidGraveSpot(clamped))return clamped;
+        World world=clamped.getWorld();
+        int cx=clamped.getBlockX(),cy=clamped.getBlockY(),cz=clamped.getBlockZ();
+        int minY=world.getMinHeight(),maxY=world.getMaxHeight()-2;
+        Location best=null;double bestDistSq=Double.MAX_VALUE;
+        for(int dx=-GRAVE_SEARCH_RADIUS;dx<=GRAVE_SEARCH_RADIUS;dx++)for(int dy=-GRAVE_SEARCH_RADIUS;dy<=GRAVE_SEARCH_RADIUS;dy++)for(int dz=-GRAVE_SEARCH_RADIUS;dz<=GRAVE_SEARCH_RADIUS;dz++){
+            int y=cy+dy;if(y<minY||y>maxY)continue;
+            double distSq=(double)dx*dx+(double)dy*dy+(double)dz*dz;
+            if(distSq>GRAVE_SEARCH_RADIUS*GRAVE_SEARCH_RADIUS||distSq>=bestDistSq)continue;
+            Location candidate=new Location(world,cx+dx+.5,y,cz+dz+.5,clamped.getYaw(),clamped.getPitch());
+            if(isValidGraveSpot(candidate)){best=candidate;bestDistSq=distSq;}
+        }
+        if(best!=null)return best;
+        for(int y=Math.max(minY,cy);y<=maxY;y++){
+            Location candidate=new Location(world,cx+.5,y,cz+.5,clamped.getYaw(),clamped.getPitch());
+            if(isValidGraveSpot(candidate))return candidate;
+        }
+        return clamped;
+    }
 
     boolean create(Player owner,List<ItemStack> drops,Location location){
         List<ItemStack> items=drops.stream().filter(Objects::nonNull).filter(item->!item.getType().isAir()&&item.getAmount()>0&&!isCompass(item)).map(ItemStack::clone).toList();
         drops.removeIf(this::isCompass);if(items.isEmpty())return false;
-        location=clampToWorld(location);
+        location=findSafeGraveLocation(location);
         ProfileProperty textures=owner.getPlayerProfile().getProperties().stream().filter(property->property.getName().equals("textures")).findFirst().orElse(null);
         long hours=Math.max(1,plugin.getConfig().getLong("graves.lifetime-hours",48)),id=db.createGrave(
                 CoreUtil.id(owner),owner.getUniqueId().toString(),owner.getName(),plugin.nicknames().displayName(owner),
@@ -248,7 +285,7 @@ final class GraveService implements Listener {
     }
     private void spawnMarker(Database.GraveRow grave){
         if(grave==null)return;Location location=resolveLocation(grave);if(location==null)return;
-        Location safe=clampToWorld(location);if(safe.getY()!=location.getY()){db.updateGraveLocation(grave.id(),safe);location=safe;}
+        Location safe=findSafeGraveLocation(location);if(!safe.equals(location)){db.updateGraveLocation(grave.id(),safe);location=safe;}
         try{
             ArmorStand stand=location.getWorld().spawn(location.clone().add(0,.1,0),ArmorStand.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,armor->{armor.setInvisible(true);armor.setSmall(true);armor.setGravity(false);armor.setBasePlate(false);armor.setArms(false);armor.setPersistent(true);armor.setCustomNameVisible(true);armor.customName(Component.text(publicName(grave)+"'s Grave",NamedTextColor.GRAY));armor.getPersistentDataContainer().set(graveKey,PersistentDataType.LONG,grave.id());armor.getEquipment().setHelmet(head(grave));});
             if(stand.isValid())db.updateGraveMarker(grave.id(),stand.getUniqueId().toString());
