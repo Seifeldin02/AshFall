@@ -164,11 +164,10 @@ final class ShardService implements Listener {
     }
 
     void rewardElite(Player player,String tier){
-        /** All three world bosses award the same amount — Ashen Knight was still on the legacy pre-multi-boss
-         *  "worldboss" value (25) while Iron Golem and Piglin Brute were added later at 50, with every other
-         *  per-kind reward parameter (money, aggro, timers) already kept symmetric across all three. 50 is the
-         *  intended value; Ashen Knight was the stale outlier. */
-        int amount=switch(tier.toLowerCase(Locale.ROOT)){case"epic"->2;case"legendary"->10;case"worldboss","worldboss_ashen","worldboss_iron","worldboss_piglin"->50;default->0;};
+        /** No boss reward exceeds 10 Shards — world bosses were previously the outlier at 50, well above
+         *  every other tier (legendary tops out at 10, dragon/wither also cap at 10). Cooldowns and anti-farm
+         *  gating are untouched by this — they live on the boss spawn/kill side (BossEventService), not here. */
+        int amount=switch(tier.toLowerCase(Locale.ROOT)){case"epic"->2;case"legendary"->10;case"worldboss","worldboss_ashen","worldboss_iron","worldboss_piglin"->10;default->0;};
         if("rare".equalsIgnoreCase(tier)){if(Math.random()>=config.getDouble("earning.rare-chance",.12))return;amount=1;}
         if(amount>0)award(player,amount,"ELITE_"+tier.toUpperCase(Locale.ROOT),0);
     }

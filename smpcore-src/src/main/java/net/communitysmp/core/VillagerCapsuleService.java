@@ -59,25 +59,23 @@ final class VillagerCapsuleService {
      *  fake two-tier hover, the trade list is always appended below the basic info — the only way "viewable
      *  without holding, no clicks, no GUI" (auctions, trade previews, anywhere a tooltip renders) is actually
      *  achievable, and it keeps the same "basic summary, then full trade detail" structure the user wanted. */
-    /** MerchantRecipe.getAdjustedIngredient1() is the game's own live-computed price for the first ingredient
-     *  — it already bakes in the villager's current demand AND any reputation-driven special_price discount,
-     *  so reading it right here at capture time (while the villager is still real) captures the true current
-     *  price, not the base/undiscounted one. This is provably exact, not an approximation: the discount is a
-     *  property stored ON the recipe itself (getSpecialPrice()/getDemand()), which EntitySnapshot captures in
-     *  full — the exact same recipe state gets restored on release, so the frozen price shown here is exactly
-     *  what the restored villager will actually charge. There's no "current reputation" to go stale, because
-     *  the entity stops existing the moment it's captured — the discount was locked in at that instant either
-     *  way. The second ingredient, when present, is never demand/reputation-adjusted in vanilla, so it's
-     *  shown as-is. getIngredients().get(0) is the base (pre-discount) price, shown alongside when it differs.
-     */
+    /** Corrected after live confirmation the previous claim was wrong (getAdjustedIngredient1() does NOT
+     *  reliably reflect a reputation discount at capture time): vanilla only computes/resets a recipe's
+     *  specialPrice when a player's OWN trade screen actually opens (Merchant#getOffers() resets and
+     *  re-derives it per-viewer from that specific player's reputation at that moment) — it is not a stable
+     *  property sitting on the recipe waiting to be read. Capturing a villager with a capsule goes through
+     *  this plugin's own confirmation flow (capture() above) and never opens the vanilla trade screen, so
+     *  getAdjustedIngredient1() at capture time reflects whatever was last computed for some unrelated (or no)
+     *  prior viewer — not "the current discount for whoever is capturing it." And even if a live discount
+     *  could be captured, showing it to anyone other than the player it was computed for (auction browsers,
+     *  a buyer who receives the capsule) would misrepresent their own actual price, since real discounts are
+     *  per-player reputation, not a property of the villager. So only the base (undiscounted, viewer-agnostic)
+     *  price is ever shown here — getIngredients(), not the adjusted variant. */
     private List<Component> tradeLoreLines(Villager villager){
-        List<Component> lines=new ArrayList<>();lines.add(Component.text("Trades (current prices):",NamedTextColor.GOLD));
+        List<Component> lines=new ArrayList<>();lines.add(Component.text("Trades (base prices):",NamedTextColor.GOLD));
         for(MerchantRecipe recipe:villager.getRecipes()){
             List<ItemStack> base=recipe.getIngredients();
-            ItemStack adjusted=recipe.getAdjustedIngredient1();
-            String first=adjusted.getAmount()+" "+CoreUtil.pretty(adjusted.getType().name());
-            if(!base.isEmpty()&&base.get(0).getAmount()!=adjusted.getAmount())first+=" (was "+base.get(0).getAmount()+")";
-            String cost=first;
+            String cost=base.isEmpty()?"":base.get(0).getAmount()+" "+CoreUtil.pretty(base.get(0).getType().name());
             if(base.size()>1&&base.get(1)!=null&&!base.get(1).getType().isAir())cost+=" + "+base.get(1).getAmount()+" "+CoreUtil.pretty(base.get(1).getType().name());
             ItemStack result=recipe.getResult();String sold=result.getAmount()+" "+resultName(result);
             lines.add(Component.text("  "+cost+" → "+sold,NamedTextColor.GRAY));
