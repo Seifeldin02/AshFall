@@ -110,6 +110,31 @@ final class EnderChestService implements Listener {
         if(holder instanceof Page1Holder ph)return ph.target().equals(CoreUtil.id(player));
         return inventory.getType()==org.bukkit.event.inventory.InventoryType.ENDER_CHEST&&holder instanceof Player owner&&owner.equals(player);
     }
+    /** True exactly when `viewer` is an authorized admin looking at SOMEONE ELSE's Ender Storage page via
+     *  /enderchest inspect (Page1Holder/ChunkHolder whose target isn't the viewer) — the same "who's allowed
+     *  to move bound items here" question ShardService.inventory() already asks for OpenInv's /inv
+     *  (topType==PLAYER, a type check) and for the owner's own storage (isPersonalStorage(), an ownership
+     *  check). A non-admin can never reach this state at all — command() gates /enderchest inspect on
+     *  isAdmin() before openForAdmin() ever runs — so "admin AND target != viewer" is equivalent to "this is
+     *  an active, authorized inspection session", not a general bypass. ShardService.inventory() uses this to
+     *  decide whether to run its own inspectionTransfer() (rebind + audit-log) instead of the normal
+     *  bound-item restriction. */
+    boolean isAdminInspecting(Inventory inventory,Player viewer){
+        if(inventory==null||!plugin.isAdmin(viewer))return false;
+        InventoryHolder holder=inventory.getHolder(false);
+        if(holder instanceof ChunkHolder ch)return !ch.player().equals(CoreUtil.id(viewer));
+        if(holder instanceof Page1Holder ph)return !ph.target().equals(CoreUtil.id(viewer));
+        return false;
+    }
+    /** The player ID this Ender Storage page belongs to (Page1Holder's target or ChunkHolder's player), or
+     *  null if this inventory isn't one — lets ShardService know who a bound-item insert during /ec inspect
+     *  should be rebound to, without needing to know about ChunkHolder/Page1Holder itself. */
+    String targetOf(Inventory inventory){
+        InventoryHolder holder=inventory.getHolder(false);
+        if(holder instanceof ChunkHolder ch)return ch.player();
+        if(holder instanceof Page1Holder ph)return ph.target();
+        return null;
+    }
     /** Any Ender Storage page — this player's own or (via admin inspect) someone else's, and either the
      *  paged SMPCore GUI or the raw vanilla fallback. Ownership-agnostic on purpose: used to block a whole
      *  category of item (relics) from Ender Storage entirely, not to check who it belongs to. */
@@ -146,20 +171,6 @@ final class EnderChestService implements Listener {
     void openFromBlock(Player player){open(player);}
     ItemStack[] allContents(Player player){return loadAll(player,capacity(player));}
 
-    /** Nothing in the normal click path ever blocked a non-owner (i.e. an admin already let in by the
-     *  isAdmin() gate above) from moving another player's account-bound items in or out of an inspection GUI
-     *  — that absence of a block IS the bypass the admin is meant to have. What was actually missing is the
-     *  audit trail: this logs the instant a bound item belonging to someone else is taken from or placed into
-     *  the slot the admin just clicked, so the bypass stays traceable without needing a separate permission
-     *  system just for Ender Storage. isInsertSlot distinguishes "clicked a real storage slot" (both take and
-     *  insert are possible there) from nav/other slots (only a take, off the cursor, would ever matter). */
-    private void auditBoundItemAccess(Player viewer,String targetId,ItemStack current,ItemStack cursor,boolean isStorageSlot){
-        if(plugin.shards()==null)return;
-        if(plugin.shards().bound(current)&&!plugin.shards().belongsTo(viewer,current))
-            db.logAudit(viewer.getName(),"ENDERCHEST_BOUND_ITEM_TAKE","target="+targetId+" item="+current.getType());
-        if(isStorageSlot&&plugin.shards().bound(cursor)&&!plugin.shards().belongsTo(viewer,cursor))
-            db.logAudit(viewer.getName(),"ENDERCHEST_BOUND_ITEM_INSERT","target="+targetId+" item="+cursor.getType());
-    }
     private IOpenInv openInvApi(){org.bukkit.plugin.Plugin p=plugin.getServer().getPluginManager().getPlugin("OpenInv");return p instanceof IOpenInv api?api:null;}
     /** Resolves a target for mirroring purposes — a genuinely online Player first, otherwise whatever OpenInv
      *  proxy is currently held for them (re-loading on demand if a prior session's proxy was already released,
@@ -368,7 +379,6 @@ final class EnderChestService implements Listener {
         if(event.getView().getTopInventory().getHolder(false) instanceof Page1Holder holder){
             boolean owner=holder.target().equals(CoreUtil.id(viewer));
             if(!owner&&!plugin.isAdmin(viewer))return;
-            if(!owner)auditBoundItemAccess(viewer,holder.target(),event.getCurrentItem(),event.getCursor(),event.getRawSlot()<PAGE1_NAV);
             int slot=event.getRawSlot();
             Player target=resolveTarget(holder.target());
             if(target==null)return;
@@ -397,7 +407,6 @@ final class EnderChestService implements Listener {
             int slot=event.getRawSlot();
             if(slot<0||slot>=UPGRADE_PAGE_SIZE){return;}
             boolean owner=holder.player().equals(CoreUtil.id(viewer));
-            if(!owner)auditBoundItemAccess(viewer,holder.player(),event.getCurrentItem(),event.getCursor(),slot<UPGRADE_CHUNK);
             if(slot<UPGRADE_CHUNK)return;
             event.setCancelled(true);
             int realTotal=chunks(holder.player());

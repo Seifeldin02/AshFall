@@ -229,12 +229,52 @@ final class ShardService implements Listener {
             if(bound(cursor)&&!belongsTo(player,cursor)){transferBinding(cursor,player);event.setCursor(cursor);}
             return;
         }
-        org.bukkit.event.inventory.InventoryType topType=event.getView().getTopInventory().getType();
-        if(topType==org.bukkit.event.inventory.InventoryType.PLAYER||topType==org.bukkit.event.inventory.InventoryType.ANVIL||plugin.enderChests().isPersonalStorage(event.getView().getTopInventory(),player))return;
+        Inventory topInv=event.getView().getTopInventory();
+        org.bukkit.event.inventory.InventoryType topType=topInv.getType();
+        if(topType==org.bukkit.event.inventory.InventoryType.ANVIL||plugin.enderChests().isPersonalStorage(topInv,player))return;
+        if(topType==org.bukkit.event.inventory.InventoryType.PLAYER){
+            if(topInv.getHolder(false) instanceof Player target&&!target.equals(player))inspectionTransfer(player,CoreUtil.id(target),target.getName(),"INV",event);
+            return;
+        }
+        if(plugin.enderChests().isAdminInspecting(topInv,player)){
+            String targetId=plugin.enderChests().targetOf(topInv);
+            Database.PlayerRow row=targetId==null?null:db.player(targetId);
+            if(targetId!=null&&row!=null)inspectionTransfer(player,targetId,row.name(),"ENDERCHEST",event);
+            return;
+        }
         ItemStack current=event.getCurrentItem(),cursor=event.getCursor();
         if(bound(current)&&!belongsTo(player,current)||bound(cursor)&&!belongsTo(player,cursor)){event.setCancelled(true);CoreUtil.error(player,"That Shard reward belongs to another player.");return;}
         boolean movingBound=bound(cursor)&&event.getRawSlot()<event.getView().getTopInventory().getSize()||event.isShiftClick()&&event.getRawSlot()>=event.getView().getTopInventory().getSize()&&bound(current);
         if(movingBound){event.setCancelled(true);CoreUtil.error(player,"Shard rewards cannot be transferred into shared storage.");}
+    }
+    /** Admin-inspection ownership transfer for /inv (OpenInv) and /enderchest inspect: a bound item taken OUT
+     *  of someone else's storage during an authorized inspection immediately rebinds to the admin who took
+     *  it; one placed IN rebinds to whoever's storage it landed in — so it behaves like its new holder's own
+     *  item everywhere afterward (equip, drop, future inspection) instead of staying locked to whoever
+     *  originally earned it. Only ever called from the two branches in inventory() already gated on either
+     *  OpenInv's own permission system (topType==PLAYER) or isAdminInspecting()'s isAdmin() check — never a
+     *  general bypass. topInventory-vs-bottomInventory is exactly what distinguishes "this click actually
+     *  touches the target's storage" from "the admin is just rearranging their own inventory while the
+     *  window happens to be open" — shift-click never touches the cursor, so only `current` matters there. */
+    private void inspectionTransfer(Player admin,String targetId,String targetName,String surface,InventoryClickEvent event){
+        ItemStack current=event.getCurrentItem(),cursor=event.getCursor();
+        int topSize=event.getView().getTopInventory().getSize(),slot=event.getRawSlot();
+        boolean clickedTop=slot>=0&&slot<topSize,adminChanged=false;
+        String adminId=CoreUtil.id(admin);
+        if(event.isShiftClick()){
+            if(bound(current)&&rebind(current,clickedTop?adminId:targetId,admin,surface,targetName))adminChanged=true;
+        }else if(clickedTop){
+            if(bound(current)&&rebind(current,adminId,admin,surface,targetName))adminChanged=true;
+            if(bound(cursor)&&rebind(cursor,targetId,admin,surface,targetName))event.setCursor(cursor);
+        }
+        if(adminChanged)event.setCurrentItem(current);
+    }
+    private boolean rebind(ItemStack item,String newOwnerId,Player admin,String surface,String targetName){
+        String oldOwnerId=item.getItemMeta().getPersistentDataContainer().get(boundKey,PersistentDataType.STRING);
+        if(newOwnerId.equals(oldOwnerId))return false;
+        ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(boundKey,PersistentDataType.STRING,newOwnerId);item.setItemMeta(meta);
+        db.logAudit(admin.getName(),"BOUND_ITEM_TRANSFER","from="+oldOwnerId+" to="+newOwnerId+" item="+item.getType()+" via="+surface+" target="+targetName);
+        return true;
     }
 
     void openCosmetics(Player player){
