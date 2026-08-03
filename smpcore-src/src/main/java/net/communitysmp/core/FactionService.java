@@ -197,6 +197,7 @@ final class FactionService {
         Database.FactionRow f=db.factionOf(CoreUtil.id(sender));
         if(f==null){chatMode.remove(sender.getUniqueId());CoreUtil.error(sender,"You are no longer in a faction — faction chat mode disabled.");return;}
         broadcast(f,"§b[F] "+plugin.nicknames().displayName(sender)+"§7: §f"+message);
+        db.logChat("FACTION",CoreUtil.id(sender),sender.getName(),Long.toString(f.id()),f.name(),message);
     }
     private boolean borderEnabled(Player player){return Boolean.parseBoolean(Objects.requireNonNullElse(db.preference(CoreUtil.id(player),"faction_borders"),"false"));}
     private void renderEnabledBorders(){for(Player player:plugin.getServer().getOnlinePlayers()){if(!borderEnabled(player))continue;Database.FactionRow faction=db.factionOf(CoreUtil.id(player));Claim claim=faction==null?null:claimOf(faction);if(claim!=null)renderBorder(player,claim);}}

@@ -50,6 +50,7 @@ final class MessagingService {
         if(plugin.afk().isAfk(target))sender.sendMessage(Component.text(plugin.nicknames().displayName(target)+" is currently AFK and may not see this right away.",NamedTextColor.GRAY));
         sender.sendMessage(Component.text("You → "+plugin.nicknames().displayName(target)+": ",NamedTextColor.GRAY).append(Component.text(clean,NamedTextColor.WHITE)));
         target.sendMessage(Component.text(plugin.nicknames().displayName(sender)+" → You: ",NamedTextColor.GRAY).append(Component.text(clean,NamedTextColor.WHITE)));
+        plugin.db().logChat("DM",CoreUtil.id(sender),sender.getName(),CoreUtil.id(target),target.getName(),clean);
         replies.put(sender.getUniqueId(),target.getUniqueId());replies.put(target.getUniqueId(),sender.getUniqueId());
     }
 

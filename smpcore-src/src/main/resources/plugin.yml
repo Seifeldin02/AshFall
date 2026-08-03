@@ -71,6 +71,8 @@ commands:
     aliases: [leaderboard, top]
   guide:
     description: Receive the server handbook
+  rules:
+    description: Read the Ashfall server rules
   smphelp:
     description: Show the concise server help
     aliases: [serverhelp]

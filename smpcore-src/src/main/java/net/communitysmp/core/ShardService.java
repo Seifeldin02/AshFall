@@ -247,7 +247,7 @@ final class ShardService implements Listener {
         long now=System.currentTimeMillis();
         for(Player player:plugin.getServer().getOnlinePlayers()){
             long haste=parseLong(db.state("shard_haste:"+CoreUtil.id(player)));if(haste>now&&!player.hasPotionEffect(PotionEffectType.HASTE))player.addPotionEffect(new PotionEffect(PotionEffectType.HASTE,240,1,false,false,false));
-            String cosmetic=db.activeCosmetic(CoreUtil.id(player));if(cosmetic==null)continue;Location loc=player.getLocation().add(0,.1,0);
+            String cosmetic=db.activeCosmetic(CoreUtil.id(player));if(cosmetic==null||plugin.adminTools().isHiddenFromPublic(player))continue;Location loc=player.getLocation().add(0,.1,0);
             switch(cosmetic){
                 case"ashen_halo"->cosmeticParticle(player,Particle.SOUL_FIRE_FLAME,player.getEyeLocation().add(0,.45,0),4,.35,.08,.35,.01);
                 case"emberstep"->cosmeticParticle(player,Particle.FLAME,loc,4,.25,.05,.25,.01);

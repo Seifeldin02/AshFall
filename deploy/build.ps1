@@ -33,6 +33,7 @@ $thirdPartyJars = @(
     @{ Rel = 'plugins\grimac-bukkit-2.3.74-85dd3d9.jar';             Src = 'plugins\grimac-bukkit-2.3.74-85dd3d9.jar' }
     @{ Rel = 'plugins\Geyser-Spigot.jar';                            Src = 'plugins\Geyser-Spigot.jar' }
     @{ Rel = 'plugins\ReplayCore-1.5.0.jar';                         Src = 'plugins\ReplayCore-1.5.0.jar' }
+    @{ Rel = 'plugins\OpenInv.jar';                                  Src = 'plugins\OpenInv.jar' }
     @{ Rel = 'staging\tab-elites-20260723\TAB.v6.1.0.jar';           Src = 'staging\tab-elites-20260723\TAB.v6.1.0.jar' }
 )
 

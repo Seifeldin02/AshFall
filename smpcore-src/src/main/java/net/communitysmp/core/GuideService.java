@@ -22,6 +22,58 @@ final class GuideService implements Listener {
 
     GuideService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();}
 
+    /** Single canonical source for the rules, in both languages — /rules and the guidebook's rules pages both
+     *  render from exactly this, so the two can never say something different. Cheat names are examples only
+     *  ("...and similar unfair tools"), never presented as an exhaustive list. */
+    private static List<String> prohibited(boolean arabic){return arabic?List.of(
+            "أي شكل من أشكال الغش: X-ray، الطيران، تسريع الحركة/المدى، NoFall، Bunny Hop، Kill Aura، المساعدة على التصويب، النقر الآلي، freecam، وأدوات غير عادلة مشابهة",
+            "الألفاظ البذيئة أو السباب",
+            "الخيانة الداخلية (Insiding) — حظر فوري",
+            "الغزو عبر الأخطاء البرمجية أو خدعة إندر بيرل (Ender Pearl glitching)",
+            "أدوات/إضافات البناء الآلي (Printer)",
+            "الحسابات البديلة للتهرب من الحظر أو مضاعفة الإحصائيات/الموارد",
+            "جدران التجدد (Regen walls)",
+            "رادار اللاعبين أو رادار الكهوف في الخريطة المصغرة"
+    ):List.of(
+            "Any form of cheating: X-ray, flight, speed/reach hacks, NoFall, Bunny Hop, Kill Aura, Aim Assist, auto-clickers, freecam, and similar unfair tools",
+            "Profanity or swearing",
+            "Insiding — instant ban",
+            "Glitch raiding or Ender Pearl glitching",
+            "Printer / automatic-building mods",
+            "Alt accounts used for ban evasion or stat/resource boosting",
+            "Regen walls",
+            "Minimap player radar or cave radar"
+    );}
+    private static List<String> allowed(boolean arabic){return arabic?List.of(
+            "الخداع والرشاوى",
+            "الغزو الطبيعي، الفخاخ، والتخريب",
+            "الخيانة خارج نطاق Insiding — نقض التحالفات أو الهدنات مسموح",
+            "استعراض المخططات (مثل Litematica) طالما ميزات البناء الآلي معطّلة",
+            "إضافات تحسين الأداء",
+            "استخدام الخريطة المصغرة مع تعطيل رادار اللاعبين ورادار الكهوف"
+    ):List.of(
+            "Deception and bribes",
+            "Normal raiding, traps, and griefing",
+            "Betrayal outside of insiding — breaking alliances or truces is allowed",
+            "Schematic/blueprint viewing (e.g. Litematica), provided automatic printer/building features are disabled",
+            "Performance mods",
+            "Minimap use with player radar and cave radar disabled"
+    );}
+    private static String distinction(boolean arabic){return arabic?
+            "الفرق: الخيانة المسموحة = نقض الاتفاقات أو التحالفات أو خداع الأعداء. الخيانة الداخلية الممنوعة (Insiding) = استغلال عضويتك أو ثقة فصيلك لسرقته أو تدميره من الداخل."
+            :"The distinction: allowed betrayal = breaking deals, alliances, or deceiving enemies. Banned insiding = abusing faction membership/trust to steal from or destroy your OWN faction from within.";}
+
+    boolean rulesCommand(Player player,String[] args){
+        boolean arabic=args.length>0&&(args[0].equalsIgnoreCase("arabic")||args[0].equalsIgnoreCase("ar")||args[0].equals("العربية"));
+        player.sendMessage(Component.text(arabic?"— قوانين أشفال —":"— ASHFALL RULES —",NamedTextColor.GOLD));
+        player.sendMessage(Component.text(arabic?"ممنوع:":"PROHIBITED:",NamedTextColor.RED));
+        for(String line:prohibited(arabic))player.sendMessage(Component.text("• "+line,NamedTextColor.GRAY));
+        player.sendMessage(Component.text(arabic?"مسموح:":"ALLOWED:",NamedTextColor.GREEN));
+        for(String line:allowed(arabic))player.sendMessage(Component.text("• "+line,NamedTextColor.GRAY));
+        player.sendMessage(Component.text(distinction(arabic),NamedTextColor.DARK_GRAY));
+        return true;
+    }
+
     boolean command(Player player,String[] args){
         if(args.length==0){open(player);return true;}
         String language=args[0].toLowerCase(Locale.ROOT);
@@ -70,7 +122,11 @@ final class GuideService implements Listener {
             new Page("EVENTS & DRAGON","/events shows the active objective, direction and reward. Tracking can be toggled.\n\nThe weekly Ender Dragon is Friday at 4:00 PM server time. Meaningful participants share progression and rewards."),
             new Page("ELITES & BOSSES","Uncommon, Rare, Epic and Legendary enemies glow and show health bars.\n\nBoss and high-tier rewards use meaningful damage participation, not only the final hit."),
             new Page("DEATH & STORAGE","Deaths with items create separate 48-hour graves. Use /graves to select one or stop tracking.\n\n/enderchest is private. Faction storage blocks outsiders unless bilateral alliance storage is active."),
-            new Page("HELP & FEEDBACK","/progress shows Adventure goals.\n/stats [player]\n/history and /f history\n/sidebar toggles the HUD.\n\nUse /feedback <message> to report bugs or suggest additions. /guide changes language.")
+            new Page("WORLD RELICS","Relics are rare, powerful artifacts found out in the world. Whoever picks one up becomes its ACTIVE owner — only one player can hold a given relic at a time.\n\n/relics shows every relic's chronicle and status. /relics trace <key> helps locate one you own.\n\nIf a relic's owner goes missing (no trace in inventory, Ender Storage, faction claim, graves or the loaded world) it's marked LOST. After a cooldown it becomes ELIGIBLE and can resurface somewhere in Ashfall for the next player to find — nothing is ever deleted, it just re-enters circulation."),
+            new Page("RAIDING & CAPSULES","Villager Capsules can capture — and steal — any normal villager, even from inside another faction's protected claim. Server merchants and spawn-protected NPCs can't be captured. Hover a capsule to see the villager's trades and current prices.\n\nObsidian inside a protected faction claim quietly resists raiding: it takes several qualifying explosion hits before it actually breaks, and un-hit obsidian slowly recovers over time. Outside claims, obsidian is ordinary vanilla obsidian."),
+            new Page("RULES — PROHIBITED","PROHIBITED:\n"+String.join("\n",prohibited(false).stream().map(line->"• "+line).toList())+"\n\nFull rules any time: /rules"),
+            new Page("RULES — ALLOWED","ALLOWED:\n"+String.join("\n",allowed(false).stream().map(line->"• "+line).toList())+"\n\n"+distinction(false)),
+            new Page("HELP & FEEDBACK","/progress shows Adventure goals.\n/stats [player]\n/history and /f history\n/sidebar toggles the HUD.\n\nUse /feedback <message> to report bugs or suggest additions. /guide changes language.\n\nRead the full server rules any time with /rules.")
     );}
 
     private List<Page> arabicPages(){return List.of(
@@ -86,7 +142,11 @@ final class GuideService implements Listener {
             new Page("الفعاليات والتنين","يعرض /events الهدف النشط والاتجاه والجائزة، ويمكن إيقاف التتبع.\n\nيظهر تنين الإند الأسبوعي يوم الجمعة 4:00 مساءً بتوقيت الخادم. يتشارك المشاركون الحقيقيون التقدم والمكافآت."),
             new Page("النخب والزعماء","الأعداء غير المألوفين والنادرين والملحميين والأسطوريين متوهجون ولهم شريط حياة.\n\nتعتمد مكافآت الزعماء والنخب القوية على المشاركة والضرر الحقيقيين لا على الضربة الأخيرة فقط."),
             new Page("الموت والتخزين","ينشئ كل موت بالأغراض قبراً مستقلاً لمدة 48 ساعة. استخدم /graves لاختيار قبر أو إيقاف تتبعه.\n\n/enderchest خاص. تخزين الفصيل محمي إلا عند تفعيل التخزين المشترك بموافقة القائدين."),
-            new Page("المساعدة والملاحظات","يعرض /progress أهداف المغامرة.\n/stats [player]\n/history و /f history\n/sidebar لتبديل الواجهة.\n\nاستخدم /feedback <message> للإبلاغ عن خلل أو اقتراح إضافة. يغيّر /guide اللغة.")
+            new Page("آثار العالم","الآثار قطع نادرة وقوية تُوجد في العالم. من يلتقطها يصبح مالكها النشط (ACTIVE) — لا يملك الأثر الواحد سوى لاعب واحد في كل مرة.\n\nيعرض /relics سجل كل أثر وحالته، ويساعد /relics trace <key> في تحديد موقع أثر تملكه.\n\nإذا فُقد أثر مالكه (لم يُعثر عليه في الحقيبة أو التخزين أو أرض الفصيل أو القبور أو العالم المحمّل) يُعلَّم كـ«مفقود». وبعد فترة يصبح «متاحاً» ويظهر من جديد في مكان ما بأشفال ليجده لاعب آخر — لا يُحذف الأثر أبداً، بل يعود إلى التداول فقط."),
+            new Page("الغزو وكبسولات القرويين","يمكن لكبسولة القروي أسر — بل وسرقة — أي قروي عادي، حتى داخل أرض فصيل آخر محمية. لا يمكن أسر تجار الخادم أو الكائنات المحمية في منطقة الولادة. مرّر المؤشر فوق الكبسولة لرؤية مقايضات القروي وأسعارها الحالية.\n\nحجر السحر (obsidian) داخل أرض فصيل محمية يقاوم الغزو بصمت: يحتاج عدة انفجارات مؤهلة قبل أن ينكسر فعلياً، ويستعيد متانته تدريجياً إن لم يُصَب لفترة. خارج أراضي الفصائل يبقى حجر السحر عادياً كما في اللعبة الأصلية."),
+            new Page("القوانين — الممنوع","ممنوع:\n"+String.join("\n",prohibited(true).stream().map(line->"• "+line).toList())+"\n\nالقوانين كاملة في أي وقت: /rules"),
+            new Page("القوانين — المسموح","مسموح:\n"+String.join("\n",allowed(true).stream().map(line->"• "+line).toList())+"\n\n"+distinction(true)),
+            new Page("المساعدة والملاحظات","يعرض /progress أهداف المغامرة.\n/stats [player]\n/history و /f history\n/sidebar لتبديل الواجهة.\n\nاستخدم /feedback <message> للإبلاغ عن خلل أو اقتراح إضافة. يغيّر /guide اللغة.\n\nيمكنك قراءة قوانين الخادم كاملة في أي وقت عبر /rules.")
     );}
 
     private Component page(String title,String body){return Component.text(title+"\n\n",NamedTextColor.GOLD).append(Component.text(body,NamedTextColor.DARK_GRAY));}

@@ -1,6 +1,8 @@
 package net.communitysmp.core;
 
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.inventory.ItemStack;
 
 import java.io.File;
@@ -14,6 +16,7 @@ final class Database implements AutoCloseable {
                       String world, int coreX, int coreZ) {}
     record FactionMemberRow(String player,String playerName,long factionId,String role,long joinedAt) {}
     record HomeRow(String name, Location location) {}
+    record ChatLogRow(long id,String kind,String sender,String senderName,String recipient,String recipientName,String message,long createdAt) {}
     record AuctionRow(long id, String seller, String sellerName, ItemStack item, double price, long listed,
                       long expires, String status, String buyer,double listingFee) {}
     record BountyRow(String target, String targetName, double amount) {}
@@ -92,6 +95,12 @@ final class Database implements AutoCloseable {
             s.execute("CREATE INDEX IF NOT EXISTS feedback_status_created ON feedback(status,created_at)");
             s.execute("CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, faction_id INTEGER, kind TEXT NOT NULL, message TEXT NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS history_scope_created ON history(scope,faction_id,created_at DESC)");
+            /** Admin-only investigation log — public/faction/DM chat, moderation-facing only (see
+             *  MessagingService/GameplayListener/FactionService for the write sites). Nothing existed here
+             *  before this table: history only ever goes as far back as the table has been live. */
+            s.execute("CREATE TABLE IF NOT EXISTS chat_log (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, sender TEXT NOT NULL, sender_name TEXT NOT NULL, recipient TEXT, recipient_name TEXT, message TEXT NOT NULL, created_at INTEGER NOT NULL)");
+            s.execute("CREATE INDEX IF NOT EXISTS chat_log_sender ON chat_log(sender,created_at DESC)");
+            s.execute("CREATE INDEX IF NOT EXISTS chat_log_recipient ON chat_log(recipient,created_at DESC)");
             s.execute("CREATE TABLE IF NOT EXISTS faction_stats (faction_id INTEGER PRIMARY KEY REFERENCES factions(id) ON DELETE CASCADE, event_wins INTEGER NOT NULL DEFAULT 0, boss_kills INTEGER NOT NULL DEFAULT 0, miniboss_kills INTEGER NOT NULL DEFAULT 0, relics INTEGER NOT NULL DEFAULT 0, bounties_claimed INTEGER NOT NULL DEFAULT 0, milestones INTEGER NOT NULL DEFAULT 0)");
             s.execute("CREATE TABLE IF NOT EXISTS daily_sales (player TEXT NOT NULL, item TEXT NOT NULL, day TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 0, earned REAL NOT NULL DEFAULT 0, PRIMARY KEY(player,item,day))");
             s.execute("CREATE TABLE IF NOT EXISTS boss_state (entity_id TEXT PRIMARY KEY, world TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, spawned_at INTEGER NOT NULL, hint_stage INTEGER NOT NULL DEFAULT 0, next_hint_at INTEGER NOT NULL, reward_state TEXT NOT NULL DEFAULT 'ACTIVE')");
@@ -146,6 +155,10 @@ final class Database implements AutoCloseable {
         ensureColumn("players","last_seen","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("players","event_participations","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("players","ender_pages","INTEGER NOT NULL DEFAULT 1");
+        ensureColumn("players","last_world","TEXT");
+        ensureColumn("players","last_x","REAL");
+        ensureColumn("players","last_y","REAL");
+        ensureColumn("players","last_z","REAL");
         ensureColumn("factions","tag","TEXT");
         ensureColumn("factions","claimed_land","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("factions","set_home","INTEGER NOT NULL DEFAULT 0");
@@ -466,6 +479,20 @@ final class Database implements AutoCloseable {
     synchronized boolean blockPlayer(String blocker,String blocked){if(hasBlocked(blocker,blocked))return false;update("INSERT INTO blocked_messages(blocker,blocked) VALUES(?,?)",blocker,blocked);return true;}
     synchronized boolean unblockPlayer(String blocker,String blocked){return update("DELETE FROM blocked_messages WHERE blocker=? AND blocked=?",blocker,blocked)>0;}
     synchronized void history(String scope,Long factionId,String kind,String message){update("INSERT INTO history(scope,faction_id,kind,message,created_at) VALUES(?,?,?,?,?)",scope,factionId,kind,message,System.currentTimeMillis());}
+    synchronized void logChat(String kind,String sender,String senderName,String recipient,String recipientName,String message){update("INSERT INTO chat_log(kind,sender,sender_name,recipient,recipient_name,message,created_at) VALUES(?,?,?,?,?,?,?)",kind,sender,senderName,recipient,recipientName,message,System.currentTimeMillis());}
+    synchronized List<ChatLogRow> chatBySender(String sender,int limit,int offset){return list("SELECT * FROM chat_log WHERE sender=? ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapChatLog,sender,limit,offset);}
+    synchronized List<ChatLogRow> chatBetween(String a,String b,int limit,int offset){return list("SELECT * FROM chat_log WHERE kind='DM' AND ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapChatLog,a,b,b,a,limit,offset);}
+    synchronized List<ChatLogRow> chatByKind(String kind,int limit,int offset){return list("SELECT * FROM chat_log WHERE kind=? ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapChatLog,kind,limit,offset);}
+    synchronized List<ChatLogRow> factionChatLog(long factionId,int limit,int offset){return list("SELECT * FROM chat_log WHERE kind='FACTION' AND recipient=? ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapChatLog,Long.toString(factionId),limit,offset);}
+    private static ChatLogRow mapChatLog(ResultSet rs)throws SQLException{return new ChatLogRow(rs.getLong("id"),rs.getString("kind"),rs.getString("sender"),rs.getString("sender_name"),column(rs,"recipient"),column(rs,"recipient_name"),rs.getString("message"),rs.getLong("created_at"));}
+    synchronized void updateLastLocation(String id,Location location){if(location==null||location.getWorld()==null)return;update("UPDATE players SET last_world=?,last_x=?,last_y=?,last_z=? WHERE id=?",location.getWorld().getName(),location.getX(),location.getY(),location.getZ(),id);}
+    synchronized Location lastLocation(String id){
+        record Raw(String world,Double x,Double y,Double z){}
+        Raw raw=one("SELECT last_world,last_x,last_y,last_z FROM players WHERE id=?",rs->new Raw(column(rs,"last_world"),(Double)rs.getObject("last_x"),(Double)rs.getObject("last_y"),(Double)rs.getObject("last_z")),id);
+        if(raw==null||raw.world()==null||raw.x()==null)return null;
+        World world=Bukkit.getWorld(raw.world());
+        return world==null?null:new Location(world,raw.x(),raw.y(),raw.z());
+    }
     synchronized void logAudit(String adminName,String action,String detail){update("INSERT INTO admin_audit(occurred_at,admin_name,action,detail) VALUES(?,?,?,?)",System.currentTimeMillis(),adminName,action,detail);}
     synchronized List<AuditRow> recentAudit(int limit){return list("SELECT * FROM admin_audit ORDER BY occurred_at DESC LIMIT ?",rs->new AuditRow(rs.getLong("id"),rs.getLong("occurred_at"),rs.getString("admin_name"),rs.getString("action"),rs.getString("detail")),limit);}
     synchronized List<HistoryRow> history(Long factionId,int limit,int offset){if(factionId==null)return list("SELECT * FROM history WHERE scope='SERVER' ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,limit,offset);return list("SELECT * FROM history WHERE scope='FACTION' AND faction_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,factionId,limit,offset);}
@@ -605,6 +632,7 @@ final class Database implements AutoCloseable {
         boolean own=false;try{own=connection.getAutoCommit();if(own)connection.setAutoCommit(false);update("DELETE FROM grave_items WHERE grave_id=?",id);int slot=0;for(ItemStack item:items)if(item!=null&&!item.getType().isAir())update("INSERT INTO grave_items(grave_id,slot,item) VALUES(?,?,?)",id,slot++,item.serializeAsBytes());if(slot==0)update("DELETE FROM graves WHERE id=?",id);if(own)connection.commit();}catch(Exception e){if(own)rollbackQuietly();if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}finally{if(own)autoCommitQuietly();}
     }
     synchronized void updateGraveMarker(long id,String marker){update("UPDATE graves SET marker_uuid=? WHERE id=?",marker,id);}
+    synchronized void updateGraveLocation(long id,Location location){update("UPDATE graves SET world=?,x=?,y=?,z=? WHERE id=?",location.getWorld().getName(),location.getX(),location.getY(),location.getZ(),id);}
     synchronized void deleteGrave(long id){update("DELETE FROM graves WHERE id=?",id);}
 
     synchronized List<String> recordSpawnerPlacement(String spawnerId,long factionId,String mobType,long placedAt,Location location){

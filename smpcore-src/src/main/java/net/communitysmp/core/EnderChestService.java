@@ -1,5 +1,6 @@
 package net.communitysmp.core;
 
+import com.lishid.openinv.IOpenInv;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Material;
@@ -75,6 +76,12 @@ final class EnderChestService implements Listener {
      *  and/or an inspecting admin — has that page open; persisted to the database and evicted the instant
      *  the last viewer closes it, never before (see close()). */
     private final Map<String,Inventory> liveChunks=new HashMap<>();
+    /** Key: target playerId (lowercase name, same as holder.target()). Holds the fake-but-real Player OpenInv
+     *  hands back for a genuinely offline target — its getEnderChest() reads/writes their actual persisted
+     *  data, not a snapshot, so this is safe against the target logging in mid-inspection: if they do,
+     *  OpenInv's own loadPlayer()/unload() handles that reconciliation, the exact problem that plugin exists
+     *  to solve safely rather than SMPCore re-implementing raw playerdata NBT access. */
+    private final Map<String,Player> offlineLoaded=new HashMap<>();
 
     EnderChestService(SMPCore plugin){
         this.plugin=plugin;
@@ -115,8 +122,13 @@ final class EnderChestService implements Listener {
     boolean command(Player player,String[] args){
         if(args.length>=2&&args[0].equalsIgnoreCase("inspect")){
             if(!plugin.isAdmin(player)){CoreUtil.error(player,"Only ADMIN can inspect another player's Ender Storage.");return true;}
+            String targetId=CoreUtil.id(args[1]);
             Player target=plugin.getServer().getPlayerExact(args[1]);
-            if(target==null){CoreUtil.error(player,"That player is not online.");return true;}
+            if(target==null){
+                if(db.player(targetId)==null){CoreUtil.error(player,"That player has not joined this server.");return true;}
+                target=loadOffline(targetId,args[1]);
+                if(target==null){CoreUtil.error(player,"That player is offline, and OpenInv (required for offline Ender Storage inspection) is unavailable.");return true;}
+            }
             openForAdmin(player,target);return true;
         }
         if(blocked(player))return true;
@@ -133,6 +145,49 @@ final class EnderChestService implements Listener {
     }
     void openFromBlock(Player player){open(player);}
     ItemStack[] allContents(Player player){return loadAll(player,capacity(player));}
+
+    /** Nothing in the normal click path ever blocked a non-owner (i.e. an admin already let in by the
+     *  isAdmin() gate above) from moving another player's account-bound items in or out of an inspection GUI
+     *  — that absence of a block IS the bypass the admin is meant to have. What was actually missing is the
+     *  audit trail: this logs the instant a bound item belonging to someone else is taken from or placed into
+     *  the slot the admin just clicked, so the bypass stays traceable without needing a separate permission
+     *  system just for Ender Storage. isInsertSlot distinguishes "clicked a real storage slot" (both take and
+     *  insert are possible there) from nav/other slots (only a take, off the cursor, would ever matter). */
+    private void auditBoundItemAccess(Player viewer,String targetId,ItemStack current,ItemStack cursor,boolean isStorageSlot){
+        if(plugin.shards()==null)return;
+        if(plugin.shards().bound(current)&&!plugin.shards().belongsTo(viewer,current))
+            db.logAudit(viewer.getName(),"ENDERCHEST_BOUND_ITEM_TAKE","target="+targetId+" item="+current.getType());
+        if(isStorageSlot&&plugin.shards().bound(cursor)&&!plugin.shards().belongsTo(viewer,cursor))
+            db.logAudit(viewer.getName(),"ENDERCHEST_BOUND_ITEM_INSERT","target="+targetId+" item="+cursor.getType());
+    }
+    private IOpenInv openInvApi(){org.bukkit.plugin.Plugin p=plugin.getServer().getPluginManager().getPlugin("OpenInv");return p instanceof IOpenInv api?api:null;}
+    /** Resolves a target for mirroring purposes — a genuinely online Player first, otherwise whatever OpenInv
+     *  proxy is currently held for them (re-loading on demand if a prior session's proxy was already released,
+     *  e.g. after navigating away and back). Never null while the target has actually joined the server
+     *  before, short of OpenInv being missing/failing. */
+    private Player resolveTarget(String targetId){
+        Player online=plugin.getServer().getPlayerExact(targetId);
+        if(online!=null)return online;
+        Player loaded=offlineLoaded.get(targetId);
+        if(loaded!=null)return loaded;
+        Database.PlayerRow row=db.player(targetId);
+        return row==null?null:loadOffline(targetId,row.name());
+    }
+    private Player loadOffline(String targetId,String name){
+        IOpenInv api=openInvApi();if(api==null)return null;
+        org.bukkit.OfflinePlayer offline=plugin.getServer().getOfflinePlayer(name);
+        Player loaded=api.loadPlayer(offline);if(loaded==null)return null;
+        offlineLoaded.put(targetId,loaded);return loaded;
+    }
+    /** Only safe to actually release the OpenInv proxy once nothing of this target's Ender Storage is still
+     *  open anywhere (page 1 or any chunk 2+ page) — navigating between those pages closes-then-reopens, so a
+     *  single close event alone can't tell "done inspecting" from "just switched pages". */
+    private void unloadIfDone(String targetId){
+        Player loaded=offlineLoaded.get(targetId);if(loaded==null)return;
+        if(liveMirrors.containsKey(targetId)||liveChunks.keySet().stream().anyMatch(key->key.startsWith(targetId+":")))return;
+        IOpenInv api=openInvApi();if(api!=null)api.unload(plugin.getServer().getOfflinePlayer(loaded.getName()));
+        offlineLoaded.remove(targetId);
+    }
 
     /** Admin inspection now covers everything, page 1 included, through the same live mirror the owner's
      *  own /ec uses — there's no remaining technical reason to send admins to /openender for the base chest. */
@@ -313,8 +368,9 @@ final class EnderChestService implements Listener {
         if(event.getView().getTopInventory().getHolder(false) instanceof Page1Holder holder){
             boolean owner=holder.target().equals(CoreUtil.id(viewer));
             if(!owner&&!plugin.isAdmin(viewer))return;
+            if(!owner)auditBoundItemAccess(viewer,holder.target(),event.getCurrentItem(),event.getCursor(),event.getRawSlot()<PAGE1_NAV);
             int slot=event.getRawSlot();
-            Player target=plugin.getServer().getPlayerExact(holder.target());
+            Player target=resolveTarget(holder.target());
             if(target==null)return;
             if(slot>=PAGE1_NAV&&slot<PAGE1_SIZE){
                 event.setCancelled(true);
@@ -340,12 +396,13 @@ final class EnderChestService implements Listener {
         if(raw instanceof ChunkHolder holder){
             int slot=event.getRawSlot();
             if(slot<0||slot>=UPGRADE_PAGE_SIZE){return;}
+            boolean owner=holder.player().equals(CoreUtil.id(viewer));
+            if(!owner)auditBoundItemAccess(viewer,holder.player(),event.getCurrentItem(),event.getCursor(),slot<UPGRADE_CHUNK);
             if(slot<UPGRADE_CHUNK)return;
             event.setCancelled(true);
-            boolean owner=holder.player().equals(CoreUtil.id(viewer));
             int realTotal=chunks(holder.player());
             if(slot==UPGRADE_CHUNK&&holder.chunk()==2){
-                Player target=plugin.getServer().getPlayerExact(holder.player());
+                Player target=resolveTarget(holder.player());
                 if(target!=null)openPage1(viewer,target,realTotal);
             }
             else if(slot==UPGRADE_CHUNK&&holder.chunk()>2)viewer.openInventory(sharedChunk(holder.player(),holder.chunk()-1));
@@ -362,22 +419,24 @@ final class EnderChestService implements Listener {
         InventoryHolder raw=event.getInventory().getHolder(false);
         if(raw instanceof Page1Holder holder){
             if(event.getViewers().isEmpty()){
-                Player target=plugin.getServer().getPlayerExact(holder.target());
+                Player target=resolveTarget(holder.target());
                 if(target!=null)mirrorPage1(target,event.getInventory());
                 persistPage1Bonus(holder.target(),event.getInventory());
                 liveMirrors.remove(holder.target());
+                unloadIfDone(holder.target());
             }
             return;
         }
         if(raw instanceof ChunkHolder holder&&event.getViewers().isEmpty()){
             persistChunk(holder.player(),holder.chunk(),event.getInventory());
             liveChunks.remove(holder.player()+":"+holder.chunk());
+            unloadIfDone(holder.player());
         }
     }
     @EventHandler public void drag(InventoryDragEvent event){
         if(event.getWhoClicked() instanceof Player viewer&&event.getView().getTopInventory().getHolder(false) instanceof Page1Holder holder){
             if(event.getRawSlots().stream().anyMatch(slot->slot>=PAGE1_NAV&&slot<PAGE1_SIZE)){event.setCancelled(true);return;}
-            Player target=plugin.getServer().getPlayerExact(holder.target());
+            Player target=resolveTarget(holder.target());
             if(target==null)return;
             Inventory top=event.getView().getTopInventory();
             plugin.getServer().getScheduler().runTask(plugin,()->mirrorPage1(target,top));

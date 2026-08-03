@@ -213,12 +213,19 @@ final class BountyService implements Listener {
         CoreUtil.msg(admin,"Claim #"+id+" approved and paid.");
         return true;
     }
+    /** A rejected+refunded claim ends the bounty entirely (onPlayerKill already deletes the bounties row the
+     *  moment a claim is submitted, before this ever runs, so there's nothing left for anyone else to claim
+     *  afterward) — functionally the same as an admin cancelling it outright, not a completed transaction, so
+     *  the 2% placement fee taken at contribution time should come back too, not just the principal. The fee
+     *  itself is never persisted per-contribution, so it's recomputed from the stored principal using the
+     *  current placement-fee-percent — a deliberate, acceptable approximation rather than a schema change,
+     *  same tradeoff the codebase already makes elsewhere for cheap self-correcting recomputation. */
     boolean rejectClaim(CommandSender admin,long id,boolean refund){
         Database.PendingBountyClaimRow row=db.pendingClaim(id);if(row==null||!"PENDING".equals(row.status())){CoreUtil.error(admin,"That claim is not pending.");return false;}
         db.resolvePendingClaim(id,"REJECTED",adminName(admin));
         if(refund){for(Database.BountyContributionRow contribution:db.bountyContributions(row.target())){
             if("BANK_AUTO".equals(contribution.source()))db.creditBankRevenue(contribution.amount(),"REFUND",null,"Rejected bounty claim #"+id);
-            else plugin.creditEarned(contribution.contributor(),contribution.amount(),"BOUNTY_REFUND");
+            else{double fee=Math.round(contribution.amount()*plugin.getConfig().getDouble("bounties.placement-fee-percent",2.0))/100.0;plugin.creditEarned(contribution.contributor(),contribution.amount()+fee,"BOUNTY_REFUND");}
         }db.clearBountyContributions(row.target());}
         db.logAudit(adminName(admin),"BOUNTY_REJECT","claim="+id+" killer="+row.killerName()+" refunded="+refund);
         CoreUtil.msg(admin,"Claim #"+id+" rejected"+(refund?" and refunded.":"."));
@@ -229,7 +236,7 @@ final class BountyService implements Listener {
         Database.BountyRow row=db.bounty(target);if(row==null){CoreUtil.error(admin,"That player has no active bounty.");return false;}
         if(refund)for(Database.BountyContributionRow contribution:db.bountyContributions(target)){
             if("BANK_AUTO".equals(contribution.source()))db.creditBankRevenue(contribution.amount(),"REFUND",null,"Bounty removed by admin");
-            else plugin.creditEarned(contribution.contributor(),contribution.amount(),"BOUNTY_REFUND");
+            else{double fee=Math.round(contribution.amount()*plugin.getConfig().getDouble("bounties.placement-fee-percent",2.0))/100.0;plugin.creditEarned(contribution.contributor(),contribution.amount()+fee,"BOUNTY_REFUND");}
         }
         db.removeBounty(target);db.clearBountyContributions(target);
         db.logAudit(adminName(admin),"BOUNTY_REMOVE","target="+targetName+" refunded="+refund);

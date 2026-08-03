@@ -4,11 +4,16 @@ import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
 import org.bukkit.block.Block;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Enemy;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Tameable;
+import io.papermc.paper.event.entity.EntityKnockbackEvent;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerFishEvent;
+import org.bukkit.event.vehicle.VehicleEntityCollisionEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitTask;
@@ -43,6 +48,25 @@ final class SpawnClaimService implements Listener {
     @EventHandler public void vehicleMove(VehicleMoveEvent event){
         if(region==null||event.getVehicle().getPassengers().stream().allMatch(passenger->passenger instanceof Player||allowed(passenger)))return;
         if(!region.contains(event.getFrom())&&region.contains(event.getTo()))event.getVehicle().teleport(event.getFrom());
+    }
+    /** An empty (or hostile-occupied) vehicle rammed into a player is a known displacement trick — ramming
+     *  doesn't move the player via EntityMoveEvent (that only fires for the vehicle's own movement), it
+     *  shoves them directly, so it needs its own check rather than relying on the movement/knockback guards. */
+    @EventHandler(ignoreCancelled=true) public void vehicleCollide(VehicleEntityCollisionEvent event){
+        if(region==null||!(event.getEntity() instanceof Player player)||plugin.privileged(player)||!region.contains(player.getLocation()))return;
+        event.setCancelled(true);event.setCollisionCancelled(true);
+    }
+    @EventHandler(ignoreCancelled=true) public void knockback(EntityKnockbackEvent event){
+        if(region==null||!(event.getEntity() instanceof Player player)||plugin.privileged(player)||!region.contains(player.getLocation()))return;
+        event.setCancelled(true);
+    }
+    /** Fishing rods can hook and reel in players, not just fish — dragging someone across the boundary that
+     *  way needs its own check since the "victim" here isn't the one being damaged or knocked back, they're
+     *  being pulled by another player's fishing mechanic. Checked from both ends, same as the spawn-PvP rule. */
+    @EventHandler(ignoreCancelled=true) public void fish(PlayerFishEvent event){
+        if(region==null||event.getState()!=PlayerFishEvent.State.CAUGHT_ENTITY||!(event.getCaught() instanceof Player caught))return;
+        if(plugin.privileged(event.getPlayer())||plugin.privileged(caught))return;
+        if(region.contains(caught.getLocation())||region.contains(event.getPlayer().getLocation()))event.setCancelled(true);
     }
 
     boolean contains(Location location){return region!=null&&region.contains(location);}
@@ -82,6 +106,25 @@ final class SpawnClaimService implements Listener {
 
     private void help(CommandSender sender){CoreUtil.msg(sender,"Spawn protection: /ashfall spawnclaim select, /ashfall spawnclaim info, /ashfall spawnclaim clear");}
     private void load(){String raw=db.state("spawn_claim");if(raw==null||raw.isBlank())return;try{String[] values=raw.split(",",5);region=new Region(values[0],Integer.parseInt(values[1]),Integer.parseInt(values[2]),Integer.parseInt(values[3]),Integer.parseInt(values[4]));}catch(Exception e){plugin.getLogger().warning("Ignored invalid spawn claim state.");}}
-    private void ejectUnmarked(){if(region==null)return;org.bukkit.World world=plugin.getServer().getWorld(region.world());if(world==null)return;for(LivingEntity entity:world.getLivingEntities())if(!(entity instanceof Player)&&region.contains(entity.getLocation())&&!allowed(entity))entity.teleport(outside(entity.getLocation()));}
+    /** Hostile mobs that wander (or get displaced) into spawn are REMOVED outright rather than bounced back
+     *  outside — bouncing only relocates them a couple of blocks past the border, and a mob still pathing or
+     *  aggroed toward someone just inside can simply walk straight back in before the next sweep, which reads
+     *  as "stuck"/oscillating rather than actually being cleaned up. Non-hostile entities (villagers, tamed
+     *  pets, named mobs) keep the original bounce-out behavior — removing those would be destructive. */
+    private void ejectUnmarked(){
+        /** Vanilla entity-to-entity collision (the gentle shove you get just from standing near someone) still
+         *  applies even with all the movement/knockback/vehicle protections elsewhere — over many small shoves
+         *  from a crowd it can still walk someone to the edge. Runs on this same 5s sweep across ALL online
+         *  players (not just those currently in the spawn world, and even with no region set at all) so
+         *  anyone who leaves the region — or the world, or has protection cleared entirely — reliably gets
+         *  collision back rather than being stuck non-collidable. */
+        for(Player player:plugin.getServer().getOnlinePlayers())player.setCollidable(region==null||!region.contains(player.getLocation()));
+        if(region==null)return;org.bukkit.World world=plugin.getServer().getWorld(region.world());if(world==null)return;
+        for(LivingEntity entity:world.getLivingEntities()){
+            if(entity instanceof Player||!region.contains(entity.getLocation())||allowed(entity))continue;
+            if(entity instanceof Enemy&&!(entity instanceof Tameable tame&&tame.isTamed())&&entity.customName()==null)entity.remove();
+            else entity.teleport(outside(entity.getLocation()));
+        }
+    }
     private Location outside(Location from){int x=from.getBlockX(),z=from.getBlockZ();int left=Math.abs(x-region.minX()),right=Math.abs(region.maxX()-x),north=Math.abs(z-region.minZ()),south=Math.abs(region.maxZ()-z),nearest=Math.min(Math.min(left,right),Math.min(north,south));if(nearest==left)x=region.minX()-2;else if(nearest==right)x=region.maxX()+2;else if(nearest==north)z=region.minZ()-2;else z=region.maxZ()+2;Location safe=CoreUtil.findSafe(from.getWorld(),x,z);if(safe!=null)return safe;return from.getWorld().getHighestBlockAt(x,z).getLocation().add(.5,1,.5);}
 }

@@ -10,9 +10,11 @@ import org.bukkit.inventory.MerchantRecipe;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 final class VillagerCapsuleService {
     private final SMPCore plugin;
@@ -26,28 +28,54 @@ final class VillagerCapsuleService {
         capsuleKey=new NamespacedKey(plugin,"villager_capsule");dataKey=new NamespacedKey(plugin,"villager_snapshot");valueKey=new NamespacedKey(plugin,"villager_asset_value");
     }
 
+    /** Normal villagers are intentionally raidable/stealable, including inside another faction's protected
+     *  claim — matching how they're already unprotected from being killed outright (combat() in
+     *  GameplayListener never claim-checks generic LivingEntity damage, only Hanging/ArmorStand and Players).
+     *  Only spawn protection and explicitly-protected NPCs (server merchants, spawn-claim "allowed" entities)
+     *  stay uncapturable. */
     boolean capture(Player player,Entity target,EquipmentSlot hand){
         if(!(target instanceof Villager villager))return false;ItemStack held=player.getInventory().getItem(hand);String kind=kind(held);if(kind==null)return false;
         if(snapshot(held)!=null){CoreUtil.error(player,"This capsule already contains a villager.");return true;}
         if(merchants.isMerchant(villager)||spawnClaims.allowed(villager)){CoreUtil.error(player,"Permanent server merchants cannot be captured.");return true;}
-        FactionService.Claim claim=factions.claimAt(villager.getLocation());if(claim!=null&&!factions.isMember(player,claim.faction())){CoreUtil.error(player,"This villager is protected by "+claim.faction().name()+".");return true;}
+        if(spawnClaims.contains(villager.getLocation())&&!plugin.isAdmin(player)){CoreUtil.error(player,"This villager is protected by spawn.");return true;}
         UUID targetId=villager.getUniqueId();
         plugin.confirmations().request(player,SettingsService.ConfirmationKind.LUXURY,true,"Capture this villager",List.of("The villager and all trades will enter the capsule."),()->{
             Entity current=plugin.getServer().getEntity(targetId);ItemStack currentItem=player.getInventory().getItem(hand);
             if(!(current instanceof Villager live)||!live.isValid()||kind(currentItem)==null||snapshot(currentItem)!=null||!player.getWorld().equals(live.getWorld())||player.getLocation().distanceSquared(live.getLocation())>36){CoreUtil.error(player,"The villager or capsule is no longer available.");return;}
             if(merchants.isMerchant(live)||spawnClaims.allowed(live)){CoreUtil.error(player,"Permanent server merchants cannot be captured.");return;}
-            FactionService.Claim currentClaim=factions.claimAt(live.getLocation());
-            if(currentClaim!=null&&!factions.isMember(player,currentClaim.faction())){CoreUtil.error(player,"That villager is now protected.");return;}
+            if(spawnClaims.contains(live.getLocation())&&!plugin.isAdmin(player)){CoreUtil.error(player,"That villager is now protected by spawn.");return;}
             captureNow(player,live,hand,currentItem,kind(currentItem));
         });
         return true;
+    }
+
+    /** Real per-hover Shift-key detection is impossible from a server-only plugin: tooltip rendering and
+     *  hover/modifier-key state are 100% client-side and never reach the server (no packet exists for it —
+     *  confirmed against the Minecraft protocol and corroborated by the Spigot plugin-dev community, e.g. the
+     *  SpigotMC thread literally titled "is there any proper way to do 'hold shift for detail' (impossible to
+     *  do)"). F3+H "advanced tooltips" is the only vanilla tooltip-verbosity toggle and it's a client-global
+     *  debug setting, not per-item server-controllable and not tied to hover+Shift at all. So instead of a
+     *  fake two-tier hover, the trade list is always appended below the basic info — the only way "viewable
+     *  without holding, no clicks, no GUI" (auctions, trade previews, anywhere a tooltip renders) is actually
+     *  achievable, and it keeps the same "basic summary, then full trade detail" structure the user wanted. */
+    private List<Component> tradeLoreLines(Villager villager){
+        List<Component> lines=new ArrayList<>();lines.add(Component.text("Trades (current prices):",NamedTextColor.GOLD));
+        for(MerchantRecipe recipe:villager.getRecipes()){
+            List<ItemStack> ingredients=recipe.getIngredients();
+            String cost=ingredients.stream().filter(i->i!=null&&!i.getType().isAir()).map(i->i.getAmount()+" "+CoreUtil.pretty(i.getType().name())).collect(Collectors.joining(" + "));
+            ItemStack result=recipe.getResult();String sold=result.getAmount()+" "+CoreUtil.pretty(result.getType().name());
+            lines.add(Component.text("  "+cost+" → "+sold,NamedTextColor.GRAY));
+        }
+        return lines;
     }
 
     private void captureNow(Player player,Villager villager,EquipmentSlot hand,ItemStack held,String kind){
         try{
             EntitySnapshot saved=villager.createSnapshot();if(saved==null||saved.getEntityType()!=EntityType.VILLAGER){CoreUtil.error(player,"That villager could not be captured safely.");return;}
             ItemStack filled=held.clone();filled.setAmount(1);ItemMeta meta=filled.getItemMeta();meta.getPersistentDataContainer().set(dataKey,PersistentDataType.STRING,saved.getAsString());double assetValue=plugin.netWorth().villagerValue(villager);meta.getPersistentDataContainer().set(valueKey,PersistentDataType.DOUBLE,assetValue);
-            String profession=CoreUtil.pretty(villager.getProfession().getKey().getKey());meta.displayName(Component.text(profession+" Villager Capsule",NamedTextColor.LIGHT_PURPLE));meta.lore(List.of(Component.text("Level "+villager.getVillagerLevel()+" • "+("REUSABLE".equals(kind)?"Reusable":"Single use"),NamedTextColor.GRAY),Component.text("Right-click a block to release.",NamedTextColor.DARK_GRAY)));meta.setMaxStackSize(1);filled.setItemMeta(meta);
+            String profession=CoreUtil.pretty(villager.getProfession().getKey().getKey());meta.displayName(Component.text(profession+" Villager Capsule",NamedTextColor.LIGHT_PURPLE));
+            List<Component> lore=new ArrayList<>(List.of(Component.text("Level "+villager.getVillagerLevel()+" • "+("REUSABLE".equals(kind)?"Reusable":"Single use"),NamedTextColor.GRAY),Component.text("Right-click a block to release.",NamedTextColor.DARK_GRAY)));
+            lore.addAll(tradeLoreLines(villager));meta.lore(lore);meta.setMaxStackSize(1);filled.setItemMeta(meta);
             player.getInventory().setItem(hand,filled);plugin.netWorth().entityRemoved(villager);villager.remove();player.playSound(player.getLocation(),Sound.BLOCK_VAULT_INSERT_ITEM,.8f,1.25f);CoreUtil.msg(player,"Villager captured.");
         }catch(Exception ex){plugin.getLogger().warning("Villager capture failed safely for "+player.getName()+": "+ex.getMessage());CoreUtil.error(player,"That villager could not be captured safely.");}
     }

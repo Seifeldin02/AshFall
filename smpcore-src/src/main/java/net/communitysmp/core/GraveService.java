@@ -49,9 +49,24 @@ final class GraveService implements Listener {
         viewers.clear();for(UUID id:ownerVisuals.values()){Entity entity=plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}ownerVisuals.clear();
     }
 
+    /** A death location can legitimately sit below the world's minimum build height — vanilla void damage
+     *  doesn't necessarily kill on the first tick, so a falling player can die well under min-height before
+     *  ever landing on anything. Spawning the marker armor stand there throws (out-of-bounds chunk section),
+     *  which used to leave the grave permanently marker-less: tracked in /graves, DB row intact, but with no
+     *  physical entity to right-click, so the contents GUI could never be opened. Clamping to the world's own
+     *  floor (getMinHeight() — confirmed empirically as Y0 in the End, not Y1) keeps the grave at the correct
+     *  X/Z and makes it a normal, lootable grave instead of a permanently stuck one. */
+    private Location clampToWorld(Location location){
+        World world=location.getWorld();
+        if(location.getY()>=world.getMinHeight()&&location.getY()<world.getMaxHeight())return location;
+        double y=Math.min(Math.max(location.getY(),world.getMinHeight()),world.getMaxHeight()-1);
+        return new Location(world,location.getX(),y,location.getZ(),location.getYaw(),location.getPitch());
+    }
+
     boolean create(Player owner,List<ItemStack> drops,Location location){
         List<ItemStack> items=drops.stream().filter(Objects::nonNull).filter(item->!item.getType().isAir()&&item.getAmount()>0&&!isCompass(item)).map(ItemStack::clone).toList();
         drops.removeIf(this::isCompass);if(items.isEmpty())return false;
+        location=clampToWorld(location);
         ProfileProperty textures=owner.getPlayerProfile().getProperties().stream().filter(property->property.getName().equals("textures")).findFirst().orElse(null);
         long hours=Math.max(1,plugin.getConfig().getLong("graves.lifetime-hours",48)),id=db.createGrave(
                 CoreUtil.id(owner),owner.getUniqueId().toString(),owner.getName(),plugin.nicknames().displayName(owner),
@@ -194,13 +209,46 @@ final class GraveService implements Listener {
     }
     private void removeVisual(Player owner){UUID id=ownerVisuals.remove(owner.getUniqueId());Entity entity=id==null?null:plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}
 
+    /** Admin recovery path for graves stuck with no physical marker (old void-Y deaths, or any other
+     *  transient spawn failure) instead of waiting for their chunk to load naturally. Never deletes a row —
+     *  items stay in SQLite regardless of outcome; this only ever tries to give a stuck grave back its
+     *  normal, lootable marker. */
+    int repairBrokenMarkers(){
+        int fixed=0;
+        for(Database.GraveRow grave:db.allGraves()){
+            if(grave.expiresAt()<=System.currentTimeMillis()||grave.markerUuid()!=null)continue;
+            Location location=resolveLocation(grave);if(location==null)continue;
+            World world=location.getWorld();int cx=location.getBlockX()>>4,cz=location.getBlockZ()>>4;
+            boolean wasLoaded=world.isChunkLoaded(cx,cz);if(!wasLoaded)world.getChunkAt(cx,cz).load();
+            spawnMarker(grave);
+            if(db.grave(grave.id())!=null&&db.grave(grave.id()).markerUuid()!=null)fixed++;
+            if(!wasLoaded)world.getChunkAt(cx,cz).unload();
+        }
+        cachedGravesAt=0;
+        return fixed;
+    }
+
     private List<Database.GraveRow> cachedGraves=List.of();
     private long cachedGravesAt=0;
     private List<Database.GraveRow> allGravesCached(){long now=System.currentTimeMillis();if(now-cachedGravesAt>5000){cachedGraves=db.allGraves();cachedGravesAt=now;}return cachedGraves;}
     private void restoreLoadedMarkers(){for(Database.GraveRow grave:allGravesCached()){if(grave.expiresAt()<=System.currentTimeMillis())continue;Location location=grave.location();if(location==null||!location.getWorld().isChunkLoaded(location.getBlockX()>>4,location.getBlockZ()>>4))continue;Entity marker=marker(grave);if(marker==null)spawnMarker(grave);}}
     private void restoreMarkersIn(World world,int chunkX,int chunkZ){for(Database.GraveRow grave:allGravesCached()){if(grave.expiresAt()<=System.currentTimeMillis()||!grave.world().equals(world.getName()))continue;Location location=grave.location();if(location!=null&&(location.getBlockX()>>4)==chunkX&&(location.getBlockZ()>>4)==chunkZ&&marker(grave)==null)spawnMarker(grave);}}
+    /** restoreLoadedMarkers()/restoreMarkersIn() already retry this on every 5-minute cleanup pass and on
+     *  every relevant chunk load for any grave with no marker — so clamping here, not just in create(),
+     *  self-heals graves that got stuck marker-less before this fix existed, as soon as their chunk is next
+     *  loaded. repairBrokenMarkers() below force-loads that chunk instead of waiting on it. */
+    /** grave.location() returns null only when the grave's stored world no longer exists at all (an admin
+     *  deleted/renamed a dimension) — the one case Y-clamping can't reach, since there's no world to build a
+     *  Location in. Relocating to the configured spawn's world keeps the grave real and lootable instead of
+     *  becoming a stale database record with no recoverable physical grave. */
+    private Location resolveLocation(Database.GraveRow grave){
+        Location location=grave.location();if(location!=null)return location;
+        Location fallback=plugin.teleports().spawn();if(fallback==null||fallback.getWorld()==null)return null;
+        db.updateGraveLocation(grave.id(),fallback);return fallback;
+    }
     private void spawnMarker(Database.GraveRow grave){
-        if(grave==null)return;Location location=grave.location();if(location==null)return;
+        if(grave==null)return;Location location=resolveLocation(grave);if(location==null)return;
+        Location safe=clampToWorld(location);if(safe.getY()!=location.getY()){db.updateGraveLocation(grave.id(),safe);location=safe;}
         try{
             ArmorStand stand=location.getWorld().spawn(location.clone().add(0,.1,0),ArmorStand.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,armor->{armor.setInvisible(true);armor.setSmall(true);armor.setGravity(false);armor.setBasePlate(false);armor.setArms(false);armor.setPersistent(true);armor.setCustomNameVisible(true);armor.customName(Component.text(publicName(grave)+"'s Grave",NamedTextColor.GRAY));armor.getPersistentDataContainer().set(graveKey,PersistentDataType.LONG,grave.id());armor.getEquipment().setHelmet(head(grave));});
             if(stand.isValid())db.updateGraveMarker(grave.id(),stand.getUniqueId().toString());
