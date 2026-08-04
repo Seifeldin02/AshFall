@@ -149,6 +149,16 @@ final class GameplayListener implements Listener {
     @EventHandler(ignoreCancelled=true) public void loot(LootGenerateEvent e){relics.hideInLoot(e.getLoot());}
     @EventHandler(ignoreCancelled=true) public void pickup(EntityPickupItemEvent e){if(e.getEntity() instanceof Player p){ItemStack item=e.getItem().getItemStack(),migrated=spawners.migrateItem(item);if(migrated!=item)e.getItem().setItemStack(migrated);relics.discover(p,migrated);progress.acquired(p,migrated.getType());}}
     @EventHandler public void despawn(ItemDespawnEvent e){relics.itemLost(e.getEntity());}
+    /** Runs before chatSpam and unconditionally for every sender (including admins) — chatSpam exempts admins
+     *  entirely via an early return, and this needs to catch a hostile/compromised admin account too, not just
+     *  regular players. See CoreUtil.stripExcessiveCombiningMarks() for why this exists: stacked Unicode
+     *  combining marks ("zalgo text") in a chat message can hang the *client* rendering it, on every recipient's
+     *  device, even though the server itself never does anything expensive with the text. */
+    @SuppressWarnings("deprecation")
+    @EventHandler(priority=EventPriority.LOWEST,ignoreCancelled=true) public void chatSanitize(AsyncPlayerChatEvent event){
+        String original=event.getMessage(),cleaned=CoreUtil.stripExcessiveCombiningMarks(original,2);
+        if(!cleaned.equals(original))event.setMessage(cleaned);
+    }
     @SuppressWarnings("deprecation")
     @EventHandler(priority=EventPriority.LOWEST,ignoreCancelled=true) public void chatSpam(AsyncPlayerChatEvent event){
         Player player=event.getPlayer();if(plugin.isAdmin(player)||plugin.bank().awaitingChatInput(player)||plugin.marketplace().awaitingInput(player)||plugin.account().awaitingInput(player))return;String normalized=event.getMessage().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+","").trim();if(normalized.isEmpty())return;long now=System.currentTimeMillis();ChatState state=chatStates.computeIfAbsent(player.getUniqueId(),key->new ChatState());

@@ -36,6 +36,9 @@ $thirdPartyJars = @(
     @{ Rel = 'plugins\OpenInv.jar';                                  Src = 'plugins\OpenInv.jar' }
     @{ Rel = 'staging\tab-elites-20260723\TAB.v6.1.0.jar';           Src = 'staging\tab-elites-20260723\TAB.v6.1.0.jar' }
 )
+# worldedit-bukkit-7.4.4.jar is NOT in this list on purpose: WorldEdit isn't installed on production
+# yet (staging-only, part of the in-progress moderation/monument migration), so there's nothing to
+# re-stage it from on every build. It was copied into ../plugins/ once, manually, from staging.
 
 Write-Host "Staging third-party jars from $SourceServer ..." -ForegroundColor Cyan
 foreach ($jar in $thirdPartyJars) {

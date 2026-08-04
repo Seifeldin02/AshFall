@@ -76,6 +76,16 @@
       <scope>system</scope>
       <systemPath>${project.basedir}/../plugins/OpenInv.jar</systemPath>
     </dependency>
+    <!-- WorldEdit isn't installed on production yet (staging-only for now), so unlike the other
+         system-scoped jars above, build.ps1 does not re-stage this one from $SourceServer on every
+         build; it was copied into ../plugins/ once, manually, from staging. -->
+    <dependency>
+      <groupId>com.sk89q.worldedit</groupId>
+      <artifactId>worldedit-bukkit</artifactId>
+      <version>7.4.4</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/../plugins/worldedit-bukkit-7.4.4.jar</systemPath>
+    </dependency>
   </dependencies>
   <build>
         <finalName>SMPCore-1.7.0</finalName>

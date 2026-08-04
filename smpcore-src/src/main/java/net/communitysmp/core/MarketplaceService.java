@@ -99,7 +99,7 @@ final class MarketplaceService implements Listener {
         for(int index=start,slot=0;index<rows.size()&&slot<PAGE_SIZE;index++,slot++){
             var row=rows.get(index);ShopService.Price price=row.getValue();ItemStack icon=shop.displayItem(row.getKey());ItemMeta meta=icon.getItemMeta();
             if(!luxury)meta.displayName(null);
-            List<Component> lore=new ArrayList<>();lore.add(Component.text("Buy: "+CoreUtil.money(price.buy()*buyMultiplier)+(luxury?"":" each"),NamedTextColor.GREEN));if(!luxury)lore.add(Component.text("Sell: "+CoreUtil.money(price.sell()*sellMultiplier)+" each",NamedTextColor.YELLOW));meta.lore(lore);icon.setItemMeta(meta);inv.setItem(slot,icon);holder.items.put(slot,new ItemRef(row.getKey(),null,null));
+            List<Component> lore=new ArrayList<>();lore.add(Component.text("Buy: "+CoreUtil.money(price.buy()*buyMultiplier)+(luxury?"":" each"),NamedTextColor.GREEN));if(!luxury)lore.add(Component.text("Sell: "+CoreUtil.money(price.sell()*sellMultiplier)+" each",NamedTextColor.YELLOW));if(!luxury)lore.add(Component.text("Hold shift to buy/sell in bulk",NamedTextColor.DARK_GRAY));meta.lore(lore);icon.setItemMeta(meta);inv.setItem(slot,icon);holder.items.put(slot,new ItemRef(row.getKey(),null,null));
         }
         return total;
     }

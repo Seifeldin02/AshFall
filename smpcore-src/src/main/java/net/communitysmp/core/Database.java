@@ -150,6 +150,8 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS blocked_messages (blocker TEXT NOT NULL, blocked TEXT NOT NULL, PRIMARY KEY(blocker,blocked))");
             s.execute("CREATE TABLE IF NOT EXISTS ip_bans (ip TEXT PRIMARY KEY, banned_by TEXT NOT NULL, reason TEXT NOT NULL, banned_at INTEGER NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0, source_player TEXT NOT NULL, source_entry TEXT NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS saved_locations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, world TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, structure_type TEXT, manual INTEGER NOT NULL DEFAULT 0, registered_by TEXT, discovered_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
+            s.execute("CREATE TABLE IF NOT EXISTS monument_refill_containers (id INTEGER PRIMARY KEY AUTOINCREMENT, monument_id INTEGER NOT NULL, world TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, z INTEGER NOT NULL, loot_table TEXT, last_refilled_at INTEGER NOT NULL DEFAULT 0, refilled_by TEXT, UNIQUE(world,x,y,z))");
+            s.execute("CREATE INDEX IF NOT EXISTS monument_refill_containers_monument ON monument_refill_containers(monument_id)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
             s.execute("DROP TABLE IF EXISTS private_chests");
         }
@@ -193,6 +195,10 @@ final class Database implements AutoCloseable {
         ensureColumn("graves","public_name","TEXT");
         ensureColumn("graves","skin_value","TEXT");
         ensureColumn("graves","skin_signature","TEXT");
+        ensureColumn("saved_locations","boundary_radius","INTEGER NOT NULL DEFAULT 24");
+        ensureColumn("saved_locations","last_snapshot_at","INTEGER NOT NULL DEFAULT 0");
+        ensureColumn("saved_locations","last_restored_at","INTEGER NOT NULL DEFAULT 0");
+        ensureColumn("saved_locations","last_refill_at","INTEGER NOT NULL DEFAULT 0");
         for(GraveRow grave:list("SELECT * FROM graves WHERE owner_uuid IS NULL OR owner_uuid=''",Database::mapGrave)){
             UUID uuid=org.bukkit.Bukkit.getOfflinePlayer(grave.ownerName()).getUniqueId();
             update("UPDATE graves SET owner_uuid=?,public_name=COALESCE(NULLIF(public_name,''),owner_name) WHERE id=?",uuid.toString(),grave.id());
@@ -491,7 +497,7 @@ final class Database implements AutoCloseable {
     synchronized boolean setIpBanExpiry(String ip,long expiresAt){return update("UPDATE ip_bans SET expires_at=? WHERE ip=?",expiresAt,ip)>0;}
     synchronized List<IpBanRow> ipBans(){return list("SELECT * FROM ip_bans ORDER BY banned_at DESC",Database::mapIpBan);}
     private static IpBanRow mapIpBan(ResultSet rs) throws SQLException{return new IpBanRow(rs.getString("ip"),rs.getString("banned_by"),rs.getString("reason"),rs.getLong("banned_at"),rs.getLong("expires_at"),rs.getString("source_player"),rs.getString("source_entry"));}
-    record SavedLocationRow(long id,String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy,long discoveredAt,String status){}
+    record SavedLocationRow(long id,String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy,long discoveredAt,String status,int boundaryRadius,long lastSnapshotAt,long lastRestoredAt,long lastRefillAt){}
     synchronized long saveLocation(String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy){
         try(PreparedStatement ps=connection.prepareStatement("INSERT INTO saved_locations(name,world,x,y,z,structure_type,manual,registered_by,discovered_at) VALUES(?,?,?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)){
             bind(ps,name,world,x,y,z,structureType,manual?1:0,registeredBy,System.currentTimeMillis());ps.executeUpdate();
@@ -504,7 +510,16 @@ final class Database implements AutoCloseable {
     synchronized boolean deleteSavedLocation(long id){return update("DELETE FROM saved_locations WHERE id=?",id)>0;}
     synchronized boolean renameSavedLocation(long id,String newName){return update("UPDATE saved_locations SET name=? WHERE id=?",newName,id)>0;}
     synchronized void setSavedLocationStatus(long id,String status){update("UPDATE saved_locations SET status=? WHERE id=?",status,id);}
-    private static SavedLocationRow mapSavedLocation(ResultSet rs) throws SQLException{return new SavedLocationRow(rs.getLong("id"),rs.getString("name"),rs.getString("world"),rs.getDouble("x"),rs.getDouble("y"),rs.getDouble("z"),rs.getString("structure_type"),rs.getInt("manual")!=0,rs.getString("registered_by"),rs.getLong("discovered_at"),rs.getString("status"));}
+    synchronized void markSnapshot(long id){update("UPDATE saved_locations SET last_snapshot_at=? WHERE id=?",System.currentTimeMillis(),id);}
+    synchronized void markRestored(long id){update("UPDATE saved_locations SET last_restored_at=? WHERE id=?",System.currentTimeMillis(),id);}
+    synchronized void markRefilled(long id){update("UPDATE saved_locations SET last_refill_at=? WHERE id=?",System.currentTimeMillis(),id);}
+
+    record RefillContainerRow(long id,long monumentId,String world,int x,int y,int z,String lootTable,long lastRefilledAt,String refilledBy){}
+    synchronized void registerRefillContainer(long monumentId,String world,int x,int y,int z,String lootTable){update("INSERT INTO monument_refill_containers(monument_id,world,x,y,z,loot_table) VALUES(?,?,?,?,?,?) ON CONFLICT(world,x,y,z) DO UPDATE SET monument_id=excluded.monument_id,loot_table=excluded.loot_table",monumentId,world,x,y,z,lootTable);}
+    synchronized List<RefillContainerRow> refillContainers(long monumentId){return list("SELECT * FROM monument_refill_containers WHERE monument_id=? ORDER BY id",Database::mapRefillContainer,monumentId);}
+    synchronized void markContainerRefilled(long containerRowId,String admin){update("UPDATE monument_refill_containers SET last_refilled_at=?,refilled_by=? WHERE id=?",System.currentTimeMillis(),admin,containerRowId);}
+    private static RefillContainerRow mapRefillContainer(ResultSet rs) throws SQLException{return new RefillContainerRow(rs.getLong("id"),rs.getLong("monument_id"),rs.getString("world"),rs.getInt("x"),rs.getInt("y"),rs.getInt("z"),rs.getString("loot_table"),rs.getLong("last_refilled_at"),rs.getString("refilled_by"));}
+    private static SavedLocationRow mapSavedLocation(ResultSet rs) throws SQLException{return new SavedLocationRow(rs.getLong("id"),rs.getString("name"),rs.getString("world"),rs.getDouble("x"),rs.getDouble("y"),rs.getDouble("z"),rs.getString("structure_type"),rs.getInt("manual")!=0,rs.getString("registered_by"),rs.getLong("discovered_at"),rs.getString("status"),rs.getInt("boundary_radius"),rs.getLong("last_snapshot_at"),rs.getLong("last_restored_at"),rs.getLong("last_refill_at"));}
     synchronized boolean hasBlocked(String blocker,String blocked){return one("SELECT 1 FROM blocked_messages WHERE blocker=? AND blocked=?",rs->true,blocker,blocked)!=null;}
     synchronized boolean blockPlayer(String blocker,String blocked){if(hasBlocked(blocker,blocked))return false;update("INSERT INTO blocked_messages(blocker,blocked) VALUES(?,?)",blocker,blocked);return true;}
     synchronized boolean unblockPlayer(String blocker,String blocked){return update("DELETE FROM blocked_messages WHERE blocker=? AND blocked=?",blocker,blocked)>0;}
@@ -525,6 +540,7 @@ final class Database implements AutoCloseable {
     }
     synchronized void logAudit(String adminName,String action,String detail){update("INSERT INTO admin_audit(occurred_at,admin_name,action,detail) VALUES(?,?,?,?)",System.currentTimeMillis(),adminName,action,detail);}
     synchronized List<AuditRow> recentAudit(int limit){return list("SELECT * FROM admin_audit ORDER BY occurred_at DESC LIMIT ?",rs->new AuditRow(rs.getLong("id"),rs.getLong("occurred_at"),rs.getString("admin_name"),rs.getString("action"),rs.getString("detail")),limit);}
+    synchronized List<AuditRow> monumentAudit(long monumentId,int limit){return list("SELECT * FROM admin_audit WHERE action LIKE 'MONUMENT_%' AND detail LIKE ? ORDER BY occurred_at DESC LIMIT ?",rs->new AuditRow(rs.getLong("id"),rs.getLong("occurred_at"),rs.getString("admin_name"),rs.getString("action"),rs.getString("detail")),"location=#"+monumentId+" %",limit);}
     synchronized List<HistoryRow> history(Long factionId,int limit,int offset){if(factionId==null)return list("SELECT * FROM history WHERE scope='SERVER' ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,limit,offset);return list("SELECT * FROM history WHERE scope='FACTION' AND faction_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,factionId,limit,offset);}
     synchronized int dailySold(String player,String item,String day){return integer("SELECT quantity FROM daily_sales WHERE player=? AND item=? AND day=?",player,item,day);}
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}

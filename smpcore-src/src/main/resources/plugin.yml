@@ -95,10 +95,9 @@ commands:
   enderchest:
     description: Open and upgrade persistent Ender storage
     aliases: [ec]
-  warn:
-    description: Issue a staff warning to a player
-  warnings:
-    description: View a player's warning/punishment history
+  # warn/warnings intentionally removed: PunisherX now owns /warn (and /history for viewing).
+  # SMPCore's old warning data lives on read-only in its own database (warnings table, punishments
+  # table) for audit purposes -- migrated copies are in PunisherX's history tagged "[Legacy SMPCore]".
   myorders:
     description: View and claim your DonutOrders buy orders, including partial deliveries
   ashfall:
@@ -112,7 +111,7 @@ commands:
   afk:
     description: Toggle AFK status
   admin:
-    description: "Console-only SMPCore admin management: list | add <player> | remove <player>"
+    description: "Console-only SMPCore admin management: list | add <player> | remove <player> | simlogin <name> (test ban-enforcement listeners without a real client)"
   shout:
     description: Send a prominent server-wide announcement
 permissions:

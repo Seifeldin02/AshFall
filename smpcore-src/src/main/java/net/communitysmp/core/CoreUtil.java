@@ -47,7 +47,41 @@ final class CoreUtil {
         }catch(ArithmeticException|NumberFormatException ignored){return-1;}
     }
     static boolean moneyParserSelfTest(){return parseMoney("1k")==1000&&parseMoney("2.5k")==2500&&parseMoney("1m")==1000000&&parseMoney("1mil")==1000000&&parseMoney("2.5m")==2500000&&parseMoney("1b")==1000000000&&parseMoney("-1")<0&&parseMoney("1e9")<0&&parseMoney("9999999999999999")<0;}
+    /** Uses raw codepoint values (not literal combining-mark characters in source) so the test string can't
+     *  be silently mangled by editor/encoding normalization — a real risk for this specific category of
+     *  character. */
+    static boolean combiningMarkSelfTest(){
+        StringBuilder zalgo=new StringBuilder().appendCodePoint('e');
+        for(int i=0;i<10;i++)zalgo.appendCodePoint(0x0301);
+        String cleaned=stripExcessiveCombiningMarks(zalgo.toString(),2);
+        int marks=0;for(int i=0;i<cleaned.length();i++)if(cleaned.charAt(i)==0x0301)marks++;
+        boolean plainUnaffected="hello world".equals(stripExcessiveCombiningMarks("hello world",2));
+        String cafe=new StringBuilder("cafe").appendCodePoint(0x0301).toString();
+        boolean accentPreserved=cafe.equals(stripExcessiveCombiningMarks(cafe,2));
+        return cleaned.charAt(0)=='e'&&marks==2&&cleaned.length()==3&&plainUnaffected&&accentPreserved;
+    }
     static String pretty(String key){String[] parts=key.toLowerCase(Locale.ROOT).split("_");StringBuilder b=new StringBuilder();for(String p:parts){if(!p.isEmpty())b.append(Character.toUpperCase(p.charAt(0))).append(p.substring(1)).append(' ');}return b.toString().trim();}
+    static String timeAgo(long epochMillis){if(epochMillis<=0)return"never";long seconds=Math.max(0,(System.currentTimeMillis()-epochMillis)/1000);if(seconds<60)return seconds+"s ago";long minutes=seconds/60;if(minutes<60)return minutes+"m ago";long hours=minutes/60;if(hours<24)return hours+"h ago";long days=hours/24;return days+"d ago";}
+    /** Caps consecutive Unicode combining marks ("zalgo text") per base character. Minecraft's chat protocol
+     *  happily transmits arbitrary combining-mark stacks (they're valid Unicode, nothing to reject), but
+     *  client-side font shaping has to lay out every mark stacked on the same glyph, and that cost scales
+     *  badly enough per-character that a short, otherwise-unremarkable message can make every recipient's
+     *  client stall rendering it — a real, longstanding chat-griefing technique, not a server-side bug. The
+     *  server can't fix client font shaping, but it can refuse to relay glyph stacks deep enough to trigger
+     *  it, which is the only lever actually available here. */
+    static String stripExcessiveCombiningMarks(String input,int maxPerChar){
+        StringBuilder result=new StringBuilder(input.length());
+        int combiningRun=0;
+        for(int i=0;i<input.length();){
+            int cp=input.codePointAt(i);
+            int type=Character.getType(cp);
+            boolean combining=type==Character.NON_SPACING_MARK||type==Character.ENCLOSING_MARK||type==Character.COMBINING_SPACING_MARK;
+            if(combining){combiningRun++;if(combiningRun<=maxPerChar)result.appendCodePoint(cp);}
+            else{combiningRun=0;result.appendCodePoint(cp);}
+            i+=Character.charCount(cp);
+        }
+        return result.toString();
+    }
     static ItemStack named(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));if(lore!=null)meta.lore(lore.stream().map(s->Component.text(s,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
     static boolean give(Player p,ItemStack item){Map<Integer,ItemStack> left=p.getInventory().addItem(item);left.values().forEach(i->p.getWorld().dropItemNaturally(p.getLocation(),i));return left.isEmpty();}
     static String ipHash(Player p){try{String ip=p.getAddress()==null?"unknown":p.getAddress().getAddress().getHostAddress();byte[] h=MessageDigest.getInstance("SHA-256").digest(ip.getBytes(StandardCharsets.UTF_8));return HexFormat.of().formatHex(h,0,12);}catch(Exception e){return "unknown";}}
