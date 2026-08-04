@@ -41,6 +41,16 @@ final class IpBanService implements Listener {
      *  and no risk of this service corrupting data it doesn't own. */
     private File authMeDatabase(){return new File(plugin.getDataFolder().getParentFile(),"AuthMe/authme.db");}
 
+    /** Same online-connection > AuthMe-last-login > AuthMe-registration priority ban() already uses, exposed
+     *  for ModerationService's unified "view" command so it can show which of Ashfall's ip_bans actually
+     *  apply to a given player without duplicating this resolution logic. Null if nothing on record at all. */
+    String lastKnownIp(String username){
+        Player online=plugin.getServer().getPlayerExact(username);
+        if(online!=null&&online.getAddress()!=null)return online.getAddress().getAddress().getHostAddress();
+        AuthMeRecord record=lookupAuthMe(username);
+        if(record==null)return null;
+        return record.ip()!=null&&!record.ip().isBlank()?record.ip():record.regIp();
+    }
     private record AuthMeRecord(String username,String ip,String regIp,long lastLogin){}
     private AuthMeRecord lookupAuthMe(String username){
         File dbFile=authMeDatabase();if(!dbFile.isFile())return null;

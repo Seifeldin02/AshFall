@@ -9,11 +9,9 @@ import com.sk89q.worldedit.extent.clipboard.io.BuiltInClipboardFormat;
 import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
 import com.sk89q.worldedit.extent.clipboard.io.ClipboardWriter;
 import com.sk89q.worldedit.function.operation.ForwardExtentCopy;
-import com.sk89q.worldedit.function.operation.Operation;
 import com.sk89q.worldedit.function.operation.Operations;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.regions.CuboidRegion;
-import com.sk89q.worldedit.session.ClipboardHolder;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -141,13 +139,6 @@ final class MonumentService {
         }
         return clipboard;
     }
-    private void pasteClipboard(Clipboard clipboard,World bukkitWorld,int x,int y,int z) throws Exception{
-        com.sk89q.worldedit.world.World weWorld=BukkitAdapter.adapt(bukkitWorld);
-        try(EditSession editSession=WorldEdit.getInstance().newEditSession(weWorld)){
-            Operation paste=new ClipboardHolder(clipboard).createPaste(editSession).to(BlockVector3.at(x,y,z)).ignoreAirBlocks(false).build();
-            Operations.complete(paste);
-        }
-    }
     private void saveSchematic(Clipboard clipboard,java.io.File file) throws Exception{
         file.getParentFile().mkdirs();
         try(ClipboardWriter writer=BuiltInClipboardFormat.SPONGE_SCHEMATIC.getWriter(new java.io.FileOutputStream(file))){
@@ -158,6 +149,75 @@ final class MonumentService {
         try(ClipboardReader reader=BuiltInClipboardFormat.SPONGE_SCHEMATIC.getReader(new java.io.FileInputStream(file))){
             return reader.read();
         }
+    }
+
+    /** How many blocks a sync actually found different, and (when apply=true) actually wrote. Previously
+     *  confirm pasted the ENTIRE clipboard/cuboid unconditionally — for an Ancient City-sized region that's
+     *  ~3.1M blocks written regardless of how much was actually damaged, which is what caused the ~20s
+     *  single-tick freeze. Real damage is typically a tiny fraction of the total area (a few dozen to a few
+     *  thousand blocks), so writing only the positions that differ turns "always touch millions of blocks"
+     *  into "touch roughly as many blocks as were actually broken" — the common case becomes near-instant,
+     *  and the worst case (a structure that's mostly different, e.g. never reconstructed before) still scales
+     *  with real damage instead of a fixed multi-million-block floor. */
+    private record SyncResult(long differing,long applied){}
+    /** World-to-world diff+apply (same-seed reconstruction). Comparison uses BlockData (not just Material) via
+     *  ChunkSnapshot — cheap in-memory array reads, same technique as the old exactDiffCount() — so a rotated
+     *  stair or a different water level counts as "different" too, not just a changed block type. Only when
+     *  apply=true does it actually read/write anything through WorldEdit (getFullBlock/setBlock, so container
+     *  NBT and other block-entity data comes along with the copy, not just the bare block type). */
+    private SyncResult syncWorldToWorld(World source,World target,Bounds b,boolean apply) throws Exception{
+        long differing=0,applied=0;
+        int minY=Math.max(b.minY(),Math.max(source.getMinHeight(),target.getMinHeight())),maxY=Math.min(b.maxY(),Math.min(source.getMaxHeight(),target.getMaxHeight())-1);
+        int minChunkX=b.minX()>>4,maxChunkX=b.maxX()>>4,minChunkZ=b.minZ()>>4,maxChunkZ=b.maxZ()>>4;
+        com.sk89q.worldedit.world.World weSource=apply?BukkitAdapter.adapt(source):null;
+        com.sk89q.worldedit.world.World weTarget=apply?BukkitAdapter.adapt(target):null;
+        try(EditSession sourceSession=apply?WorldEdit.getInstance().newEditSession(weSource):null;
+            EditSession targetSession=apply?WorldEdit.getInstance().newEditSession(weTarget):null){
+            for(int cx=minChunkX;cx<=maxChunkX;cx++)for(int cz=minChunkZ;cz<=maxChunkZ;cz++){
+                org.bukkit.ChunkSnapshot sourceSnap=source.getChunkAt(cx,cz).getChunkSnapshot(false,false,false);
+                org.bukkit.ChunkSnapshot targetSnap=target.getChunkAt(cx,cz).getChunkSnapshot(false,false,false);
+                int xStart=Math.max(b.minX(),cx*16),xEnd=Math.min(b.maxX(),cx*16+15);
+                int zStart=Math.max(b.minZ(),cz*16),zEnd=Math.min(b.maxZ(),cz*16+15);
+                for(int x=xStart;x<=xEnd;x++)for(int y=minY;y<=maxY;y++)for(int z=zStart;z<=zEnd;z++){
+                    if(sourceSnap.getBlockData(x&15,y,z&15).equals(targetSnap.getBlockData(x&15,y,z&15)))continue;
+                    differing++;
+                    if(apply){
+                        BlockVector3 pos=BlockVector3.at(x,y,z);
+                        targetSession.setBlock(pos,sourceSession.getFullBlock(pos));
+                        applied++;
+                    }
+                }
+            }
+        }
+        return new SyncResult(differing,applied);
+    }
+    /** Clipboard-to-world diff+apply (schematic restore). The clipboard was captured with its origin set to
+     *  the monument's own center, so its internal absolute coordinates already line up 1:1 with the live
+     *  world's coordinates — no offset math needed. Comparison converts the live block's BlockData to a
+     *  WorldEdit BlockState via BukkitAdapter so both sides compare as the same type; a Clipboard has no
+     *  chunk-snapshot equivalent (it's already an in-memory structure, not a live chunk system) so this reads
+     *  it directly, but that's still plain array access internally, not disk/chunk I/O. */
+    private SyncResult syncClipboardToWorld(Clipboard source,World target,Bounds b,boolean apply) throws Exception{
+        long differing=0,applied=0;
+        int minY=Math.max(b.minY(),target.getMinHeight()),maxY=Math.min(b.maxY(),target.getMaxHeight()-1);
+        int minChunkX=b.minX()>>4,maxChunkX=b.maxX()>>4,minChunkZ=b.minZ()>>4,maxChunkZ=b.maxZ()>>4;
+        com.sk89q.worldedit.world.World weTarget=apply?BukkitAdapter.adapt(target):null;
+        try(EditSession targetSession=apply?WorldEdit.getInstance().newEditSession(weTarget):null){
+            for(int cx=minChunkX;cx<=maxChunkX;cx++)for(int cz=minChunkZ;cz<=maxChunkZ;cz++){
+                org.bukkit.ChunkSnapshot targetSnap=target.getChunkAt(cx,cz).getChunkSnapshot(false,false,false);
+                int xStart=Math.max(b.minX(),cx*16),xEnd=Math.min(b.maxX(),cx*16+15);
+                int zStart=Math.max(b.minZ(),cz*16),zEnd=Math.min(b.maxZ(),cz*16+15);
+                for(int x=xStart;x<=xEnd;x++)for(int y=minY;y<=maxY;y++)for(int z=zStart;z<=zEnd;z++){
+                    BlockVector3 pos=BlockVector3.at(x,y,z);
+                    com.sk89q.worldedit.world.block.BlockState sourceBlock=source.getBlock(pos);
+                    com.sk89q.worldedit.world.block.BlockState targetBlock=BukkitAdapter.adapt(targetSnap.getBlockData(x&15,y,z&15));
+                    if(sourceBlock.equals(targetBlock))continue;
+                    differing++;
+                    if(apply){targetSession.setBlock(pos,source.getFullBlock(pos));applied++;}
+                }
+            }
+        }
+        return new SyncResult(differing,applied);
     }
 
     boolean command(CommandSender sender,String[] args){
@@ -421,6 +481,21 @@ final class MonumentService {
      *  this next to it" after the fact. preview checks the paste region against faction claims (the one
      *  automated safety check that IS reliably possible) and requires confirm as a separate step; confirm
      *  additionally snapshots current state first, so even a restore mistake is itself undoable. */
+    /** The one remaining unbounded cost after switching to diff-only writes: with players online and no
+     *  chunked/time-sliced execution built yet, a genuinely massive apply (e.g. a structure that's never been
+     *  reconstructed before, so almost everything "differs") would still freeze the server for everyone. Until
+     *  that's built, block it outright unless an admin explicitly opts in via maintenance mode (server-list
+     *  already shows "under maintenance" for that flag, so this reuses an existing, visible signal rather than
+     *  adding a separate one). No online players at all means no one to freeze, so that case is always allowed. */
+    private static final long LARGE_APPLY_THRESHOLD=200_000;
+    private boolean blockedByLargeApplyGuard(CommandSender sender,long applyCount){
+        if(applyCount<=LARGE_APPLY_THRESHOLD)return false;
+        boolean anyoneOnline=!plugin.getServer().getOnlinePlayers().isEmpty();
+        boolean maintenance=plugin.getConfig().getBoolean("maintenance.enabled",false);
+        if(!anyoneOnline||maintenance)return false;
+        CoreUtil.error(sender,applyCount+" blocks need writing — that's large enough to freeze the server for everyone online (chunked/time-sliced execution isn't built yet). Either wait for a lower-traffic moment, or explicitly enable maintenance mode first (it already kicks the server list to \"under maintenance\") and run this again.");
+        return true;
+    }
     private boolean restore(CommandSender player,String[] args){
         if(!worldEditReady(player))return true;
         if(args.length<4){CoreUtil.error(player,"Usage: /ashfall monument restore <id> preview|confirm");return true;}
@@ -435,19 +510,24 @@ final class MonumentService {
         if(world==null){CoreUtil.error(player,"That location's world isn't loaded.");return true;}
         Bounds b=resolveBounds(row,world);
         String warning=claimWarning(world,b,x,y,z);
-        CoreUtil.msg(player,"Restore preview for \""+row.name()+"\": "+b.size()+" ("+b.blockCount()+" blocks) at "+row.world()+" "+x+","+y+","+z+".");
+        Clipboard toRestore;
+        SyncResult scan;
+        try{
+            toRestore=loadSchematic(schem);
+            scan=syncClipboardToWorld(toRestore,world,b,false);
+        }catch(Exception e){CoreUtil.error(player,"Scan failed: "+e);plugin.getLogger().warning("[monument restore scan] "+e);return true;}
+        CoreUtil.msg(player,"Restore "+(confirm?"— applying":"preview")+" for \""+row.name()+"\": "+b.size()+" area, "+scan.differing()+" block(s) actually differ from the snapshot and would be written (not the full "+b.blockCount()+"-block area).");
         if(!warning.isEmpty())CoreUtil.error(player,warning+"Proceeding with confirm will overwrite blocks there.");
         if(!confirm){CoreUtil.msg(player,"Preview only — nothing changed. Run 'restore "+args[2]+" confirm' to actually apply it.");return true;}
-        if(b.blockCount()>1_000_000)CoreUtil.error(player,"This is a "+b.blockCount()+"-block area — copying it runs synchronously and WILL briefly freeze the whole server. Not a crash, but every player will stall until it finishes.");
+        if(blockedByLargeApplyGuard(player,scan.differing()))return true;
         try{
             Clipboard before=copyRegion(world,b,x,y,z);
             saveSchematic(before,schemFile(row.id(),"_pre_restore_"+System.currentTimeMillis()));
-            Clipboard toRestore=loadSchematic(schem);
-            pasteClipboard(toRestore,world,x,y,z);
+            syncClipboardToWorld(toRestore,world,b,true);
         }catch(Exception e){CoreUtil.error(player,"Restore failed: "+e);plugin.getLogger().warning("[monument restore] "+e);return true;}
         db.markRestored(row.id());
-        db.logAudit(player.getName(),"MONUMENT_RESTORE","location=#"+row.id()+" \""+row.name()+"\" area="+b.size()+" claim_warning="+(!warning.isEmpty()));
-        CoreUtil.msg(player,"Restored \""+row.name()+"\" from its snapshot. The pre-restore state was itself saved in case this needs to be undone.");
+        db.logAudit(player.getName(),"MONUMENT_RESTORE","location=#"+row.id()+" \""+row.name()+"\" area="+b.size()+" applied="+scan.differing()+" claim_warning="+(!warning.isEmpty()));
+        CoreUtil.msg(player,"Restored \""+row.name()+"\" from its snapshot — "+scan.differing()+" block(s) written. The pre-restore state was itself saved in case this needs to be undone.");
         return true;
     }
 
@@ -504,26 +584,70 @@ final class MonumentService {
             default->{CoreUtil.error(player,"Usage: /ashfall monument refill <id> scan|preview|confirm [force]");yield true;}
         };
     }
+    /** Marker stored in monument_refill_containers.loot_table for a container confirmed genuine (present in
+     *  the same-seed pristine copy) but which the pristine copy shows never carries a LootTable NBT tag at
+     *  all — e.g. Trial Chambers' reward barrels, which vanilla populates at runtime through the trial/vault
+     *  mechanism rather than a static structure loot table. These are real, unambiguously part of the
+     *  structure, but there is nothing for Lootable.setLootTable() to re-arm; refillApply() reports them
+     *  separately instead of silently skipping or mishandling them. */
+    private static final String NO_LOOT_TABLE_MARKER="NO_LOOT_TABLE";
+    /** Registers a container position only if the SAME-SEED pristine copy also has a container there — reusing
+     *  the exact same disposable temp world reconstruct() uses. Genuineness is "does this exact position
+     *  generate as a container at all in an untouched copy", NOT "does it currently carry a loot table" — the
+     *  first attempt at this check required a live LootTable NBT tag in the pristine copy, which incorrectly
+     *  rejected genuine Trial Chambers reward barrels (confirmed live: /data get block ... LootTable on a
+     *  known-genuine barrel in the pristine world returns nothing — those are populated by the trial/vault
+     *  reward mechanism at runtime, not a static structure loot table, so requiring one was simply wrong for
+     *  that container role). A player's own hopper/dispenser sitting inside a monument's now-much-larger real
+     *  bounds will be ordinary terrain in the temp world at that position — not a container of any kind — so
+     *  it's still correctly rejected regardless of loot-table presence. Only for structure types with vanilla
+     *  worldgen this server can locate (needs WorldEdit for the temp world, same as reconstruct); if that's
+     *  unavailable, falls back to the old live-only check with a clear note that it may include false
+     *  positives. */
     private boolean refillScan(CommandSender player,Database.SavedLocationRow row,World world,Bounds b){
+        World tempWorld=null;
+        if(plugin.getServer().getPluginManager().getPlugin("WorldEdit")!=null){
+            tempWorld=ensureReconstructionWorld(player,world);
+            if(tempWorld!=null){
+                int minChunkX=b.minX()>>4,maxChunkX=b.maxX()>>4,minChunkZ=b.minZ()>>4,maxChunkZ=b.maxZ()>>4;
+                for(int cx=minChunkX;cx<=maxChunkX;cx++)for(int cz=minChunkZ;cz<=maxChunkZ;cz++)tempWorld.getChunkAt(cx,cz).load(true);
+            }
+        }
         CoreUtil.msg(player,"Scanning "+b.size()+" ("+b.blockCount()+" blocks) around \""+row.name()+"\" for containers…"+(b.blockCount()>500_000?" this is a large area and may take a moment.":"")+" This runs once, on demand, never automatically.");
         Map<Material,Integer> foundByType=new java.util.EnumMap<>(Material.class);
         Map<Material,Integer> excludedByType=new java.util.EnumMap<>(Material.class);
-        int registered=0;
-        for(int x=b.minX();x<=b.maxX();x++)for(int y=b.minY();y<=b.maxY();y++)for(int z=b.minZ();z<=b.maxZ();z++){
-            Material type=world.getBlockAt(x,y,z).getType();
-            if(EXCLUDED_SPECIAL.contains(type)){excludedByType.merge(type,1,Integer::sum);continue;}
-            if(!CONTAINER_TYPES.contains(type))continue;
-            db.registerRefillContainer(row.id(),world.getName(),x,y,z,null);
-            foundByType.merge(type,1,Integer::sum);
-            registered++;
+        int registered=0,rejectedNotGenuine=0,noLootTable=0;
+        World finalTempWorld=tempWorld;
+        int minChunkX=b.minX()>>4,maxChunkX=b.maxX()>>4,minChunkZ=b.minZ()>>4,maxChunkZ=b.maxZ()>>4;
+        for(int cx=minChunkX;cx<=maxChunkX;cx++)for(int cz=minChunkZ;cz<=maxChunkZ;cz++){
+            org.bukkit.ChunkSnapshot liveSnap=world.getChunkAt(cx,cz).getChunkSnapshot(false,false,false);
+            int xStart=Math.max(b.minX(),cx*16),xEnd=Math.min(b.maxX(),cx*16+15);
+            int zStart=Math.max(b.minZ(),cz*16),zEnd=Math.min(b.maxZ(),cz*16+15);
+            for(int x=xStart;x<=xEnd;x++)for(int y=b.minY();y<=b.maxY();y++)for(int z=zStart;z<=zEnd;z++){
+                Material type=liveSnap.getBlockType(x&15,y,z&15);
+                if(EXCLUDED_SPECIAL.contains(type)){excludedByType.merge(type,1,Integer::sum);continue;}
+                if(!CONTAINER_TYPES.contains(type))continue;
+                String lootMarker=null;
+                if(finalTempWorld!=null){
+                    org.bukkit.block.BlockState tempState=finalTempWorld.getBlockAt(x,y,z).getState();
+                    if(!CONTAINER_TYPES.contains(tempState.getType())){rejectedNotGenuine++;continue;}
+                    boolean hasLootTable=tempState instanceof org.bukkit.loot.Lootable lootable&&lootable.getLootTable()!=null;
+                    if(!hasLootTable){lootMarker=NO_LOOT_TABLE_MARKER;noLootTable++;}
+                }
+                db.registerRefillContainer(row.id(),world.getName(),x,y,z,lootMarker);
+                foundByType.merge(type,1,Integer::sum);
+                registered++;
+            }
         }
-        if(registered==0&&excludedByType.isEmpty()){
+        if(registered==0&&excludedByType.isEmpty()&&rejectedNotGenuine==0){
             CoreUtil.msg(player,"Scan complete: no supported refillable containers found in \""+row.name()+"\"'s area. Either this structure genuinely has none (e.g. an ocean monument), the area is wrong (check /ashfall monument inspect "+row.id()+" — 'fallback cube' means /monument locate never captured real bounds for this one), or they haven't generated/loaded in yet.");
             return true;
         }
-        CoreUtil.msg(player,"Scan complete: "+registered+" container(s) found and registered to \""+row.name()+"\".");
+        CoreUtil.msg(player,"Scan complete: "+registered+" container(s) found and registered to \""+row.name()+"\"."+(tempWorld==null?" (WorldEdit unavailable — could not cross-check against a same-seed copy, so this may include player-placed containers that happen to fall inside the area.)":""));
         if(!foundByType.isEmpty()){StringBuilder types=new StringBuilder();foundByType.forEach((m,c)->types.append(m.name()).append('×').append(c).append(' '));CoreUtil.msg(player,"  Found: "+types);}
         if(!excludedByType.isEmpty()){StringBuilder types=new StringBuilder();excludedByType.forEach((m,c)->types.append(m.name()).append('×').append(c).append(' '));CoreUtil.msg(player,"  Skipped (not ordinary refillable containers — see /ashfall monument help): "+types);}
+        if(rejectedNotGenuine>0)CoreUtil.msg(player,"  Skipped "+rejectedNotGenuine+" container(s) that the same-seed copy shows are NOT part of the original structure (likely player-placed, just sitting inside this monument's bounds).");
+        if(noLootTable>0)CoreUtil.msg(player,"  Note: "+noLootTable+" of the registered containers never carry a loot table even in the pristine copy (e.g. Trial Vault reward barrels, populated at runtime by that mechanism) — they'll show up but refill can't re-arm them via a loot table; see /ashfall monument help.");
         CoreUtil.msg(player,"Run /ashfall monument refill "+row.id()+" preview to see what's eligible.");
         return true;
     }
@@ -535,8 +659,9 @@ final class MonumentService {
         org.bukkit.loot.LootTable table=plugin.getServer().getLootTable(NamespacedKey.minecraft(lootKey));
         if(table==null){CoreUtil.error(player,"Loot table \""+lootKey+"\" isn't available on this server/version.");return true;}
         long now=System.currentTimeMillis();
-        List<Database.RefillContainerRow> eligible=new java.util.ArrayList<>(),skippedPlayerItems=new java.util.ArrayList<>(),skippedCooldown=new java.util.ArrayList<>(),skippedPending=new java.util.ArrayList<>();
+        List<Database.RefillContainerRow> eligible=new java.util.ArrayList<>(),skippedPlayerItems=new java.util.ArrayList<>(),skippedCooldown=new java.util.ArrayList<>(),skippedPending=new java.util.ArrayList<>(),skippedNoLootTable=new java.util.ArrayList<>();
         for(Database.RefillContainerRow c:containers){
+            if(NO_LOOT_TABLE_MARKER.equals(c.lootTable())){skippedNoLootTable.add(c);continue;}
             org.bukkit.block.BlockState state=world.getBlockAt(c.x(),c.y(),c.z()).getState();
             if(!(state instanceof org.bukkit.loot.Lootable lootable))continue;
             if(lootable.getLootTable()!=null&&!force){skippedPending.add(c);continue;}
@@ -550,6 +675,7 @@ final class MonumentService {
         CoreUtil.msg(player,"Refill "+(confirm?"— applying":"preview")+" for \""+row.name()+"\" using loot table \""+lootKey+"\":");
         CoreUtil.msg(player,"  Still has original vanilla loot pending (will refill itself on first open, no action needed): "+skippedPending.size());
         CoreUtil.msg(player,"  Eligible (empty, loot table already spent): "+eligible.size()+" | Skipped (not empty — has items, possibly a player's): "+skippedPlayerItems.size()+" | Skipped (cooldown, refilled <24h ago): "+skippedCooldown.size());
+        if(!skippedNoLootTable.isEmpty())CoreUtil.msg(player,"  Not applicable: "+skippedNoLootTable.size()+" container(s) confirmed genuine but never loot-table-based (e.g. Trial Vault reward barrels) — refill can't re-arm these via a loot table, nothing to do here.");
         if(!confirm){
             for(Database.RefillContainerRow c:eligible)CoreUtil.msg(player,"    would refill: "+c.world()+" "+c.x()+","+c.y()+","+c.z());
             CoreUtil.msg(player,"Preview only — nothing changed. Run 'refill "+row.id()+" confirm' to apply, or add 'force' to override skips.");
@@ -592,32 +718,6 @@ final class MonumentService {
         org.bukkit.WorldCreator creator=new org.bukkit.WorldCreator(tempName).seed(reference.getSeed()).environment(reference.getEnvironment()).type(org.bukkit.WorldType.NORMAL).generateStructures(true);
         return creator.createWorld();
     }
-    /** Exact, full block-by-block comparison across the whole bounds — no sampling. For a monument-sized
-     *  region (even an Ancient City's real captured bounds, not the old fixed cube) this is still a bounded,
-     *  one-off admin operation, not something running per-tick, so the cost of checking every block instead
-     *  of every-2nd is worth paying for an accurate count before anyone confirms an overwrite. */
-    /** A naive triple-nested getBlockAt() loop over a large monument (an Ancient City's real captured bounds
-     *  is ~3.1 million blocks — 6.2 million getBlockAt() calls to compare both worlds) is slow enough to trip
-     *  Paper's watchdog on a single tick (confirmed live: an early-warning thread dump, not a hard crash, but
-     *  still a genuine multi-second server-wide freeze — not acceptable). ChunkSnapshot.getBlockType() reads
-     *  from a flat pre-copied array instead of doing a full chunk/block-state lookup per call, so this captures
-     *  one snapshot per chunk (still main-thread, but O(chunks) instead of O(blocks) worth of API overhead —
-     *  ~240 chunks for that Ancient City instead of 3.1M individual block fetches) and does the actual 6.2M
-     *  comparisons against the cheap in-memory arrays instead. */
-    private long exactDiffCount(World liveWorld,World tempWorld,Bounds b){
-        long diff=0;
-        int minY=Math.max(b.minY(),Math.max(liveWorld.getMinHeight(),tempWorld.getMinHeight())),maxY=Math.min(b.maxY(),Math.min(liveWorld.getMaxHeight(),tempWorld.getMaxHeight())-1);
-        int minChunkX=b.minX()>>4,maxChunkX=b.maxX()>>4,minChunkZ=b.minZ()>>4,maxChunkZ=b.maxZ()>>4;
-        for(int cx=minChunkX;cx<=maxChunkX;cx++)for(int cz=minChunkZ;cz<=maxChunkZ;cz++){
-            org.bukkit.ChunkSnapshot liveSnap=liveWorld.getChunkAt(cx,cz).getChunkSnapshot(false,false,false);
-            org.bukkit.ChunkSnapshot tempSnap=tempWorld.getChunkAt(cx,cz).getChunkSnapshot(false,false,false);
-            int xStart=Math.max(b.minX(),cx*16),xEnd=Math.min(b.maxX(),cx*16+15);
-            int zStart=Math.max(b.minZ(),cz*16),zEnd=Math.min(b.maxZ(),cz*16+15);
-            for(int x=xStart;x<=xEnd;x++)for(int y=minY;y<=maxY;y++)for(int z=zStart;z<=zEnd;z++)
-                if(liveSnap.getBlockType(x&15,y,z&15)!=tempSnap.getBlockType(x&15,y,z&15))diff++;
-        }
-        return diff;
-    }
     private boolean reconstruct(CommandSender player,String[] args){
         if(!worldEditReady(player))return true;
         if(args.length<4){CoreUtil.error(player,"Usage: /ashfall monument reconstruct <id> preview|confirm");return true;}
@@ -634,22 +734,22 @@ final class MonumentService {
         CoreUtil.msg(player,"Forcing chunk generation in the temp world across "+b.size()+"…"+(b.blockCount()>500_000?" large area, may take a moment.":""));
         int minChunkX=b.minX()>>4,maxChunkX=b.maxX()>>4,minChunkZ=b.minZ()>>4,maxChunkZ=b.maxZ()>>4;
         for(int cx=minChunkX;cx<=maxChunkX;cx++)for(int cz=minChunkZ;cz<=maxChunkZ;cz++)tempWorld.getChunkAt(cx,cz).load(true);
-        long diffCount=exactDiffCount(liveWorld,tempWorld,b);
+        SyncResult scan;
+        try{scan=syncWorldToWorld(tempWorld,liveWorld,b,false);}
+        catch(Exception e){CoreUtil.error(player,"Scan failed: "+e);plugin.getLogger().warning("[monument reconstruct scan] "+e);return true;}
         String warning=claimWarning(liveWorld,b,x,y,z);
-        CoreUtil.msg(player,"Reconstruction "+(confirm?"— applying":"preview")+" for \""+row.name()+"\": "+b.size()+" ("+b.blockCount()+" blocks, "+(row.hasRealBounds()?"real structure bounds":"fallback cube")+") — "+diffCount+" block(s) actually differ between the live structure and the freshly-generated same-seed copy.");
+        CoreUtil.msg(player,"Reconstruction "+(confirm?"— applying":"preview")+" for \""+row.name()+"\": "+b.size()+" area ("+(row.hasRealBounds()?"real structure bounds":"fallback cube")+") — "+scan.differing()+" block(s) actually differ and would be written (not the full "+b.blockCount()+"-block area).");
         if(!warning.isEmpty())CoreUtil.error(player,warning+"Proceeding with confirm will overwrite blocks there.");
         if(!confirm){CoreUtil.msg(player,"Preview only — nothing changed. Run 'reconstruct "+args[2]+" confirm' to actually copy the clean structure over the live one.");return true;}
-        if(b.blockCount()>1_000_000)CoreUtil.error(player,"This is a "+b.blockCount()+"-block area — copying it runs synchronously and WILL briefly freeze the whole server (measured: ~20s for an Ancient City-sized region). Not a crash, but every player will stall until it finishes.");
+        if(blockedByLargeApplyGuard(player,scan.differing()))return true;
         try{
-            Clipboard cleanCopy=copyRegion(tempWorld,b,x,y,z);
-            saveSchematic(cleanCopy,schemFile(row.id(),"_pre_reconstruct_"+System.currentTimeMillis()));
             Clipboard liveBackup=copyRegion(liveWorld,b,x,y,z);
             saveSchematic(liveBackup,schemFile(row.id(),"_pre_reconstruct_backup_"+System.currentTimeMillis()));
-            pasteClipboard(cleanCopy,liveWorld,x,y,z);
+            scan=syncWorldToWorld(tempWorld,liveWorld,b,true);
         }catch(Exception e){CoreUtil.error(player,"Reconstruction failed: "+e);plugin.getLogger().warning("[monument reconstruct] "+e);return true;}
         db.markRestored(row.id());
-        db.logAudit(player.getName(),"MONUMENT_RECONSTRUCT","location=#"+row.id()+" \""+row.name()+"\" area="+b.size()+" diff="+diffCount+" claim_warning="+(!warning.isEmpty()));
-        CoreUtil.msg(player,"Reconstructed \""+row.name()+"\" from a same-seed temp-world copy ("+diffCount+" blocks changed). The pre-reconstruction live state was itself backed up in case this needs to be undone.");
+        db.logAudit(player.getName(),"MONUMENT_RECONSTRUCT","location=#"+row.id()+" \""+row.name()+"\" area="+b.size()+" applied="+scan.applied()+" claim_warning="+(!warning.isEmpty()));
+        CoreUtil.msg(player,"Reconstructed \""+row.name()+"\" from a same-seed temp-world copy ("+scan.applied()+" blocks changed). The pre-reconstruction live state was itself backed up in case this needs to be undone.");
         return true;
     }
 }

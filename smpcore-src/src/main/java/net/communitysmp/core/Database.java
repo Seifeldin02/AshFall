@@ -152,6 +152,8 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS saved_locations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, world TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, structure_type TEXT, manual INTEGER NOT NULL DEFAULT 0, registered_by TEXT, discovered_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE TABLE IF NOT EXISTS monument_refill_containers (id INTEGER PRIMARY KEY AUTOINCREMENT, monument_id INTEGER NOT NULL, world TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, z INTEGER NOT NULL, loot_table TEXT, last_refilled_at INTEGER NOT NULL DEFAULT 0, refilled_by TEXT, UNIQUE(world,x,y,z))");
             s.execute("CREATE INDEX IF NOT EXISTS monument_refill_containers_monument ON monument_refill_containers(monument_id)");
+            s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
+            s.execute("CREATE INDEX IF NOT EXISTS staff_notes_player ON staff_notes(player_uuid,created_at DESC)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
             s.execute("DROP TABLE IF EXISTS private_chests");
         }
@@ -476,6 +478,9 @@ final class Database implements AutoCloseable {
     synchronized void state(String key,String value) { update("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",key,value); }
 
     synchronized List<PlayerRow> richestPlayers() { return list("SELECT * FROM players ORDER BY balance DESC LIMIT 10", rs -> new PlayerRow(rs.getString("id"),rs.getString("name"),rs.getDouble("balance"),rs.getInt("first_spawn")!=0,rs.getInt("guide")!=0,rs.getString("ip_hash"),rs.getInt("personal_slots"),rs.getInt("boss_kills"),rs.getInt("player_kills"),rs.getInt("event_wins"))); }
+    /** Every player who's ever joined (players table is populated on first join, never pruned) — backs
+     *  offline-player autocomplete for moderation commands, where the target is very often not online. */
+    synchronized List<String> allPlayerNames(){return list("SELECT name FROM players ORDER BY name",rs->rs.getString("name"));}
     synchronized List<FactionRow> richestFactions() { return list("SELECT * FROM factions ORDER BY balance DESC LIMIT 10",Database::mapFaction); }
     synchronized List<PlayerRow> topStat(String column) { if(!Set.of("boss_kills","player_kills","event_wins").contains(column)) throw new IllegalArgumentException(); return list("SELECT * FROM players ORDER BY "+column+" DESC,name LIMIT 10",rs -> new PlayerRow(rs.getString("id"),rs.getString("name"),rs.getDouble("balance"),rs.getInt("first_spawn")!=0,rs.getInt("guide")!=0,rs.getString("ip_hash"),rs.getInt("personal_slots"),rs.getInt("boss_kills"),rs.getInt("player_kills"),rs.getInt("event_wins"))); }
 
@@ -555,6 +560,17 @@ final class Database implements AutoCloseable {
     synchronized void logAudit(String adminName,String action,String detail){update("INSERT INTO admin_audit(occurred_at,admin_name,action,detail) VALUES(?,?,?,?)",System.currentTimeMillis(),adminName,action,detail);}
     synchronized List<AuditRow> recentAudit(int limit){return list("SELECT * FROM admin_audit ORDER BY occurred_at DESC LIMIT ?",rs->new AuditRow(rs.getLong("id"),rs.getLong("occurred_at"),rs.getString("admin_name"),rs.getString("action"),rs.getString("detail")),limit);}
     synchronized List<AuditRow> monumentAudit(long monumentId,int limit){return list("SELECT * FROM admin_audit WHERE action LIKE 'MONUMENT_%' AND detail LIKE ? ORDER BY occurred_at DESC LIMIT ?",rs->new AuditRow(rs.getLong("id"),rs.getLong("occurred_at"),rs.getString("admin_name"),rs.getString("action"),rs.getString("detail")),"location=#"+monumentId+" %",limit);}
+
+    record StaffNoteRow(long id,String playerUuid,String playerName,String note,String staffName,long createdAt){}
+    synchronized long addStaffNote(String playerUuid,String playerName,String note,String staffName){
+        try(PreparedStatement ps=connection.prepareStatement("INSERT INTO staff_notes(player_uuid,player_name,note,staff_name,created_at) VALUES(?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)){
+            bind(ps,playerUuid,playerName,note,staffName,System.currentTimeMillis());ps.executeUpdate();
+            try(ResultSet rs=ps.getGeneratedKeys()){return rs.next()?rs.getLong(1):-1;}
+        }catch(SQLException e){throw fail(e);}
+    }
+    synchronized List<StaffNoteRow> staffNotes(String playerUuid){return list("SELECT * FROM staff_notes WHERE player_uuid=? ORDER BY created_at DESC",Database::mapStaffNote,playerUuid);}
+    synchronized boolean deleteStaffNote(long id){return update("DELETE FROM staff_notes WHERE id=?",id)>0;}
+    private static StaffNoteRow mapStaffNote(ResultSet rs) throws SQLException{return new StaffNoteRow(rs.getLong("id"),rs.getString("player_uuid"),rs.getString("player_name"),rs.getString("note"),rs.getString("staff_name"),rs.getLong("created_at"));}
     synchronized List<HistoryRow> history(Long factionId,int limit,int offset){if(factionId==null)return list("SELECT * FROM history WHERE scope='SERVER' ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,limit,offset);return list("SELECT * FROM history WHERE scope='FACTION' AND faction_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,factionId,limit,offset);}
     synchronized int dailySold(String player,String item,String day){return integer("SELECT quantity FROM daily_sales WHERE player=? AND item=? AND day=?",player,item,day);}
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
