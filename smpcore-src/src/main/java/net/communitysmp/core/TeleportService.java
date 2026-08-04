@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 final class TeleportService {
     private record Pending(BukkitTask task, Location start, UUID observer) {}
-    private record Request(String requester, long expires) {}
+    private record Request(String requester, long expires, boolean here) {}
     private final SMPCore plugin; private final Database db;
     private final Map<UUID, Pending> pending = new ConcurrentHashMap<>();
     private final Map<UUID, Long> cooldowns = new ConcurrentHashMap<>();
@@ -250,7 +250,12 @@ final class TeleportService {
     private void clearCombat(UUID player){pvpLinks.remove(player);for(var entry:pvpLinks.entrySet())entry.getValue().remove(player);pvpLinks.entrySet().removeIf(entry->entry.getValue().isEmpty());}
     boolean combatSelfTest(){long now=System.currentTimeMillis();UUID a=UUID.randomUUID(),b=UUID.randomUUID(),c=UUID.randomUUID();link(a,b,now+60000);link(a,c,now+60000);clearCombat(b);boolean partial=combatRemaining(a,now)>0&&combatRemaining(b,now)==0;clearCombat(c);boolean cleared=combatRemaining(a,now)==0;clearCombat(a);return partial&&cleared;}
 
-    boolean tpa(Player from, String targetName) {
+    boolean tpa(Player from, String targetName) { return tpaRequest(from, targetName, false); }
+    /** Same request/cooldown/expiry/warmup machinery as /tpa — the only difference is which side ends up
+     *  moving. accept() reads the stored `here` flag to decide that at acceptance time, so this doesn't need
+     *  its own parallel request map, cancellation handling, or expiry task. */
+    boolean tpahere(Player from, String targetName) { return tpaRequest(from, targetName, true); }
+    private boolean tpaRequest(Player from, String targetName, boolean here) {
         long combatWait=plugin.privileged(from)?0:combatRemaining(from);
         if(combatWait>0){CoreUtil.error(from,"You cannot request a teleport for "+combatWait+" more second"+(combatWait==1?"":"s")+" after PvP.");return true;}
         Player target=plugin.nicknames().findVisiblePlayer(targetName);
@@ -258,9 +263,9 @@ final class TeleportService {
         if(!plugin.settings().tpaRequests(target)){CoreUtil.error(from,plugin.nicknames().displayName(target)+" is not accepting teleport requests.");return true;}
         if(plugin.afk().isAfk(target))CoreUtil.msg(from,plugin.nicknames().displayName(target)+" is currently AFK; the request may sit unanswered for a while.");
         long seconds=Math.max(1,plugin.getConfig().getLong("teleport.request-seconds",60)),expiry=System.currentTimeMillis()+seconds*1000L;
-        String targetId=CoreUtil.id(target);Request request=new Request(CoreUtil.id(from),expiry);requests.put(targetId,request);
-        CoreUtil.msg(from,"Teleport request sent to "+plugin.nicknames().displayName(target)+". It expires in "+seconds+" seconds.");
-        CoreUtil.msg(target,plugin.nicknames().displayName(from)+" wants to teleport to you. Use /tpaccept or /tpdeny.");
+        String targetId=CoreUtil.id(target);Request request=new Request(CoreUtil.id(from),expiry,here);requests.put(targetId,request);
+        CoreUtil.msg(from,"Teleport"+(here?" here":"")+" request sent to "+plugin.nicknames().displayName(target)+". It expires in "+seconds+" seconds.");
+        CoreUtil.msg(target,plugin.nicknames().displayName(from)+(here?" wants you to teleport to them.":" wants to teleport to you.")+" Use /tpaccept or /tpdeny.");
         plugin.getServer().getScheduler().runTaskLater(plugin,()->{
             if(!requests.remove(targetId,request))return;
             Player requester=findById(request.requester),receiver=findById(targetId);
@@ -269,7 +274,7 @@ final class TeleportService {
         },seconds*20L);
         return true;
     }
-    boolean accept(Player target) { Request request = requests.remove(CoreUtil.id(target)); if (request == null || request.expires < System.currentTimeMillis()) { CoreUtil.error(target, "You have no active teleport request."); return true; } Player requester = findById(request.requester); if (requester == null) { CoreUtil.error(target, "That player is no longer online."); return true; } CoreUtil.msg(target, "Accepted " + plugin.nicknames().displayName(requester) + "'s request."); warmup(requester, target.getLocation(), plugin.nicknames().displayName(target), target); return true; }
+    boolean accept(Player target) { Request request = requests.remove(CoreUtil.id(target)); if (request == null || request.expires < System.currentTimeMillis()) { CoreUtil.error(target, "You have no active teleport request."); return true; } Player requester = findById(request.requester); if (requester == null) { CoreUtil.error(target, "That player is no longer online."); return true; } CoreUtil.msg(target, "Accepted " + plugin.nicknames().displayName(requester) + "'s request."); if(request.here())warmup(target, requester.getLocation(), plugin.nicknames().displayName(requester), requester); else warmup(requester, target.getLocation(), plugin.nicknames().displayName(target), target); return true; }
     boolean deny(Player target) { Request request = requests.remove(CoreUtil.id(target)); if (request == null) { CoreUtil.error(target, "You have no active teleport request."); return true; } Player requester = findById(request.requester); if (requester != null) CoreUtil.error(requester, plugin.nicknames().displayName(target) + " denied your request."); CoreUtil.msg(target, "Teleport request denied."); return true; }
     private Player findById(String id) { for (Player p : plugin.getServer().getOnlinePlayers()) if (CoreUtil.id(p).equals(id)) return p; return null; }
 

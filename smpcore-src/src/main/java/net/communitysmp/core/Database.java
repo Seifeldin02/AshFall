@@ -148,6 +148,8 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS warnings (id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, player_name TEXT NOT NULL, staff TEXT NOT NULL, staff_name TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, triggered_tier INTEGER NOT NULL DEFAULT 0)");
             s.execute("CREATE INDEX IF NOT EXISTS warnings_player ON warnings(player,created_at DESC)");
             s.execute("CREATE TABLE IF NOT EXISTS blocked_messages (blocker TEXT NOT NULL, blocked TEXT NOT NULL, PRIMARY KEY(blocker,blocked))");
+            s.execute("CREATE TABLE IF NOT EXISTS ip_bans (ip TEXT PRIMARY KEY, banned_by TEXT NOT NULL, reason TEXT NOT NULL, banned_at INTEGER NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0, source_player TEXT NOT NULL, source_entry TEXT NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS saved_locations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, world TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, structure_type TEXT, manual INTEGER NOT NULL DEFAULT 0, registered_by TEXT, discovered_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
             s.execute("DROP TABLE IF EXISTS private_chests");
         }
@@ -482,6 +484,27 @@ final class Database implements AutoCloseable {
     synchronized List<WarningRow> warnings(String playerId,int limit){return list("SELECT * FROM warnings WHERE player=? ORDER BY created_at DESC LIMIT ?",Database::mapWarning,playerId,limit);}
     private static PunishmentRow mapPunishment(ResultSet rs) throws SQLException{return new PunishmentRow(rs.getString("player"),rs.getString("player_name"),rs.getInt("tier"),rs.getInt("warning_count"),rs.getLong("probation_until"),rs.getLong("last_punished_at"));}
     private static WarningRow mapWarning(ResultSet rs) throws SQLException{return new WarningRow(rs.getLong("id"),rs.getString("player"),rs.getString("player_name"),rs.getString("staff"),rs.getString("staff_name"),rs.getString("reason"),rs.getLong("created_at"),rs.getInt("triggered_tier"));}
+    record IpBanRow(String ip,String bannedBy,String reason,long bannedAt,long expiresAt,String sourcePlayer,String sourceEntry){boolean active(){return expiresAt==0||expiresAt>System.currentTimeMillis();}}
+    synchronized void addIpBan(String ip,String bannedBy,String reason,long expiresAt,String sourcePlayer,String sourceEntry){update("INSERT INTO ip_bans(ip,banned_by,reason,banned_at,expires_at,source_player,source_entry) VALUES(?,?,?,?,?,?,?) ON CONFLICT(ip) DO UPDATE SET banned_by=excluded.banned_by,reason=excluded.reason,banned_at=excluded.banned_at,expires_at=excluded.expires_at,source_player=excluded.source_player,source_entry=excluded.source_entry",ip,bannedBy,reason,System.currentTimeMillis(),expiresAt,sourcePlayer,sourceEntry);}
+    synchronized IpBanRow ipBan(String ip){return one("SELECT * FROM ip_bans WHERE ip=?",Database::mapIpBan,ip);}
+    synchronized boolean removeIpBan(String ip){return update("DELETE FROM ip_bans WHERE ip=?",ip)>0;}
+    synchronized boolean setIpBanExpiry(String ip,long expiresAt){return update("UPDATE ip_bans SET expires_at=? WHERE ip=?",expiresAt,ip)>0;}
+    synchronized List<IpBanRow> ipBans(){return list("SELECT * FROM ip_bans ORDER BY banned_at DESC",Database::mapIpBan);}
+    private static IpBanRow mapIpBan(ResultSet rs) throws SQLException{return new IpBanRow(rs.getString("ip"),rs.getString("banned_by"),rs.getString("reason"),rs.getLong("banned_at"),rs.getLong("expires_at"),rs.getString("source_player"),rs.getString("source_entry"));}
+    record SavedLocationRow(long id,String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy,long discoveredAt,String status){}
+    synchronized long saveLocation(String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy){
+        try(PreparedStatement ps=connection.prepareStatement("INSERT INTO saved_locations(name,world,x,y,z,structure_type,manual,registered_by,discovered_at) VALUES(?,?,?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)){
+            bind(ps,name,world,x,y,z,structureType,manual?1:0,registeredBy,System.currentTimeMillis());ps.executeUpdate();
+            try(ResultSet rs=ps.getGeneratedKeys()){return rs.next()?rs.getLong(1):-1;}
+        }catch(SQLException e){throw fail(e);}
+    }
+    synchronized List<SavedLocationRow> savedLocations(){return list("SELECT * FROM saved_locations ORDER BY manual DESC,name",Database::mapSavedLocation);}
+    synchronized SavedLocationRow savedLocation(long id){return one("SELECT * FROM saved_locations WHERE id=?",Database::mapSavedLocation,id);}
+    synchronized SavedLocationRow savedLocationByName(String name){return one("SELECT * FROM saved_locations WHERE name=?",Database::mapSavedLocation,name);}
+    synchronized boolean deleteSavedLocation(long id){return update("DELETE FROM saved_locations WHERE id=?",id)>0;}
+    synchronized boolean renameSavedLocation(long id,String newName){return update("UPDATE saved_locations SET name=? WHERE id=?",newName,id)>0;}
+    synchronized void setSavedLocationStatus(long id,String status){update("UPDATE saved_locations SET status=? WHERE id=?",status,id);}
+    private static SavedLocationRow mapSavedLocation(ResultSet rs) throws SQLException{return new SavedLocationRow(rs.getLong("id"),rs.getString("name"),rs.getString("world"),rs.getDouble("x"),rs.getDouble("y"),rs.getDouble("z"),rs.getString("structure_type"),rs.getInt("manual")!=0,rs.getString("registered_by"),rs.getLong("discovered_at"),rs.getString("status"));}
     synchronized boolean hasBlocked(String blocker,String blocked){return one("SELECT 1 FROM blocked_messages WHERE blocker=? AND blocked=?",rs->true,blocker,blocked)!=null;}
     synchronized boolean blockPlayer(String blocker,String blocked){if(hasBlocked(blocker,blocked))return false;update("INSERT INTO blocked_messages(blocker,blocked) VALUES(?,?)",blocker,blocked);return true;}
     synchronized boolean unblockPlayer(String blocker,String blocked){return update("DELETE FROM blocked_messages WHERE blocker=? AND blocked=?",blocker,blocked)>0;}

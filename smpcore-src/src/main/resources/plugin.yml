@@ -30,6 +30,8 @@ commands:
     description: Buy the next personal home slot
   tpa:
     description: Request teleport to a player
+  tpahere:
+    description: Request a player teleport to you
   tpaccept:
     description: Accept a teleport request
   tpdeny:

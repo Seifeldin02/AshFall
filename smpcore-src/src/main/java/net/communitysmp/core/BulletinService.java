@@ -52,21 +52,35 @@ final class BulletinService implements Listener {
         }
         db.state(STATE,anchor.getWorld().getName()+"|"+anchor.getX()+"|"+anchor.getY()+"|"+anchor.getZ()+"|"+face.name()+"|"+String.join(",",panels.stream().map(UUID::toString).toList()));refresh();
     }
-    void refresh(){List<TextDisplay> displays=resolve();if(displays.size()!=3)return;displays.sort(Comparator.comparingInt(display->display.getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,0)));displays.get(0).text(profilePanel());displays.get(1).text(centerPanel());displays.get(2).text(factionPanel());}
-    private Component profilePanel(){return panel(List.of("YOUR PROFILE","","Right-click to view","rank • money • shards","playtime • PvP"),NamedTextColor.AQUA);}
-    private Component centerPanel(){
-        List<String> lines=new ArrayList<>();lines.add("ASHFALL BULLETIN");lines.add("Active  "+plugin.bosses().activeEventLine());lines.add("Next  "+plugin.bosses().nextEventLine());lines.add("Dragon  "+plugin.weeklyDragon().countdown());lines.add("Boss  "+plugin.bosses().worldBossLine());Database.BankRow bank=plugin.bank().treasury();lines.add("Bank  "+CoreUtil.compactMoney(bank==null?0:bank.balance()));List<Database.HistoryRow> history=db.history(null,1,0);if(!history.isEmpty()){lines.add("");lines.add(shorten(history.getFirst().message(),36));}return panel(lines,NamedTextColor.GOLD);
+    /** Layout: left = top factions, right = top players, far right = personal stats + /stats hint. Each
+     *  hologram click still opens a detail GUI (see openPersonal()) — only which panel triggers which GUI
+     *  changed, not the GUIs themselves, so nothing already working here was thrown away. Refreshed on the
+     *  same 30-60s timer as before, never per-tick. */
+    void refresh(){List<TextDisplay> displays=resolve();if(displays.size()!=3)return;displays.sort(Comparator.comparingInt(display->display.getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,0)));displays.get(0).text(factionLeaderboardPanel());displays.get(1).text(playerLeaderboardPanel());displays.get(2).text(personalPanel());}
+    private Component factionLeaderboardPanel(){
+        List<String> lines=new ArrayList<>();lines.add("TOP FACTIONS");List<NetWorthService.Row> rows=plugin.netWorth().rankings();
+        if(rows.isEmpty())lines.add("No factions yet.");else{int rank=1;for(NetWorthService.Row row:rows.subList(0,Math.min(10,rows.size())))lines.add((rank++)+". "+shorten(row.name(),16)+" — "+CoreUtil.compactMoney(row.value()));}
+        return panel(lines,NamedTextColor.GREEN);
     }
-    private Component factionPanel(){return panel(List.of("YOUR FACTION","","Right-click to view","claim • net worth","members • relations"),NamedTextColor.GREEN);}
+    private Component playerLeaderboardPanel(){
+        List<String> lines=new ArrayList<>();lines.add("TOP PLAYERS");List<Database.StatsRow> rows=db.topStats("balance",10,0);
+        if(rows.isEmpty())lines.add("No players yet.");else{int rank=1;for(Database.StatsRow row:rows)lines.add((rank++)+". "+shorten(row.name(),16)+" — "+CoreUtil.compactMoney(row.balance()));}
+        return panel(lines,NamedTextColor.GOLD);
+    }
+    private Component personalPanel(){return panel(List.of("YOUR STATS","","Right-click for details","rank • money • shards","playtime • PvP","","Use /stats any time"),NamedTextColor.AQUA);}
     private Component panel(List<String> lines,NamedTextColor title){Component result=Component.text(lines.getFirst(),title);for(int i=1;i<lines.size();i++)result=result.append(Component.newline()).append(Component.text(lines.get(i),NamedTextColor.WHITE));return result;}
 
     @EventHandler public void interact(PlayerInteractAtEntityEvent event){if(!event.getRightClicked().getPersistentDataContainer().has(panelKey,PersistentDataType.INTEGER))return;event.setCancelled(true);openPersonal(event.getPlayer(),event.getRightClicked().getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,1));}
     @EventHandler public void click(InventoryClickEvent event){if(event.getInventory().getHolder() instanceof Holder)event.setCancelled(true);}
     @EventHandler public void damage(EntityDamageEvent event){if(event.getEntity().getPersistentDataContainer().has(panelKey,PersistentDataType.INTEGER))event.setCancelled(true);}
+    /** Panel index meaning changed with the leaderboard layout (0=factions, 1=players, 2=personal), but the
+     *  three detail GUIs below are untouched — only which panel index opens which GUI moved, so a click on
+     *  the factions leaderboard still opens the faction GUI and a click on the personal-stats panel still
+     *  opens the profile GUI, just via the new indices. */
     void openPersonal(Player player,int panel){
-        Inventory inv=plugin.getServer().createInventory(new Holder(panel),36,Component.text(panel==0?"Your Profile":panel==2?"Your Faction":"Ashfall Bulletin",NamedTextColor.DARK_GRAY));
-        if(panel==0){Database.StatsRow stats=db.stats(CoreUtil.id(player));inv.setItem(10,item(Material.PLAYER_HEAD,player.getName(),List.of("Adventure Rank: "+plugin.progress().rankLabel(player),"Hostile Income: "+String.format(Locale.US,"%.2fx",plugin.progress().multiplierView(player)))));inv.setItem(12,item(Material.EMERALD,"Balance",List.of(CoreUtil.money(stats==null?0:stats.balance()))));inv.setItem(14,item(Material.AMETHYST_SHARD,"Shards",List.of(Integer.toString(plugin.shards().balance(player)))));if(stats!=null)inv.setItem(16,item(Material.CLOCK,"Playtime & PvP",List.of(stats.playSeconds()/3600+"h "+stats.playSeconds()%3600/60+"m",stats.playerKills()+" kills • "+stats.deaths()+" deaths")));}
-        else if(panel==2){
+        Inventory inv=plugin.getServer().createInventory(new Holder(panel),36,Component.text(panel==2?"Your Profile":panel==0?"Your Faction":"Ashfall Bulletin",NamedTextColor.DARK_GRAY));
+        if(panel==2){Database.StatsRow stats=db.stats(CoreUtil.id(player));inv.setItem(10,item(Material.PLAYER_HEAD,player.getName(),List.of("Adventure Rank: "+plugin.progress().rankLabel(player),"Hostile Income: "+String.format(Locale.US,"%.2fx",plugin.progress().multiplierView(player)))));inv.setItem(12,item(Material.EMERALD,"Balance",List.of(CoreUtil.money(stats==null?0:stats.balance()))));inv.setItem(14,item(Material.AMETHYST_SHARD,"Shards",List.of(Integer.toString(plugin.shards().balance(player)))));if(stats!=null)inv.setItem(16,item(Material.CLOCK,"Playtime & PvP",List.of(stats.playSeconds()/3600+"h "+stats.playSeconds()%3600/60+"m",stats.playerKills()+" kills • "+stats.deaths()+" deaths")));}
+        else if(panel==0){
             Database.FactionRow faction=db.factionOf(CoreUtil.id(player));
             if(faction==null){
                 inv.setItem(13,item(Material.WHITE_BANNER,"No Faction",List.of("Create one with /f create <name>.","Or ask a leader for an invite.")));
