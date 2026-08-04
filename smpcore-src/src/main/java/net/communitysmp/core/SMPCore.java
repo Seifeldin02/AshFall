@@ -90,6 +90,40 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     private boolean consoleAdmin(CommandSender sender,String[] args){
         if(!(sender instanceof ConsoleCommandSender)&&!(sender instanceof RemoteConsoleCommandSender)){CoreUtil.error(sender,"This command is console-only.");return true;}
         if(args.length==0||args[0].equalsIgnoreCase("list")){CoreUtil.msg(sender,"Admin accounts: "+trustedAdmins.accountList()+". AuthMe login is required.");return true;}
+        if(args[0].equalsIgnoreCase("spawntrialtest")){
+            if(args.length<2){CoreUtil.error(sender,"Usage: /admin spawntrialtest <player> — spawns one zombie tagged trial_spawner_mob and one untagged control zombie next to the player, then reports whether each survives the very next Hostile-Mobs-OFF sweep. Diagnostic only, deterministic (doesn't depend on waiting for a real trial spawner's cooldown).");return true;}
+            Player target=getServer().getPlayerExact(args[1]);
+            if(target==null){CoreUtil.error(sender,"Player not online: "+args[1]);return true;}
+            org.bukkit.Location base=target.getLocation();
+            org.bukkit.entity.Zombie tagged=target.getWorld().spawn(base.clone().add(2,0,0),org.bukkit.entity.Zombie.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM);
+            tagged.getPersistentDataContainer().set(new org.bukkit.NamespacedKey(this,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE,(byte)1);
+            org.bukkit.entity.Zombie control=target.getWorld().spawn(base.clone().add(-2,0,0),org.bukkit.entity.Zombie.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM);
+            java.util.UUID taggedId=tagged.getUniqueId(),controlId=control.getUniqueId();
+            CoreUtil.msg(sender,"[spawntrialtest] spawned tagged="+taggedId+" control="+controlId+" near "+target.getName()+" (hostile mobs "+(settings.naturalSpawns(target)?"ON":"OFF")+"). Waiting one sweep cycle (~6s)...");
+            getServer().getScheduler().runTaskLater(this,()->{
+                org.bukkit.entity.Entity taggedNow=getServer().getEntity(taggedId),controlNow=getServer().getEntity(controlId);
+                boolean taggedAlive=taggedNow!=null&&taggedNow.isValid(),controlAlive=controlNow!=null&&controlNow.isValid();
+                CoreUtil.msg(sender,"[spawntrialtest] result: tagged(trial_spawner_mob)="+(taggedAlive?"SURVIVED":"removed")+" | control(untagged)="+(controlAlive?"SURVIVED":"removed")+(!controlAlive&&taggedAlive?" — exception working correctly (control removed, tagged exempt)":controlAlive?" — hostile mobs may be ON for this player, or sweep hasn't run yet":" — PROBLEM: tagged mob was removed too"));
+            },120L);
+            return true;
+        }
+        if(args[0].equalsIgnoreCase("nearbymobs")){
+            if(args.length<2){CoreUtil.error(sender,"Usage: /admin nearbymobs <player> [radius] — lists nearby hostile mobs and whether each is tagged trial_spawner_mob. Diagnostic only.");return true;}
+            Player target=getServer().getPlayerExact(args[1]);
+            if(target==null){CoreUtil.error(sender,"Player not online: "+args[1]);return true;}
+            double radius=args.length>2?Double.parseDouble(args[2]):40;
+            org.bukkit.NamespacedKey trialKey=new org.bukkit.NamespacedKey(this,"trial_spawner_mob");
+            int total=0,tagged=0;
+            for(org.bukkit.entity.Entity e:target.getNearbyEntities(radius,radius,radius)){
+                if(!(e instanceof org.bukkit.entity.Enemy living))continue;
+                total++;
+                boolean isTrial=e.getPersistentDataContainer().has(trialKey,org.bukkit.persistence.PersistentDataType.BYTE);
+                if(isTrial)tagged++;
+                CoreUtil.msg(sender,"  "+e.getType()+" at "+e.getLocation().getBlockX()+","+e.getLocation().getBlockY()+","+e.getLocation().getBlockZ()+" — trial_spawner_mob="+isTrial+" valid="+e.isValid());
+            }
+            CoreUtil.msg(sender,"[nearbymobs] "+target.getName()+" (hostile mobs "+(settings.naturalSpawns(target)?"ON":"OFF")+"): "+total+" hostile mob(s) within "+radius+" blocks, "+tagged+" tagged as trial-spawner-spawned.");
+            return true;
+        }
         if(args[0].equalsIgnoreCase("localdispatch")){
             if(args.length<2){CoreUtil.error(sender,"Usage: /admin localdispatch <raw command, e.g. \"worldedit:pos1 1,2,3\"> — dispatches via the exact same getServer().dispatchCommand(getConsoleSender(),...) path MonumentService's dispatch() uses internally. Diagnostic only.");return true;}
             String raw=String.join(" ",Arrays.copyOfRange(args,1,args.length));

@@ -199,6 +199,16 @@ final class Database implements AutoCloseable {
         ensureColumn("saved_locations","last_snapshot_at","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("saved_locations","last_restored_at","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("saved_locations","last_refill_at","INTEGER NOT NULL DEFAULT 0");
+        // Real structure bounding box, from Paper's GeneratedStructure API (covers every connected piece of
+        // e.g. an Ancient City or Trial Chambers, not a guessed cube) -- NULL until locate() captures one, at
+        // which point all six are set together. Falls back to boundary_radius around the center when absent
+        // (manual/"custom" registrations, or a structure type Paper doesn't expose GeneratedStructure data for).
+        ensureColumn("saved_locations","min_x","INTEGER");
+        ensureColumn("saved_locations","min_y","INTEGER");
+        ensureColumn("saved_locations","min_z","INTEGER");
+        ensureColumn("saved_locations","max_x","INTEGER");
+        ensureColumn("saved_locations","max_y","INTEGER");
+        ensureColumn("saved_locations","max_z","INTEGER");
         for(GraveRow grave:list("SELECT * FROM graves WHERE owner_uuid IS NULL OR owner_uuid=''",Database::mapGrave)){
             UUID uuid=org.bukkit.Bukkit.getOfflinePlayer(grave.ownerName()).getUniqueId();
             update("UPDATE graves SET owner_uuid=?,public_name=COALESCE(NULLIF(public_name,''),owner_name) WHERE id=?",uuid.toString(),grave.id());
@@ -497,7 +507,9 @@ final class Database implements AutoCloseable {
     synchronized boolean setIpBanExpiry(String ip,long expiresAt){return update("UPDATE ip_bans SET expires_at=? WHERE ip=?",expiresAt,ip)>0;}
     synchronized List<IpBanRow> ipBans(){return list("SELECT * FROM ip_bans ORDER BY banned_at DESC",Database::mapIpBan);}
     private static IpBanRow mapIpBan(ResultSet rs) throws SQLException{return new IpBanRow(rs.getString("ip"),rs.getString("banned_by"),rs.getString("reason"),rs.getLong("banned_at"),rs.getLong("expires_at"),rs.getString("source_player"),rs.getString("source_entry"));}
-    record SavedLocationRow(long id,String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy,long discoveredAt,String status,int boundaryRadius,long lastSnapshotAt,long lastRestoredAt,long lastRefillAt){}
+    record SavedLocationRow(long id,String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy,long discoveredAt,String status,int boundaryRadius,long lastSnapshotAt,long lastRestoredAt,long lastRefillAt,Integer minX,Integer minY,Integer minZ,Integer maxX,Integer maxY,Integer maxZ){
+        boolean hasRealBounds(){return minX!=null&&minY!=null&&minZ!=null&&maxX!=null&&maxY!=null&&maxZ!=null;}
+    }
     synchronized long saveLocation(String name,String world,double x,double y,double z,String structureType,boolean manual,String registeredBy){
         try(PreparedStatement ps=connection.prepareStatement("INSERT INTO saved_locations(name,world,x,y,z,structure_type,manual,registered_by,discovered_at) VALUES(?,?,?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)){
             bind(ps,name,world,x,y,z,structureType,manual?1:0,registeredBy,System.currentTimeMillis());ps.executeUpdate();
@@ -513,13 +525,15 @@ final class Database implements AutoCloseable {
     synchronized void markSnapshot(long id){update("UPDATE saved_locations SET last_snapshot_at=? WHERE id=?",System.currentTimeMillis(),id);}
     synchronized void markRestored(long id){update("UPDATE saved_locations SET last_restored_at=? WHERE id=?",System.currentTimeMillis(),id);}
     synchronized void markRefilled(long id){update("UPDATE saved_locations SET last_refill_at=? WHERE id=?",System.currentTimeMillis(),id);}
+    synchronized void setStructureBounds(long id,int minX,int minY,int minZ,int maxX,int maxY,int maxZ){update("UPDATE saved_locations SET min_x=?,min_y=?,min_z=?,max_x=?,max_y=?,max_z=? WHERE id=?",minX,minY,minZ,maxX,maxY,maxZ,id);}
 
     record RefillContainerRow(long id,long monumentId,String world,int x,int y,int z,String lootTable,long lastRefilledAt,String refilledBy){}
     synchronized void registerRefillContainer(long monumentId,String world,int x,int y,int z,String lootTable){update("INSERT INTO monument_refill_containers(monument_id,world,x,y,z,loot_table) VALUES(?,?,?,?,?,?) ON CONFLICT(world,x,y,z) DO UPDATE SET monument_id=excluded.monument_id,loot_table=excluded.loot_table",monumentId,world,x,y,z,lootTable);}
     synchronized List<RefillContainerRow> refillContainers(long monumentId){return list("SELECT * FROM monument_refill_containers WHERE monument_id=? ORDER BY id",Database::mapRefillContainer,monumentId);}
     synchronized void markContainerRefilled(long containerRowId,String admin){update("UPDATE monument_refill_containers SET last_refilled_at=?,refilled_by=? WHERE id=?",System.currentTimeMillis(),admin,containerRowId);}
     private static RefillContainerRow mapRefillContainer(ResultSet rs) throws SQLException{return new RefillContainerRow(rs.getLong("id"),rs.getLong("monument_id"),rs.getString("world"),rs.getInt("x"),rs.getInt("y"),rs.getInt("z"),rs.getString("loot_table"),rs.getLong("last_refilled_at"),rs.getString("refilled_by"));}
-    private static SavedLocationRow mapSavedLocation(ResultSet rs) throws SQLException{return new SavedLocationRow(rs.getLong("id"),rs.getString("name"),rs.getString("world"),rs.getDouble("x"),rs.getDouble("y"),rs.getDouble("z"),rs.getString("structure_type"),rs.getInt("manual")!=0,rs.getString("registered_by"),rs.getLong("discovered_at"),rs.getString("status"),rs.getInt("boundary_radius"),rs.getLong("last_snapshot_at"),rs.getLong("last_restored_at"),rs.getLong("last_refill_at"));}
+    private static SavedLocationRow mapSavedLocation(ResultSet rs) throws SQLException{return new SavedLocationRow(rs.getLong("id"),rs.getString("name"),rs.getString("world"),rs.getDouble("x"),rs.getDouble("y"),rs.getDouble("z"),rs.getString("structure_type"),rs.getInt("manual")!=0,rs.getString("registered_by"),rs.getLong("discovered_at"),rs.getString("status"),rs.getInt("boundary_radius"),rs.getLong("last_snapshot_at"),rs.getLong("last_restored_at"),rs.getLong("last_refill_at"),nullableInt(rs,"min_x"),nullableInt(rs,"min_y"),nullableInt(rs,"min_z"),nullableInt(rs,"max_x"),nullableInt(rs,"max_y"),nullableInt(rs,"max_z"));}
+    private static Integer nullableInt(ResultSet rs,String column) throws SQLException{int value=rs.getInt(column);return rs.wasNull()?null:value;}
     synchronized boolean hasBlocked(String blocker,String blocked){return one("SELECT 1 FROM blocked_messages WHERE blocker=? AND blocked=?",rs->true,blocker,blocked)!=null;}
     synchronized boolean blockPlayer(String blocker,String blocked){if(hasBlocked(blocker,blocked))return false;update("INSERT INTO blocked_messages(blocker,blocked) VALUES(?,?)",blocker,blocked);return true;}
     synchronized boolean unblockPlayer(String blocker,String blocked){return update("DELETE FROM blocked_messages WHERE blocker=? AND blocked=?",blocker,blocked)>0;}

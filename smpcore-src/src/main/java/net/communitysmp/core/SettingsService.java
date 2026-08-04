@@ -343,6 +343,7 @@ final class SettingsService implements Listener {
         if(plugin.bosses().isOrdinaryElite(living))return true;
         if(enemy instanceof Tameable tame&&tame.isTamed())return false;
         if(living.customName()!=null)return false;
+        if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
     boolean selfTest(){return MAIN.size()>=10&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED");}
