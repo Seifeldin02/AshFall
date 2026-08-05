@@ -88,6 +88,20 @@ final class EnderChestService implements Listener {
         this.plugin=plugin;
         this.db=plugin.db();
         db.migrateEnderStorageAdditive();
+        /** Runs the same idempotent, tier-raising-only migration below automatically on every startup, not
+         *  only on manual admin trigger — a real production incident showed the manual-only approach is
+         *  actively dangerous: a player who logs in and opens /enderchest before an admin remembers to run
+         *  the command sees their entire bonus row and page 2 rendered as Locked (their ender_tier column
+         *  is still its default, 0, until migrated), which looks exactly like real item loss even though
+         *  nothing was actually touched — that's what triggered this comment. Still safe (and still useful)
+         *  to trigger manually too — see migrateTiers(CommandSender) — running it twice computes the exact
+         *  same result and changes nothing, per its own doc below.
+         *  GATED OFF (default false) pending full forensic verification of that same incident — do not flip
+         *  this to default-true until that investigation is explicitly closed out. */
+        if(plugin.getConfig().getBoolean("ender-chest.auto-migrate-on-startup",false)){
+            int changed=runMigrateTiers();
+            if(changed>0)plugin.getLogger().info("[EnderChest] Startup tier migration upgraded "+changed+" player(s) to a higher tier.");
+        }
     }
 
     void shutdown(){
@@ -325,6 +339,13 @@ final class EnderChestService implements Listener {
      *  someone (owner or admin) happens to have that page open right now, otherwise the database — so a
      *  migration run while players are online can't read stale pre-save data out from under them. */
     int migrateTiers(org.bukkit.command.CommandSender sender){
+        int[] counts=new int[2];
+        int changed=runMigrateTiers(counts);
+        CoreUtil.msg(sender,"Ender Chest tier migration: checked "+counts[0]+" known player(s), upgraded "+changed+" to a higher tier. Nobody's tier was ever lowered or left unmigrated if they qualified for more.");
+        return changed;
+    }
+    private int runMigrateTiers(){return runMigrateTiers(new int[2]);}
+    private int runMigrateTiers(int[] countsOut){
         Set<String> legacyBuyers=db.legacyEnderStorageBuyers();
         int checked=0,changed=0;
         for(String id:db.allPlayerIds()){
@@ -333,7 +354,7 @@ final class EnderChestService implements Listener {
             int required=Math.max(occupancyTier(id),legacyBuyers.contains(id)?1:0);
             if(required>currentTier){db.setEnderTier(id,required);changed++;}
         }
-        CoreUtil.msg(sender,"Ender Chest tier migration: checked "+checked+" known player(s), upgraded "+changed+" to a higher tier. Nobody's tier was ever lowered or left unmigrated if they qualified for more.");
+        countsOut[0]=checked;countsOut[1]=changed;
         return changed;
     }
     /** Only ever looks at old page 1 (0-44) and page 2 (45-89) — the exact two pages that still exist,

@@ -4,7 +4,7 @@ main: net.communitysmp.core.SMPCore
 api-version: '26.2'
 authors: [ServerOwner]
 description: Lightweight factions, economy, travel, markets, bosses, events and exploration.
-depend: [Vault]
+depend: [Vault, WorldEdit]
 softdepend: [AuthMe, floodgate, Geyser-Spigot, TAB, SkinsRestorer, GrimAC, Nicked, ReplayCore]
 loadbefore: [DonutOrders]
 commands:

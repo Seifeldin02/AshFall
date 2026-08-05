@@ -116,6 +116,47 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             bulletin.purge(sender);
             return true;
         }
+        /** Forensic-only: opens its OWN separate, read-only JDBC connection to an arbitrary sqlite file
+         *  path (never the live plugin database connection, and never anything but SELECT) and dumps every
+         *  ender_chest_items row for one player, across every page number that exists in that file (not
+         *  just pages 1-2) — deserializing each item to its real Material/amount/display name rather than
+         *  just a byte length, so a genuine item-content comparison across snapshots is possible. Built
+         *  specifically to investigate a reported Ender Chest data-loss incident without touching any live
+         *  server's actual database or requiring a restart. */
+        if(args[0].equalsIgnoreCase("ecforensics")){
+            if(args.length<4){CoreUtil.error(sender,"Usage: /admin ecforensics <label> <absoluteDbPath> <player>");return true;}
+            String label=args[1],dbPath=args[2],targetName=args[3],targetId=CoreUtil.id(targetName);
+            java.io.File dbFile=new java.io.File(dbPath);
+            if(!dbFile.isFile()){CoreUtil.error(sender,"No such file: "+dbPath);return true;}
+            try(java.sql.Connection conn=java.sql.DriverManager.getConnection("jdbc:sqlite:file:"+dbFile.getAbsolutePath().replace("\\","/")+"?mode=ro");
+                java.sql.PreparedStatement stmt=conn.prepareStatement("SELECT page,slot,item FROM ender_chest_items WHERE player=? ORDER BY page,slot")){
+                stmt.setString(1,targetId);
+                int count=0;
+                getLogger().info("[ecforensics:"+label+"] "+targetName+" ("+targetId+") from "+dbPath+":");
+                try(java.sql.ResultSet rs=stmt.executeQuery()){
+                    while(rs.next()){
+                        count++;
+                        int page=rs.getInt("page"),slot=rs.getInt("slot");
+                        byte[] bytes=rs.getBytes("item");
+                        String summary;
+                        try{
+                            org.bukkit.inventory.ItemStack stack=org.bukkit.inventory.ItemStack.deserializeBytes(bytes);
+                            String name=stack.hasItemMeta()&&stack.getItemMeta().hasDisplayName()?net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(stack.getItemMeta().displayName())+" ":"";
+                            summary=name+stack.getType()+" x"+stack.getAmount()+" (bytes="+bytes.length+")";
+                        }catch(Throwable error){
+                            summary="UNDESERIALIZABLE ("+bytes.length+" bytes) -- "+error.getClass().getSimpleName()+": "+error.getMessage();
+                        }
+                        getLogger().info("  page="+page+" slot="+slot+" -> "+summary);
+                    }
+                }
+                getLogger().info("[ecforensics:"+label+"] "+targetName+": "+count+" row(s) total.");
+                CoreUtil.msg(sender,"[ecforensics:"+label+"] "+targetName+": "+count+" row(s) -- see console/log for full item detail.");
+            }catch(Exception error){
+                CoreUtil.error(sender,"[ecforensics] failed: "+error);
+                getLogger().warning("[ecforensics] failed for "+dbPath+": "+error);
+            }
+            return true;
+        }
         if(args[0].equalsIgnoreCase("nearbymobs")){
             if(args.length<2){CoreUtil.error(sender,"Usage: /admin nearbymobs <player> [radius] — lists nearby hostile mobs and whether each is tagged trial_spawner_mob. Diagnostic only.");return true;}
             Player target=getServer().getPlayerExact(args[1]);
