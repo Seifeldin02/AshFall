@@ -212,6 +212,7 @@ final class RelicService implements Listener {
         for(Database.RelicLifecycleRow row:db.relicLifecycles()){
             if("LOST".equals(row.status()))lostTick(row,now);
             else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner()))checkReclaim(row,now);
+            else if("ELIGIBLE".equals(row.status()))eligibleTick(row);
         }
     }
     /** "Never resurface while any valid copy remains", enforced at the one place it actually matters: a
@@ -232,6 +233,20 @@ final class RelicService implements Listener {
             plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(row.key())+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
             db.history("SERVER",null,"RELIC",displayName(row.key())+" became eligible to resurface.");
         }
+    }
+    /** Mirrors lostTick()'s escrow self-heal, extended to the ELIGIBLE state — lostTick() only ever runs
+     *  while status is still LOST, so a relic that was incorrectly marked lost by a since-fixed bug and
+     *  had already crossed into ELIGIBLE before that fix ever deployed would otherwise sit there forever,
+     *  or worse, let someone mint a genuine duplicate while the true owner's copy is still safely sitting
+     *  in their auction escrow — exactly the state a real production relic was found stuck in (marked LOST
+     *  by the OLD pre-rework code, timer expired, never revisited once ELIGIBLE). makeRelicEligible()
+     *  never clears owner/owner_name, so the last recorded owner is still known here. */
+    private void eligibleTick(Database.RelicLifecycleRow row){
+        if("hidden".equals(row.owner()))return;
+        if(activeAuctionFor(row.owner(),row.key())==null&&expiredAuctionFor(row.owner(),row.key())==null)return;
+        db.confirmRelic(row.key(),row.owner(),row.ownerName());
+        plugin.getLogger().info("[RelicLifecycle] "+row.key()+" was ELIGIBLE to resurface but a copy was still present in "+row.ownerName()+"'s auction escrow — restored to ACTIVE.");
+        db.history("SERVER",null,"RELIC",displayName(row.key())+" was found safe in an auction listing and restored to "+row.ownerName()+" instead of resurfacing a duplicate.");
     }
     /** The single reclaim rule, replacing the old ability-usage/Minecraft-tick timers and the old
      *  "search every location or give up after N hours" auto-verify: a normally-held relic is reclaimed
