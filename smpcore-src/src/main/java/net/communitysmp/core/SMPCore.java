@@ -606,7 +606,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"dragon"->filter(args[1],List.of("status","start"));
                 case"replay"->filter(args[1],List.of("killer","victim"));
                 case"ipban"->filter(args[1],List.of("ban","unban","duration","list"));
-                case"monument"->filter(args[1],List.of("list","locate","tp","register","inspect","remove","rename","snapshot","restore","refill","history","reconstruct","prism","help"));
+                case"monument"->filter(args[1],List.of("list","locate","tp","register","inspect","remove","rename","snapshot","restore","refill","history","reconstruct","revamp","prism","help"));
                 case"moderation"->filter(args[1],List.of("view","duration","revoke","note","notes"));
                 default->List.of();
             };
@@ -616,7 +616,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("ipban")&&Set.of("unban","duration").contains(args[1].toLowerCase(Locale.ROOT)))return onlineNames(sender,args[2]);
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("ipban")&&args[1].equalsIgnoreCase("duration"))return filter(args[3],List.of("7d","3d","1d","12h","1h","30m","perm"));
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("monument")&&args[1].equalsIgnoreCase("locate"))return filter(args[2],monuments.structureTypeKeys());
-        if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("monument")&&Set.of("tp","remove","rename","snapshot","restore","inspect","history","refill","reconstruct","prism").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],monuments.cachedNames());
+        if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("monument")&&Set.of("tp","remove","rename","snapshot","restore","inspect","history","refill","reconstruct","revamp","prism").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],monuments.cachedNames());
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("monument")&&args[1].equalsIgnoreCase("restore"))return filter(args[3],List.of("preview","confirm"));
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("monument")&&args[1].equalsIgnoreCase("refill"))return filter(args[3],List.of("scan","preview","confirm"));
         if(name.equals("ashfall")&&args.length==5&&args[0].equalsIgnoreCase("monument")&&args[1].equalsIgnoreCase("refill")&&Set.of("preview","confirm").contains(args[3].toLowerCase(Locale.ROOT)))return filter(args[4],List.of("force"));

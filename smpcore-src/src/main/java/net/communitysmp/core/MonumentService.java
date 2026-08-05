@@ -236,6 +236,7 @@ final class MonumentService {
             case"history"->history(sender,args);
             case"refill"->refill(sender,args);
             case"reconstruct"->reconstruct(sender,args);
+            case"revamp"->revamp(sender,args);
             case"prism"->prism(sender,args);
             case"help"->{restorationHelp(sender);yield true;}
             default->{help(sender);yield true;}
@@ -243,7 +244,7 @@ final class MonumentService {
     }
     private void help(CommandSender sender){
         CoreUtil.msg(sender,"Monuments: /ashfall monument list");
-        CoreUtil.msg(sender,"           /ashfall monument locate <"+String.join("|",STRUCTURE_KEYS.keySet())+">");
+        CoreUtil.msg(sender,"           /ashfall monument locate <"+String.join("|",STRUCTURE_KEYS.keySet())+"> [new]  ('new' skips already-registered ones and searches outward)");
         CoreUtil.msg(sender,"           /ashfall monument tp <id>");
         CoreUtil.msg(sender,"           /ashfall monument register <name> [type]");
         CoreUtil.msg(sender,"           /ashfall monument inspect <id>");
@@ -254,6 +255,7 @@ final class MonumentService {
         CoreUtil.msg(sender,"           /ashfall monument refill <id> scan|preview|confirm [force]");
         CoreUtil.msg(sender,"           /ashfall monument history <id>");
         CoreUtil.msg(sender,"           /ashfall monument reconstruct <id> preview|confirm  (same-seed proof of concept, requires WorldEdit)");
+        CoreUtil.msg(sender,"           /ashfall monument revamp <id>  (reconstruct confirm + refill scan + refill confirm, in order)");
         CoreUtil.msg(sender,"           /ashfall monument prism <id>  (prints a ready-to-use Prism lookup for that location)");
         CoreUtil.msg(sender,"           /ashfall monument help  (explains which restoration path to use and why)");
     }
@@ -273,14 +275,21 @@ final class MonumentService {
         Structure structure=Registry.STRUCTURE.get(NamespacedKey.minecraft(key));
         if(structure==null){CoreUtil.error(player,"That structure type isn't available in this world/version.");return true;}
         World world=player.getWorld();Location origin=player.getLocation();
-        Database.SavedLocationRow nearestCached=nearestExisting(origin,typeArg);
-        if(nearestCached!=null){CoreUtil.msg(player,"Already cached as #"+nearestCached.id()+" \""+nearestCached.name()+"\" — use /ashfall monument tp "+nearestCached.id()+". (Searching again would be an expensive re-scan for a structure we already know about.)");return true;}
-        CoreUtil.msg(player,"Searching for the nearest "+typeArg+"… this may briefly affect server performance, same as vanilla /locate.");
-        StructureSearchResult result;
-        try{result=world.locateNearestStructure(origin,structure,100,false);}
-        catch(Exception ex){CoreUtil.error(player,"Search failed: "+ex.getMessage());return true;}
-        if(result==null||result.getLocation()==null){CoreUtil.error(player,"No "+typeArg+" found within a reasonable search radius.");return true;}
-        Location loc=result.getLocation();
+        boolean wantNew=args.length>3&&args[3].equalsIgnoreCase("new");
+        Location loc;
+        if(wantNew){
+            loc=locateUnregistered(player,world,origin,structure,typeArg);
+            if(loc==null)return true;
+        }else{
+            Database.SavedLocationRow nearestCached=nearestExisting(origin,typeArg);
+            if(nearestCached!=null){CoreUtil.msg(player,"Already cached as #"+nearestCached.id()+" \""+nearestCached.name()+"\" — use /ashfall monument tp "+nearestCached.id()+", or /ashfall monument locate "+typeArg+" new to find one that isn't registered yet.");return true;}
+            CoreUtil.msg(player,"Searching for the nearest "+typeArg+"… this may briefly affect server performance, same as vanilla /locate.");
+            StructureSearchResult result;
+            try{result=world.locateNearestStructure(origin,structure,100,false);}
+            catch(Exception ex){CoreUtil.error(player,"Search failed: "+ex.getMessage());return true;}
+            if(result==null||result.getLocation()==null){CoreUtil.error(player,"No "+typeArg+" found within a reasonable search radius.");return true;}
+            loc=result.getLocation();
+        }
         String name=typeArg+"_"+(countOfType(typeArg)+1);
         long id=db.saveLocation(name,loc.getWorld().getName(),loc.getX(),loc.getY(),loc.getZ(),typeArg,false,CoreUtil.id(player));
         BoundingBox box=captureStructureBoundingBox(world,loc,structure);
@@ -291,6 +300,45 @@ final class MonumentService {
             sendLocateResult(player,typeArg,loc,id,name," — cached as #"+id+" (\""+name+"\"). No real structure bounds available from Paper for this type — falling back to a "+(FALLBACK_RADIUS*2)+"x"+(FALLBACK_RADIUS*2)+"x"+(FALLBACK_RADIUS*2)+" cube; widen with a bigger boundary_radius if needed.");
         }
         return true;
+    }
+    /** "locate <type> new": deliberately skips every structure already registered and keeps looking outward
+     *  for one that isn't, instead of plain locate's behavior of short-circuiting on the nearest cached hit.
+     *  locateNearestStructure() always returns the nearest match to wherever it's told to start, so simply
+     *  re-running it from the same spot would return the same known structure forever — this walks the search
+     *  origin outward in expanding rings and re-searches from each, taking the first result that isn't within
+     *  nearestExisting()'s same-structure radius of a registered entry. Hard-capped at MAX_NEW_SEARCHES
+     *  structure searches (each one is as expensive as a vanilla /locate) so this can never become an
+     *  unbounded scan — it reports honestly and stops rather than grinding the server. */
+    private static final int MAX_NEW_SEARCHES=12;
+    private static final int NEW_SEARCH_RING_BLOCKS=2500;
+    private Location locateUnregistered(Player player,World world,Location origin,Structure structure,String typeArg){
+        CoreUtil.msg(player,"Searching outward for an unregistered "+typeArg+", skipping ones already saved… this runs up to "+MAX_NEW_SEARCHES+" vanilla-style /locate scans and may briefly affect performance.");
+        int[][] offsets={{0,0},{1,0},{0,1},{-1,0},{0,-1},{1,1},{-1,1},{-1,-1},{1,-1}};
+        int searches=0;
+        Set<String> seen=new java.util.HashSet<>();
+        for(int ring=0;ring<=3&&searches<MAX_NEW_SEARCHES;ring++){
+            for(int[] offset:offsets){
+                if(ring==0&&(offset[0]!=0||offset[1]!=0))continue;
+                if(ring>0&&offset[0]==0&&offset[1]==0)continue;
+                if(searches>=MAX_NEW_SEARCHES)break;
+                searches++;
+                Location from=origin.clone().add(offset[0]*NEW_SEARCH_RING_BLOCKS*ring,0,offset[1]*NEW_SEARCH_RING_BLOCKS*ring);
+                StructureSearchResult result;
+                try{result=world.locateNearestStructure(from,structure,100,false);}
+                catch(Exception ex){continue;}
+                if(result==null||result.getLocation()==null)continue;
+                Location found=result.getLocation();
+                /** The same structure is very often the nearest hit from several neighbouring ring points;
+                 *  skipping coordinates already evaluated keeps the capped search budget spent on genuinely
+                 *  new candidates rather than re-checking one structure many times. */
+                if(!seen.add(found.getBlockX()+":"+found.getBlockZ()))continue;
+                if(nearestExisting(found,typeArg)!=null)continue;
+                CoreUtil.msg(player,"Found an unregistered "+typeArg+" after "+searches+" scan(s).");
+                return found;
+            }
+        }
+        CoreUtil.error(player,"No unregistered "+typeArg+" found after "+searches+" scan(s) out to ~"+(NEW_SEARCH_RING_BLOCKS*3)+" blocks. Every one nearby is already saved — stopping rather than running an unbounded search. Move further out and try again.");
+        return null;
     }
     /** Coordinates are clickable and run /ashfall monument tp <id> instead of the raw "world x,y,z" text —
      *  that command already resolves the correct world itself, so clicking can never send an admin to the
@@ -583,6 +631,29 @@ final class MonumentService {
      *  the actual randomized items only get generated the next time a player opens it, exactly like a
      *  freshly-generated structure chest would, respecting difficulty/luck/RNG for real instead of us
      *  hand-rolling a fake version of that logic. */
+    /** One-shot convenience for the standard "put this monument back the way it generated" workflow, which is
+     *  otherwise three separate commands that must be run in a specific order: reconstruct the blocks, rescan
+     *  for the containers that reconstruction just restored, then refill those containers' loot. Runs them
+     *  back to back against the same monument and stops immediately if any step fails, so a failed
+     *  reconstruction can't be followed by a refill of stale/incorrect container data. Each underlying step
+     *  keeps its own confirmation semantics and full output — this only removes the retyping, it does not
+     *  skip or weaken any of their checks. */
+    private boolean revamp(CommandSender sender,String[] args){
+        if(args.length<3){CoreUtil.error(sender,"Usage: /ashfall monument revamp <id|name>");return true;}
+        Database.SavedLocationRow row=resolve(args[2]);
+        if(row==null){CoreUtil.error(sender,"No saved location with that id/name.");return true;}
+        String target=args[2];
+        CoreUtil.msg(sender,"Revamping \""+row.name()+"\" (#"+row.id()+") — running reconstruct, then refill scan, then refill confirm.");
+        CoreUtil.msg(sender,"[1/3] reconstruct…");
+        if(!reconstruct(sender,new String[]{"monument","reconstruct",target,"confirm"}))return true;
+        CoreUtil.msg(sender,"[2/3] refill scan…");
+        if(!refill(sender,new String[]{"monument","refill",target,"scan"}))return true;
+        CoreUtil.msg(sender,"[3/3] refill confirm…");
+        if(!refill(sender,new String[]{"monument","refill",target,"confirm"}))return true;
+        CoreUtil.msg(sender,"Revamp of \""+row.name()+"\" finished — review the per-step output above for what each stage actually changed.");
+        db.logAudit(sender.getName(),"MONUMENT_REVAMP","location=#"+row.id()+" \""+row.name()+"\"");
+        return true;
+    }
     private boolean refill(CommandSender player,String[] args){
         if(args.length<4){CoreUtil.error(player,"Usage: /ashfall monument refill <id> scan|preview|confirm [force]");return true;}
         Database.SavedLocationRow row=resolve(args[2]);

@@ -160,6 +160,23 @@ final class RelicService implements Listener {
         for(int slot:event.getRawSlots())if(slot<topSize){event.setCancelled(true);CoreUtil.error(player,"Relics cannot be stored — carry, drop, trade, or auction them instead.");return;}
     }
     @EventHandler public void guardHopperTransfer(InventoryMoveItemEvent event){if(keyOf(event.getItem())!=null)event.setCancelled(true);}
+    /** InventoryMoveItemEvent above only covers container-to-container movement — a hopper (or hopper
+     *  minecart) vacuuming a dropped item entity off the ground fires InventoryPickupItemEvent instead, which
+     *  nothing was listening for. That's how a relic could still physically end up inside a hopper despite
+     *  the storage ban: drop it on top of one. Cancelling here means the relic never enters the hopper at
+     *  all rather than being pulled in and stripped afterwards. */
+    @EventHandler(ignoreCancelled=true) public void guardHopperPickup(org.bukkit.event.inventory.InventoryPickupItemEvent event){
+        if(keyOf(event.getItem().getItemStack())!=null)event.setCancelled(true);
+    }
+    /** AxTrade (and any other GUI-mediated hand-off) moves a relic between two online players without ever
+     *  firing a pickup event, so ownership stayed pointed at the giver until something else happened to
+     *  re-scan — the reason a traded Warlord's Ember only registered after being dropped and re-claimed.
+     *  Re-scanning both sides one tick after ANY inventory closes catches every GUI transfer generically,
+     *  with no compile-time dependency on a specific trade plugin. */
+    @EventHandler public void reconcileOnInventoryClose(org.bukkit.event.inventory.InventoryCloseEvent event){
+        if(!(event.getPlayer() instanceof Player player))return;
+        plugin.getServer().getScheduler().runTask(plugin,()->{if(player.isOnline())confirmInventory(player);});
+    }
     /** Tasteful, live-only chat marker — gated on the actual Sovereign of Ashfall rank (which itself requires
      *  every prior rank plus current relic ownership), not on relic ownership alone. Owning a relic without
      *  having earned the rank must never show the symbol. Prepends rather than replaces the format string so it
@@ -184,11 +201,51 @@ final class RelicService implements Listener {
             String relicKey=keyOf(item);if(relicKey==null)continue;
             Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);if(row==null)continue;
             if("ACTIVE".equals(row.status())&&playerId.equals(row.owner())){db.confirmRelic(relicKey,playerId,player.getName());continue;}
+            if("ACTIVE".equals(row.status())){
+                /** Someone other than the tracked owner is physically holding an ACTIVE relic. That's either a
+                 *  legitimate hand-off (trade/gift/kill-loot — the item genuinely moved and the old owner no
+                 *  longer has one) or a real duplicate (both copies exist at once). Blindly stripping, as this
+                 *  did before, deleted legitimately traded relics; blindly reassigning — the behavior before
+                 *  that — is what let the Colossus Core duplication go unnoticed. Deciding on whether the
+                 *  tracked owner STILL has a copy distinguishes the two cases exactly. */
+                switch(ownerCopyState(row)){
+                    case PRESENT -> {
+                        item.setAmount(0);
+                        plugin.getLogger().warning("[RelicDuplicateGuard] Removed a duplicate "+relicKey+" from "+player.getName()+" — the tracked owner ("+row.ownerName()+") still holds the real one.");
+                        db.history("SERVER",null,"RELIC",displayName(relicKey)+": a duplicate physical copy was removed from "+player.getName()+" (tracked owner "+row.ownerName()+" still holds the genuine one).");
+                    }
+                    case ABSENT -> {
+                        db.confirmRelic(relicKey,playerId,player.getName());
+                        plugin.getLogger().info("[RelicLifecycle] "+relicKey+" changed hands: "+row.ownerName()+" no longer holds it and "+player.getName()+" does — ownership transferred.");
+                        db.history("SERVER",null,"RELIC",displayName(relicKey)+" changed hands from "+row.ownerName()+" to "+plugin.nicknames().displayName(player)+".");
+                    }
+                    /** Owner offline: their inventory genuinely can't be inspected, so "duplicate" and
+                     *  "traded away just before logging off" are indistinguishable right now. Deleting a
+                     *  possibly-real item is far worse than a temporarily stale owner field, so this defers
+                     *  rather than guessing — it resolves itself the moment the tracked owner logs back in. */
+                    case UNKNOWN -> plugin.getLogger().info("[RelicLifecycle] "+player.getName()+" holds "+relicKey+" tracked to the currently-offline "+row.ownerName()+"; deferring until that owner is online and it can be told apart from a duplicate.");
+                }
+                continue;
+            }
             item.setAmount(0);
             plugin.getLogger().warning("[RelicDuplicateGuard] Removed a stray "+relicKey+" from "+player.getName()+" (tracked status="+row.status()+", tracked owner="+row.ownerName()+") — did not match the single tracked copy.");
             db.history("SERVER",null,"RELIC",displayName(relicKey)+": a duplicate/stale physical copy was removed from "+player.getName()+" during a routine check (tracked owner: "+row.ownerName()+", status: "+row.status()+").");
         }
     }
+    private enum CopyState { PRESENT, ABSENT, UNKNOWN }
+    /** Whether the tracked owner still demonstrably has their copy. Auction escrow counts as present (the
+     *  item really is there); an offline owner is UNKNOWN rather than ABSENT, since their saved inventory
+     *  isn't inspectable. */
+    private CopyState ownerCopyState(Database.RelicLifecycleRow row){
+        String owner=row.owner(),relicKey=row.key();
+        if("hidden".equals(owner))return CopyState.ABSENT;
+        if(activeAuctionFor(owner,relicKey)!=null||expiredAuctionFor(owner,relicKey)!=null)return CopyState.PRESENT;
+        Player online=onlineById(owner);
+        if(online==null)return CopyState.UNKNOWN;
+        if(hasRelic(online.getInventory().getContents(),relicKey)||hasRelic(plugin.enderChests().allContents(online),relicKey))return CopyState.PRESENT;
+        return CopyState.ABSENT;
+    }
+    private Player onlineById(String playerId){for(Player p:plugin.getServer().getOnlinePlayers())if(CoreUtil.id(p).equals(playerId))return p;return null;}
     boolean hideInLoot(List<ItemStack> loot){if(Math.random()>config.getDouble("lifecycle.exploration-chance",.0002))return false;for(String relicKey:List.of("wayfinder","oathblade")){if(mint(relicKey,"hidden","Undiscovered")){loot.add(create(relicKey));return true;}}return false;}
     void itemLost(Item item){itemLostByKey(keyOf(item.getItemStack()));}
     void itemLostByKey(String relicKey){
@@ -211,7 +268,7 @@ final class RelicService implements Listener {
         long now=System.currentTimeMillis();
         for(Database.RelicLifecycleRow row:db.relicLifecycles()){
             if("LOST".equals(row.status()))lostTick(row,now);
-            else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner()))checkReclaim(row,now);
+            else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner())){checkReclaim(row,now);checkStillExists(row);}
             else if("ELIGIBLE".equals(row.status()))eligibleTick(row);
         }
     }
@@ -233,6 +290,32 @@ final class RelicService implements Listener {
             plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(row.key())+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
             db.history("SERVER",null,"RELIC",displayName(row.key())+" became eligible to resurface.");
         }
+    }
+    /** Backstop for destruction the event handlers can miss. itemLost() fires from ItemDespawnEvent and from
+     *  EntityDamageEvent(VOID/FIRE/LAVA/explosion) on a dropped Item, but an item entity can also leave the
+     *  world without either — most notably falling out of the bottom of the world, where it may simply be
+     *  removed rather than damaged (confirmed live: a Colossus Core thrown into the void stayed ACTIVE
+     *  indefinitely). This sweeps ACTIVE relics whose owner is online yet has no copy anywhere checkable —
+     *  inventory, Ender Storage, auction escrow, any other online player's hands, their graves, or a loaded
+     *  dropped-item entity — and only after two consecutive misses (~20 min, since this rides the 10-minute
+     *  lifecycle pass) marks it lost. Deliberately unhurried: relic state is not performance-critical, and
+     *  requiring two passes keeps a momentarily-unloaded chunk or an in-flight transfer from being mistaken
+     *  for destruction. An offline owner is skipped entirely rather than assumed empty-handed. */
+    private final Map<String,Integer> missingStrikes=new HashMap<>();
+    private void checkStillExists(Database.RelicLifecycleRow row){
+        String relicKey=row.key();
+        if(ownerCopyState(row)!=CopyState.ABSENT){missingStrikes.remove(relicKey);return;}
+        for(Player other:plugin.getServer().getOnlinePlayers())
+            if(hasRelic(other.getInventory().getContents(),relicKey)||hasRelic(plugin.enderChests().allContents(other),relicKey)){missingStrikes.remove(relicKey);return;}
+        Player owner=onlineById(row.owner());
+        if(owner!=null)for(Database.GraveRow grave:db.graves(owner.getUniqueId()))
+            if(hasRelic(db.graveItems(grave.id()).toArray(new ItemStack[0]),relicKey)){missingStrikes.remove(relicKey);return;}
+        for(World world:plugin.getServer().getWorlds())for(Entity entity:world.getEntities())
+            if(entity instanceof Item dropped&&relicKey.equals(keyOf(dropped.getItemStack()))){missingStrikes.remove(relicKey);return;}
+        if(missingStrikes.merge(relicKey,1,Integer::sum)<2)return;
+        missingStrikes.remove(relicKey);
+        plugin.getLogger().info("[RelicLifecycle] "+relicKey+" could not be found in any checkable location across two consecutive passes while its owner ("+row.ownerName()+") was online — treating it as destroyed.");
+        itemLostByKey(relicKey);
     }
     /** Mirrors lostTick()'s escrow self-heal, extended to the ELIGIBLE state — lostTick() only ever runs
      *  while status is still LOST, so a relic that was incorrectly marked lost by a since-fixed bug and
