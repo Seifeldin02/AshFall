@@ -286,11 +286,25 @@ final class MonumentService {
         BoundingBox box=captureStructureBoundingBox(world,loc,structure);
         if(box!=null){
             db.setStructureBounds(id,(int)Math.floor(box.getMinX()),(int)Math.floor(box.getMinY()),(int)Math.floor(box.getMinZ()),(int)Math.ceil(box.getMaxX())-1,(int)Math.ceil(box.getMaxY())-1,(int)Math.ceil(box.getMaxZ())-1);
-            CoreUtil.msg(player,"Found "+typeArg+" at "+loc.getWorld().getName()+" "+loc.getBlockX()+","+loc.getBlockY()+","+loc.getBlockZ()+" — cached as #"+id+" (\""+name+"\"). Real structure bounds captured: "+((int)Math.ceil(box.getMaxX())-(int)Math.floor(box.getMinX()))+"x"+((int)Math.ceil(box.getMaxY())-(int)Math.floor(box.getMinY()))+"x"+((int)Math.ceil(box.getMaxZ())-(int)Math.floor(box.getMinZ()))+".");
+            sendLocateResult(player,typeArg,loc,id,name," — cached as #"+id+" (\""+name+"\"). Real structure bounds captured: "+((int)Math.ceil(box.getMaxX())-(int)Math.floor(box.getMinX()))+"x"+((int)Math.ceil(box.getMaxY())-(int)Math.floor(box.getMinY()))+"x"+((int)Math.ceil(box.getMaxZ())-(int)Math.floor(box.getMinZ()))+".");
         }else{
-            CoreUtil.msg(player,"Found "+typeArg+" at "+loc.getWorld().getName()+" "+loc.getBlockX()+","+loc.getBlockY()+","+loc.getBlockZ()+" — cached as #"+id+" (\""+name+"\"). No real structure bounds available from Paper for this type — falling back to a "+(FALLBACK_RADIUS*2)+"x"+(FALLBACK_RADIUS*2)+"x"+(FALLBACK_RADIUS*2)+" cube; widen with a bigger boundary_radius if needed.");
+            sendLocateResult(player,typeArg,loc,id,name," — cached as #"+id+" (\""+name+"\"). No real structure bounds available from Paper for this type — falling back to a "+(FALLBACK_RADIUS*2)+"x"+(FALLBACK_RADIUS*2)+"x"+(FALLBACK_RADIUS*2)+" cube; widen with a bigger boundary_radius if needed.");
         }
         return true;
+    }
+    /** Coordinates are clickable and run /ashfall monument tp <id> instead of the raw "world x,y,z" text —
+     *  that command already resolves the correct world itself, so clicking can never send an admin to the
+     *  same coordinates in the wrong dimension the way copy-pasting bare numbers could. */
+    private void sendLocateResult(Player player,String typeArg,Location loc,long id,String name,String suffix){
+        net.kyori.adventure.text.Component coords=net.kyori.adventure.text.Component.text(loc.getBlockX()+","+loc.getBlockY()+","+loc.getBlockZ(),net.kyori.adventure.text.format.NamedTextColor.AQUA,net.kyori.adventure.text.format.TextDecoration.UNDERLINED)
+            .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/ashfall monument tp "+id))
+            .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(net.kyori.adventure.text.Component.text("Click to teleport to \""+name+"\" (/ashfall monument tp "+id+")")));
+        net.kyori.adventure.text.Component message=net.kyori.adventure.text.Component.text("Ashfall ",net.kyori.adventure.text.format.NamedTextColor.GOLD)
+            .append(net.kyori.adventure.text.Component.text("› ",net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY))
+            .append(net.kyori.adventure.text.Component.text("Found "+typeArg+" at "+loc.getWorld().getName()+" ",net.kyori.adventure.text.format.NamedTextColor.WHITE))
+            .append(coords)
+            .append(net.kyori.adventure.text.Component.text(suffix,net.kyori.adventure.text.format.NamedTextColor.WHITE));
+        player.sendMessage(message);
     }
     private long countOfType(String type){return db.savedLocations().stream().filter(r->type.equals(r.structureType())).count();}
     /** Within 200 blocks (structures of the same kind are always much farther apart than that in vanilla

@@ -169,6 +169,18 @@ final class Database implements AutoCloseable {
         ensureColumn("players","last_x","REAL");
         ensureColumn("players","last_y","REAL");
         ensureColumn("players","last_z","REAL");
+        // The ONE persisted safe-wilderness location a genuinely new player is placed at on their very
+        // first spawn, reused as their death respawn point until they set a real bed/anchor. NULL for
+        // every player who already existed before this feature shipped -- they're simply never assigned
+        // one, so their respawn behavior is completely unchanged (see TeleportService.persistedSpawn()).
+        ensureColumn("players","persisted_spawn_world","TEXT");
+        ensureColumn("players","persisted_spawn_x","REAL");
+        ensureColumn("players","persisted_spawn_y","REAL");
+        ensureColumn("players","persisted_spawn_z","REAL");
+        // 0 = free 27-slot Ender Chest tier. Migrated once from the old chunk-count model by
+        // /ashfall enderchest migrate (see EnderChestService.migrateTiers()) -- not automatic on startup,
+        // since production data needs a deliberate, reported run rather than a silent boot-time change.
+        ensureColumn("players","ender_tier","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("factions","tag","TEXT");
         ensureColumn("factions","claimed_land","INTEGER NOT NULL DEFAULT 0");
         ensureColumn("factions","set_home","INTEGER NOT NULL DEFAULT 0");
@@ -259,6 +271,16 @@ final class Database implements AutoCloseable {
     synchronized void setPersonalSlots(String id, int slots) { update("UPDATE players SET personal_slots=? WHERE id=?", slots, id); }
     synchronized int enderPages(String id){return Math.max(1,integer("SELECT ender_pages FROM players WHERE id=?",id));}
     synchronized void setEnderPages(String id,int pages){update("UPDATE players SET ender_pages=? WHERE id=?",Math.max(1,Math.min(64,pages)),id);}
+    /** Replaces the old chunk-count model (ender_pages, still present but no longer read for capacity —
+     *  see EnderChestService's tier redesign). 0 = free 27-slot tier, matching every player who never
+     *  bought anything; never decreases once migrated/purchased. */
+    synchronized int enderTier(String id){return Math.max(0,integer("SELECT ender_tier FROM players WHERE id=?",id));}
+    synchronized void setEnderTier(String id,int tier){update("UPDATE players SET ender_tier=? WHERE id=?",Math.max(0,tier),id);}
+    synchronized List<String> allPlayerIds(){return list("SELECT id FROM players",rs->rs.getString("id"));}
+    /** Everyone who ever paid for the OLD single chunk-2 upgrade (EnderChestService.purchase()'s only
+     *  possible non-1 "next" value under the old max-upgrades:2 model) — used by the tier migration to
+     *  floor their new tier at 1 even if their expanded space happens to be empty right now. */
+    synchronized Set<String> legacyEnderStorageBuyers(){return new HashSet<>(list("SELECT DISTINCT player FROM economy_ledger WHERE category='UPGRADE_SINK' AND detail='ENDER_STORAGE_2' AND player IS NOT NULL",rs->rs.getString("player")));}
     synchronized void migrateEnderStorageAdditive(){
         if("done".equals(state("ender_storage_additive_v1")))return;
         boolean own=false;
@@ -286,6 +308,16 @@ final class Database implements AutoCloseable {
     synchronized StatsRow stats(String id){return one("SELECT id,name,play_seconds,player_kills,deaths,mob_kills,boss_kills,event_wins,balance FROM players WHERE id=?",Database::mapStats,id);}
     synchronized StatsRow statsByName(String name){return one("SELECT id,name,play_seconds,player_kills,deaths,mob_kills,boss_kills,event_wins,balance FROM players WHERE name=? COLLATE NOCASE",Database::mapStats,name);}
     synchronized List<StatsRow> topStats(String column){return topStats(column,10,0);}
+    /** One bulk read backing the bulletin's personal-stats panels — avoids a separate per-player query on
+     *  every refresh cycle (see BulletinService.refreshPersonalPanels()). Keyed by player id. */
+    synchronized Map<String,StatsRow> statsSnapshot(){Map<String,StatsRow> map=new HashMap<>();for(StatsRow row:list("SELECT id,name,play_seconds,player_kills,deaths,mob_kills,boss_kills,event_wins,balance FROM players",Database::mapStats))map.put(row.id(),row);return map;}
+    synchronized Map<String,Integer> shardBalanceSnapshot(){
+        Map<String,Integer> map=new HashMap<>();
+        try(PreparedStatement ps=connection.prepareStatement("SELECT player,balance FROM shard_accounts");ResultSet rs=ps.executeQuery()){
+            while(rs.next())map.put(rs.getString("player"),rs.getInt("balance"));
+        }catch(SQLException e){throw fail(e);}
+        return map;
+    }
     synchronized List<StatsRow> topStats(String column,int limit,int offset){if(!Set.of("play_seconds","player_kills","deaths","mob_kills","boss_kills","event_wins","balance").contains(column))throw new IllegalArgumentException("stat");return list("SELECT id,name,play_seconds,player_kills,deaths,mob_kills,boss_kills,event_wins,balance FROM players ORDER BY "+column+" DESC,name LIMIT "+Math.max(1,limit)+" OFFSET "+Math.max(0,offset),Database::mapStats);}
     private final Map<String,Map<String,String>> preferenceCache = new HashMap<>();
     synchronized String preference(String player,String key){
@@ -564,6 +596,14 @@ final class Database implements AutoCloseable {
     synchronized Location lastLocation(String id){
         record Raw(String world,Double x,Double y,Double z){}
         Raw raw=one("SELECT last_world,last_x,last_y,last_z FROM players WHERE id=?",rs->new Raw(column(rs,"last_world"),(Double)rs.getObject("last_x"),(Double)rs.getObject("last_y"),(Double)rs.getObject("last_z")),id);
+        if(raw==null||raw.world()==null||raw.x()==null)return null;
+        World world=Bukkit.getWorld(raw.world());
+        return world==null?null:new Location(world,raw.x(),raw.y(),raw.z());
+    }
+    synchronized void setPersistedSpawn(String id,Location location){if(location==null||location.getWorld()==null)return;update("UPDATE players SET persisted_spawn_world=?,persisted_spawn_x=?,persisted_spawn_y=?,persisted_spawn_z=? WHERE id=?",location.getWorld().getName(),location.getX(),location.getY(),location.getZ(),id);}
+    synchronized Location persistedSpawn(String id){
+        record Raw(String world,Double x,Double y,Double z){}
+        Raw raw=one("SELECT persisted_spawn_world,persisted_spawn_x,persisted_spawn_y,persisted_spawn_z FROM players WHERE id=?",rs->new Raw(column(rs,"persisted_spawn_world"),(Double)rs.getObject("persisted_spawn_x"),(Double)rs.getObject("persisted_spawn_y"),(Double)rs.getObject("persisted_spawn_z")),id);
         if(raw==null||raw.world()==null||raw.x()==null)return null;
         World world=Bukkit.getWorld(raw.world());
         return world==null?null:new Location(world,raw.x(),raw.y(),raw.z());

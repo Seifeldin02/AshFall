@@ -36,7 +36,17 @@ final class SettingsService implements Listener {
         final String key;
         ConfirmationKind(String key){this.key=key;}
     }
-    private enum Page { MAIN, CONFIRMATIONS }
+    /** OTHER keeps the original "tpa_requests" key so nobody's existing preference silently resets when this
+     *  splits into three settings — it now scopes to non-faction requesters only (see TeleportService).
+     *  FACTION defaults ON so a player who never touched TPA settings keeps today's behavior (faction-mates
+     *  could always request before this split existed). AUTO_ACCEPT defaults OFF (opt-in) and, per spec, can
+     *  only ever take effect while FACTION is also ON — enforced in set(), not just in the UI. */
+    enum TpaKind {
+        OTHER("tpa_requests",true), FACTION("tpa_requests_faction",true), AUTO_ACCEPT("tpa_auto_accept_faction",false);
+        final String key;final boolean fallback;
+        TpaKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
+    }
+    private enum Page { MAIN, CONFIRMATIONS, TPA }
     private record Holder(Page page) implements InventoryHolder {@Override public Inventory getInventory(){return null;}}
     private record Toggle(String key,String title,Material icon,boolean fallback) {}
 
@@ -48,7 +58,6 @@ final class SettingsService implements Listener {
             new Toggle("grave_tracking","Grave Tracker",Material.RECOVERY_COMPASS,true),
             new Toggle("boss_notifications","Boss Alerts",Material.BELL,true),
             new Toggle("private_messages","Private Messages",Material.WRITABLE_BOOK,true),
-            new Toggle("tpa_requests","TPA Requests",Material.ENDER_PEARL,true),
             new Toggle("auction_notifications","Auction Alerts",Material.CHEST,true),
             new Toggle("sound_notifications","Sounds",Material.NOTE_BLOCK,true)
     );
@@ -72,6 +81,7 @@ final class SettingsService implements Listener {
             if(locked(player,true))return true;
             if(!nativeDialogsSupported(player)){openChest(player,Page.MAIN);return true;}
             if(args.length>1&&args[1].equalsIgnoreCase("confirmations"))openNative(player,Page.CONFIRMATIONS);
+            else if(args.length>1&&args[1].equalsIgnoreCase("tpa"))openNative(player,Page.TPA);
             else if(args.length>1&&args[1].equalsIgnoreCase("account"))plugin.account().openNative(player,args.length>2?args[2]:"");
             else openNative(player,Page.MAIN);
             return true;
@@ -80,14 +90,15 @@ final class SettingsService implements Listener {
         if(locked(player,true))return true;
         if(args.length>0&&args[0].equalsIgnoreCase("chest")){openChest(player,Page.MAIN);return true;}
         if(args.length>0&&args[0].equalsIgnoreCase("confirmations")){open(player,Page.CONFIRMATIONS);return true;}
+        if(args.length>0&&args[0].equalsIgnoreCase("tpa")){open(player,Page.TPA);return true;}
         if(args.length>2&&args[0].equalsIgnoreCase("set")){
             String key=args[1].toLowerCase(Locale.ROOT),value=args[2].toLowerCase(Locale.ROOT);
             if(!validKey(key)||!Set.of("on","off").contains(value)){CoreUtil.error(player,"Unknown setting selection.");return true;}
             set(player,key,value.equals("on"));
             if(args.length>3&&args[3].equalsIgnoreCase("quick"))return true;
             if(args.length>3&&args[3].equalsIgnoreCase("native")&&nativeDialogsSupported(player)){
-                openNative(player,key.startsWith("confirm_")?Page.CONFIRMATIONS:Page.MAIN);
-            }else open(player,key.startsWith("confirm_")?Page.CONFIRMATIONS:Page.MAIN);
+                openNative(player,pageFor(key));
+            }else open(player,pageFor(key));
             return true;
         }
         if(args.length>1&&args[0].equalsIgnoreCase("toggle")){
@@ -95,12 +106,13 @@ final class SettingsService implements Listener {
             if("particles".equals(key))cycleParticles(player);else if("confirm_all".equals(key))setAllConfirmations(player,!allConfirmations(player));else if(validKey(key))set(player,key,!enabled(player,key,defaultFor(key)));
             if(args.length>2&&args[2].equalsIgnoreCase("quick"))return true;
             if(args.length>2&&args[2].equalsIgnoreCase("native")&&nativeDialogsSupported(player)){
-                openNative(player,key.startsWith("confirm_")?Page.CONFIRMATIONS:Page.MAIN);
-            }else open(player,key.startsWith("confirm_")?Page.CONFIRMATIONS:Page.MAIN);
+                openNative(player,pageFor(key));
+            }else open(player,pageFor(key));
             return true;
         }
         open(player,Page.MAIN);return true;
     }
+    private Page pageFor(String key){if(key.startsWith("confirm_"))return Page.CONFIRMATIONS;if(Arrays.stream(TpaKind.values()).anyMatch(kind->kind.key.equals(key)))return Page.TPA;return Page.MAIN;}
 
     void open(Player player){open(player,Page.MAIN);}
     void openChestRoot(Player player){if(!locked(player,true))openChest(player,Page.MAIN);}
@@ -124,16 +136,26 @@ final class SettingsService implements Listener {
                 for(Toggle toggle:MAIN)buttons.add(nativeToggle(player,toggle,Page.MAIN));
                 buttons.add(nativeCycle(player));
                 buttons.add(nativeButton("Purchase Confirmations","settings native confirmations"));
+                buttons.add(nativeButton("TPA Requests","settings native tpa"));
                 buttons.add(nativeButton("Account","settings native account"));
                 buttons.add(nativeButton("Random Travel","rtp"));
                 buttons.add(nativeButton(plugin.teleports().isQueuedForRtp(player)?"Leave RTP Queue":"Join RTP Queue","rtp queue"));
-            }else{
+            }else if(page==Page.CONFIRMATIONS){
                 buttons.add(nativeConfirmationToggle(player,null));
                 for(ConfirmationKind kind:ConfirmationKind.values())buttons.add(nativeConfirmationToggle(player,kind));
                 buttons.add(nativeButton("Back","settings native"));
+            }else{
+                buttons.add(nativeTpaToggle(player,TpaKind.OTHER));
+                buttons.add(nativeTpaToggle(player,TpaKind.FACTION));
+                /** "Hide Auto-Accept where possible" — a native Dialog's button list is free-form (unlike the
+                 *  chest/Bedrock forms below, which key their click handlers off fixed positional indices), so
+                 *  this is the one surface where the dependency can be hidden outright rather than shown
+                 *  disabled-with-explanation. */
+                if(enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback))buttons.add(nativeTpaToggle(player,TpaKind.AUTO_ACCEPT));
+                buttons.add(nativeButton("Back","settings native"));
             }
             Dialog dialog=Dialog.create(builder->builder.empty()
-                    .base(DialogBase.builder(Component.text(page==Page.MAIN?"ASHEN SETTINGS":"PURCHASE CONFIRMATIONS",NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).build())
+                    .base(DialogBase.builder(Component.text(pageTitle(page),NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).build())
                     .type(DialogType.multiAction(buttons,null,2)));
             player.showDialog(dialog);
         }catch(Throwable error){
@@ -166,6 +188,14 @@ final class SettingsService implements Listener {
                     openNative(online,Page.CONFIRMATIONS);
                 }),ClickCallback.Options.builder().uses(100).build()));
     }
+    private ActionButton nativeTpaToggle(Player player,TpaKind kind){
+        boolean current=enabled(player,kind.key,kind.fallback);
+        return ActionButton.create(stateLabel(prettyTpa(kind),current),Component.empty(),150,DialogAction.customClick((response,audience)->
+                plugin.getServer().getScheduler().runTask(plugin,()->{
+                    Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null||locked(online,true))return;
+                    set(online,kind.key,!enabled(online,kind.key,kind.fallback));openNative(online,Page.TPA);
+                }),ClickCallback.Options.builder().uses(100).build()));
+    }
     private ActionButton nativeCycle(Player player){
         return ActionButton.create(Component.text("Particles: ",NamedTextColor.WHITE).append(Component.text(CoreUtil.pretty(particles(player)),NamedTextColor.AQUA)),Component.empty(),150,
                 DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
@@ -177,18 +207,25 @@ final class SettingsService implements Listener {
     private boolean openBedrock(Player player,Page page){
         try{
             GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return false;
-            SimpleForm.Builder form=SimpleForm.builder().title(page==Page.MAIN?"ASHEN SETTINGS":"PURCHASE CONFIRMATIONS");
+            SimpleForm.Builder form=SimpleForm.builder().title(pageTitle(page));
             if(page==Page.MAIN){
                 for(Toggle toggle:MAIN)form.button(toggle.title()+"\n"+(enabled(player,toggle.key(),toggle.fallback())?"§aON":"§cOFF"));
                 form.button("Particle Intensity\n§e"+CoreUtil.pretty(particles(player)));
                 form.button("Purchase Confirmations");
+                form.button("TPA Requests");
                 form.button("Random Travel");
                 form.button(plugin.teleports().isQueuedForRtp(player)?"RTP Queue\n§aQUEUED — tap to leave":"RTP Queue\n§7Tap to join");
                 form.button("Cosmetics");
                 form.button("Account");
-            }else{
+            }else if(page==Page.CONFIRMATIONS){
                 form.button("All Routine Confirmations\n"+(allConfirmations(player)?"§aON":"§cOFF"));
                 for(ConfirmationKind kind:ConfirmationKind.values())form.button(prettyConfirmation(kind)+"\n"+(confirmationEnabled(player,kind)?"§aON":"§cOFF"));
+                form.button("Back");
+            }else{
+                boolean factionOn=enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback);
+                form.button(prettyTpa(TpaKind.OTHER)+"\n"+(enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback)?"§aON":"§cOFF"));
+                form.button(prettyTpa(TpaKind.FACTION)+"\n"+(factionOn?"§aON":"§cOFF"));
+                form.button(prettyTpa(TpaKind.AUTO_ACCEPT)+"\n"+(factionOn?(enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback)?"§aON":"§cOFF"):"§7Unavailable — enable Faction TPA Requests"));
                 form.button("Back");
             }
             form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
@@ -197,13 +234,19 @@ final class SettingsService implements Listener {
                     if(clicked>=0&&clicked<MAIN.size()){Toggle toggle=MAIN.get(clicked);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));openBedrock(player,Page.MAIN);}
                     else if(clicked==MAIN.size()){cycleParticles(player);openBedrock(player,Page.MAIN);}
                     else if(clicked==MAIN.size()+1)openBedrock(player,Page.CONFIRMATIONS);
-                    else if(clicked==MAIN.size()+2)plugin.teleports().rtp(player);
-                    else if(clicked==MAIN.size()+3){plugin.teleports().toggleRtpQueue(player);openBedrock(player,Page.MAIN);}
-                    else if(clicked==MAIN.size()+4)plugin.shards().openCosmetics(player);
-                    else if(clicked==MAIN.size()+5)plugin.account().open(player);
-                }else{
+                    else if(clicked==MAIN.size()+2)openBedrock(player,Page.TPA);
+                    else if(clicked==MAIN.size()+3)plugin.teleports().rtp(player);
+                    else if(clicked==MAIN.size()+4){plugin.teleports().toggleRtpQueue(player);openBedrock(player,Page.MAIN);}
+                    else if(clicked==MAIN.size()+5)plugin.shards().openCosmetics(player);
+                    else if(clicked==MAIN.size()+6)plugin.account().open(player);
+                }else if(page==Page.CONFIRMATIONS){
                     if(clicked==0){setAllConfirmations(player,!allConfirmations(player));openBedrock(player,Page.CONFIRMATIONS);}
                     else if(clicked>0&&clicked<=ConfirmationKind.values().length){ConfirmationKind kind=ConfirmationKind.values()[clicked-1];set(player,kind.key,!confirmationEnabled(player,kind));openBedrock(player,Page.CONFIRMATIONS);}
+                    else openBedrock(player,Page.MAIN);
+                }else{
+                    if(clicked==0){set(player,TpaKind.OTHER.key,!enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback));openBedrock(player,Page.TPA);}
+                    else if(clicked==1){set(player,TpaKind.FACTION.key,!enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback));openBedrock(player,Page.TPA);}
+                    else if(clicked==2){set(player,TpaKind.AUTO_ACCEPT.key,!enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback));openBedrock(player,Page.TPA);}
                     else openBedrock(player,Page.MAIN);
                 }
             }));
@@ -212,14 +255,16 @@ final class SettingsService implements Listener {
     }
 
     private void openChest(Player player,Page page){
-        Inventory inv=plugin.getServer().createInventory(new Holder(page),54,Component.text(page==Page.MAIN?"ASHEN SETTINGS":"PURCHASE CONFIRMATIONS",NamedTextColor.DARK_GRAY));
+        Inventory inv=plugin.getServer().createInventory(new Holder(page),54,Component.text(pageTitle(page),NamedTextColor.DARK_GRAY));
         renderChest(inv,player,page);
         player.openInventory(inv);
     }
+    private static final int[] MAIN_SLOTS={10,11,12,13,14,15,16,19,20};
     private void renderChest(Inventory inv,Player player,Page page){
         inv.clear();
         if(page==Page.MAIN){
-            int[] slots={10,11,12,13,14,15,16,19,20,21};for(int i=0;i<MAIN.size();i++){Toggle toggle=MAIN.get(i);inv.setItem(slots[i],toggle(toggle.icon(),toggle.title(),enabled(player,toggle.key(),toggle.fallback())));}
+            for(int i=0;i<MAIN.size();i++){Toggle toggle=MAIN.get(i);inv.setItem(MAIN_SLOTS[i],toggle(toggle.icon(),toggle.title(),enabled(player,toggle.key(),toggle.fallback())));}
+            inv.setItem(21,button(Material.ENDER_PEARL,"TPA Requests",List.of("Configure who can send you teleport requests.")));
             inv.setItem(23,cycle(Material.FIREWORK_STAR,"Particle Intensity",particles(player)));
             inv.setItem(31,button(Material.REPEATER,"Purchase Confirmations",List.of("Configure each marketplace section.")));
             inv.setItem(39,button(Material.ENDER_PEARL,"Random Travel",List.of("Travel safely in your current dimension.")));
@@ -227,9 +272,15 @@ final class SettingsService implements Listener {
             inv.setItem(40,button(queued?Material.LIME_DYE:Material.COMPASS,"RTP Queue",List.of(queued?"§aQueued — click to leave.":"Click to join the queue.","Pairs you with another queued player","in the same dimension.")));
             inv.setItem(41,button(Material.PLAYER_HEAD,"Cosmetics",List.of("Choose an unlocked Shard cosmetic.")));
             inv.setItem(49,button(Material.NAME_TAG,"Account",List.of("Password and registration settings.")));
-        }else{
+        }else if(page==Page.CONFIRMATIONS){
             inv.setItem(13,toggle(Material.REPEATER,"All Routine Confirmations",allConfirmations(player)));
             int slot=19;for(ConfirmationKind kind:ConfirmationKind.values()){inv.setItem(slot++,stateBlock(prettyConfirmation(kind),confirmationEnabled(player,kind)));}
+            inv.setItem(49,button(Material.ARROW,"Back",List.of()));
+        }else{
+            boolean factionOn=enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback);
+            inv.setItem(20,tpaChestItem(prettyTpa(TpaKind.OTHER),"Requests from outside your faction.",enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback)));
+            inv.setItem(21,tpaChestItem(prettyTpa(TpaKind.FACTION),"/tpa and /tpahere from faction members.",factionOn));
+            inv.setItem(22,factionOn?tpaChestItem(prettyTpa(TpaKind.AUTO_ACCEPT),"Auto-accepts only /tpa (never /tpahere)\nfrom faction members.",enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback)):tpaDisabledChestItem());
             inv.setItem(49,button(Material.ARROW,"Back",List.of()));
         }
     }
@@ -239,16 +290,22 @@ final class SettingsService implements Listener {
         if(locked(player,true))return;
         int slot=event.getRawSlot();
         if(holder.page==Page.MAIN){
-            int[] slots={10,11,12,13,14,15,16,19,20,21};for(int i=0;i<slots.length;i++)if(slot==slots[i]){Toggle toggle=MAIN.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
-            if(slot==23){cycleParticles(player);renderChest(event.getInventory(),player,Page.MAIN);}
+            for(int i=0;i<MAIN_SLOTS.length;i++)if(slot==MAIN_SLOTS[i]){Toggle toggle=MAIN.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
+            if(slot==21)openChest(player,Page.TPA);
+            else if(slot==23){cycleParticles(player);renderChest(event.getInventory(),player,Page.MAIN);}
             else if(slot==31)openChest(player,Page.CONFIRMATIONS);
             else if(slot==39){player.closeInventory();plugin.teleports().rtp(player);}
             else if(slot==40){plugin.teleports().toggleRtpQueue(player);renderChest(event.getInventory(),player,Page.MAIN);}
             else if(slot==41)plugin.shards().openCosmetics(player);
             else if(slot==49)plugin.account().open(player);
-        }else{
+        }else if(holder.page==Page.CONFIRMATIONS){
             if(slot==13){setAllConfirmations(player,!allConfirmations(player));renderChest(event.getInventory(),player,Page.CONFIRMATIONS);}
             else if(slot>=19&&slot<19+ConfirmationKind.values().length){ConfirmationKind kind=ConfirmationKind.values()[slot-19];set(player,kind.key,!confirmationEnabled(player,kind));renderChest(event.getInventory(),player,Page.CONFIRMATIONS);}
+            else if(slot==49)openChest(player,Page.MAIN);
+        }else{
+            if(slot==20){set(player,TpaKind.OTHER.key,!enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback));renderChest(event.getInventory(),player,Page.TPA);}
+            else if(slot==21){set(player,TpaKind.FACTION.key,!enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback));renderChest(event.getInventory(),player,Page.TPA);}
+            else if(slot==22){set(player,TpaKind.AUTO_ACCEPT.key,!enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback));renderChest(event.getInventory(),player,Page.TPA);}
             else if(slot==49)openChest(player,Page.MAIN);
         }
     }
@@ -263,7 +320,11 @@ final class SettingsService implements Listener {
     boolean graveTracking(Player player){return enabled(player,"grave_tracking",true);}
     boolean bossNotifications(Player player){return enabled(player,"boss_notifications",true);}
     boolean privateMessages(Player player){return enabled(player,"private_messages",true);}
-    boolean tpaRequests(Player player){return enabled(player,"tpa_requests",true);}
+    boolean tpaRequests(Player player){return enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback);}
+    boolean factionTpaRequests(Player player){return enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback);}
+    /** Runtime enforcement of "Auto-Accept requires Faction TPA Requests" lives here, not just in the UI —
+     *  callers never need to separately check factionTpaRequests() before trusting this. */
+    boolean tpaAutoAcceptFaction(Player player){return factionTpaRequests(player)&&enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback);}
     boolean auctionNotifications(Player player){return enabled(player,"auction_notifications",true);}
     boolean sounds(Player player){return enabled(player,"sound_notifications",true);}
     void hostileDamage(Player player){hostileDamageAt.put(player.getUniqueId(),System.currentTimeMillis());}
@@ -280,6 +341,7 @@ final class SettingsService implements Listener {
     double particleScale(Player player){return switch(particles(player)){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 
     private void set(Player player,String key,boolean enabled){
+        if(TpaKind.AUTO_ACCEPT.key.equals(key)&&enabled&&!factionTpaRequests(player)){CoreUtil.error(player,"Enable Faction TPA Requests first — Auto-Accept only applies to faction /tpa requests.");return;}
         db.preference(CoreUtil.id(player),key,Boolean.toString(enabled));
         if("sidebar".equals(key)){if(enabled)plugin.ui().update(player);else plugin.ui().removeSidebar(player);}
         if("night_vision".equals(key)){if(enabled)applyNightVision(player);else removeNightVision(player);}
@@ -290,11 +352,13 @@ final class SettingsService implements Listener {
         String next=switch(particles(player)){case"FULL"->"REDUCED";case"REDUCED"->"MINIMAL";default->"FULL";};
         db.preference(CoreUtil.id(player),"particle_intensity",next);CoreUtil.msg(player,"Particle Intensity: "+CoreUtil.pretty(next)+".");
     }
-    private boolean validKey(String key){return MAIN.stream().anyMatch(toggle->toggle.key().equals(key))||Arrays.stream(ConfirmationKind.values()).anyMatch(kind->kind.key.equals(key));}
-    private boolean defaultFor(String key){if(ConfirmationKind.SHOP.key.equals(key))return false;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
+    private boolean validKey(String key){return MAIN.stream().anyMatch(toggle->toggle.key().equals(key))||Arrays.stream(ConfirmationKind.values()).anyMatch(kind->kind.key.equals(key))||Arrays.stream(TpaKind.values()).anyMatch(kind->kind.key.equals(key));}
+    private boolean defaultFor(String key){if(ConfirmationKind.SHOP.key.equals(key))return false;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
     private String state(Player player,String key,boolean fallback){return enabled(player,key,fallback)?"ON":"OFF";}
-    private String displayKey(String key){return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
+    private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
     private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";};}
+    private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"Other Players' TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
+    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";};}
 
     private void nightVisionTick(){
         for(Player player:plugin.getServer().getOnlinePlayers()){
@@ -346,11 +410,29 @@ final class SettingsService implements Listener {
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()>=10&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED");}
+    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest();}
+    private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 
     private ItemStack toggle(Material icon,String title,boolean enabled){ItemStack item=new ItemStack(icon);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(title,NamedTextColor.GOLD));meta.lore(List.of(Component.text(enabled?"ON":"OFF",enabled?NamedTextColor.GREEN:NamedTextColor.RED),Component.text("Click to change.",NamedTextColor.DARK_GRAY)));item.setItemMeta(meta);return item;}
     private ItemStack stateBlock(String title,boolean enabled){return toggle(enabled?Material.LIME_CONCRETE:Material.RED_CONCRETE,title,enabled);}
     private ItemStack cycle(Material icon,String title,String value){return button(icon,title,List.of(value,"Click to change."));}
     private ItemStack button(Material material,String title,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(title,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
+    private ItemStack tpaChestItem(String title,String description,boolean enabled){
+        ItemStack item=new ItemStack(enabled?Material.LIME_DYE:Material.RED_DYE);ItemMeta meta=item.getItemMeta();
+        meta.displayName(Component.text(title,NamedTextColor.GOLD));
+        List<Component> lore=new ArrayList<>();lore.add(Component.text(enabled?"ON":"OFF",enabled?NamedTextColor.GREEN:NamedTextColor.RED));
+        for(String line:description.split("\n"))lore.add(Component.text(line,NamedTextColor.GRAY));
+        lore.add(Component.text("Click to change.",NamedTextColor.DARK_GRAY));
+        meta.lore(lore);item.setItemMeta(meta);return item;
+    }
+    /** Chest slots can't be cleanly "hidden" the way a native Dialog's button list can (an empty slot next to
+     *  Faction TPA would just look broken, with no clue why), so this is the "otherwise show it disabled and
+     *  clearly explain the dependency" branch of the spec for the chest/Bedrock surfaces. */
+    private ItemStack tpaDisabledChestItem(){
+        ItemStack item=new ItemStack(Material.GRAY_DYE);ItemMeta meta=item.getItemMeta();
+        meta.displayName(Component.text("Auto-Accept Faction TPA",NamedTextColor.GRAY));
+        meta.lore(List.of(Component.text("UNAVAILABLE",NamedTextColor.DARK_GRAY),Component.text("Requires Faction TPA Requests to be ON.",NamedTextColor.GRAY),Component.text("Auto-accepts only /tpa (never /tpahere)",NamedTextColor.DARK_GRAY),Component.text("from faction members.",NamedTextColor.DARK_GRAY)));
+        item.setItemMeta(meta);return item;
+    }
 }

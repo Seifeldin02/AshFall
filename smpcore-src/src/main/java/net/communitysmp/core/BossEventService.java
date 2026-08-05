@@ -77,6 +77,17 @@ final class BossEventService {
     }
     void reload() { bosses = YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(), "bosses.yml")); events = YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(), "events.yml")); }
     boolean isPeacefulExempt(LivingEntity entity){String tier=entity.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);return entity instanceof Boss||entity instanceof Warden||isWorldBossTier(tier)||"miniboss".equals(tier);}
+    /** Vanilla's IronGolemAttackHostilesGoal lets the Warded Colossus break off to fight nearby
+     *  zombies/hostile mobs entirely on its own initiative — as a world boss that's an exploitable
+     *  distraction (kite hostile mobs at it to stall the fight, or let it grind "free" kills instead of ever
+     *  engaging the player). Mob#setTarget() (used elsewhere, e.g. retargeting onto whoever last hit it)
+     *  never fires this event, so cancelling non-player targets here only ever blocks the AI's own automatic
+     *  mob-targeting — it never interferes with that player-combat retargeting. */
+    void onWorldBossTarget(EntityTargetLivingEntityEvent e){
+        if(!(e.getEntity() instanceof IronGolem golem))return;
+        if(!isWorldBossTier(golem.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))return;
+        if(!(e.getTarget() instanceof Player))e.setCancelled(true);
+    }
     void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
 
     void onSpawn(CreatureSpawnEvent e) {
@@ -601,7 +612,7 @@ final class BossEventService {
     private int onlineFactionCount(){Set<Long> ids=new HashSet<>();for(Player player:plugin.getServer().getOnlinePlayers()){if(player.getGameMode()==GameMode.SPECTATOR)continue;Database.FactionRow faction=db.factionOf(CoreUtil.id(player));if(faction!=null)ids.add(faction.id());}return ids.size();}
     private long randomRemaining(EventTier tier){String path="tiers."+tier.name().toLowerCase(Locale.ROOT);long fallbackMin=tier==EventTier.MICRO?1:tier==EventTier.MAJOR?12:72,fallbackMax=tier==EventTier.MICRO?4:tier==EventTier.MAJOR?36:120;long min=Math.max(1,events.getLong(path+".interval-active-hours-min",fallbackMin)),max=Math.max(min,events.getLong(path+".interval-active-hours-max",fallbackMax));return ThreadLocalRandom.current().nextLong(min*3600000L,max*3600000L+1);}
     private void persistEventTimers(){for(EventTier tier:EventTier.values()){String suffix=tier.name().toLowerCase(Locale.ROOT);db.state("event_remaining_"+suffix,Long.toString(eventRemaining.getOrDefault(tier,randomRemaining(tier))));EventType type=scheduledEvents.get(tier);if(type!=null)db.state("event_scheduled_"+suffix,type.name());}}
-    private void visualTick() {eliteIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity mob)||!mob.isValid()){removeHealthBar(id);return true;}String tier=mob.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);if(expireElite(mob,tier))return true;mob.setGlowing(true);String ability=mob.getPersistentDataContainer().get(abilityKey,PersistentDataType.STRING);Particle particle="FLAMEBOUND".equals(ability)||"VOLATILE".equals(ability)||"INFERNAL_RIFT".equals(ability)||"CINDERLORD".equals(ability)?Particle.FLAME:"STORMCALLER".equals(ability)||"FROSTBITE".equals(ability)?Particle.ELECTRIC_SPARK:"VAMPIRIC".equals(ability)||"VENOMOUS".equals(ability)?Particle.DAMAGE_INDICATOR:"PHASEWALKER".equals(ability)||"VOID_TETHER".equals(ability)?Particle.PORTAL:"COLOSSAL".equals(ability)?Particle.CRIT:Particle.ENCHANT;if(isWorldBossTier(tier)){WorldBossKind kind=kindFromTier(tier);scaleWorldBoss(mob);worldBossMechanic(mob,kind);worldBossRegen(mob,kind);worldBossSoftEnrage(mob,kind);trackBossChunk(mob.getLocation());}else if("epic".equals(tier)||"legendary".equals(tier))eliteMechanic(mob,tier);int count=isWorldBossTier(tier)?14:"legendary".equals(tier)?12:"epic".equals(tier)||"miniboss".equals(tier)?8:"rare".equals(tier)?5:3;settingsParticle(mob.getLocation().add(0,1,0),particle,count,.5,.7,.5,.01);updateHealthBar(mob,tier);antiCheeseTick(mob,tier);return false;});sharedBossIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity boss)||!boss.isValid()){damage.remove(id);lastContribution.remove(id);return true;}if(!isWorldBossTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))scaleSharedBoss(boss);return false;});}
+    private void visualTick() {eliteIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity mob)||!mob.isValid()){removeHealthBar(id);return true;}String tier=mob.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);if(expireElite(mob,tier))return true;mob.setGlowing(true);String ability=mob.getPersistentDataContainer().get(abilityKey,PersistentDataType.STRING);Particle particle="FLAMEBOUND".equals(ability)||"VOLATILE".equals(ability)||"INFERNAL_RIFT".equals(ability)||"CINDERLORD".equals(ability)?Particle.FLAME:"STORMCALLER".equals(ability)||"FROSTBITE".equals(ability)?Particle.ELECTRIC_SPARK:"VAMPIRIC".equals(ability)||"VENOMOUS".equals(ability)?Particle.DAMAGE_INDICATOR:"PHASEWALKER".equals(ability)||"VOID_TETHER".equals(ability)?Particle.PORTAL:"COLOSSAL".equals(ability)?Particle.CRIT:Particle.ENCHANT;if(isWorldBossTier(tier)){WorldBossKind kind=kindFromTier(tier);scaleWorldBoss(mob);worldBossMechanic(mob,kind);worldBossRegen(mob,kind);worldBossSoftEnrage(mob,kind);worldBossElementTick(mob,kind);trackBossChunk(mob.getLocation());}else if("epic".equals(tier)||"legendary".equals(tier))eliteMechanic(mob,tier);int count=isWorldBossTier(tier)?14:"legendary".equals(tier)?12:"epic".equals(tier)||"miniboss".equals(tier)?8:"rare".equals(tier)?5:3;settingsParticle(mob.getLocation().add(0,1,0),particle,count,.5,.7,.5,.01);updateHealthBar(mob,tier);antiCheeseTick(mob,tier);return false;});sharedBossIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity boss)||!boss.isValid()){damage.remove(id);lastContribution.remove(id);return true;}if(!isWorldBossTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))scaleSharedBoss(boss);return false;});}
     private void settingsParticle(Location location,Particle particle,int baseCount,double offsetX,double offsetY,double offsetZ,double extra){
         if(location.getWorld()==null)return;
         for(Player viewer:location.getWorld().getPlayers()){
@@ -629,6 +640,19 @@ final class BossEventService {
         double regen=max*bosses.getDouble(configPrefix(kind)+".disengage-regen-percent",.01);
         boss.setHealth(Math.min(max,boss.getHealth()+regen));
         boss.getWorld().spawnParticle(Particle.SOUL,boss.getLocation().add(0,1,0),16,.6,.8,.6,.02);
+    }
+    /** Luring a world boss into water/lava must never make the fight easier — each boss instead gets
+     *  measurably STRONGER in its "wrong" element, so pulling it there is a straight disadvantage for
+     *  players rather than a way to stall a slow/awkward mover in a corner. Deliberately independent of
+     *  antiCheeseTick's "engaged" tracking (unlike the Piglin Brute lava-speed hack below) — the buff applies
+     *  purely off the boss's own physical state, refreshed every visualTick (~1s) pass with a duration a
+     *  little longer than that interval so a moment of tick jitter never lets it lapse early. */
+    private void worldBossElementTick(LivingEntity boss,WorldBossKind kind){
+        switch(kind){
+            case IRON_GOLEM -> {if(boss.isInWater()){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,30,2,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.BUBBLE,boss.getLocation().add(0,1,0),12,.5,.5,.5,.02);}}
+            case ASHEN_KNIGHT -> {if(boss.isInWater()){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,30,2,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.SPEED,30,1,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.BUBBLE,boss.getLocation().add(0,1,0),12,.5,.5,.5,.02);}}
+            case PIGLIN_BRUTE -> {if(boss.isInLava()){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,30,2,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.LAVA,boss.getLocation().add(0,1,0),8,.5,.5,.5,0);}}
+        }
     }
     /** Anti-stall safety net, not a core mechanic: a group that's well past the intended 8-12 minute fight
      *  (world-boss-enrage.after-minutes) makes the boss hit gradually and modestly harder in fixed, capped

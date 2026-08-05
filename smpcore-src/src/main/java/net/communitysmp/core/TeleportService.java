@@ -16,6 +16,8 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Consumer;
 
 final class TeleportService {
     private record Pending(BukkitTask task, Location start, UUID observer) {}
@@ -233,6 +235,28 @@ final class TeleportService {
             );
         }));
     }
+    /** The same safety search searchRtp() runs (world border, spawn-claim/faction-claim/active-event
+     *  avoidance, safeRtp()'s per-dimension floor/headroom check) but without any of the player-facing
+     *  cooldown/warmup/combat gating that only makes sense for a live /rtp request — this drives a brand
+     *  new player's one-time placement instead (see GameplayListener.onAuthenticated()), which has no
+     *  combat state and shouldn't wait through a warmup countdown before their first spawn. */
+    void findSafeSpawnLocation(World world,int attempt,Consumer<Location> onFound,Runnable onFail){
+        if(world==null){onFail.run();return;}
+        int max=Math.max(8,plugin.getConfig().getInt("random-spawn.attempts",16));
+        if(attempt>=max){onFail.run();return;}
+        WorldBorder border=world.getWorldBorder();
+        double configured=Math.max(1000,plugin.getConfig().getDouble("random-spawn.radius",5000)),half=Math.max(32,border.getSize()/2-32),radius=Math.min(configured,half);
+        Location center=border.getCenter();
+        int x=(int)Math.round(center.getX()+ThreadLocalRandom.current().nextDouble(-radius,radius)),z=(int)Math.round(center.getZ()+ThreadLocalRandom.current().nextDouble(-radius,radius));
+        world.getChunkAtAsync(x>>4,z>>4,true).whenComplete((chunk,error)->plugin.getServer().getScheduler().runTask(plugin,()->{
+            if(error!=null){findSafeSpawnLocation(world,attempt+1,onFound,onFail);return;}
+            Location safe=safeRtp(world,x,z);int distance=Math.max(500,plugin.getConfig().getInt("rtp.protected-distance",500));
+            if(safe==null||!insideBorder(border,safe)||plugin.spawnClaims().near(safe,distance)||plugin.factions().nearClaim(safe,distance)||plugin.bosses().nearActiveEvent(safe,distance)){findSafeSpawnLocation(world,attempt+1,onFound,onFail);return;}
+            onFound.accept(safe);
+        }));
+    }
+    void persistNewPlayerSpawn(String playerId,Location location){plugin.db().setPersistedSpawn(playerId,location);}
+    Location persistedSpawn(String playerId){return plugin.db().persistedSpawn(playerId);}
     private Location safeRtp(World world,int x,int z){
         if(world.getEnvironment()==World.Environment.NORMAL)return CoreUtil.findSafe(world,x,z);
         if(world.getEnvironment()==World.Environment.NETHER){
@@ -260,7 +284,22 @@ final class TeleportService {
         if(combatWait>0){CoreUtil.error(from,"You cannot request a teleport for "+combatWait+" more second"+(combatWait==1?"":"s")+" after PvP.");return true;}
         Player target=plugin.nicknames().findVisiblePlayer(targetName);
         if(target==null||target.equals(from)){CoreUtil.error(from,"That player is not available.");return true;}
-        if(!plugin.settings().tpaRequests(target)){CoreUtil.error(from,plugin.nicknames().displayName(target)+" is not accepting teleport requests.");return true;}
+        /** The general tpaRequests() toggle now scopes to non-faction requesters only — faction-mates are
+         *  gated by their own, separately-configurable factionTpaRequests() toggle instead, per the settings
+         *  split. Both still apply to /tpa AND /tpahere identically; only auto-accept below distinguishes
+         *  between the two. */
+        boolean sameFaction=plugin.factions().sameFaction(from,target);
+        if(!(sameFaction?plugin.settings().factionTpaRequests(target):plugin.settings().tpaRequests(target))){CoreUtil.error(from,plugin.nicknames().displayName(target)+" is not accepting teleport requests.");return true;}
+        /** Auto-Accept only ever fires for /tpa (never /tpahere) from an actual faction-mate, and
+         *  tpaAutoAcceptFaction() itself re-checks factionTpaRequests() — so this can't fire in a state the
+         *  gate above wouldn't already have allowed. Bypasses the pending-request map and its expiry task
+         *  entirely; there's nothing to accept/deny once this fires. */
+        if(!here&&sameFaction&&plugin.settings().tpaAutoAcceptFaction(target)){
+            CoreUtil.msg(from,"Teleport request to "+plugin.nicknames().displayName(target)+" was auto-accepted (Faction Auto-Accept).");
+            CoreUtil.msg(target,plugin.nicknames().displayName(from)+"'s teleport request was auto-accepted (Faction Auto-Accept).");
+            warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
+            return true;
+        }
         if(plugin.afk().isAfk(target))CoreUtil.msg(from,plugin.nicknames().displayName(target)+" is currently AFK; the request may sit unanswered for a while.");
         long seconds=Math.max(1,plugin.getConfig().getLong("teleport.request-seconds",60)),expiry=System.currentTimeMillis()+seconds*1000L;
         String targetId=CoreUtil.id(target);Request request=new Request(CoreUtil.id(from),expiry,here);requests.put(targetId,request);

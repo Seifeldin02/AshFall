@@ -19,6 +19,7 @@ import org.bukkit.inventory.ItemStack;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /** Page 1 is a hybrid, and that split matters everywhere below. Slots 0-26 ARE the actual vanilla Ender
@@ -205,23 +206,44 @@ final class EnderChestService implements Listener {
     void openForAdmin(Player admin,Player target){
         plugin.db().logAudit(admin.getName(),"INSPECT_ENDERCHEST","target="+target.getName());
         CoreUtil.msg(admin,"Showing "+target.getName()+"'s Ender Storage, live.");
-        openPage1(admin,target,chunks(target));
+        openPage1(admin,target,totalPages(target));
     }
 
-    private int chunks(String playerId){return Math.max(1,Math.min(maxChunks(),db.enderPages(playerId)));}
-    private int chunks(Player player){return chunks(CoreUtil.id(player));}
-    /** Every chunk — including 1, now that it has bonus slots alongside the vanilla 27 — holds UPGRADE_CHUNK
-     *  logical slots, so this is uniform. */
-    private int capacity(Player player){return chunks(player)*UPGRADE_CHUNK;}
-    private int maxChunks(){return Math.max(2,plugin.getConfig().getInt("ender-chest.max-upgrades",2));}
-    int displayPages(Player player){return chunks(player);}
+    /** Tier 0 (free) is always exactly the real vanilla chest, 27 slots — not configurable, since it IS
+     *  the vanilla chest. Tiers 1-3 are purchased and each grant a TOTAL slot count (not incremental) from
+     *  ender-chest.tiers.<N>.slots. Two physical GUI pages cover the full 0-90 range regardless of tier —
+     *  page 1 is slots 0-44 (27 vanilla + up to 18 bonus), page 2 is slots 45-89 — but only however many of
+     *  those slots the player's current tier actually unlocks are usable; the rest render locked (see
+     *  lockedFrom()/openPage1()/sharedChunk()). This keeps the entire live-mirroring/multi-viewer/OpenInv
+     *  architecture above completely untouched: only how much of the already-existing GUI space is
+     *  currently interactive changes. */
+    private static final int BASE_CAPACITY=27;
+    private static final int MAX_TIER=3;
+    private int tier(String playerId){return Math.max(0,Math.min(MAX_TIER,db.enderTier(playerId)));}
+    private int tier(Player player){return tier(CoreUtil.id(player));}
+    private int tierCapacity(int tier){return tier<=0?BASE_CAPACITY:plugin.getConfig().getInt("ender-chest.tiers."+tier+".slots",BASE_CAPACITY);}
+    private double tierPrice(int tier){return plugin.getConfig().getDouble("ender-chest.tiers."+tier+".price",0);}
+    private int capacity(Player player){return tierCapacity(tier(player));}
+    /** Page 2 only ever becomes navigable once the player has unlocked at least one slot of it (tier 2+,
+     *  72 slots) — matching the old "don't even show a Next button for something you haven't bought"
+     *  behavior, just keyed off tier instead of chunk count. */
+    private int totalPages(Player player){return totalPages(CoreUtil.id(player));}
+    private int totalPages(String playerId){return tierCapacity(tier(playerId))>UPGRADE_CHUNK?2:1;}
+    int displayPages(Player player){return totalPages(player);}
+    /** How many of THIS page's UPGRADE_CHUNK logical slots are currently unlocked — page 1 covers logical
+     *  0-44, page 2 covers logical 45-89. Clamped into [0,UPGRADE_CHUNK]. */
+    private int unlockedOnPage(Player player,int pageNumber){return unlockedOnPage(CoreUtil.id(player),pageNumber);}
+    private int unlockedOnPage(String playerId,int pageNumber){
+        int cap=tierCapacity(tier(playerId)),pageStart=(pageNumber-1)*UPGRADE_CHUNK;
+        return Math.max(0,Math.min(UPGRADE_CHUNK,cap-pageStart));
+    }
 
     /** Bare /ec always lands on page 1 — the familiar "this is my Ender Chest" view. */
     private void open(Player player){openPage(player,1);}
 
     private void openPage(Player player,int requested){
         if(blocked(player))return;
-        int totalChunks=chunks(player),page=Math.max(1,Math.min(requested,totalChunks));
+        int totalChunks=totalPages(player),page=Math.max(1,Math.min(requested,totalChunks));
         currentPages.put(player.getUniqueId(),page);
         if(page==1){openPage1(player,player,totalChunks);return;}
         player.openInventory(sharedChunk(CoreUtil.id(player),page));
@@ -255,8 +277,90 @@ final class EnderChestService implements Listener {
             for(int i=PAGE1_NAV;i<PAGE1_SIZE;i++)view.setItem(i,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
             liveMirrors.put(targetId,view);
         }
+        refreshPage1Locks(view,target);
         refreshPage1Nav(view,totalChunks);
         viewer.openInventory(view);
+    }
+    /** Re-applied every time page 1 is (re)handed out, not just at first materialization, so a live
+     *  upgrade purchase mid-session immediately unlocks the newly-available slots without needing to
+     *  reopen. Only ever overlays the lock indicator onto a slot that's currently EMPTY (or already
+     *  showing the lock indicator) — never hides or replaces a real item. That should be unreachable
+     *  anyway since tiers only ever increase, but costs nothing to guard regardless. */
+    private void refreshPage1Locks(Inventory view,Player target){
+        int unlocked=unlockedOnPage(target,1);
+        for(int i=CHUNK;i<PAGE1_NAV;i++){
+            boolean shouldLock=i>=unlocked;
+            ItemStack current=view.getItem(i);
+            boolean isLockPlaceholder=current!=null&&current.getType()==Material.BARRIER;
+            if(shouldLock&&(current==null||isLockPlaceholder))view.setItem(i,lockedSlotItem());
+            else if(!shouldLock&&isLockPlaceholder)view.setItem(i,null);
+        }
+    }
+    private ItemStack lockedSlotItem(){return CoreUtil.named(Material.BARRIER,"Locked",List.of("Upgrade your Ender Chest to unlock this slot.","/enderchest upgrade"));}
+    private boolean isLockedSlot(ItemStack item){return item!=null&&item.getType()==Material.BARRIER&&item.hasItemMeta()&&item.getItemMeta().hasDisplayName()&&net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(item.getItemMeta().displayName()).equals("Locked");}
+
+    /** One-time, idempotent migration from the old chunk-count model to the new 27/45/72/90 tier system.
+     *  Never called automatically (no startup hook) — a production data change like this needs a
+     *  deliberate, reported, admin-triggered run, not a silent one buried in a restart. Safe to run more
+     *  than once: it only ever raises a player's tier to the minimum required, never lowers it, and
+     *  re-running against already-migrated data recomputes the exact same result and changes nothing.
+     *
+     *  Two independent signals decide the minimum tier, and the higher of the two wins:
+     *   1. Occupancy — the highest logical slot, ONLY across the old page 1 (0-44) and page 2 (45-89) —
+     *      the exact two pages that still exist, unchanged, in the new system — that actually has an item
+     *      in it. The vanilla 27-slot chest itself is deliberately never checked: it physically cannot
+     *      hold more than 27 items, so occupancy there alone can never require more than Tier 0. Deliberately
+     *      does NOT look at any old page 3+: production's old max-upgrades:2 config made that physically
+     *      impossible to ever reach for a real player (confirmed against production's live config this
+     *      session), so nothing legitimate can be sitting there — but stray leftover test/debug data doing
+     *      so on a non-production database must NOT count either, since nothing in the new 2-page layout
+     *      can represent or display an old page 3+ slot at all. Counting it anyway granted a tier with no
+     *      visible storage behind it (confirmed live: an old page-7 item drove a Tier 3 grant while the
+     *      player's actual page 2 rendered completely empty) — exactly backwards from "grant the minimum
+     *      tier the occupied space requires".
+     *   2. Purchase history — anyone with a real economy_ledger record of buying the old $200k chunk-2
+     *      upgrade is floored at Tier 1 even if that space is currently empty; they already paid for it.
+     *
+     *  Reads whichever is authoritative per player exactly like loadAll() does: a live shared Inventory if
+     *  someone (owner or admin) happens to have that page open right now, otherwise the database — so a
+     *  migration run while players are online can't read stale pre-save data out from under them. */
+    int migrateTiers(org.bukkit.command.CommandSender sender){
+        Set<String> legacyBuyers=db.legacyEnderStorageBuyers();
+        int checked=0,changed=0;
+        for(String id:db.allPlayerIds()){
+            checked++;
+            int currentTier=Math.max(0,db.enderTier(id));
+            int required=Math.max(occupancyTier(id),legacyBuyers.contains(id)?1:0);
+            if(required>currentTier){db.setEnderTier(id,required);changed++;}
+        }
+        CoreUtil.msg(sender,"Ender Chest tier migration: checked "+checked+" known player(s), upgraded "+changed+" to a higher tier. Nobody's tier was ever lowered or left unmigrated if they qualified for more.");
+        return changed;
+    }
+    /** Only ever looks at old page 1 (0-44) and page 2 (45-89) — the exact two pages that still exist,
+     *  unchanged, in the new system. Deliberately does NOT check page 3+ (see migrateTiers()'s doc for why
+     *  that would be wrong even defensively, not just unnecessary) — production's old max-upgrades:2 config
+     *  made anything past page 2 physically impossible for a real player to ever have. */
+    private int occupancyTier(String playerId){
+        int tier=0;
+        for(int page=1;page<=2;page++){
+            ItemStack[] data=migrationSource(playerId,page);
+            if(data==null)continue;
+            int start=page==1?CHUNK:0;
+            for(int i=start;i<UPGRADE_CHUNK&&i<data.length;i++){
+                if(data[i]==null||isLockedSlot(data[i]))continue;
+                if(page==1)tier=Math.max(tier,1);
+                else tier=Math.max(tier,i<27?2:3);
+            }
+        }
+        return tier;
+    }
+    /** Live shared Inventory if currently open (owner or admin), otherwise a pure database read — never
+     *  touches OpenInv/the vanilla chest, since (as occupancyTier()'s doc explains) the vanilla chest is
+     *  irrelevant to which tier is required. */
+    private ItemStack[] migrationSource(String playerId,int page){
+        Inventory live=page==1?liveMirrors.get(playerId):liveChunks.get(playerId+":"+page);
+        if(live!=null){ItemStack[] result=new ItemStack[UPGRADE_CHUNK];for(int i=0;i<UPGRADE_CHUNK;i++)result[i]=live.getItem(i);return result;}
+        return db.enderPage(playerId,page);
     }
     private void refreshPage1Nav(Inventory view,int totalChunks){
         view.setItem(PAGE1_NAV+4,CoreUtil.named(Material.ENDER_EYE,"Page 1/"+totalChunks,List.of()));
@@ -269,10 +373,13 @@ final class EnderChestService implements Listener {
         target.getEnderChest().setContents(mirrored);
     }
     /** Persists page 1's bonus slots (27-44) — the non-vanilla portion — using the exact same
-     *  reused-page-1-partition scheme as reading (see openPage1()/class doc). */
+     *  reused-page-1-partition scheme as reading (see openPage1()/class doc). Skips the lock-indicator
+     *  placeholder (see lockedSlotItem()/refreshPage1Locks()) — it's a GUI-only overlay, never real player
+     *  data, and must never be written to ender_chest_items or it would come back as a phantom item next
+     *  load and permanently poison the tier migration's occupancy check. */
     private void persistPage1Bonus(String targetId,Inventory view){
         ItemStack[] bonus=new ItemStack[PAGE1_NAV];
-        for(int i=CHUNK;i<PAGE1_NAV;i++)bonus[i]=view.getItem(i);
+        for(int i=CHUNK;i<PAGE1_NAV;i++){ItemStack item=view.getItem(i);bonus[i]=isLockedSlot(item)?null:item;}
         db.saveEnderPage(targetId,1,bonus);
     }
 
@@ -285,17 +392,29 @@ final class EnderChestService implements Listener {
      *  does not re-check that, so it must never be reachable with an unvalidated page number. */
     private Inventory sharedChunk(String playerId,int chunkNumber){
         String key=playerId+":"+chunkNumber;
-        int totalChunks=chunks(playerId);
+        int totalChunks=totalPages(playerId);
         Inventory existing=liveChunks.get(key);
-        if(existing!=null){refreshNav(existing,chunkNumber,totalChunks);return existing;}
+        if(existing!=null){refreshChunkLocks(existing,playerId,chunkNumber);refreshNav(existing,chunkNumber,totalChunks);return existing;}
         ItemStack[] data=db.enderPage(playerId,chunkNumber);
         Inventory inv=plugin.getServer().createInventory(new ChunkHolder(playerId,chunkNumber),UPGRADE_PAGE_SIZE,
                 Component.text("Ender Storage • page "+chunkNumber+"/"+totalChunks,NamedTextColor.DARK_PURPLE));
         for(int slot=0;slot<UPGRADE_CHUNK&&slot<data.length;slot++)if(data[slot]!=null)inv.setItem(slot,data[slot].clone());
         for(int slot=UPGRADE_CHUNK;slot<UPGRADE_PAGE_SIZE;slot++)inv.setItem(slot,CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
+        refreshChunkLocks(inv,playerId,chunkNumber);
         refreshNav(inv,chunkNumber,totalChunks);
         liveChunks.put(key,inv);
         return inv;
+    }
+    /** Same guarded lock/unlock overlay as refreshPage1Locks(), for page 2's storage slots (logical 45-89). */
+    private void refreshChunkLocks(Inventory inv,String playerId,int chunkNumber){
+        int unlocked=unlockedOnPage(playerId,chunkNumber);
+        for(int slot=0;slot<UPGRADE_CHUNK;slot++){
+            boolean shouldLock=slot>=unlocked;
+            ItemStack current=inv.getItem(slot);
+            boolean isLockPlaceholder=isLockedSlot(current);
+            if(shouldLock&&(current==null||isLockPlaceholder))inv.setItem(slot,lockedSlotItem());
+            else if(!shouldLock&&isLockPlaceholder)inv.setItem(slot,null);
+        }
     }
     /** Re-applied every time a chunk is (re)handed out, not just at first materialization — otherwise a page
      *  cached before a purchase raised the total (e.g. an admin still inspecting it) would keep showing a
@@ -306,35 +425,36 @@ final class EnderChestService implements Listener {
         inv.setItem(UPGRADE_CHUNK+5,CoreUtil.named(Material.EMERALD,"Upgrade (owner only)",List.of()));
         inv.setItem(UPGRADE_CHUNK+8,chunkNumber<totalChunks?CoreUtil.named(Material.ARROW,"Next Page",List.of()):CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE,"",List.of()));
     }
+    /** Skips the lock-indicator placeholder the same way persistPage1Bonus() does — see that method's doc
+     *  for why it must never be written to ender_chest_items. */
     private void persistChunk(String playerId,int chunkNumber,Inventory inventory){
         ItemStack[] part=new ItemStack[UPGRADE_CHUNK];
-        for(int slot=0;slot<UPGRADE_CHUNK;slot++)part[slot]=inventory.getItem(slot);
+        for(int slot=0;slot<UPGRADE_CHUNK;slot++){ItemStack item=inventory.getItem(slot);part[slot]=isLockedSlot(item)?null:item;}
         db.saveEnderPage(playerId,chunkNumber,part);
     }
 
     private void openUpgrade(Player player,int returnPage){
-        int current=chunks(player);
-        if(current>=maxChunks()){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");return;}
+        int current=tier(player);
+        if(current>=MAX_TIER){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");return;}
         int next=current+1;
-        double cost=plugin.getConfig().getDouble("ender-chest.upgrades."+next);
-        int nextCapacity=next*UPGRADE_CHUNK;
+        double cost=tierPrice(next);
         Inventory inventory=plugin.getServer().createInventory(new UpgradeHolder(CoreUtil.id(player),returnPage),27,
                 Component.text("Ender Storage Upgrade",NamedTextColor.DARK_PURPLE));
-        inventory.setItem(11,CoreUtil.named(Material.LIME_CONCRETE,"Confirm",List.of(CoreUtil.money(cost),nextCapacity+" slots total")));
+        inventory.setItem(11,CoreUtil.named(Material.LIME_CONCRETE,"Confirm",List.of(CoreUtil.money(cost),tierCapacity(next)+" slots total")));
         inventory.setItem(15,CoreUtil.named(Material.RED_CONCRETE,"Cancel",List.of()));
         player.openInventory(inventory);
     }
 
     private void purchase(Player player,int returnPage){
-        int current=chunks(player);
-        if(current>=maxChunks()){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");openPage(player,returnPage);return;}
+        int current=tier(player);
+        if(current>=MAX_TIER){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");openPage(player,returnPage);return;}
         int next=current+1;
-        double cost=plugin.getConfig().getDouble("ender-chest.upgrades."+next);
+        double cost=tierPrice(next);
         if(cost<=0){CoreUtil.error(player,"That storage expansion is not configured.");openPage(player,returnPage);return;}
         if(!plugin.bank().allowNonessential(player,"Ender Storage upgrades")){openPage(player,returnPage);return;}
-        if(!plugin.bank().payServer(player,cost,"SINK","ENDER_STORAGE_"+next)){CoreUtil.error(player,"You cannot afford this upgrade.");openPage(player,returnPage);return;}
-        db.recordEconomy(CoreUtil.id(player),"UPGRADE_SINK",-cost,"ENDER_STORAGE_"+next);
-        db.setEnderPages(CoreUtil.id(player),next);
+        if(!plugin.bank().payServer(player,cost,"SINK","ENDER_STORAGE_TIER_"+next)){CoreUtil.error(player,"You cannot afford this upgrade.");openPage(player,returnPage);return;}
+        db.recordEconomy(CoreUtil.id(player),"UPGRADE_SINK",-cost,"ENDER_STORAGE_TIER_"+next);
+        db.setEnderTier(CoreUtil.id(player),next);
         player.playSound(player.getLocation(),Sound.BLOCK_ENDER_CHEST_OPEN,1f,1.25f);
         CoreUtil.msg(player,"Ender Storage expanded to "+capacity(player)+" slots.");
         openPage(player,returnPage);
@@ -345,7 +465,7 @@ final class EnderChestService implements Listener {
      *  Inventory if one is currently open, otherwise the database. */
     private ItemStack[] loadAll(Player player,int capacity){
         ItemStack[] flat=new ItemStack[capacity];
-        int totalChunks=chunks(player);
+        int totalChunks=totalPages(player);
         String id=CoreUtil.id(player);
         for(int chunk=1;chunk<=totalChunks;chunk++){
             ItemStack[] source;
@@ -356,7 +476,7 @@ final class EnderChestService implements Listener {
                 else source=db.enderPage(id,chunk);
             }
             for(int slot=0;slot<UPGRADE_CHUNK&&slot<source.length&&(chunk-1)*UPGRADE_CHUNK+slot<flat.length;slot++)
-                flat[(chunk-1)*UPGRADE_CHUNK+slot]=source[slot]==null?null:source[slot].clone();
+                flat[(chunk-1)*UPGRADE_CHUNK+slot]=(source[slot]==null||isLockedSlot(source[slot]))?null:source[slot].clone();
         }
         return flat;
     }
@@ -382,9 +502,15 @@ final class EnderChestService implements Listener {
             int slot=event.getRawSlot();
             Player target=resolveTarget(holder.target());
             if(target==null)return;
+            /** Locked slots are filled with a real, non-stackable BARRIER placeholder rather than left
+             *  empty — the same reason the nav row below is glass-filled rather than left empty (see the
+             *  class doc on openPage1()): an occupied, non-stackable slot can never be a shift-click
+             *  auto-placement target, so this alone already blocks the bypass the nav-row comment warns
+             *  about. This check only has to stop a DIRECT click from picking up/swapping the barrier. */
+            if(slot>=CHUNK&&slot<PAGE1_NAV&&isLockedSlot(event.getCurrentItem())){event.setCancelled(true);CoreUtil.error(viewer,"That slot is locked — upgrade your Ender Chest to unlock it.");return;}
             if(slot>=PAGE1_NAV&&slot<PAGE1_SIZE){
                 event.setCancelled(true);
-                if(slot==PAGE1_NAV+8&&chunks(target)>1)viewer.openInventory(sharedChunk(holder.target(),2));
+                if(slot==PAGE1_NAV+8&&totalPages(target)>1)viewer.openInventory(sharedChunk(holder.target(),2));
                 else if(slot==PAGE1_NAV+5){
                     if(!owner){CoreUtil.error(viewer,"Only the owner can purchase upgrades.");return;}
                     openUpgrade(viewer,1);
@@ -407,9 +533,12 @@ final class EnderChestService implements Listener {
             int slot=event.getRawSlot();
             if(slot<0||slot>=UPGRADE_PAGE_SIZE){return;}
             boolean owner=holder.player().equals(CoreUtil.id(viewer));
-            if(slot<UPGRADE_CHUNK)return;
+            if(slot<UPGRADE_CHUNK){
+                if(isLockedSlot(event.getCurrentItem())){event.setCancelled(true);CoreUtil.error(viewer,"That slot is locked — upgrade your Ender Chest to unlock it.");}
+                return;
+            }
             event.setCancelled(true);
-            int realTotal=chunks(holder.player());
+            int realTotal=totalPages(holder.player());
             if(slot==UPGRADE_CHUNK&&holder.chunk()==2){
                 Player target=resolveTarget(holder.player());
                 if(target!=null)openPage1(viewer,target,realTotal);
@@ -444,15 +573,15 @@ final class EnderChestService implements Listener {
     }
     @EventHandler public void drag(InventoryDragEvent event){
         if(event.getWhoClicked() instanceof Player viewer&&event.getView().getTopInventory().getHolder(false) instanceof Page1Holder holder){
-            if(event.getRawSlots().stream().anyMatch(slot->slot>=PAGE1_NAV&&slot<PAGE1_SIZE)){event.setCancelled(true);return;}
+            Inventory top=event.getView().getTopInventory();
+            if(event.getRawSlots().stream().anyMatch(slot->(slot>=PAGE1_NAV&&slot<PAGE1_SIZE)||(slot>=CHUNK&&slot<PAGE1_NAV&&isLockedSlot(top.getItem(slot))))){event.setCancelled(true);return;}
             Player target=resolveTarget(holder.target());
             if(target==null)return;
-            Inventory top=event.getView().getTopInventory();
             plugin.getServer().getScheduler().runTask(plugin,()->mirrorPage1(target,top));
             return;
         }
         InventoryHolder raw=event.getInventory().getHolder(false);
-        if(raw instanceof ChunkHolder&&event.getRawSlots().stream().anyMatch(slot->slot>=UPGRADE_CHUNK&&slot<UPGRADE_PAGE_SIZE))event.setCancelled(true);
+        if(raw instanceof ChunkHolder&&event.getRawSlots().stream().anyMatch(slot->(slot>=UPGRADE_CHUNK&&slot<UPGRADE_PAGE_SIZE)||(slot<UPGRADE_CHUNK&&isLockedSlot(event.getInventory().getItem(slot)))))event.setCancelled(true);
     }
     @EventHandler public void quit(PlayerQuitEvent event){currentPages.remove(event.getPlayer().getUniqueId());}
 

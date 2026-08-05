@@ -112,6 +112,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             },120L);
             return true;
         }
+        if(args[0].equalsIgnoreCase("bulletinpurge")){
+            bulletin.purge(sender);
+            return true;
+        }
         if(args[0].equalsIgnoreCase("nearbymobs")){
             if(args.length<2){CoreUtil.error(sender,"Usage: /admin nearbymobs <player> [radius] — lists nearby hostile mobs and whether each is tagged trial_spawner_mob. Diagnostic only.");return true;}
             Player target=getServer().getPlayerExact(args[1]);
@@ -288,6 +292,11 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"ipban"->ipBans.command(sender,args);
                 case"monument"->monuments.command(sender,args);
                 case"moderation"->moderation.command(sender,args);
+                case"enderchest"->{
+                    if(args.length<2||!args[1].equalsIgnoreCase("migratetiers")){CoreUtil.error(sender,"Usage: /ashfall enderchest migratetiers confirm — one-time, idempotent migration to the 27/45/72/90 tier system.");break;}
+                    if(args.length<3||!args[2].equalsIgnoreCase("confirm")){CoreUtil.error(sender,"This changes ender_tier for every known player. Run '/ashfall enderchest migratetiers confirm' to proceed. Safe to run more than once.");break;}
+                    enderChests.migrateTiers(sender);
+                }
                 case"progressrepair"->adminProgressRepair(sender,args);
                 case"cooldowns"->adminCooldowns(sender,args);
                 case"dragon"->adminDragon(sender,args);

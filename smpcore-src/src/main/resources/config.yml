@@ -93,9 +93,19 @@ graves:
   lifetime-hours: 48
 
 ender-chest:
-  max-upgrades: 2
-  upgrades:
-    2: 750000
+  # Tier 0 (free) is always exactly 27 slots -- the real vanilla Ender Chest, not configurable here since
+  # it IS the vanilla chest. Tiers 1-3 are purchased, each granting the total slot count below (not an
+  # incremental add-on) for the listed one-time price.
+  tiers:
+    1:
+      slots: 45
+      price: 200000
+    2:
+      slots: 72
+      price: 750000
+    3:
+      slots: 90
+      price: 1500000
 
 random-spawn:
   enabled: true
