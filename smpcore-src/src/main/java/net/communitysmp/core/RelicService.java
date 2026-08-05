@@ -3,6 +3,7 @@ package net.communitysmp.core;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.*;
+import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.enchantments.Enchantment;
@@ -35,6 +36,9 @@ import java.util.*;
 final class RelicService implements Listener {
     private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask;
     RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);}
+    /** Test-only hook for /admin relictest — runs the real periodic lifecycle pass immediately instead of
+     *  waiting up to 10 minutes for the next scheduled one. Not used by any normal game logic. */
+    void debugForceLifecycleTick(){lifecycleTick();}
     void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();}
     void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));}
     Set<String> keys(){ConfigurationSection section=config.getConfigurationSection("relics");return section==null?Set.of():section.getKeys(false);}
@@ -66,7 +70,6 @@ final class RelicService implements Listener {
         if(row!=null&&"ACTIVE".equals(row.status()))return false;
         db.registerRelic(relicKey,CoreUtil.id(player),player.getName());
         CoreUtil.give(player,create(relicKey));
-        markUsed(relicKey);
         discovery(player,relicKey,"found");
         return true;
     }
@@ -82,10 +85,46 @@ final class RelicService implements Listener {
     }
     void discover(Player player,ItemStack item){
         String relicKey=keyOf(item);if(relicKey==null)return;Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);if(row==null)return;
-        markUsed(relicKey);
         if("hidden".equals(row.owner())||"ELIGIBLE".equals(row.status())||!row.active()){db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());discovery(player,relicKey,"uncovered");}
         else if(row.owner().equals(CoreUtil.id(player)))db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());
         else{db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());discovery(player,relicKey,"claimed");}
+    }
+    /** Called by AuctionService.buy() when a sold listing happens to contain a relic — a sale is exactly
+     *  as legitimate an ownership transfer as picking one up via discover(), so it goes through the same
+     *  confirmRelic() ownership+status+timer reset, keeping the single tracked copy pointed at whoever
+     *  now actually holds it (and resetting the reclaim clock, since the buyer just logged an activity). */
+    void transferOnSale(ItemStack item,Player buyer){
+        String relicKey=keyOf(item);if(relicKey==null)return;
+        if(db.relicLifecycle(relicKey)==null)return;
+        db.confirmRelic(relicKey,CoreUtil.id(buyer),buyer.getName());
+        discovery(buyer,relicKey,"purchased");
+    }
+    /** Admin diagnostic and on-demand trigger for the same duplicate guard confirmInventory() already
+     *  runs automatically (every 10-minute lifecycle tick, and on every join/quit) — reports exactly
+     *  which online players currently hold a physical copy and whether each matches the tracked owner,
+     *  then runs the same check immediately instead of waiting. Prepared specifically for a known,
+     *  already-diagnosed duplicate (e.g. an extra Colossus Core) so the cleanup at deploy time is a
+     *  deliberate, visible, audited action rather than a silent background side effect. Only inspects
+     *  ONLINE players — an offline player's saved inventory can't be edited directly; their stale copy
+     *  is caught automatically the moment they next log in. */
+    void reconcile(CommandSender sender,String relicKey){
+        if(!keys().contains(relicKey)){CoreUtil.error(sender,"Unknown relic key. Use /relics for the list.");return;}
+        Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);
+        if(row==null){CoreUtil.error(sender,"No lifecycle record for "+relicKey+" yet.");return;}
+        CoreUtil.msg(sender,"Reconciling "+displayName(relicKey)+" — tracked canonical owner: "+row.ownerName()+" ["+row.status()+"]");
+        int found=0;
+        for(Player player:plugin.getServer().getOnlinePlayers()){
+            boolean holds=hasRelic(player.getInventory().getContents(),relicKey)||hasRelic(plugin.enderChests().allContents(player),relicKey);
+            if(!holds)continue;
+            found++;
+            boolean canonical="ACTIVE".equals(row.status())&&CoreUtil.id(player).equals(row.owner());
+            CoreUtil.msg(sender,"  "+player.getName()+" holds a physical copy — "+(canonical?"matches the tracked owner, kept.":"does NOT match the tracked owner ("+row.ownerName()+", status "+row.status()+") — will be removed below."));
+        }
+        if(found==0){CoreUtil.msg(sender,"No online player currently holds a physical copy in inventory or Ender Storage.");return;}
+        CoreUtil.msg(sender,"Running an immediate check now (same logic as the periodic sweep and every join/quit)...");
+        for(Player player:plugin.getServer().getOnlinePlayers())confirmInventory(player);
+        db.logAudit(sender instanceof Player p?p.getName():"CONSOLE","RELIC_RECONCILE","relic="+relicKey+" tracked_owner="+row.ownerName()+" online_holders="+found);
+        CoreUtil.msg(sender,"Done — re-run this command to confirm the result. Every removal was logged to console and /ashfall audit.");
     }
     @EventHandler public void despawn(org.bukkit.event.entity.ItemDespawnEvent event){itemLost(event.getEntity());}
 
@@ -130,108 +169,122 @@ final class RelicService implements Listener {
         event.setFormat("§d◆ §r"+event.getFormat());
     }
     private void discovery(Player player,String relicKey,String verb){plugin.getServer().broadcast(Component.text("✦ RELIC DISCOVERED ",NamedTextColor.LIGHT_PURPLE).append(Component.text(plugin.nicknames().displayName(player)+" "+verb+" "+displayName(relicKey)+".",NamedTextColor.GOLD)));plugin.progress().relicFound(player,displayName(relicKey));}
-    /** Passive relics (no right-click ability) count as "used" simply by sitting in the active inventory —
-     *  that's how their entire mechanic works, via buffTick()/the elite-multiplier methods running off
-     *  whatever's equipped. Interactive relics (ashen_reprisal/colossus_core/warlords_ember) only count as
-     *  used when their ability actually fires — see the end of each handler below — since carrying one
-     *  unused for weeks shouldn't reset its own clock. */
-    private static final Set<String> PASSIVE_RELICS=Set.of("crown_of_ash","wayfinder","oathblade");
-    void confirmInventory(Player player){for(ItemStack item:player.getInventory().getContents()){String relicKey=keyOf(item);if(relicKey!=null){Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);if(row!=null){db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());if(PASSIVE_RELICS.contains(relicKey))markUsed(relicKey);}}}}
-    boolean hideInLoot(List<ItemStack> loot){if(Math.random()>config.getDouble("lifecycle.exploration-chance",.0002))return false;for(String relicKey:List.of("wayfinder","oathblade")){if(mint(relicKey,"hidden","Undiscovered")){loot.add(create(relicKey));return true;}}return false;}
-    /** Ticks, not milliseconds — "Minecraft days" must track the in-game clock (frozen while the server is
-     *  down, unaffected by real-world calendar time) rather than wall-clock time. Reads the primary claims
-     *  world's full-time; falls back to whatever world loaded first if that one is somehow unavailable. */
-    private static final long MC_DAY_TICKS=24000L;
-    private long mcTicksNow(){World world=plugin.getServer().getWorld(plugin.getConfig().getString("claims.world","world"));if(world==null){List<World> worlds=plugin.getServer().getWorlds();world=worlds.isEmpty()?null:worlds.get(0);}return world==null?0L:world.getFullTime();}
-    /** Separate from last_confirmed (which just means "still exists somewhere legitimate", used for the
-     *  60-real-day abandoned-owner check). last_used specifically means "actually engaged with" — see
-     *  confirmInventory() and the interactive relics' handlers below for what sets it — and drives the
-     *  7-Minecraft-day unused-reclaim rule. Defaults to "just used" for a relic with no recorded value yet
-     *  (new feature rollout, or a freshly minted/claimed relic) so it starts with a full grace period
-     *  instead of being immediately eligible for reclaim. */
-    private void markUsed(String relicKey){db.state("relic_last_used:"+relicKey,Long.toString(mcTicksNow()));}
-    private long lastUsedTicks(String relicKey){String raw=db.state("relic_last_used:"+relicKey);if(raw==null||raw.isBlank())return mcTicksNow();try{return Long.parseLong(raw);}catch(NumberFormatException e){return mcTicksNow();}}
-    void itemLost(Item item){itemLostByKey(keyOf(item.getItemStack()));}
-    void itemLostByKey(String relicKey){if(relicKey==null||!isActive(relicKey))return;long delay=config.getLong("lifecycle.lost-reentry-mc-days",7)*MC_DAY_TICKS;db.markRelicLost(relicKey,mcTicksNow()+delay);plugin.getServer().broadcast(Component.text("The "+displayName(relicKey)+" has been lost to history...",NamedTextColor.DARK_PURPLE));plugin.progress().relicLost(displayName(relicKey));}
-    /** Reclaims a relic nobody has actually engaged with for lifecycle.unused-mc-days, even though the
-     *  owner still technically has it sitting in their inventory. Pulls it out of wherever it's carried,
-     *  then routes through the exact same LOST -> eligible -> resurfacing cycle as any other loss. */
-    private void removeUnused(Database.RelicLifecycleRow row){
-        String relicKey=row.key();
-        for(Player player:plugin.getServer().getOnlinePlayers())for(ItemStack item:player.getInventory().getContents())if(relicKey.equals(keyOf(item)))item.setAmount(0);
-        plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed after going unused for "+config.getLong("lifecycle.unused-mc-days",7)+" Minecraft days (last owner: "+row.ownerName()+").");
-        db.history("SERVER",null,"RELIC",displayName(relicKey)+" was reclaimed after going unused for "+config.getLong("lifecycle.unused-mc-days",7)+" Minecraft days (last owner: "+row.ownerName()+").");
-        itemLostByKey(relicKey);
+    /** Refreshes the tracked owner's bookkeeping when they hold their own relic. Anything else — a
+     *  different online player holding a copy of a relic recorded ACTIVE to someone else, or ANY online
+     *  player holding a copy of a relic that isn't currently ACTIVE at all (a stale leftover from a
+     *  reclaim that happened while they were offline — an offline player's saved inventory can't be
+     *  edited directly, so the strip is deferred to whenever that copy is next seen) — means a second
+     *  physical copy exists. Removing it here, the moment it's ever seen again, is what makes "only one
+     *  tracked copy" an actual invariant instead of a hope; silently reassigning ownership to whoever's
+     *  scan happened to run last (the old behavior) is exactly how the Colossus Core duplication went
+     *  unnoticed for days. */
+    void confirmInventory(Player player){
+        String playerId=CoreUtil.id(player);
+        for(ItemStack item:player.getInventory().getContents()){
+            String relicKey=keyOf(item);if(relicKey==null)continue;
+            Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);if(row==null)continue;
+            if("ACTIVE".equals(row.status())&&playerId.equals(row.owner())){db.confirmRelic(relicKey,playerId,player.getName());continue;}
+            item.setAmount(0);
+            plugin.getLogger().warning("[RelicDuplicateGuard] Removed a stray "+relicKey+" from "+player.getName()+" (tracked status="+row.status()+", tracked owner="+row.ownerName()+") — did not match the single tracked copy.");
+            db.history("SERVER",null,"RELIC",displayName(relicKey)+": a duplicate/stale physical copy was removed from "+player.getName()+" during a routine check (tracked owner: "+row.ownerName()+", status: "+row.status()+").");
+        }
     }
+    boolean hideInLoot(List<ItemStack> loot){if(Math.random()>config.getDouble("lifecycle.exploration-chance",.0002))return false;for(String relicKey:List.of("wayfinder","oathblade")){if(mint(relicKey,"hidden","Undiscovered")){loot.add(create(relicKey));return true;}}return false;}
+    void itemLost(Item item){itemLostByKey(keyOf(item.getItemStack()));}
+    void itemLostByKey(String relicKey){
+        if(relicKey==null||!isActive(relicKey))return;
+        long delay=config.getLong("lifecycle.resurface-after-real-days",2)*86400000L;
+        db.markRelicLost(relicKey,System.currentTimeMillis()+delay);
+        plugin.getServer().broadcast(Component.text("The "+displayName(relicKey)+" has been lost to history...",NamedTextColor.DARK_PURPLE));
+        plugin.progress().relicLost(displayName(relicKey));
+    }
+    /** Escrow-aware location check backing the reclaim timer and trace(): an active auction listing is a
+     *  fully valid, tracked location — the item physically exists there, just not in Bukkit inventory —
+     *  and an expired-but-uncollected one still counts as "in the seller's expired-items storage" until
+     *  they either collect it or go the full reclaim window without logging in after it expired.
+     *  Seller-scoped (not the global activeAuctions() list, which caps at 200 rows) so a relic can never
+     *  be missed just because enough unrelated listings exist. */
+    private Database.AuctionRow activeAuctionFor(String owner,String relicKey){for(Database.AuctionRow row:db.activeAuctionsBySeller(owner))if(relicKey.equals(keyOf(row.item())))return row;return null;}
+    private Database.AuctionRow expiredAuctionFor(String owner,String relicKey){for(Database.AuctionRow row:db.collectibleAuctions(owner))if(relicKey.equals(keyOf(row.item())))return row;return null;}
     private void lifecycleTick(){
         for(Player player:plugin.getServer().getOnlinePlayers())confirmInventory(player);
-        long now=System.currentTimeMillis(),nowTicks=mcTicksNow();
-        long inactive=config.getLong("lifecycle.inactive-owner-days",60)*86400000L;
-        long lostDelayTicks=config.getLong("lifecycle.lost-reentry-mc-days",7)*MC_DAY_TICKS;
-        long unusedTicks=config.getLong("lifecycle.unused-mc-days",7)*MC_DAY_TICKS;
+        long now=System.currentTimeMillis();
         for(Database.RelicLifecycleRow row:db.relicLifecycles()){
-            if("LOST".equals(row.status())&&row.eligibleAt()>0&&nowTicks>=row.eligibleAt()){db.makeRelicEligible(row.key());plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(row.key())+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));db.history("SERVER",null,"RELIC",displayName(row.key())+" became eligible to resurface.");}
-            else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner())&&db.lastSeen(row.owner())>0&&now-db.lastSeen(row.owner())>=inactive&&now-row.lastConfirmed()>=inactive){db.markRelicLost(row.key(),nowTicks+lostDelayTicks);plugin.getServer().broadcast(Component.text("The "+displayName(row.key())+" has faded from living memory...",NamedTextColor.DARK_PURPLE));plugin.progress().relicLost(displayName(row.key()));}
-            else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner())&&nowTicks-lastUsedTicks(row.key())>=unusedTicks)removeUnused(row);
-            else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner()))autoVerify(row,now);
+            if("LOST".equals(row.status()))lostTick(row,now);
+            else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner()))checkReclaim(row,now);
         }
     }
-    /** Nobody should have to remember to run /relics trace for a relic to ever get correctly marked lost —
-     *  this runs the same exhaustive search automatically, on every tick, for every active relic that
-     *  hasn't been confirmed recently. If the owner is online, their live inventory/Ender Storage is checked
-     *  directly and a genuine "not found anywhere" while online is conclusive enough to act on immediately.
-     *  If they're offline we can't inspect their personal inventory at all (no server-side API for that
-     *  without raw NBT parsing), so graves/claim/loaded-world are checked but a much longer unconfirmed
-     *  stretch is required before concluding — avoiding a false "lost" just because someone's been away. */
-    private void autoVerify(Database.RelicLifecycleRow row,long now){
-        long checkAfter=config.getLong("lifecycle.auto-verify-after-hours",6)*3600000L;
-        if(now-row.lastConfirmed()<checkAfter)return;
-        String relicKey=row.key();
-        Player online=plugin.getServer().getPlayer(row.owner());
-        if(online!=null&&(hasRelic(online.getInventory().getContents(),relicKey)||hasRelic(plugin.enderChests().allContents(online),relicKey))){db.confirmRelic(relicKey,row.owner(),row.ownerName());return;}
-        Database.FactionRow faction=db.factionOf(row.owner());
-        if(faction!=null){FactionService.Claim claim=plugin.factions().claimOf(faction);if(claim!=null&&claimContains(claim,relicKey)){db.confirmRelic(relicKey,row.owner(),row.ownerName());return;}}
-        for(Database.GraveRow grave:db.graves(row.owner()))if(hasRelic(db.graveItems(grave.id()).toArray(new ItemStack[0]),relicKey)){db.confirmRelic(relicKey,row.owner(),row.ownerName());return;}
-        for(World world:plugin.getServer().getWorlds())for(Entity entity:world.getEntities())if(entity instanceof Item item&&relicKey.equals(keyOf(item.getItemStack()))){db.confirmRelic(relicKey,row.owner(),row.ownerName());return;}
-        if(online==null){
-            long offlineThreshold=config.getLong("lifecycle.auto-verify-offline-hours",96)*3600000L;
-            if(now-row.lastConfirmed()<offlineThreshold)return;
+    /** "Never resurface while any valid copy remains", enforced at the one place it actually matters: a
+     *  relic that got marked LOST while a genuine copy was sitting in the owner's auction escrow (exactly
+     *  the bug this whole rework fixes — self-healing for any relic already mislabeled this way when the
+     *  fix deploys, and a permanent guard against it happening again through some other path) is restored
+     *  to ACTIVE instead of ever being allowed to reach ELIGIBLE and resurface a second copy. Only once
+     *  no such copy is found does the normal resurface countdown apply. */
+    private void lostTick(Database.RelicLifecycleRow row,long now){
+        if(!"hidden".equals(row.owner())&&(activeAuctionFor(row.owner(),row.key())!=null||expiredAuctionFor(row.owner(),row.key())!=null)){
+            db.confirmRelic(row.key(),row.owner(),row.ownerName());
+            plugin.getLogger().info("[RelicLifecycle] "+row.key()+" was marked LOST while a copy was still present in "+row.ownerName()+"'s auction escrow — restored to ACTIVE.");
+            db.history("SERVER",null,"RELIC",displayName(row.key())+" was found safe in an auction listing and restored to "+row.ownerName()+" instead of resurfacing a duplicate.");
+            return;
+        }
+        if(row.eligibleAt()>0&&now>=row.eligibleAt()){
+            db.makeRelicEligible(row.key());
+            plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(row.key())+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
+            db.history("SERVER",null,"RELIC",displayName(row.key())+" became eligible to resurface.");
+        }
+    }
+    /** The single reclaim rule, replacing the old ability-usage/Minecraft-tick timers and the old
+     *  "search every location or give up after N hours" auto-verify: a normally-held relic is reclaimed
+     *  only once its owner has gone lifecycle.reclaim-after-real-days real days without logging in. An
+     *  active auction listing pauses this clock entirely; an expired-but-uncollected listing starts the
+     *  clock no earlier than the expiry, and any later login still resets it, exactly like a
+     *  normally-held relic. This is the "never resurface while any valid copy remains" guarantee: it
+     *  simply never fires while a tracked copy (inventory, Ender Storage, or auction escrow) is known to
+     *  still exist and its owner is still coming back. */
+    private void checkReclaim(Database.RelicLifecycleRow row,long now){
+        String relicKey=row.key(),owner=row.owner();
+        if(activeAuctionFor(owner,relicKey)!=null)return;
+        long reclaimAfter=config.getLong("lifecycle.reclaim-after-real-days",7)*86400000L;
+        Database.AuctionRow expired=expiredAuctionFor(owner,relicKey);
+        long anchor=expired!=null?Math.max(expired.expires(),db.lastSeen(owner)):db.lastSeen(owner);
+        if(anchor<=0||now-anchor<reclaimAfter)return;
+        if(expired!=null){
+            if(!db.reclaimExpiredAuction(expired.id()))return;
+            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed from "+row.ownerName()+"'s expired, uncollected auction listing #"+expired.id()+" after "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days without a login since expiry.");
+            db.history("SERVER",null,"RELIC",displayName(relicKey)+" was reclaimed from an expired, uncollected auction listing (last owner: "+row.ownerName()+").");
+        }else{
+            for(Player player:plugin.getServer().getOnlinePlayers())for(ItemStack item:player.getInventory().getContents())if(relicKey.equals(keyOf(item)))item.setAmount(0);
+            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed — "+row.ownerName()+" has not logged in for "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days.");
+            db.history("SERVER",null,"RELIC",displayName(relicKey)+" was reclaimed after "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days without a login (last owner: "+row.ownerName()+").");
         }
         itemLostByKey(relicKey);
-        plugin.getLogger().info("[RelicAutoVerify] "+relicKey+" auto-detected as lost — owner "+row.ownerName()+" ("+(online!=null?"online":"offline")+"), not found in inventory, Ender Storage, faction claim, graves, or loaded world entities.");
-        db.history("SERVER",null,"RELIC",displayName(relicKey)+" was automatically detected as lost (last owner: "+row.ownerName()+").");
     }
     /** Admin removal of the physical item(s) — not a permanent retirement. deactivateRelic() (still present
      *  in Database.java but deliberately never called from anywhere) sets a terminal 'RETIRED' status
      *  lifecycleTick() never revisits, which silently deleted the relic from the chronicle forever.
      *  markRelicLost() (the same call organic loss uses) puts it through the normal LOST -> eligible ->
-     *  resurfacing cycle instead. Must use the same Minecraft-tick eligible_at basis lifecycleTick() checks
-     *  against (mcTicksNow(), not System.currentTimeMillis()) — using wall-clock millis here produced a
-     *  number so far beyond any real tick count that the LOST -> eligible transition could never trigger,
-     *  leaving anything removed this way stuck in LOST forever regardless of the status name being correct. */
+     *  resurfacing cycle instead, using the same real-millis eligible_at basis lifecycleTick() checks. */
     boolean remove(String relicKey){
         if(db.relic(relicKey)==null)return false;
-        db.markRelicLost(relicKey,mcTicksNow()+config.getLong("lifecycle.lost-reentry-mc-days",7)*MC_DAY_TICKS);
+        db.markRelicLost(relicKey,System.currentTimeMillis()+config.getLong("lifecycle.resurface-after-real-days",2)*86400000L);
         for(Player player:plugin.getServer().getOnlinePlayers())for(ItemStack item:player.getInventory().getContents())if(relicKey.equals(keyOf(item)))item.setAmount(0);
         return true;
     }
-    long lostReentryDays(){return config.getLong("lifecycle.lost-reentry-mc-days",7);}
+    long lostReentryDays(){return config.getLong("lifecycle.resurface-after-real-days",2);}
     void list(Player p){
         List<Database.RelicLifecycleRow> rows=db.relicLifecycles();
         if(rows.isEmpty()){CoreUtil.msg(p,"No relics have entered the chronicle yet.");return;}
         CoreUtil.msg(p,"Relic chronicle:");
-        long nowTicks=mcTicksNow();
+        long now=System.currentTimeMillis();
         for(Database.RelicLifecycleRow row:rows){
             String suffix="";
-            if("LOST".equals(row.status())&&row.eligibleAt()>0)suffix=" — resurfaces in "+formatTicks(row.eligibleAt()-nowTicks);
+            if("LOST".equals(row.status())&&row.eligibleAt()>0)suffix=" — resurfaces in "+formatRemaining(row.eligibleAt()-now);
             CoreUtil.msg(p,"• "+displayName(row.key())+" — "+plugin.nicknames().displayName(row.ownerName())+" ["+CoreUtil.pretty(row.status())+"]"+suffix);
         }
     }
-    /** Minecraft time, not real time - 1000 ticks per "hour" (24000/day), matching the tick-based lifecycle
-     *  this whole rework runs on. */
-    private String formatTicks(long ticks){
-        if(ticks<=0)return "any moment now";
-        long totalHours=ticks/1000,days=totalHours/24,hours=totalHours%24;
+    private String formatRemaining(long millis){
+        if(millis<=0)return "any moment now";
+        long totalHours=millis/3600000L,days=totalHours/24,hours=totalHours%24;
         if(days>0)return days+"d "+hours+"h";
         if(hours>0)return hours+"h";
         return "under an hour";
@@ -252,6 +305,10 @@ final class RelicService implements Listener {
         CoreUtil.msg(player,"Tracing "+displayName(relicKey)+"...");
         if(hasRelic(player.getInventory().getContents(),relicKey)){conclude(player,relicKey,"found in their own inventory",true);CoreUtil.msg(player,"Found: it's in your own inventory right now.");return;}
         if(hasRelic(plugin.enderChests().allContents(player),relicKey)){conclude(player,relicKey,"found in their Ender Storage",true);CoreUtil.msg(player,"Found: it's sitting in your Ender Storage.");return;}
+        Database.AuctionRow activeAuction=activeAuctionFor(CoreUtil.id(player),relicKey);
+        if(activeAuction!=null){conclude(player,relicKey,"found in an active auction listing #"+activeAuction.id(),true);CoreUtil.msg(player,"Found: it's in your active Auction House listing #"+activeAuction.id()+".");return;}
+        Database.AuctionRow expiredAuction=expiredAuctionFor(CoreUtil.id(player),relicKey);
+        if(expiredAuction!=null){conclude(player,relicKey,"found in an expired, uncollected auction listing #"+expiredAuction.id(),true);CoreUtil.msg(player,"Found: it's sitting in your expired Auction House listing #"+expiredAuction.id()+" — run /ah collect to retrieve it.");return;}
         Database.FactionRow faction=db.factionOf(CoreUtil.id(player));
         if(faction!=null){
             FactionService.Claim claim=plugin.factions().claimOf(faction);
@@ -264,13 +321,12 @@ final class RelicService implements Listener {
         Database.RelicLifecycleRow fresh=db.relicLifecycle(relicKey);
         if(!fresh.owner().equals(CoreUtil.id(player))){plugin.getLogger().info("[RelicTrace] "+player.getName()+" traced "+relicKey+": ownership already transferred to "+fresh.ownerName()+".");CoreUtil.msg(player,displayName(relicKey)+" is currently held by "+plugin.nicknames().displayName(fresh.ownerName())+" — ownership already transferred.");return;}
         itemLostByKey(relicKey);
-        CoreUtil.msg(player,"No trace of "+displayName(relicKey)+" in your inventory, Ender Storage, faction territory, graves, or loaded world entities. It has been marked lost and will resurface in "+config.getLong("lifecycle.lost-reentry-days",14)+" days.");
+        CoreUtil.msg(player,"No trace of "+displayName(relicKey)+" in your inventory, Ender Storage, active/expired auction listings, faction territory, graves, or loaded world entities. It has been marked lost and will resurface in "+config.getLong("lifecycle.resurface-after-real-days",2)+" real days.");
         plugin.getLogger().info("[RelicTrace] "+player.getName()+" traced "+relicKey+": no remaining copy found anywhere checkable; transitioned to LOST.");
         db.history("SERVER",null,"RELIC",plugin.nicknames().displayName(player)+" traced "+displayName(relicKey)+" and found no remaining copy; transitioned to lost.");
     }
-    /** Found-somewhere outcomes still refresh last_confirmed — otherwise a relic sitting untouched in a
-     *  world container (which the periodic inventory sweep can never see) would keep drifting toward the
-     *  60-day inactive-owner fallback even though a trace just proved it's still genuinely accounted for. */
+    /** Found-somewhere outcomes still refresh last_confirmed for display purposes; the reclaim decision
+     *  itself no longer depends on it (see checkReclaim(), keyed off login recency instead). */
     private void conclude(Player player,String relicKey,String logNote,boolean refresh){
         plugin.getLogger().info("[RelicTrace] "+player.getName()+" traced "+relicKey+": "+logNote+".");
         if(refresh)db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());
@@ -309,7 +365,6 @@ final class RelicService implements Listener {
     private void ashenReprisal(Player player,PlayerInteractEvent event){
         event.setCancelled(true);
         if(onCooldown(player,"ashen_reprisal",config.getLong("buffs.ashen-reprisal.cooldown-seconds",25)*1000L))return;
-        markUsed("ashen_reprisal");
         double damage=config.getDouble("buffs.ashen-reprisal.damage",6),range=config.getDouble("buffs.ashen-reprisal.range",4.5);
         Location eye=player.getEyeLocation();Vector direction=eye.getDirection().normalize();int hits=0;
         for(Entity entity:player.getNearbyEntities(range,range,range)){
@@ -326,7 +381,6 @@ final class RelicService implements Listener {
     private void colossusWard(Player player,PlayerInteractEvent event){
         event.setCancelled(true);
         if(onCooldown(player,"colossus_core",config.getLong("buffs.colossus-core.cooldown-seconds",45)*1000L))return;
-        markUsed("colossus_core");
         int duration=(int)Math.round(config.getDouble("buffs.colossus-core.brace-seconds",3)*20);
         player.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,duration,3,false,true,true));
         player.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS,duration,1,false,true,true));
@@ -347,7 +401,6 @@ final class RelicService implements Listener {
     private void warlordsDash(Player player,PlayerInteractEvent event){
         event.setCancelled(true);
         if(onCooldown(player,"warlords_ember",config.getLong("buffs.warlords-ember.cooldown-seconds",20)*1000L))return;
-        markUsed("warlords_ember");
         Vector direction=player.getLocation().getDirection().normalize();double power=config.getDouble("buffs.warlords-ember.power",2.1);
         Location destination=player.getLocation().add(direction.clone().multiply(power*2));
         if(plugin.spawnClaims().contains(destination)&&!plugin.isAdmin(player)){CoreUtil.error(player,"You cannot dash into protected spawn territory.");return;}

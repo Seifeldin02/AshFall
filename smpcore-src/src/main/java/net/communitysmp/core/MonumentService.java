@@ -141,12 +141,12 @@ final class MonumentService {
     }
     private void saveSchematic(Clipboard clipboard,java.io.File file) throws Exception{
         file.getParentFile().mkdirs();
-        try(ClipboardWriter writer=BuiltInClipboardFormat.SPONGE_SCHEMATIC.getWriter(new java.io.FileOutputStream(file))){
+        try(java.io.FileOutputStream out=new java.io.FileOutputStream(file);ClipboardWriter writer=BuiltInClipboardFormat.SPONGE_SCHEMATIC.getWriter(out)){
             writer.write(clipboard);
         }
     }
     private Clipboard loadSchematic(java.io.File file) throws Exception{
-        try(ClipboardReader reader=BuiltInClipboardFormat.SPONGE_SCHEMATIC.getReader(new java.io.FileInputStream(file))){
+        try(java.io.FileInputStream in=new java.io.FileInputStream(file);ClipboardReader reader=BuiltInClipboardFormat.SPONGE_SCHEMATIC.getReader(in)){
             return reader.read();
         }
     }

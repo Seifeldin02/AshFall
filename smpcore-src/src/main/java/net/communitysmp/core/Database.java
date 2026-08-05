@@ -76,6 +76,7 @@ final class Database implements AutoCloseable {
             s.execute("PRAGMA foreign_keys=ON");
             s.execute("PRAGMA busy_timeout=5000");
             s.execute("CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, name TEXT NOT NULL, balance REAL NOT NULL, first_spawn INTEGER NOT NULL DEFAULT 0, guide INTEGER NOT NULL DEFAULT 0, ip_hash TEXT, personal_slots INTEGER NOT NULL DEFAULT 1, boss_kills INTEGER NOT NULL DEFAULT 0, player_kills INTEGER NOT NULL DEFAULT 0, event_wins INTEGER NOT NULL DEFAULT 0)");
+            s.execute("CREATE INDEX IF NOT EXISTS players_name ON players(name)");
             s.execute("CREATE TABLE IF NOT EXISTS factions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, tag TEXT UNIQUE COLLATE NOCASE, leader TEXT NOT NULL, balance REAL NOT NULL DEFAULT 0, tier INTEGER NOT NULL DEFAULT 0, home_slots INTEGER NOT NULL DEFAULT 1, world TEXT NOT NULL, core_x INTEGER NOT NULL, core_z INTEGER NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS faction_members (player TEXT PRIMARY KEY, player_name TEXT NOT NULL, faction_id INTEGER NOT NULL REFERENCES factions(id) ON DELETE CASCADE, role TEXT NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS homes (owner TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL COLLATE NOCASE, world TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, yaw REAL NOT NULL, pitch REAL NOT NULL, PRIMARY KEY(owner,type,name))");
@@ -140,6 +141,7 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS progression_item_claims (item_id TEXT PRIMARY KEY, player TEXT NOT NULL, claimed_at INTEGER NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS admin_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, admin_name TEXT NOT NULL, action TEXT NOT NULL, detail TEXT)");
             s.execute("CREATE INDEX IF NOT EXISTS admin_audit_time ON admin_audit(occurred_at DESC)");
+            s.execute("CREATE INDEX IF NOT EXISTS admin_audit_action ON admin_audit(action)");
             /** tier NEVER resets — it is the player's all-time punishment history. warning_count is the
              *  CURRENT active strike count (0-2) toward the next escalation, and resets to 0 every time a
              *  punishment is applied. probation_until is only meaningful while now < probation_until: a warning
@@ -441,10 +443,19 @@ final class Database implements AutoCloseable {
     synchronized AuctionRow auction(long id) { expireAuctions(); return one("SELECT * FROM auctions WHERE id=?", Database::mapAuction, id); }
     synchronized int activeAuctionCount(String seller) { expireAuctions(); return integer("SELECT COUNT(*) FROM auctions WHERE seller=? AND status='ACTIVE'", seller); }
     synchronized List<AuctionRow> collectibleAuctions(String seller) { expireAuctions(); return list("SELECT * FROM auctions WHERE seller=? AND status='EXPIRED' ORDER BY expires", Database::mapAuction, seller); }
+    /** Seller-scoped, unlike activeAuctions() (which caps at 200 rows server-wide, ordered by price) — a
+     *  relic listing checked against that global list could be missed entirely if 200 unrelated cheaper
+     *  listings exist. Used by RelicService to confirm "is this specific relic actively escrowed". */
+    synchronized List<AuctionRow> activeAuctionsBySeller(String seller){expireAuctions();return list("SELECT * FROM auctions WHERE seller=? AND status='ACTIVE' ORDER BY listed",Database::mapAuction,seller);}
     synchronized boolean markAuctionSold(long id, String buyer) { return update("UPDATE auctions SET status='SOLD',buyer=?,sold_at=? WHERE id=? AND status='ACTIVE' AND expires>?", buyer,System.currentTimeMillis(),id,System.currentTimeMillis()) == 1; }
     synchronized boolean collectAuction(long id, String seller) { return update("UPDATE auctions SET status='COLLECTED' WHERE id=? AND seller=? AND status='EXPIRED'", id, seller) == 1; }
     synchronized boolean cancelAuction(long id, String seller) { return update("UPDATE auctions SET status='EXPIRED',expires=? WHERE id=? AND seller=? AND status='ACTIVE'", System.currentTimeMillis(), id, seller) == 1; }
     synchronized void expireAuctions() { update("UPDATE auctions SET status='EXPIRED' WHERE status='ACTIVE' AND expires<=?", System.currentTimeMillis()); }
+    /** Relic lifecycle reclaim of an expired-but-never-collected listing: voids the escrow row (so /ah
+     *  collect can never later also hand out the same physical item — the one thing that would recreate
+     *  a duplicate) in the same call that marks the relic itself LOST. Only succeeds if the row is still
+     *  genuinely EXPIRED (not already collected/sold/reclaimed by something else in the meantime). */
+    synchronized boolean reclaimExpiredAuction(long id){return update("UPDATE auctions SET status='RECLAIMED' WHERE id=? AND status='EXPIRED'",id)==1;}
 
     synchronized BountyRow bounty(String target) { return one("SELECT * FROM bounties WHERE target=?", rs -> new BountyRow(rs.getString("target"),rs.getString("target_name"),rs.getDouble("amount")), target); }
     synchronized void addBounty(String target, String targetName, double amount) { update("INSERT INTO bounties(target,target_name,amount) VALUES(?,?,?) ON CONFLICT(target) DO UPDATE SET target_name=excluded.target_name,amount=bounties.amount+excluded.amount", target,targetName,amount); }

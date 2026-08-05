@@ -97,15 +97,15 @@ boss-participation:
 
 world-boss:
   name: The Ashen Knight
-  health: 3750.0
-  damage: 18.0
+  health: 4500.0
+  damage: 20.0
   scale: 1.35
   reward-min: 126562.5
   reward-max: 253125
   active-radius: 50
   active-seconds: 60
   mechanic-interval-seconds: 13
-  judgment-damage: 7.0
+  judgment-damage: 8.0
   disengage-regen-percent: 0.01
   reward-extra-player-factor: 0.35
   event-duration-minutes: 120
@@ -116,8 +116,8 @@ world-boss:
 
 iron-golem-boss:
   name: The Warded Colossus
-  health: 5250.0
-  damage: 22.0
+  health: 6300.0
+  damage: 25.0
   scale: 1.5
   reward-min: 126562.5
   reward-max: 253125
@@ -126,7 +126,7 @@ iron-golem-boss:
   active-seconds: 60
   mechanic-interval-seconds: 12
   overload-interval-seconds: 35
-  overload-damage: 10.0
+  overload-damage: 11.5
   disengage-regen-percent: 0.01
   reward-extra-player-factor: 0.35
   event-duration-minutes: 120
@@ -137,8 +137,8 @@ iron-golem-boss:
 
 piglin-brute-boss:
   name: The Cinder Warlord
-  health: 3000.0
-  damage: 24.0
+  health: 3600.0
+  damage: 27.0
   scale: 1.8
   reward-min: 126562.5
   reward-max: 253125
@@ -148,7 +148,7 @@ piglin-brute-boss:
   active-seconds: 60
   mechanic-interval-seconds: 9
   storm-interval-seconds: 25
-  storm-damage: 4.0
+  storm-damage: 4.5
   disengage-regen-percent: 0.01
   reward-extra-player-factor: 0.35
   event-duration-minutes: 120
@@ -156,6 +156,12 @@ piglin-brute-boss:
   spawn-radius-max: 4000
   first-hint-minutes: 10
   second-hint-minutes: 20
+
+world-boss-enrage:
+  after-minutes: 14
+  ramp-interval-minutes: 2
+  damage-bonus-per-stage: 0.08
+  max-stages: 5
 
 legendary-sigil-drop-chance: 0.08
 
