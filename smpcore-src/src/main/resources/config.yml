@@ -332,13 +332,16 @@ nametags:
   # How often the balance line and faction prefixes are refreshed, in ticks. Deliberately slow -- these do
   # not need sub-second accuracy, and each player carries a single shared display whose per-viewer
   # visibility is toggled rather than respawned.
-  refresh-ticks: 40
+  refresh-ticks: 20
   # Text size of the balance line. The first version was far too small to read at a glance.
-  scale: 1.15
+  scale: 1.0
+  # Height of the replacement nametag above the mount point. Because the overlay REPLACES the vanilla
+  # nametag (mounting suppresses it), this should sit roughly where that nametag used to be.
+  lift: 0.30
+  # Background of the overlay. 1073741824 (0x40000000) is vanilla's own 25% black nametag backdrop.
+  background-argb: 1073741824
   # Height of each overlay above the player's mount point. Kept clear of the vanilla nametag block so the
   # name and health line stay visible underneath.
-  balance-lift: 0.75
-  faction-lift: 1.05
   # Height ABOVE THE PLAYER'S FEET for each line. The vanilla name sits around 2.1 and the below-name
   # health line just under it, so these stack above without covering either. Nudge to taste.
   # Both lines are positioned RELATIVE to where the client actually draws the nametag (entity height +
@@ -348,13 +351,10 @@ nametags:
   # to clear the below-name health line too.
   # How often the lines are repositioned. They follow by teleport rather than riding the player, because
   # a mounted passenger suppresses the player's entire vanilla nametag block.
-  follow-ticks: 2
   # Colour of the faction tag line. Any Minecraft colour name (AQUA, BLUE, GOLD, GREEN, ...).
   faction-color: AQUA
   # Horizontal placement of the faction tag. char-width approximates glyph width so the tag clears names
   # of any length; faction-gap is the space left between the name and the tag.
-  char-width: 0.062
-  faction-gap: 0.14
   # Display view-range multiplier; the earlier 0.6 made it vanish at close range.
   view-range: 1.0
 
