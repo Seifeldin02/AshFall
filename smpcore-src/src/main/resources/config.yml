@@ -332,9 +332,11 @@ nametags:
   refresh-ticks: 40
   # Text size of the balance line. The first version was far too small to read at a glance.
   scale: 1.15
-  # Height of the balance line relative to the player. Nudge this if it collides with the below-name
-  # health line (ui.health-below-name) or sits too far from the vanilla name.
-  balance-offset: 0.32
+  # Heights relative to the player. ~0.32 lands ON the vanilla name, so balance sits just under it and the
+  # faction tag just above it. Nudge these if they collide with the below-name health line
+  # (ui.health-below-name) or drift too far from the name.
+  balance-offset: 0.12
+  faction-offset: 0.58
   # Display view-range multiplier; the earlier 0.6 made it vanish at close range.
   view-range: 1.0
 

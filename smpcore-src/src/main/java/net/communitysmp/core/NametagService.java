@@ -13,8 +13,6 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.scheduler.BukkitTask;
-import org.bukkit.scoreboard.Scoreboard;
-import org.bukkit.scoreboard.Team;
 import org.bukkit.util.Transformation;
 import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
@@ -24,33 +22,31 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-/** Optional extras around a player's nametag: their faction tag beside the name, and their balance under it.
+/** Optional extra lines around a player's nametag: their faction tag and their balance.
  *
- *  The two are rendered by deliberately different mechanisms, because they need different things:
+ *  Both are rendered as our own TextDisplays mounted on the player. An earlier version used a scoreboard
+ *  team PREFIX for the faction tag, because that is the only way to sit truly to the left of the vanilla
+ *  name; it was reverted because a team prefix decorates the player's name EVERYWHERE the server renders
+ *  it, so it leaked into death messages ("[BLK] MacoCT was slain by..."), and because TAB manages nametag
+ *  teams itself and simply overwrote ours, so the tag never actually appeared above the head. Both are
+ *  properties of the mechanism rather than tuning, so exact left-of-name placement is traded away for
+ *  something self-contained that cannot leak into chat or be fought over by another plugin.
  *
- *  FACTION TAG uses a scoreboard team PREFIX on the viewer's own scoreboard. That is the only way to place
- *  text immediately to the left of the vanilla name on the same line and have it stay there as the camera
- *  moves around the player -- a floating entity at a fixed horizontal offset would swing out of place as
- *  you orbit them. It is also exactly how TAB renders its prefixes, so it matches the tab list visually.
- *  Every player already has their own scoreboard (see UIService), so this stays per-viewer for free.
+ *  The vanilla nametag is never touched -- no renames, no team decoration -- so nicknames and TAB keep
+ *  working exactly as before.
  *
- *  BALANCE uses a TextDisplay mounted on the player, since a second line under the name cannot be done with
- *  a team prefix and the below-name scoreboard slot only renders integers (no "$12.5k").
- *
- *  Neither ever renders the player's NAME -- the vanilla nametag is left completely alone.
- *
- *  Ownership note, which is what the earlier version got wrong: a mounted display is EJECTED when its
- *  carrier dies, and nothing re-mounted it, so it stayed floating at the death spot -- which is precisely
- *  where the grave then appeared. Every refresh now re-verifies that the display is still riding its owner
- *  and re-mounts it otherwise, and death removes it outright so it is rebuilt cleanly on respawn. The
- *  display is never positioned relative to anything except its owning player. */
+ *  Ownership: a mounted display is EJECTED when its carrier dies, and the first version never re-mounted
+ *  it, so it stayed floating at the death spot -- precisely where the grave then spawned. Every refresh
+ *  now re-verifies the display is still riding its owner and re-mounts it otherwise, and death removes it
+ *  outright so it rebuilds cleanly on respawn. A display is never positioned relative to anything but its
+ *  owning player. */
 final class NametagService implements Listener {
     private final SMPCore plugin;
     /** Owner id -> their balance display. One per player, shown/hidden per viewer. */
     private final Map<UUID,UUID> balanceDisplays=new HashMap<>();
     private final Map<UUID,String> lastBalanceText=new HashMap<>();
-    /** viewer id -> (target id -> prefix currently applied), so teams are only touched when they change. */
-    private final Map<UUID,Map<UUID,String>> appliedPrefix=new HashMap<>();
+    private final Map<UUID,UUID> factionDisplays=new HashMap<>();
+    private final Map<UUID,String> lastFactionText=new HashMap<>();
     private BukkitTask task;
 
     NametagService(SMPCore plugin){
@@ -61,26 +57,28 @@ final class NametagService implements Listener {
     void shutdown(){
         if(task!=null)task.cancel();
         for(UUID id:balanceDisplays.values())removeDisplay(id);
-        balanceDisplays.clear();lastBalanceText.clear();appliedPrefix.clear();
+        for(UUID id:factionDisplays.values())removeDisplay(id);
+        balanceDisplays.clear();lastBalanceText.clear();factionDisplays.clear();lastFactionText.clear();
     }
     @EventHandler public void quit(PlayerQuitEvent event){clearFor(event.getPlayer().getUniqueId());}
     /** Death ejects passengers, so the display is dropped rather than left stranded; the next refresh
      *  rebuilds it on the respawned player. */
     @EventHandler public void death(PlayerDeathEvent event){
         UUID id=event.getEntity().getUniqueId();
-        removeDisplay(balanceDisplays.remove(id));
-        lastBalanceText.remove(id);
+        removeDisplay(balanceDisplays.remove(id));lastBalanceText.remove(id);
+        removeDisplay(factionDisplays.remove(id));lastFactionText.remove(id);
     }
     private void clearFor(UUID id){
-        removeDisplay(balanceDisplays.remove(id));
-        lastBalanceText.remove(id);
-        appliedPrefix.remove(id);
-        for(Map<UUID,String> perViewer:appliedPrefix.values())perViewer.remove(id);
+        removeDisplay(balanceDisplays.remove(id));lastBalanceText.remove(id);
+        removeDisplay(factionDisplays.remove(id));lastFactionText.remove(id);
     }
 
     private void tick(){
-        boolean anyBalance=false;
-        for(Player viewer:plugin.getServer().getOnlinePlayers())if(plugin.settings().showBalanceNametags(viewer)){anyBalance=true;break;}
+        boolean anyBalance=false,anyFaction=false;
+        for(Player viewer:plugin.getServer().getOnlinePlayers()){
+            if(plugin.settings().showBalanceNametags(viewer))anyBalance=true;
+            if(plugin.settings().showFactionNametags(viewer))anyFaction=true;
+        }
         for(Player target:plugin.getServer().getOnlinePlayers()){
             boolean eligible=!plugin.adminTools().isHiddenFromPublic(target);
             UUID id=target.getUniqueId();
@@ -98,49 +96,53 @@ final class NametagService implements Listener {
                     display.text(Component.text(text,NamedTextColor.GREEN));
                 }
             }
-            applyFactionPrefixes(target,eligible);
+            updateFactionLine(target,eligible&&anyFaction);
         }
         /** Per-viewer visibility for the balance line. */
         for(Player viewer:plugin.getServer().getOnlinePlayers()){
             boolean wants=plugin.settings().showBalanceNametags(viewer);
-            for(Map.Entry<UUID,UUID> entry:balanceDisplays.entrySet()){
-                TextDisplay display=resolve(entry.getValue());
+            boolean wantsFaction=plugin.settings().showFactionNametags(viewer);
+            for(UUID displayId:balanceDisplays.values()){
+                TextDisplay display=resolve(displayId);
                 if(display==null)continue;
                 if(wants)viewer.showEntity(plugin,display);else viewer.hideEntity(plugin,display);
             }
+            for(UUID displayId:factionDisplays.values()){
+                TextDisplay display=resolve(displayId);
+                if(display==null)continue;
+                if(wantsFaction)viewer.showEntity(plugin,display);else viewer.hideEntity(plugin,display);
+            }
         }
     }
-    /** Blue faction tag immediately left of the vanilla name, on each viewer's own scoreboard. */
-    private void applyFactionPrefixes(Player target,boolean eligible){
+    /** Faction tag as its own line, sitting directly above the balance line.
+     *
+     *  This deliberately does NOT use a scoreboard team prefix any more. A prefix is the only way to place
+     *  text truly to the left of the vanilla name, but it decorates the player's name EVERYWHERE the server
+     *  renders it -- including death messages, which is why "[BLK] MacoCT was slain by..." started showing
+     *  up in chat. It also loses to TAB, which manages nametag teams itself and simply overwrote ours, so
+     *  the tag never appeared above the head at all. Both problems are inherent to the mechanism, not
+     *  tuning, so the tag is rendered as our own display instead: it costs the exact left-of-name placement
+     *  but it is self-contained, never leaks into chat, and cannot be fought over by another plugin. */
+    private void updateFactionLine(Player target,boolean eligible){
+        UUID id=target.getUniqueId();
         Database.FactionRow faction=eligible?plugin.db().factionOf(CoreUtil.id(target)):null;
-        String desired=faction==null?"":"["+faction.tag()+"] ";
-        for(Player viewer:plugin.getServer().getOnlinePlayers()){
-            boolean wants=eligible&&plugin.settings().showFactionNametags(viewer)&&!desired.isEmpty();
-            Map<UUID,String> applied=appliedPrefix.computeIfAbsent(viewer.getUniqueId(),k->new HashMap<>());
-            String current=applied.get(target.getUniqueId());
-            String want=wants?desired:"";
-            if(want.equals(current==null?"":current))continue;
-            applied.put(target.getUniqueId(),want);
-            try{
-                Scoreboard board=viewer.getScoreboard();
-                String teamName="aft"+target.getUniqueId().toString().replace("-","").substring(0,12);
-                Team team=board.getTeam(teamName);
-                if(want.isEmpty()){
-                    if(team!=null)team.removeEntry(target.getName());
-                    continue;
-                }
-                if(team==null)team=board.registerNewTeam(teamName);
-                team.prefix(Component.text(want,NamedTextColor.BLUE));
-                if(!team.hasEntry(target.getName()))team.addEntry(target.getName());
-            }catch(Throwable ignored){}
-        }
+        if(faction==null){removeDisplay(factionDisplays.remove(id));lastFactionText.remove(id);return;}
+        TextDisplay display=resolve(factionDisplays.get(id));
+        if(display==null){display=spawnLine(target,(float)plugin.getConfig().getDouble("nametags.faction-offset",.60));factionDisplays.put(id,display.getUniqueId());}
+        else if(!target.equals(display.getVehicle()))target.addPassenger(display);
+        String text="["+faction.tag()+"]";
+        if(text.equals(lastFactionText.get(id)))return;
+        lastFactionText.put(id,text);
+        display.text(Component.text(text,NamedTextColor.BLUE));
     }
     /** Mounted on its owner and nothing else. Scale and offset are configurable because how tightly this
      *  sits under the vanilla name depends on whether the below-name health line is also enabled. */
     private TextDisplay spawnBalance(Player target){
+        return spawnLine(target,(float)plugin.getConfig().getDouble("nametags.balance-offset",.32));
+    }
+    private TextDisplay spawnLine(Player target,float offset){
         Location at=target.getLocation();
         float scale=(float)plugin.getConfig().getDouble("nametags.scale",1.15);
-        float offset=(float)plugin.getConfig().getDouble("nametags.balance-offset",.32);
         TextDisplay display=at.getWorld().spawn(at,TextDisplay.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,d->{
             d.setPersistent(false);d.setInvulnerable(true);d.setGravity(false);
             d.setBillboard(Display.Billboard.CENTER);d.setAlignment(TextDisplay.TextAlignment.CENTER);
