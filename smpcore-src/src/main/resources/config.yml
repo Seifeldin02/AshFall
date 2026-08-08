@@ -334,13 +334,19 @@ nametags:
   scale: 1.15
   # Height ABOVE THE PLAYER'S FEET for each line. The vanilla name sits around 2.1 and the below-name
   # health line just under it, so these stack above without covering either. Nudge to taste.
-  balance-offset: 2.35
-  faction-offset: 2.80
+  # Money sits BELOW both the vanilla name and the below-name health line; the faction tag sits at the
+  # SAME height as the name and is pushed sideways (see faction-gap) rather than stacked above it.
+  balance-offset: 1.90
+  faction-offset: 2.35
   # How often the lines are repositioned. They follow by teleport rather than riding the player, because
   # a mounted passenger suppresses the player's entire vanilla nametag block.
   follow-ticks: 2
   # Colour of the faction tag line. Any Minecraft colour name (AQUA, BLUE, GOLD, GREEN, ...).
   faction-color: AQUA
+  # Horizontal placement of the faction tag. char-width approximates glyph width so the tag clears names
+  # of any length; faction-gap is the space left between the name and the tag.
+  char-width: 0.062
+  faction-gap: 0.14
   # Display view-range multiplier; the earlier 0.6 made it vanish at close range.
   view-range: 1.0
 

@@ -124,7 +124,11 @@ final class NametagService implements Listener {
                 TextDisplay display=resolve(balanceDisplays.get(id));
                 /** Re-verify ownership every pass: if it was ejected (death, dismount, teleport oddity) it is
                  *  re-mounted, so it can never drift onto a grave or any other entity. */
-                if(display==null){display=spawnBalance(target);balanceDisplays.put(id,display.getUniqueId());}
+                if(display==null){
+                    /** Clearing the cache matters: without it a display recreated after a toggle, death or
+                     *  chunk reload matches the remembered text, skips the update, and renders blank. */
+                    display=spawnBalance(target);balanceDisplays.put(id,display.getUniqueId());lastBalanceText.remove(id);
+                }
 
                 String text=compact(plugin.db().player(CoreUtil.id(target)).balance());
                 if(!text.equals(lastBalanceText.get(id))){
@@ -164,12 +168,13 @@ final class NametagService implements Listener {
         Database.FactionRow faction=eligible?plugin.db().factionOf(CoreUtil.id(target)):null;
         if(faction==null){removeDisplay(factionDisplays.remove(id));lastFactionText.remove(id);return;}
         TextDisplay display=resolve(factionDisplays.get(id));
-        if(display==null){display=spawnLine(target,(float)plugin.getConfig().getDouble("nametags.faction-offset",2.80));factionDisplays.put(id,display.getUniqueId());}
+        if(display==null){display=spawnLine(target,(float)plugin.getConfig().getDouble("nametags.faction-offset",2.35));factionDisplays.put(id,display.getUniqueId());lastFactionText.remove(id);}
 
         String text="["+faction.tag()+"]";
         if(text.equals(lastFactionText.get(id)))return;
         lastFactionText.put(id,text);
         display.text(Component.text(text,factionColor()));
+        sideAlign(display,target.getName(),text);
     }
     /** Mounted on its owner and nothing else. Scale and offset are configurable because how tightly this
      *  sits under the vanilla name depends on whether the below-name health line is also enabled. */
@@ -195,6 +200,21 @@ final class NametagService implements Listener {
         String name=plugin.getConfig().getString("nametags.faction-color","AQUA");
         NamedTextColor color=NamedTextColor.NAMES.value(name.toLowerCase(java.util.Locale.ROOT));
         return color==null?NamedTextColor.AQUA:color;
+    }
+    /** Places the faction tag to the RIGHT of the vanilla name on the same line.
+     *
+     *  The sideways shift is applied as the display's transformation TRANSLATION, not as a world-space
+     *  position offset. That distinction is the whole trick: a Display's transformation is applied in its
+     *  own local space and is carried along by CENTER billboarding, so +X stays on the viewer's right no
+     *  matter which way they orbit the player. A world offset would swing around and end up on the wrong
+     *  side. The distance is derived from the name and tag lengths so it clears names of any length rather
+     *  than being a fixed gap tuned for one nickname. */
+    private void sideAlign(TextDisplay display,String name,String tag){
+        float scale=(float)plugin.getConfig().getDouble("nametags.scale",1.15);
+        double perChar=plugin.getConfig().getDouble("nametags.char-width",.062)*scale;
+        double gap=plugin.getConfig().getDouble("nametags.faction-gap",.14);
+        double shift=(name.length()/2.0)*perChar+(tag.length()/2.0)*perChar+gap;
+        display.setTransformation(new Transformation(new Vector3f((float)shift,0,0),new AxisAngle4f(),new Vector3f(scale,scale,scale),new AxisAngle4f()));
     }
     private TextDisplay resolve(UUID id){
         if(id==null)return null;
