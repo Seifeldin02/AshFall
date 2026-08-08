@@ -186,8 +186,17 @@ world-boss-unreachable:
   # vertical gap, so a tower of any height is reachable; these only bound the arc.
   leap-horizontal: 0.9
   leap-min-vertical: 0.8
-  leap-max-vertical: 3.2
+  # 0 = no ceiling: the impulse is solved from the real height gap, so a tower of any height is reachable.
+  leap-max-vertical: 0
+  # Ticks the upward impulse is re-applied while still ascending. Without this the mob's own pathfinding
+  # overwrites the launch velocity on the next tick and the leap collapses into a hop.
+  leap-sustain-ticks: 6
   leap-cooldown-seconds: 4
+
+world-boss-swim:
+  # Direct steering speed used while submerged. Land pathfinding cannot follow a route through open water,
+  # which is what made the Colossus/Knight orbit aimlessly; underwater they steer straight at the target.
+  speed: 0.32
 
 world-boss-spawn:
   # A randomly spawned boss must land this far from any protected land (spawn region or faction claim)

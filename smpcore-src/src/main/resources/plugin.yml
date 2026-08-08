@@ -8,6 +8,9 @@ depend: [Vault, WorldEdit]
 softdepend: [AuthMe, floodgate, Geyser-Spigot, TAB, SkinsRestorer, GrimAC, Nicked, ReplayCore, PunisherX, Prism]
 loadbefore: [DonutOrders]
 commands:
+  kit:
+    description: Staff test loadout
+    usage: /kit test
   f:
     description: Faction commands
     aliases: [faction]

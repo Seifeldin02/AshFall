@@ -29,6 +29,8 @@ final class GameplayListener implements Listener {
     private static final class ChatState {final Deque<Long> times=new ArrayDeque<>();String last="";long lastAt,cooldownUntil;int offenses;}
     private final SMPCore plugin;private final Database db;private final FactionService factions;private final TeleportService teleports;private final ShopService shop;private final AuctionService auctions;private final BossEventService bosses;private final BountyService bounties;private final RelicService relics;private final ProgressService progress;private final SpawnerService spawners;private final SpawnClaimService spawnClaims;private final NetWorthService netWorth;private final MerchantService merchants;private final VillagerCapsuleService capsules;private final GraveService graves;private final ObsidianDurabilityService obsidian;
     private final Set<UUID> firstJoin=Collections.synchronizedSet(new HashSet<>());private final SecureRandom secureRandom=new SecureRandom();
+    private final Map<UUID,String> lastCommand=new ConcurrentHashMap<>();
+    private final Map<UUID,Long> lastCommandAt=new ConcurrentHashMap<>();
     private final Map<UUID,ChatState> chatStates=new ConcurrentHashMap<>();private final Map<UUID,Long> lastCommands=new ConcurrentHashMap<>();private final Map<UUID,Deque<Long>> commandViolations=new ConcurrentHashMap<>();
     private final Set<UUID> exemptDisconnects=ConcurrentHashMap.newKeySet();
     private final Map<UUID,UUID> combatLogKillers=new ConcurrentHashMap<>();
@@ -122,6 +124,7 @@ final class GameplayListener implements Listener {
     @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true) public void damaged(EntityDamageEvent e){bosses.onAnyDamage(e);if(e.isCancelled())return;if(e.getEntity() instanceof Player p){if(spawnClaims.contains(p.getLocation())&&!plugin.privileged(p)){e.setCancelled(true);return;}teleports.onDamage(p);if(hostileDamage(e))plugin.settings().hostileDamage(p);if((e.getCause()==EntityDamageEvent.DamageCause.FIRE||e.getCause()==EntityDamageEvent.DamageCause.FIRE_TICK||e.getCause()==EntityDamageEvent.DamageCause.LAVA)&&relics.activeItem(p.getInventory().getHelmet(),"crown_of_ash"))e.setDamage(e.getDamage()*.25);}else if(e.getEntity() instanceof Item item&&(e.getCause()==EntityDamageEvent.DamageCause.FIRE||e.getCause()==EntityDamageEvent.DamageCause.LAVA||e.getCause()==EntityDamageEvent.DamageCause.VOID||e.getCause()==EntityDamageEvent.DamageCause.BLOCK_EXPLOSION||e.getCause()==EntityDamageEvent.DamageCause.ENTITY_EXPLOSION))relics.itemLost(item);}
     private boolean hostileDamage(EntityDamageEvent event){if(!(event instanceof EntityDamageByEntityEvent byEntity))return false;Entity source=byEntity.getDamager();if(source instanceof Projectile projectile&&projectile.getShooter() instanceof Entity shooter)source=shooter;return source instanceof Enemy;}
     @EventHandler(ignoreCancelled=true) public void worldBossTarget(EntityTargetLivingEntityEvent e){bosses.onWorldBossTarget(e);}
+    @EventHandler(ignoreCancelled=true) public void eliteBlockChange(EntityChangeBlockEvent e){bosses.onEliteBlockChange(e);}
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void move(PlayerMoveEvent e){teleports.onMove(e.getPlayer(),e.getTo());if(e.hasChangedPosition()||e.hasChangedOrientation())plugin.shards().activity(e.getPlayer());}
     @EventHandler public void changedWorld(PlayerChangedWorldEvent e){progress.worldChanged(e.getPlayer(),e.getPlayer().getWorld().getEnvironment());teleports.leaveRtpQueueOnWorldChange(e.getPlayer());}
     @EventHandler public void held(PlayerItemHeldEvent e){plugin.getServer().getScheduler().runTask(plugin,()->scanImportant(e.getPlayer()));}
@@ -157,6 +160,23 @@ if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason
     @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true) public void entityMove(EntityMoveEvent e){if(e.getEntity() instanceof Villager villager)netWorth.villagerMoved(villager,e.getFrom(),e.getTo());if(e.getEntity() instanceof Player||spawnClaims.allowed(e.getEntity()))return;if(!spawnClaims.contains(e.getFrom())&&spawnClaims.contains(e.getTo()))e.setCancelled(true);}
     @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true) public void entityTeleport(EntityTeleportEvent e){if(e.getEntity() instanceof Player||spawnClaims.allowed(e.getEntity())||e.getTo()==null)return;if(!spawnClaims.contains(e.getFrom())&&spawnClaims.contains(e.getTo()))e.setCancelled(true);}
     @EventHandler(priority=EventPriority.LOWEST) public void commandRate(PlayerCommandPreprocessEvent e){
+        /** Duplicate-command guard: re-sending the exact same command within duplicate-window-ms is almost
+         *  always a double-tap or a macro, and for GUI-opening commands it stacks inventories. Exempt
+         *  commands (login/confirm/etc, see commandExempt) and admins are skipped by the checks below. */
+        if(e.getPlayer()!=null&&!plugin.isAdmin(e.getPlayer())&&!commandExempt(e.getMessage())){
+            long dupWindow=plugin.getConfig().getLong("rate-limits.commands.duplicate-window-ms",3000);
+            String key=e.getMessage().trim().toLowerCase(Locale.ROOT);
+            long now=System.currentTimeMillis();
+            String prev=lastCommand.get(e.getPlayer().getUniqueId());
+            Long prevAt=lastCommandAt.get(e.getPlayer().getUniqueId());
+            if(prev!=null&&prevAt!=null&&prev.equals(key)&&now-prevAt<dupWindow){
+                e.setCancelled(true);
+                CoreUtil.error(e.getPlayer(),"You just ran that — wait a moment.");
+                return;
+            }
+            lastCommand.put(e.getPlayer().getUniqueId(),key);lastCommandAt.put(e.getPlayer().getUniqueId(),now);
+        }
+
         Player player=e.getPlayer();if(plugin.isAdmin(player)||commandExempt(e.getMessage()))return;long now=System.currentTimeMillis(),minimum=Math.max(250,plugin.getConfig().getLong("rate-limits.commands.minimum-interval-ms",500)),last=lastCommands.getOrDefault(player.getUniqueId(),0L);if(now-last>=minimum){lastCommands.put(player.getUniqueId(),now);return;}e.setCancelled(true);
         Deque<Long> violations=commandViolations.computeIfAbsent(player.getUniqueId(),key->new ArrayDeque<>());synchronized(violations){while(!violations.isEmpty()&&now-violations.peekFirst()>5000)violations.removeFirst();violations.addLast(now);if(violations.size()==3)CoreUtil.error(player,"Commands are being sent too quickly.");}
     }
@@ -202,7 +222,15 @@ if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason
     @SuppressWarnings("deprecation")
     @EventHandler(priority=EventPriority.LOWEST,ignoreCancelled=true) public void chatSpam(AsyncPlayerChatEvent event){
         Player player=event.getPlayer();if(plugin.isAdmin(player)||plugin.bank().awaitingChatInput(player)||plugin.marketplace().awaitingInput(player)||plugin.account().awaitingInput(player))return;String normalized=event.getMessage().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+","").trim();if(normalized.isEmpty())return;long now=System.currentTimeMillis();ChatState state=chatStates.computeIfAbsent(player.getUniqueId(),key->new ChatState());
-        synchronized(state){if(now<state.cooldownUntil){event.setCancelled(true);if(state.cooldownUntil-now>1000)CoreUtil.error(player,"Chat cooldown: "+Math.max(1,(state.cooldownUntil-now+999)/1000)+"s.");return;}if(now-state.lastAt>30000)state.offenses=0;while(!state.times.isEmpty()&&now-state.times.peekFirst()>4000)state.times.removeFirst();state.times.addLast(now);boolean repeated=now-state.lastAt<12000&&nearDuplicate(state.last,normalized),rapid=state.times.size()>5;if(!repeated&&!rapid){state.last=normalized;state.lastAt=now;return;}event.setCancelled(true);state.offenses++;if(state.offenses>=3){state.cooldownUntil=now+Math.max(5,plugin.getConfig().getLong("rate-limits.chat.cooldown-seconds",10))*1000L;state.offenses=0;CoreUtil.error(player,"Chat paused briefly for repeated spam.");}else CoreUtil.error(player,repeated?"Please do not repeat the same message.":"Please slow down in chat.");}
+        synchronized(state){
+            /** Flat floor rules, deliberately simple and separate from the escalating spam logic below:
+             *  a 1s gap between any two messages and a 3s block on repeating the same one. Admins returned
+             *  early above, so legitimate rapid staff use is unaffected. */
+            long minGap=plugin.getConfig().getLong("rate-limits.chat.minimum-interval-ms",1000);
+            long dupWindow=plugin.getConfig().getLong("rate-limits.chat.duplicate-window-ms",3000);
+            if(state.lastAt>0&&now-state.lastAt<minGap){event.setCancelled(true);CoreUtil.error(player,"Slow down — one message per second.");return;}
+            if(state.last!=null&&state.last.equals(normalized)&&now-state.lastAt<dupWindow){event.setCancelled(true);CoreUtil.error(player,"You just said that.");return;}
+            if(now<state.cooldownUntil){event.setCancelled(true);if(state.cooldownUntil-now>1000)CoreUtil.error(player,"Chat cooldown: "+Math.max(1,(state.cooldownUntil-now+999)/1000)+"s.");return;}if(now-state.lastAt>30000)state.offenses=0;while(!state.times.isEmpty()&&now-state.times.peekFirst()>4000)state.times.removeFirst();state.times.addLast(now);boolean repeated=now-state.lastAt<12000&&nearDuplicate(state.last,normalized),rapid=state.times.size()>5;if(!repeated&&!rapid){state.last=normalized;state.lastAt=now;return;}event.setCancelled(true);state.offenses++;if(state.offenses>=3){state.cooldownUntil=now+Math.max(5,plugin.getConfig().getLong("rate-limits.chat.cooldown-seconds",10))*1000L;state.offenses=0;CoreUtil.error(player,"Chat paused briefly for repeated spam.");}else CoreUtil.error(player,repeated?"Please do not repeat the same message.":"Please slow down in chat.");}
     }
     /** Runs after chatSpam (LOWEST) has had its chance to cancel a spam/cooldown violation — ignoreCancelled
      *  means a message already blocked for spam never reaches faction chat either. Cancels the public chat

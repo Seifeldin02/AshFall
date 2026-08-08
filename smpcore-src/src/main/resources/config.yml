@@ -1,11 +1,6 @@
 server-name: Ashfall Concord
 starting-balance: 250.0
 
-economy:
-  # A single purchase at or above this value is announced server-wide (0 disables). Covers every
-  # money-out purchase, Boss Summoning Papers included, since they all settle through one payment path.
-  major-purchase-announcement: 1000000
-
 maintenance:
   enabled: false
 
@@ -41,8 +36,13 @@ performance:
 rate-limits:
   commands:
     minimum-interval-ms: 500
+    # Re-running the exact same command within this window is blocked (double-taps, macros).
+    duplicate-window-ms: 3000
   chat:
     cooldown-seconds: 10
+    # Flat floor between any two messages, and how long the same message stays blocked.
+    minimum-interval-ms: 1000
+    duplicate-window-ms: 3000
 
 pvp:
   drop-player-head: true

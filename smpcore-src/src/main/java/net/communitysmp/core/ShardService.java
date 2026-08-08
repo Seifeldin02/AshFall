@@ -126,6 +126,49 @@ final class ShardService implements Listener {
         };
         return item;
     }
+    /** Admin/staging loadout: everything the Shard Shop's gear tier sells, fully maxed, plus the consumables
+     *  needed to actually stress-test combat (boss fights, PvP, relic abilities) without grinding for them.
+     *  Deliberately built from the SAME enchanted() catalogue the shop uses, so what testers hold is exactly
+     *  what players can buy rather than a parallel definition that could drift. Admin-gated at the command. */
+    void giveTestKit(Player player){
+        List<ItemStack> kit=new ArrayList<>(List.of(
+                enchanted(Material.NETHERITE_HELMET,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1,Enchantment.RESPIRATION,3,Enchantment.AQUA_AFFINITY,1)),
+                enchanted(Material.NETHERITE_CHESTPLATE,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3)),
+                enchanted(Material.NETHERITE_SWORD,Map.of(Enchantment.SHARPNESS,5,Enchantment.LOOTING,3,Enchantment.SWEEPING_EDGE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.NETHERITE_AXE,Map.of(Enchantment.SHARPNESS,5,Enchantment.EFFICIENCY,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.INFINITY,1,Enchantment.FLAME,1,Enchantment.UNBREAKING,3)),
+                enchanted(Material.CROSSBOW,Map.of(Enchantment.QUICK_CHARGE,3,Enchantment.MULTISHOT,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.SHIELD,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.ELYTRA,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                new ItemStack(Material.ENCHANTED_GOLDEN_APPLE,30),
+                new ItemStack(Material.COOKED_BEEF,64),
+                new ItemStack(Material.ENDER_PEARL,32),
+                new ItemStack(Material.ARROW,64)));
+        /** Spear is version-gated: NETHERITE_SPEAR only exists on builds that ship the combat spear, and a
+         *  hard reference would fail to load the class entirely on ones that don't. */
+        Material spear=Material.matchMaterial("NETHERITE_SPEAR");
+        if(spear!=null)kit.add(enchanted(spear,Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        for(int i=0;i<2;i++)kit.add(new ItemStack(Material.WIND_CHARGE,64));
+        for(int i=0;i<2;i++)kit.add(firework(64,1));
+        for(int i=0;i<5;i++)kit.add(strengthPotion());
+        for(ItemStack item:kit)CoreUtil.give(player,item);
+        CoreUtil.msg(player,"Test kit issued: full maxed Shard Shop loadout, 30 e-apples, 5x Strength II, 64 steak, 32 pearls, 2x64 wind charges, elytra + 2x64 tier-1 rockets.");
+    }
+    private ItemStack strengthPotion(){
+        ItemStack potion=new ItemStack(Material.POTION);
+        org.bukkit.inventory.meta.PotionMeta meta=(org.bukkit.inventory.meta.PotionMeta)potion.getItemMeta();
+        meta.addCustomEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.STRENGTH,3600,1),true);
+        meta.displayName(Component.text("Potion of Strength II",NamedTextColor.LIGHT_PURPLE));
+        potion.setItemMeta(meta);potion.setAmount(1);return potion;
+    }
+    private ItemStack firework(int amount,int power){
+        ItemStack rocket=new ItemStack(Material.FIREWORK_ROCKET,amount);
+        org.bukkit.inventory.meta.FireworkMeta meta=(org.bukkit.inventory.meta.FireworkMeta)rocket.getItemMeta();
+        meta.setPower(power);rocket.setItemMeta(meta);return rocket;
+    }
     private ItemStack enchanted(Material material,Map<Enchantment,Integer> enchants){ItemStack item=new ItemStack(material);enchants.forEach((enchant,level)->item.addUnsafeEnchantment(enchant,level));return item;}
     private ItemStack supplies(){
         ItemStack item=new ItemStack(Material.BUNDLE);BundleMeta meta=(BundleMeta)item.getItemMeta();
