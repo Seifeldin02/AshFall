@@ -98,13 +98,14 @@ spawners:
   min-delay-ticks: 100
   max-delay-ticks: 200
   # Vanilla suppresses a spawner once a few mobs are nearby, which throttles any real farm. Lifted here.
-  max-nearby-entities: 200
+  max-nearby-entities: 2048
   required-player-range: 32
   spawn-range: 4
-  # Safety ceilings so a large stack cannot become a lag machine: most physical mobs one stack may add per
-  # cycle, and the local living-entity count at which a stack stops producing entirely.
-  max-spawns-per-cycle: 12
-  nearby-entity-ceiling: 80
+  # Virtual stacking: a placed spawner keeps only a few real entities and folds further spawns into them
+  # as an internal count (rendered "Blaze x50"). A new representative appears only once the current one
+  # reaches the cap. Throughput is limited by the CYCLE alone -- never by how many mobs are already there.
+  virtual-stack-cap: 100
+  virtual-merge-radius: 6
 
 graves:
   lifetime-hours: 48

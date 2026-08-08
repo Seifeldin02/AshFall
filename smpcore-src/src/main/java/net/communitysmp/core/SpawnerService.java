@@ -29,7 +29,7 @@ final class SpawnerService {
     private final SMPCore plugin;
     private final Database db;
     private final FactionService factions;
-    private final NamespacedKey typeKey,placedKey,historiesKey,stackKey,identityKey,identitiesKey,spawnerMobKey,raidFactionKey;
+    private final NamespacedKey typeKey,placedKey,historiesKey,stackKey,identityKey,identitiesKey,spawnerMobKey,raidFactionKey,virtualKey;
     private final Map<UUID,Long> warned=new HashMap<>();
     private final Map<String,Long> miningStarted=new HashMap<>();
     private final Map<String,Long> tntOwners=new HashMap<>();
@@ -38,7 +38,7 @@ final class SpawnerService {
 
     SpawnerService(SMPCore plugin,FactionService factions){
         this.plugin=plugin;this.db=plugin.db();this.factions=factions;
-        typeKey=new NamespacedKey(plugin,"spawner_type");placedKey=new NamespacedKey(plugin,"placed_spawner");historiesKey=new NamespacedKey(plugin,"spawner_histories");stackKey=new NamespacedKey(plugin,"spawner_stack");identityKey=new NamespacedKey(plugin,"spawner_identity");identitiesKey=new NamespacedKey(plugin,"spawner_identities");spawnerMobKey=new NamespacedKey(plugin,"spawner_mob");raidFactionKey=new NamespacedKey(plugin,"raid_faction");
+        virtualKey=new NamespacedKey(plugin,"virtual_stack");typeKey=new NamespacedKey(plugin,"spawner_type");placedKey=new NamespacedKey(plugin,"placed_spawner");historiesKey=new NamespacedKey(plugin,"spawner_histories");stackKey=new NamespacedKey(plugin,"spawner_stack");identityKey=new NamespacedKey(plugin,"spawner_identity");identitiesKey=new NamespacedKey(plugin,"spawner_identities");spawnerMobKey=new NamespacedKey(plugin,"spawner_mob");raidFactionKey=new NamespacedKey(plugin,"raid_faction");
         plugin.getServer().getScheduler().runTaskLater(plugin,this::migrateLoadedFactionSpawners,100L);
         hoverTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::hoverTick,10L,
                 Math.max(5L,plugin.getConfig().getLong("performance.spawner-hover-ticks",10)));
@@ -94,7 +94,10 @@ final class SpawnerService {
         int max=Math.max(min,plugin.getConfig().getInt("spawners.max-delay-ticks",200));
         spawner.setMinSpawnDelay(min);spawner.setMaxSpawnDelay(max);spawner.setDelay(min);
         spawner.setSpawnCount(1);
-        spawner.setMaxNearbyEntities(Math.max(6,plugin.getConfig().getInt("spawners.max-nearby-entities",200)));
+        /** Vanilla throttles a spawner once a few mobs of its type are nearby. With virtual stacking the
+         *  representative count stays tiny anyway, so this ceiling is raised right out of the way: a placed
+         *  spawner's rate is governed by its cycle alone and never slows because entities are present. */
+        spawner.setMaxNearbyEntities(Math.max(64,plugin.getConfig().getInt("spawners.max-nearby-entities",2048)));
         spawner.setRequiredPlayerRange(Math.max(16,plugin.getConfig().getInt("spawners.required-player-range",32)));
         spawner.setSpawnRange(Math.max(2,plugin.getConfig().getInt("spawners.spawn-range",4)));
     }
@@ -105,19 +108,90 @@ final class SpawnerService {
         int[] next=Arrays.copyOf(old,old.length+1);next[next.length-1]=event.getItem().getItemMeta().getPersistentDataContainer().getOrDefault(historiesKey,PersistentDataType.INTEGER,1);String[] ids=identities(spawner,old.length),nextIds=Arrays.copyOf(ids,ids.length+1);nextIds[nextIds.length-1]=event.getItem().getItemMeta().getPersistentDataContainer().getOrDefault(identityKey,PersistentDataType.STRING,UUID.randomUUID().toString());setHistories(spawner,next);setIdentities(spawner,nextIds);tunePlacedSpawner(spawner);spawner.update(true);FactionService.Claim claim=factions.claimAt(event.getClickedBlock().getLocation());if(claim!=null)plugin.progress().factionSpawnerPlaced(claim.faction(),nextIds[nextIds.length-1],spawner.getSpawnedType(),System.currentTimeMillis(),event.getClickedBlock().getLocation());consume(event.getPlayer(),event.getHand());plugin.netWorth().blockChanged(event.getClickedBlock());CoreUtil.msg(event.getPlayer(),CoreUtil.pretty(itemType)+" Spawner ×"+next.length);return true;
     }
 
+    /** Virtual mob stacking for PLAYER-PLACED spawners.
+     *
+     *  A farm keeps only a handful of real entities. Every further spawn folds into one of them, raising
+     *  its internal count (rendered as e.g. "Blaze x50") instead of adding another physical mob, and a new
+     *  representative is only created once the current one hits the per-entity cap. Killing a representative
+     *  resolves the whole stack at once -- loot, XP, money and kill accounting all multiplied a single time,
+     *  never by re-running vanilla's own reward path.
+     *
+     *  This is what makes a placed spawner competitive with a natural farm without being a lag machine:
+     *  throughput is limited by the spawn CYCLE, not by an entity budget, so it does not slow down or stop
+     *  because mobs are already present. Natural world spawners are untouched and behave exactly as vanilla.
+     */
     void spawned(SpawnerSpawnEvent event){
         if(event.getEntity() instanceof Enemy&&pauseHostileSpawner(event.getSpawner())){event.setCancelled(true);return;}
-        CreatureSpawner spawner=event.getSpawner();int count=stackSize(spawner);if(count<=1)return;
-        /** Hard ceiling on how many physical entities one stack may add per cycle, plus a local crowding
-         *  check. Without these a max stack in a chunk that is already full of mobs is a straightforward
-         *  lag machine; with them a big stack still produces far more than a small one, it just cannot
-         *  run away unbounded. */
-        int perCycleCap=Math.max(1,plugin.getConfig().getInt("spawners.max-spawns-per-cycle",12));
-        int crowdCap=Math.max(8,plugin.getConfig().getInt("spawners.nearby-entity-ceiling",80));
-        long nearby=event.getEntity().getNearbyEntities(8,6,8).stream().filter(en->en instanceof org.bukkit.entity.LivingEntity&&!(en instanceof Player)).count();
-        if(nearby>=crowdCap)return;
-        count=Math.min(count,perCycleCap);
-        for(int i=1;i<count;i++){Entity extra=event.getEntity().getWorld().spawnEntity(event.getEntity().getLocation(),event.getEntity().getType());extra.getPersistentDataContainer().set(spawnerMobKey,PersistentDataType.BYTE,(byte)1);}
+        CreatureSpawner spawner=event.getSpawner();
+        if(!spawner.getPersistentDataContainer().has(placedKey,PersistentDataType.BYTE))return;
+        if(!(event.getEntity() instanceof LivingEntity spawned))return;
+        /** One spawner cycle contributes its whole stack size at once, so a x10 spawner adds 10 to the
+         *  virtual count per cycle -- the stack multiplier lives here and nowhere else, which is what keeps
+         *  production from being multiplied twice. */
+        int add=Math.max(1,stackSize(spawner));
+        int cap=Math.max(2,plugin.getConfig().getInt("spawners.virtual-stack-cap",100));
+        LivingEntity host=findStackHost(spawned,cap);
+        if(host!=null){
+            setVirtualStack(host,Math.min(cap,virtualStack(host)+add));
+            event.setCancelled(true);
+            return;
+        }
+        setVirtualStack(spawned,Math.min(cap,add));
+    }
+    /** Nearest living representative of the same type that still has room. Deliberately a small radius:
+     *  representatives should cluster at the farm, not merge across a whole chunk. */
+    private LivingEntity findStackHost(LivingEntity spawned,int cap){
+        double radius=Math.max(2,plugin.getConfig().getDouble("spawners.virtual-merge-radius",6));
+        LivingEntity best=null;int bestStack=-1;
+        for(Entity nearby:spawned.getWorld().getNearbyEntities(spawned.getLocation(),radius,radius,radius)){
+            if(!(nearby instanceof LivingEntity other)||other.isDead()||other==spawned)continue;
+            if(other.getType()!=spawned.getType())continue;
+            int stack=virtualStack(other);
+            if(stack<=0||stack>=cap)continue;
+            /** Prefer the fullest one under the cap so stacks fill up rather than spreading thin. */
+            if(stack>bestStack){bestStack=stack;best=other;}
+        }
+        return best;
+    }
+    int virtualStack(Entity entity){
+        if(entity==null)return 0;
+        return entity.getPersistentDataContainer().getOrDefault(virtualKey,PersistentDataType.INTEGER,0);
+    }
+    private void setVirtualStack(LivingEntity entity,int amount){
+        entity.getPersistentDataContainer().set(virtualKey,PersistentDataType.INTEGER,amount);
+        entity.getPersistentDataContainer().set(spawnerMobKey,PersistentDataType.BYTE,(byte)1);
+        if(amount>1){
+            entity.customName(net.kyori.adventure.text.Component.text(CoreUtil.pretty(entity.getType().name())+" ",net.kyori.adventure.text.format.NamedTextColor.GRAY)
+                    .append(net.kyori.adventure.text.Component.text("x"+amount,net.kyori.adventure.text.format.NamedTextColor.AQUA)));
+            entity.setCustomNameVisible(true);
+        }
+        /** A representative carrying many mobs' worth of value must not quietly despawn and take the whole
+         *  stack with it; the cap plus the small merge radius keeps the entity count tiny regardless. */
+        entity.setRemoveWhenFarAway(amount<=1);
+    }
+    /** Resolves a stacked representative on death: everything it represents pays out once, together.
+     *  Runs at HIGH so it sees the final vanilla drop list (including Looting) and multiplies THAT, rather
+     *  than re-running any reward logic and risking a double payout. Drops are merged into full stacks so
+     *  a x100 kill produces a handful of item entities instead of hundreds. */
+    void stackedDeath(org.bukkit.event.entity.EntityDeathEvent event){
+        int stack=virtualStack(event.getEntity());
+        if(stack<=1)return;
+        java.util.Map<org.bukkit.Material,Integer> totals=new java.util.LinkedHashMap<>();
+        java.util.List<ItemStack> complex=new java.util.ArrayList<>();
+        for(ItemStack drop:event.getDrops()){
+            if(drop==null||drop.getType().isAir())continue;
+            /** Anything with custom data is duplicated as-is rather than merged, so enchanted or named
+             *  drops are never collapsed into a plain stack. */
+            if(drop.hasItemMeta()&&(drop.getItemMeta().hasDisplayName()||drop.getItemMeta().hasEnchants()))complex.add(drop);
+            else totals.merge(drop.getType(),drop.getAmount(),Integer::sum);
+        }
+        event.getDrops().clear();
+        for(var entry:totals.entrySet()){
+            int remaining=entry.getValue()*stack,max=entry.getKey().getMaxStackSize();
+            while(remaining>0){int take=Math.min(max,remaining);event.getDrops().add(new ItemStack(entry.getKey(),take));remaining-=take;}
+        }
+        for(ItemStack item:complex)for(int i=0;i<stack;i++)event.getDrops().add(item.clone());
+        event.setDroppedExp(event.getDroppedExp()*stack);
     }
     private boolean pauseHostileSpawner(CreatureSpawner spawner){
         double range=Math.max(8,spawner.getRequiredPlayerRange()),rangeSq=range*range;

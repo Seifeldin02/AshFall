@@ -125,6 +125,7 @@ final class GameplayListener implements Listener {
     private boolean hostileDamage(EntityDamageEvent event){if(!(event instanceof EntityDamageByEntityEvent byEntity))return false;Entity source=byEntity.getDamager();if(source instanceof Projectile projectile&&projectile.getShooter() instanceof Entity shooter)source=shooter;return source instanceof Enemy;}
     @EventHandler(ignoreCancelled=true) public void worldBossTarget(EntityTargetLivingEntityEvent e){bosses.onWorldBossTarget(e);}
     @EventHandler(ignoreCancelled=true) public void eliteBlockChange(EntityChangeBlockEvent e){bosses.onEliteBlockChange(e);}
+    @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true) public void stackedMobDeath(EntityDeathEvent e){spawners.stackedDeath(e);}
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void move(PlayerMoveEvent e){teleports.onMove(e.getPlayer(),e.getTo());if(e.hasChangedPosition()||e.hasChangedOrientation())plugin.shards().activity(e.getPlayer());}
     @EventHandler public void changedWorld(PlayerChangedWorldEvent e){progress.worldChanged(e.getPlayer(),e.getPlayer().getWorld().getEnvironment());teleports.leaveRtpQueueOnWorldChange(e.getPlayer());}
     @EventHandler public void held(PlayerItemHeldEvent e){plugin.getServer().getScheduler().runTask(plugin,()->scanImportant(e.getPlayer()));}

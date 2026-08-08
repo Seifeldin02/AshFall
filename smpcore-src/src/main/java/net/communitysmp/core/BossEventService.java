@@ -520,7 +520,15 @@ final class BossEventService {
             if(spawnerShare<=0)return;
         }
         String dimension="dimension-mob-rewards."+mob.getWorld().getEnvironment().name()+"."+mob.getType().name();List<Double> range = bosses.getDoubleList(dimension);if(range.size()<2)range = bosses.getDoubleList("mob-rewards." + mob.getType().name()); if (range.size() < 2) range = bosses.getDoubleList("default-mob-reward"); if (range.size() < 2) range = List.of(.05, .35); double factor = farmFactor(killer, mob.getType()); if (factor <= 0) return;
-        double amount = random(range.get(0), range.get(1)) * factor * (spawner&&factor<1?spawnerShare*.5:spawnerShare);if(mob instanceof Enemy){plugin.progress().hostileKill(killer,mob.getType(),mob.getWorld().getEnvironment());amount*=plugin.progress().mobIncomeMultiplier(killer);}
+        double amount = random(range.get(0), range.get(1)) * factor * (spawner&&factor<1?spawnerShare*.5:spawnerShare);
+        /** A stacked representative pays for everything it represents, in one settlement -- the money is
+         *  multiplied here rather than by re-entering this method per virtual mob, so vanilla's own reward
+         *  path still runs exactly once and nothing is double-counted. */
+        int virtual=Math.max(1,plugin.spawners().virtualStack(mob));
+        if(virtual>1)amount*=virtual;if(mob instanceof Enemy){
+            /** Kill accounting reflects the whole stack too, so progression and the anti-farm curve both
+             *  see the real number of mobs killed rather than one per representative. */
+            for(int k=0;k<virtual;k++)plugin.progress().hostileKill(killer,mob.getType(),mob.getWorld().getEnvironment());amount*=plugin.progress().mobIncomeMultiplier(killer);}
         if (amount >= .01) { plugin.creditEarned(CoreUtil.id(killer),amount,"MOB_"+mob.getType().name());db.recordEconomy(CoreUtil.id(killer),"MOB_NORMAL",amount,mob.getType().name()); killer.sendActionBar(Component.text("+" + CoreUtil.money(amount) + " mob reward", NamedTextColor.GREEN)); }
     }
     private void rewardVanillaBoss(EntityDeathEvent event,LivingEntity boss,Player killer){
