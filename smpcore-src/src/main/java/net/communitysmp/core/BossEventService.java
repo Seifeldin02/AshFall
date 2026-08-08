@@ -242,7 +242,15 @@ final class BossEventService {
         try {
             boss = spawnBossEntity(world, loc, kind); double rawHp = bosses.getDouble(prefix+".health", 18000); double hp = clampHealth(rawHp); boss.getAttribute(Attribute.MAX_HEALTH).setBaseValue(hp); boss.setHealth(hp); if(boss.getAttribute(Attribute.ATTACK_DAMAGE)!=null)boss.getAttribute(Attribute.ATTACK_DAMAGE).setBaseValue(bosses.getDouble(prefix+".damage", 18)); if(kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)boss.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, Integer.MAX_VALUE, 0, false, false));
             if(boss.getAttribute(Attribute.FOLLOW_RANGE)!=null)boss.getAttribute(Attribute.FOLLOW_RANGE).setBaseValue(bosses.getDouble("world-boss-targeting.range",50));
-            if((kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)&&boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE)!=null)boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE).setBaseValue(boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE).getBaseValue()+0.25);
+            if(boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE)!=null){
+                /** Per-boss knockback footing. The Warlord is the mobile, in-your-face boss, so being punted
+                 *  around by mace/wind-charge hits was itself a soft cheese -- it could be kept permanently
+                 *  airborne and away. It now stands its ground far better without gaining any damage or
+                 *  health; the Colossus is a siege engine and is similarly planted, while the Knight stays
+                 *  the most movable of the three so knockback remains a real tool against something. */
+                double resist=bosses.getDouble(configPrefix(kind)+".knockback-resistance",kind==WorldBossKind.PIGLIN_BRUTE?.75:kind==WorldBossKind.IRON_GOLEM?.8:.35);
+                boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE).setBaseValue(Math.max(boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE).getBaseValue(),resist));
+            }
             boss.getPersistentDataContainer().set(tierKey, PersistentDataType.STRING, tierFor(kind)); boss.getPersistentDataContainer().set(abilityKey, PersistentDataType.STRING, signatureAbility(kind)); boss.getPersistentDataContainer().set(phaseKey, PersistentDataType.INTEGER, 0); boss.setRemoveWhenFarAway(false); boss.customName(Component.text("⚔ " + displayName(kind), colorFor(kind))); boss.setCustomNameVisible(true); boss.setGlowing(true);
             boss.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,origin.name());
             registerHealthBar(boss,tierFor(kind));
@@ -953,8 +961,7 @@ final class BossEventService {
                 target.getWorld().playSound(target.getLocation(),Sound.ITEM_FIRECHARGE_USE,1.3f,.8f);
                 target.getWorld().spawnParticle(Particle.FLAME,target.getLocation(),30,.6,.4,.6,.04);
                 target.sendActionBar(Component.text("The Cinder Warlord burns your perch away!",NamedTextColor.GOLD));
-                Vector lunge=target.getLocation().toVector().subtract(boss.getLocation().toVector()).setY(0);
-                if(lunge.lengthSquared()>0.0001)boss.setVelocity(lunge.normalize().multiply(.85).setY(Math.min(1.4,.5+dy*.05)));
+                launchWarlord(boss,target,dy);
             }
         }
         if(broken>0)boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_ZOMBIE_BREAK_WOODEN_DOOR,1.1f,.7f);
@@ -970,14 +977,54 @@ final class BossEventService {
         Player target=mob.getTarget() instanceof Player p?p:null;
         if(target==null||!target.getWorld().equals(boss.getWorld()))return;
         if(!boss.isInWater())return;
+        WorldBossKind kind=kindFromTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING));
+        String prefix="world-boss-swim."+configPrefix(kind);
         Vector toward=target.getEyeLocation().toVector().subtract(boss.getEyeLocation().toVector());
         if(toward.lengthSquared()<0.25)return;
-        Vector swim=toward.normalize().multiply(bosses.getDouble("world-boss-swim.speed",.28));
-        /** Blended with existing motion so it accelerates like swimming rather than snapping to a new
-         *  vector each pulse, and floored so it neither sinks to the seabed nor hovers. */
-        Vector velocity=boss.getVelocity().multiply(.72).add(swim.multiply(.45));
-        if(velocity.getY()<-.05)velocity.setY(-.05);
+        /** Per-boss water profiles. Uniform handling was the mistake: the Ashen Knight is an undead skeleton,
+         *  which in vanilla sinks and tries to WALK the seabed, so a gentle blended nudge left it fighting
+         *  its own physics and looking broken, while the heavier Iron Golem happened to behave acceptably
+         *  under the same numbers. The Knight now gets high steering authority and real buoyancy so it
+         *  genuinely swims at the player's depth; the Colossus stays deliberately heavier and slower (a
+         *  walking siege engine, not a swimmer); the Warlord sits between the two. */
+        double speed=bosses.getDouble(prefix+".speed",bosses.getDouble("world-boss-swim.speed",.28));
+        double authority=bosses.getDouble(prefix+".authority",bosses.getDouble("world-boss-swim.authority",.45));
+        double buoyancy=bosses.getDouble(prefix+".buoyancy",bosses.getDouble("world-boss-swim.buoyancy",-.05));
+        Vector swim=toward.normalize().multiply(speed);
+        Vector velocity=boss.getVelocity().multiply(1-authority).add(swim.multiply(authority));
+        /** Match the target's depth rather than merely refusing to sink -- without this an undead boss
+         *  parks on the bottom while the player swims above it, which is the "circling uselessly" look. */
+        double depthGap=target.getEyeLocation().getY()-boss.getEyeLocation().getY();
+        if(depthGap>0.6)velocity.setY(Math.max(velocity.getY(),Math.min(.28,depthGap*.12)));
+        else if(velocity.getY()<buoyancy)velocity.setY(buoyancy);
         boss.setVelocity(velocity);
+        /** Face the direction of travel; a mob steered purely by velocity keeps its old yaw and reads as
+         *  drifting sideways, which is a large part of why this looked so wrong. */
+        boss.setRotation((float)Math.toDegrees(Math.atan2(-toward.getX(),toward.getZ())),boss.getLocation().getPitch());
+    }
+    /** The Warlord is the mobile boss, so its answer to height is to actually get up there. Two fixes over
+     *  the previous attempt: the ceiling was 1.4 (roughly 12 blocks) which simply was not enough against a
+     *  taller tower, and a single setVelocity is erased by the mob's own movement on the very next tick.
+     *  The impulse is now solved from the real gap with no hard ceiling and re-applied while still rising. */
+    private void launchWarlord(LivingEntity boss,Player target,double dy){
+        Vector flat=target.getLocation().toVector().subtract(boss.getLocation().toVector()).setY(0);
+        Vector horizontal=flat.lengthSquared()>0.0001?flat.normalize().multiply(bosses.getDouble("world-boss-unreachable.warlord-lunge-horizontal",.9)):new Vector();
+        double solved=Math.max(.9,.115*Math.sqrt(Math.max(0,dy))+.5);
+        double cap=bosses.getDouble("world-boss-unreachable.warlord-lunge-max",0);
+        final double up=cap>0?Math.min(cap,solved):solved;
+        boss.setVelocity(horizontal.clone().setY(up));
+        UUID id=boss.getUniqueId();
+        int sustain=Math.max(0,bosses.getInt("world-boss-unreachable.warlord-lunge-sustain-ticks",8));
+        for(int t=1;t<=sustain;t++){
+            final int tick=t;
+            plugin.getServer().getScheduler().runTaskLater(plugin,()->{
+                Entity live=plugin.getServer().getEntity(id);
+                if(!(live instanceof LivingEntity rising)||!rising.isValid())return;
+                if(rising.getVelocity().getY()<=0.01)return;
+                double decay=1.0-(tick/(double)(sustain+1));
+                rising.setVelocity(horizontal.clone().setY(Math.max(rising.getVelocity().getY(),up*decay)));
+            },t);
+        }
     }
     /** Land-side pathing nudge, throttled on purpose. Calling moveTo() every tick restarts the route
      *  mid-execution, which is itself what made bosses circle instead of committing to a direction; water
@@ -1234,11 +1281,27 @@ final class BossEventService {
         }
         if(broken>0){mob.getWorld().playSound(mob.getLocation(),Sound.ENTITY_IRON_GOLEM_ATTACK,1.5f,.6f);mob.getWorld().spawnParticle(Particle.EXPLOSION,mob.getLocation().add(0,1,0),Math.min(broken,4));target.sendActionBar(Component.text("The boss smashes through your shelter!",NamedTextColor.RED));}
     }
+    /** What a boss is allowed to demolish while breaking out or collapsing a camper's perch.
+     *  OBSIDIAN and CRYING_OBSIDIAN were previously protected, which is precisely what made an obsidian
+     *  pillar a total hard-counter to all three bosses -- the anti-cheese would nibble everything around it
+     *  and leave the one block that mattered. They are now breakable, so a tower of any material comes down.
+     *  Still absolutely untouchable: bedrock, barriers, reinforced deepslate, spawners, command blocks,
+     *  end portal frames/gateways, respawn anchors (a functional spawn point that explodes if mishandled),
+     *  and obsidian that is actually part of a lit nether portal -- a boss must never eat someone's portal
+     *  just because they fought near it. Protected land (spawn region, any faction claim) is still exempt in
+     *  full, so this cannot damage builds inside claims. */
     private boolean breakableShelterBlock(Block block){
         if(block.getType().isAir()||!block.getType().isSolid())return false;
-        if(Set.of(Material.BEDROCK,Material.BARRIER,Material.OBSIDIAN,Material.CRYING_OBSIDIAN,Material.REINFORCED_DEEPSLATE,Material.RESPAWN_ANCHOR,Material.SPAWNER,Material.END_PORTAL_FRAME,Material.END_GATEWAY,Material.COMMAND_BLOCK).contains(block.getType()))return false;
+        if(Set.of(Material.BEDROCK,Material.BARRIER,Material.REINFORCED_DEEPSLATE,Material.RESPAWN_ANCHOR,Material.SPAWNER,Material.END_PORTAL_FRAME,Material.END_GATEWAY,Material.COMMAND_BLOCK,Material.STRUCTURE_BLOCK,Material.JIGSAW).contains(block.getType()))return false;
+        if((block.getType()==Material.OBSIDIAN||block.getType()==Material.CRYING_OBSIDIAN)&&partOfPortal(block))return false;
         if(plugin.spawnClaims().contains(block.getLocation())||factions.claimAt(block.getLocation())!=null)return false;
         return true;
+    }
+    /** Obsidian directly adjacent to an active portal surface is frame, not cover. */
+    private boolean partOfPortal(Block block){
+        for(org.bukkit.block.BlockFace face:new org.bukkit.block.BlockFace[]{org.bukkit.block.BlockFace.UP,org.bukkit.block.BlockFace.DOWN,org.bukkit.block.BlockFace.NORTH,org.bukkit.block.BlockFace.SOUTH,org.bukkit.block.BlockFace.EAST,org.bukkit.block.BlockFace.WEST})
+            if(block.getRelative(face).getType()==Material.NETHER_PORTAL)return true;
+        return false;
     }
     private void legendaryCounter(LivingEntity mob,Player target){
         mob.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,60,1,false,false));mob.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME,mob.getLocation().add(0,1,0),45,.8,1,.8,.05);

@@ -151,11 +151,12 @@ final class ShardService implements Listener {
          *  shipping the combat spear, and a hard reference would break class loading on ones that do not. */
         Material spear=Material.matchMaterial("NETHERITE_SPEAR");
         if(spear!=null)kit.add(enchanted(spear,withOptional(Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),"lunge",3)));
+        for(int i=0;i<4;i++)kit.add(new ItemStack(Material.OBSIDIAN,64));
         for(int i=0;i<2;i++)kit.add(new ItemStack(Material.WIND_CHARGE,64));
         for(int i=0;i<2;i++)kit.add(firework(64,1));
         for(int i=0;i<5;i++)kit.add(strengthPotion());
         for(ItemStack item:kit)CoreUtil.give(player,item);
-        CoreUtil.msg(player,"Test kit issued: full maxed Shard Shop loadout, 30 e-apples, 5x Strength II, 64 steak, 32 pearls, 2x64 wind charges, elytra + 2x64 tier-1 rockets.");
+        CoreUtil.msg(player,"Test kit issued: full maxed Shard Shop loadout, 30 e-apples, 5x Strength II, 64 steak, 32 pearls, 2x64 wind charges, 4x64 obsidian, elytra + 2x64 tier-1 rockets.");
     }
     /** Adds an enchantment that may not exist on every server build (e.g. Lunge, which ships with the
      *  combat spear) by registry lookup, so the class still loads and the item is still granted on builds

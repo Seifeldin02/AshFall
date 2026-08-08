@@ -105,6 +105,8 @@ world-boss:
   health: 4500.0
   damage: 20.0
   scale: 1.35
+  # Most movable of the three, so knockback stays a genuine tool against something.
+  knockback-resistance: 0.35
   reward-min: 126562.5
   reward-max: 253125
   active-radius: 50
@@ -124,6 +126,8 @@ iron-golem-boss:
   health: 6300.0
   damage: 25.0
   scale: 1.5
+  # A siege engine should not be shoved around.
+  knockback-resistance: 0.8
   reward-min: 126562.5
   reward-max: 253125
   reward-iron-blocks: 128
@@ -145,6 +149,8 @@ piglin-brute-boss:
   health: 3600.0
   damage: 27.0
   scale: 1.8
+  # Was punt-able enough that keeping it permanently airborne was itself a soft cheese.
+  knockback-resistance: 0.75
   reward-min: 126562.5
   reward-max: 253125
   reward-gold-blocks: 64
@@ -207,11 +213,35 @@ world-boss-unreachable:
   collapse-depth: 3
   # Downward tug applied so they actually come off the perch. Cap only -- deals no damage itself.
   pull-max: 1.1
+  # Cinder Warlord lunge: 0 = no ceiling, solved from the real height gap. Sustain re-applies the impulse
+  # while still rising, since the mob's own movement erases a single setVelocity on the next tick.
+  warlord-lunge-horizontal: 0.9
+  warlord-lunge-max: 0
+  warlord-lunge-sustain-ticks: 8
 
 world-boss-swim:
-  # Direct steering speed used while submerged. Land pathfinding cannot follow a route through open water,
-  # which is what made the Colossus/Knight orbit aimlessly; underwater they steer straight at the target.
-  speed: 0.32
+  # Fallbacks; each boss overrides below. "authority" is how strongly steering overrides existing motion
+  # (0-1), "buoyancy" is the floor on downward velocity while submerged.
+  speed: 0.28
+  authority: 0.45
+  buoyancy: -0.05
+  # The Ashen Knight is an undead skeleton: vanilla makes it sink and try to walk the seabed, so it needs
+  # the most help to look like it is actually swimming. Highest authority and real lift.
+  world-boss:
+    speed: 0.42
+    authority: 0.75
+    buoyancy: 0.0
+  # The Colossus is a walking siege engine, deliberately the heaviest and slowest in water -- it should
+  # feel ponderous, just not broken.
+  iron-golem-boss:
+    speed: 0.26
+    authority: 0.55
+    buoyancy: -0.04
+  # The Warlord sits between the two; water is its bad element (lava is its good one).
+  piglin-brute-boss:
+    speed: 0.34
+    authority: 0.65
+    buoyancy: -0.02
 
 world-boss-spawn:
   # A randomly spawned boss must land this far from any protected land (spawn region or faction claim)
