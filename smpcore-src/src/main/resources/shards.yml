@@ -15,8 +15,8 @@ earning:
 # Prices assume about one shard per 45 minutes of active play. Strong permanent
 # rewards therefore remain long-term goals; weekly limits prevent stockpiling abuse.
 stock:
-  disposable_capsule: {icon: TRIAL_KEY, name: Disposable Villager Capsule, price: 80, limit: 2, period: WEEK, category: UTILITY}
-  reusable_capsule: {icon: OMINOUS_TRIAL_KEY, name: Reusable Villager Capsule, price: 320, limit: 1, period: LIFETIME, category: UTILITY, mandatory: true}
+  disposable_capsule: {icon: TRIAL_KEY, name: Disposable Villager Capsule, price: 40, limit: 2, period: WEEK, category: UTILITY}
+  reusable_capsule: {icon: OMINOUS_TRIAL_KEY, name: Reusable Villager Capsule, price: 200, limit: 1, period: LIFETIME, category: UTILITY, mandatory: true}
   sealed_omen: {icon: PAPER, name: Sealed Omen, price: 200, limit: 1, period: WEEK, category: UTILITY, mandatory: true}
   enchanted_golden_apple: {icon: ENCHANTED_GOLDEN_APPLE, name: Enchanted Golden Apple, price: 40, limit: 2, period: WEEK, category: UTILITY}
   premium_supplies: {icon: BUNDLE, name: Expedition Supplies, price: 18, limit: 3, period: WEEK, category: UTILITY}
@@ -29,7 +29,7 @@ stock:
   market_axe: {icon: NETHERITE_AXE, name: Market Axe, price: 180, limit: 1, period: MONTH, category: TOOLS}
   haste_24h: {icon: HONEY_BOTTLE, name: Haste Draught, price: 32, limit: 2, period: WEEK, category: UTILITY}
 
-  iron_golem_spawner: {icon: IRON_GOLEM_SPAWN_EGG, name: Warded Colossus Spawner, price: 300, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
+  iron_golem_spawner: {icon: IRON_GOLEM_SPAWN_EGG, name: Iron Golem Spawner, price: 500, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
   netherite_pickaxe: {icon: NETHERITE_PICKAXE, name: Max Netherite Pickaxe, price: 120, limit: 1, period: WEEK, category: TOOLS}
   netherite_shovel: {icon: NETHERITE_SHOVEL, name: Max Netherite Shovel, price: 80, limit: 1, period: WEEK, category: TOOLS}
   netherite_axe: {icon: NETHERITE_AXE, name: Max Netherite Axe, price: 90, limit: 1, period: WEEK, category: TOOLS}

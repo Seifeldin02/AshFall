@@ -53,7 +53,7 @@ final class ShopService {
         else if(material==Material.OMINOUS_TRIAL_KEY){meta.getPersistentDataContainer().set(capsuleKey,PersistentDataType.STRING,"REUSABLE");meta.setMaxStackSize(1);meta.lore(List.of(Component.text("Reusable villager transport.",NamedTextColor.GRAY)));}
         item.setItemMeta(meta);return item;
     }
-    /** IRON_GOLEM_SPAWN_EGG is only a shop-facing ICON for the Warded Colossus Spawner -- what the player
+    /** IRON_GOLEM_SPAWN_EGG is only a shop-facing ICON for the Iron Golem Spawner -- what the player
      *  actually receives is a real, tagged SMPCore spawner, so it places, stacks and tracks like any other.
      *  Handled here because purchaseItem is the single delivery point every shop purchase passes through. */
     private ItemStack purchaseItem(Material material,Price price,int amount){
@@ -204,7 +204,7 @@ final class ShopService {
     List<Map.Entry<Material,Price>> entries(boolean luxury){return prices.entrySet().stream().filter(entry->entry.getValue().luxury()==luxury).map(entry->Map.entry(entry.getKey(),entry.getValue())).toList();}
     Price price(Material material){return prices.get(material);}
     /** The shop ICON must match what is actually delivered. IRON_GOLEM_SPAWN_EGG is only the catalogue key
-     *  for the Warded Colossus Spawner -- showing the egg made the listing look like it sold a spawn egg,
+     *  for the Iron Golem Spawner -- showing the egg made the listing look like it sold a spawn egg,
      *  so the icon is swapped for the real spawner here exactly as purchaseItem swaps the delivery. */
     ItemStack displayItem(Material material){
         Price price=prices.get(material);
