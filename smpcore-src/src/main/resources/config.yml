@@ -335,6 +335,10 @@ nametags:
   refresh-ticks: 40
   # Text size of the balance line. The first version was far too small to read at a glance.
   scale: 1.15
+  # Height of each overlay above the player's mount point. Kept clear of the vanilla nametag block so the
+  # name and health line stay visible underneath.
+  balance-lift: 0.75
+  faction-lift: 1.05
   # Height ABOVE THE PLAYER'S FEET for each line. The vanilla name sits around 2.1 and the below-name
   # health line just under it, so these stack above without covering either. Nudge to taste.
   # Both lines are positioned RELATIVE to where the client actually draws the nametag (entity height +
@@ -342,8 +346,6 @@ nametags:
   # for sneaking, riding, swimming or any scaled player. The faction tag sits exactly on that anchor
   # (beside the name, see faction-gap); balance-drop is how far BELOW it the money line sits, which needs
   # to clear the below-name health line too.
-  anchor-lift: 0.5
-  balance-drop: 0.46
   # How often the lines are repositioned. They follow by teleport rather than riding the player, because
   # a mounted passenger suppresses the player's entire vanilla nametag block.
   follow-ticks: 2

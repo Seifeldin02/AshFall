@@ -176,7 +176,10 @@ final class PacketNametagService implements Listener {
         float scale=(float)plugin.getConfig().getDouble("nametags.scale",1.0);
         /** Vertical separation between the two lines is done with the Display's own translation transform,
          *  because both ride the same mount point and would otherwise render on top of each other. */
-        float lift=(float)plugin.getConfig().getDouble(isBalance?"nametags.balance-lift":"nametags.faction-lift",isBalance?.30:.62);
+        /** Lifted clear of the vanilla nametag rather than sitting on it. Both mounted implementations lost
+         *  the name and health line, and the overlays rendering directly over that block is the most likely
+         *  cause, so they are pushed above it by default. */
+        float lift=(float)plugin.getConfig().getDouble(isBalance?"nametags.balance-lift":"nametags.faction-lift",isBalance?.75:1.05);
         List<EntityData<?>> data=new ArrayList<>();
         data.add(new EntityData<>(IDX_TRANSLATION,EntityDataTypes.VECTOR3F,new Vector3f(0,lift,0)));
         data.add(new EntityData<>(IDX_SCALE,EntityDataTypes.VECTOR3F,new Vector3f(scale,scale,scale)));
@@ -187,9 +190,15 @@ final class PacketNametagService implements Listener {
         data.add(textData(text,isBalance));
         send(viewer,new WrapperPlayServerEntityMetadata(entityId,data));
     }
+    /** Money renders as a dark green currency sign followed by a white value; the faction tag is a single
+     *  colour. Built as a component rather than a coloured string so the two halves are genuinely separate
+     *  styles rather than legacy colour codes embedded in text. */
     private EntityData<?> textData(String text,boolean isBalance){
-        NamedTextColor color=isBalance?NamedTextColor.GREEN:factionColor();
-        return new EntityData<>(IDX_TEXT,EntityDataTypes.ADV_COMPONENT,Component.text(text,color));
+        Component component;
+        if(isBalance&&text.startsWith("$"))
+            component=Component.text("$",NamedTextColor.DARK_GREEN).append(Component.text(text.substring(1),NamedTextColor.WHITE));
+        else component=Component.text(text,isBalance?NamedTextColor.WHITE:factionColor());
+        return new EntityData<>(IDX_TEXT,EntityDataTypes.ADV_COMPONENT,component);
     }
     /** Attachment: the client is told our fake entities are passengers of the real player, so IT handles
      *  every position update from then on. This is the whole reason there is no positioning code here. */
