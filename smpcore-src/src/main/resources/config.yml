@@ -326,10 +326,17 @@ events:
   protected-area-radius: 100
 
 nametags:
-  # How often balance/faction lines under player names are refreshed, in ticks. Deliberately slow --
-  # these do not need sub-second accuracy, and each player carries at most two shared displays whose
-  # per-viewer visibility is toggled rather than respawned.
+  # How often the balance line and faction prefixes are refreshed, in ticks. Deliberately slow -- these do
+  # not need sub-second accuracy, and each player carries a single shared display whose per-viewer
+  # visibility is toggled rather than respawned.
   refresh-ticks: 40
+  # Text size of the balance line. The first version was far too small to read at a glance.
+  scale: 1.15
+  # Height of the balance line relative to the player. Nudge this if it collides with the below-name
+  # health line (ui.health-below-name) or sits too far from the vanilla name.
+  balance-offset: 0.32
+  # Display view-range multiplier; the earlier 0.6 made it vanish at close range.
+  view-range: 1.0
 
 settings:
   native-dialogs: true

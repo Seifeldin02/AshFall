@@ -145,6 +145,8 @@ final class ShardService implements Listener {
         inv.setItem(1,new ItemStack(Material.WIND_CHARGE,64));
         inv.setItem(2,enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.INFINITY,1,Enchantment.UNBREAKING,3)));
         inv.setItem(3,strengthPotion());
+        /** Key 5 is gapples, not an empty gap -- "gaps" was slang for golden apples, not a blank slot. */
+        inv.setItem(4,new ItemStack(Material.ENCHANTED_GOLDEN_APPLE,30));
         inv.setItem(5,new ItemStack(Material.COOKED_BEEF,64));
         inv.setItem(6,new ItemStack(Material.TOTEM_OF_UNDYING));
         inv.setItem(7,new ItemStack(Material.OBSIDIAN,64));
@@ -156,7 +158,6 @@ final class ShardService implements Listener {
                 enchanted(Material.NETHERITE_AXE,Map.of(Enchantment.EFFICIENCY,5,Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.CROSSBOW,Map.of(Enchantment.QUICK_CHARGE,3,Enchantment.MULTISHOT,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.ELYTRA,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                new ItemStack(Material.ENCHANTED_GOLDEN_APPLE,30),
                 new ItemStack(Material.ARROW,64),
                 new ItemStack(Material.ENDER_PEARL,16),
                 new ItemStack(Material.OBSIDIAN,64),
@@ -177,7 +178,7 @@ final class ShardService implements Listener {
             inv.setItem(slot,new ItemStack(Material.TOTEM_OF_UNDYING));totems++;
         }
         player.updateInventory();
-        CoreUtil.msg(player,"Test kit equipped: armour + shield worn, hotbar set (mace / wind charges / bow / strength / _ / steak / totem / obsidian / pearls), "+totems+" totem(s) filling the remaining space.");
+        CoreUtil.msg(player,"Test kit equipped: armour + shield worn, hotbar set (mace / wind charges / bow / strength / gapples / steak / totem / obsidian / pearls), "+totems+" totem(s) filling the remaining space.");
     }
     /** Adds an enchantment that may not exist on every server build (e.g. Lunge, which ships with the
      *  combat spear) by registry lookup, so the class still loads and the item is still granted on builds
