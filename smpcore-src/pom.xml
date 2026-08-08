@@ -10,12 +10,25 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
   <repositories>
+        <!-- PacketEvents is not published to Paper's repo; CodeMC is its official host. -->
+        <repository>
+            <id>codemc</id>
+            <url>https://repo.codemc.io/repository/maven-releases/</url>
+        </repository>
     <repository>
       <id>papermc</id>
       <url>https://repo.papermc.io/repository/maven-public/</url>
     </repository>
   </repositories>
   <dependencies>
+        <!-- Provided: the shaded packetevents plugin supplies these classes at runtime, so they must NOT
+             be bundled into our jar (double-loading packet handlers would be a real problem). -->
+        <dependency>
+            <groupId>com.github.retrooper</groupId>
+            <artifactId>packetevents-spigot</artifactId>
+            <version>2.13.0</version>
+            <scope>provided</scope>
+        </dependency>
     <dependency>
       <groupId>io.papermc.paper</groupId>
       <artifactId>paper-api</artifactId>
