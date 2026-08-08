@@ -126,37 +126,57 @@ final class ShardService implements Listener {
         };
         return item;
     }
-    /** Admin/staging loadout: everything the Shard Shop's gear tier sells, fully maxed, plus the consumables
-     *  needed to actually stress-test combat (boss fights, PvP, relic abilities) without grinding for them.
-     *  Deliberately built from the SAME enchanted() catalogue the shop uses, so what testers hold is exactly
-     *  what players can buy rather than a parallel definition that could drift. Admin-gated at the command. */
+    /** Admin/staging loadout, laid out for testing rather than dumped into the inventory. Armour and shield
+     *  are equipped directly, the hotbar is fixed in a known order (mace, wind charges, bow, strength, gap,
+     *  steak, totem, obsidian, pearls) so muscle memory carries between test runs, and whatever storage
+     *  space is left over is filled with totems -- the thing you run out of first when repeatedly dying to a
+     *  boss on purpose. Built from the SAME enchanted() catalogue the Shard Shop sells, so testers hold
+     *  exactly what players can buy. */
     void giveTestKit(Player player){
-        List<ItemStack> kit=new ArrayList<>(List.of(
-                enchanted(Material.NETHERITE_HELMET,Map.of(Enchantment.PROTECTION,4,Enchantment.RESPIRATION,3,Enchantment.AQUA_AFFINITY,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.NETHERITE_CHESTPLATE,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.SWIFT_SNEAK,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3,Enchantment.SOUL_SPEED,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+        org.bukkit.inventory.PlayerInventory inv=player.getInventory();
+        inv.setHelmet(enchanted(Material.NETHERITE_HELMET,Map.of(Enchantment.PROTECTION,4,Enchantment.RESPIRATION,3,Enchantment.AQUA_AFFINITY,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        inv.setChestplate(enchanted(Material.NETHERITE_CHESTPLATE,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        inv.setLeggings(enchanted(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.SWIFT_SNEAK,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        inv.setBoots(enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3,Enchantment.SOUL_SPEED,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        inv.setItemInOffHand(enchanted(Material.SHIELD,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        /** Hotbar slots are 0-8 == displayed keys 1-9. Slot 4 (key 5) is deliberately left empty. */
+        inv.setItem(0,enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        inv.setItem(1,new ItemStack(Material.WIND_CHARGE,64));
+        inv.setItem(2,enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.INFINITY,1,Enchantment.UNBREAKING,3)));
+        inv.setItem(3,strengthPotion());
+        inv.setItem(5,new ItemStack(Material.COOKED_BEEF,64));
+        inv.setItem(6,new ItemStack(Material.TOTEM_OF_UNDYING));
+        inv.setItem(7,new ItemStack(Material.OBSIDIAN,64));
+        inv.setItem(8,new ItemStack(Material.ENDER_PEARL,16));
+        /** Everything else from the loadout goes into storage in a stable order, then the remainder of the
+         *  inventory is packed with totems. */
+        List<ItemStack> rest=new ArrayList<>(List.of(
                 enchanted(Material.NETHERITE_SWORD,Map.of(Enchantment.SHARPNESS,5,Enchantment.LOOTING,3,Enchantment.SWEEPING_EDGE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.NETHERITE_AXE,Map.of(Enchantment.EFFICIENCY,5,Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.INFINITY,1,Enchantment.UNBREAKING,3)),
                 enchanted(Material.CROSSBOW,Map.of(Enchantment.QUICK_CHARGE,3,Enchantment.MULTISHOT,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.SHIELD,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.ELYTRA,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 new ItemStack(Material.ENCHANTED_GOLDEN_APPLE,30),
-                new ItemStack(Material.COOKED_BEEF,64),
-                new ItemStack(Material.ENDER_PEARL,32),
-                new ItemStack(Material.ARROW,64)));
-        /** Spear and its Lunge enchantment are both version-gated: NETHERITE_SPEAR only exists on builds
-         *  shipping the combat spear, and a hard reference would break class loading on ones that do not. */
+                new ItemStack(Material.ARROW,64),
+                new ItemStack(Material.ENDER_PEARL,16),
+                new ItemStack(Material.OBSIDIAN,64),
+                new ItemStack(Material.OBSIDIAN,64),
+                new ItemStack(Material.OBSIDIAN,64),
+                new ItemStack(Material.WIND_CHARGE,64),
+                firework(64,1),
+                firework(64,1)));
         Material spear=Material.matchMaterial("NETHERITE_SPEAR");
-        if(spear!=null)kit.add(enchanted(spear,withOptional(Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),"lunge",3)));
-        for(int i=0;i<4;i++)kit.add(new ItemStack(Material.OBSIDIAN,64));
-        for(int i=0;i<2;i++)kit.add(new ItemStack(Material.WIND_CHARGE,64));
-        for(int i=0;i<2;i++)kit.add(firework(64,1));
-        for(int i=0;i<5;i++)kit.add(strengthPotion());
-        for(ItemStack item:kit)CoreUtil.give(player,item);
-        CoreUtil.msg(player,"Test kit issued: full maxed Shard Shop loadout, 30 e-apples, 5x Strength II, 64 steak, 32 pearls, 2x64 wind charges, 4x64 obsidian, elytra + 2x64 tier-1 rockets.");
+        if(spear!=null)rest.add(enchanted(spear,withOptional(Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),"lunge",3)));
+        for(int i=0;i<4;i++)rest.add(strengthPotion());
+        for(ItemStack item:rest)inv.addItem(item);
+        /** Fill whatever storage space is genuinely still empty with totems. */
+        int totems=0;
+        for(int slot=9;slot<36;slot++){
+            ItemStack existing=inv.getItem(slot);
+            if(existing!=null&&!existing.getType().isAir())continue;
+            inv.setItem(slot,new ItemStack(Material.TOTEM_OF_UNDYING));totems++;
+        }
+        player.updateInventory();
+        CoreUtil.msg(player,"Test kit equipped: armour + shield worn, hotbar set (mace / wind charges / bow / strength / _ / steak / totem / obsidian / pearls), "+totems+" totem(s) filling the remaining space.");
     }
     /** Adds an enchantment that may not exist on every server build (e.g. Lunge, which ships with the
      *  combat spear) by registry lookup, so the class still loads and the item is still granted on builds

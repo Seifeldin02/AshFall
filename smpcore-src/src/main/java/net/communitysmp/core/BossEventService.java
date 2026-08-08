@@ -160,6 +160,10 @@ final class BossEventService {
         if(current!=null){
             long since=bossTargetOutOfRangeSince.computeIfAbsent(id,key->now);
             if(now-since<(long)(bosses.getDouble("world-boss-targeting.lose-target-seconds",3)*1000))return;
+            /** Hard leash. Dropping the Bukkit target alone is not enough: vanilla AI keeps the last
+             *  navigation path and simply walks after them, which is how a boss ended up trailing someone
+             *  all the way home. Cancel the in-flight path too, so beyond range it genuinely disengages. */
+            mob.getPathfinder().stopPathfinding();
         }
         bossTargetOutOfRangeSince.remove(id);
         Player nearest=null;double best=rangeSq;
@@ -911,6 +915,10 @@ final class BossEventService {
         UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
         Player target=mob.getTarget() instanceof Player p?p:null;
         if(target==null||!validBossTarget(target)||!target.getWorld().equals(boss.getWorld())){bossUnreachableSince.remove(id);return;}
+        /** Anti-cheese must never fire at someone beyond the leash -- otherwise a boss demolishes terrain
+         *  chasing a player who has already legitimately broken off. */
+        double leash=bosses.getDouble("world-boss-targeting.range",50);
+        if(boss.getLocation().distanceSquared(target.getLocation())>leash*leash){bossUnreachableSince.remove(id);return;}
         if(!lastEngaged.containsKey(id)){bossUnreachableSince.remove(id);return;}
         if(!bossCannotReach(mob,target)){bossUnreachableSince.remove(id);return;}
         long stuckFor=now-bossUnreachableSince.computeIfAbsent(id,key->now);
@@ -1095,10 +1103,23 @@ final class BossEventService {
         if(lavaKind==WorldBossKind.PIGLIN_BRUTE&&boss.isInLava()){
             UUID lavaId=boss.getUniqueId();long lavaNow=System.currentTimeMillis();
             long interval=(long)(bosses.getDouble("world-boss-unreachable.warlord-lava-lunge-seconds",2.5)*1000);
-            if(lavaNow-bossLavaLungeAt.getOrDefault(lavaId,0L)>=interval
-                    &&boss.getLocation().distanceSquared(target.getLocation())>4){
+            double gap=boss.getLocation().distance(target.getLocation());
+            if(lavaNow-bossLavaLungeAt.getOrDefault(lavaId,0L)>=interval&&gap>2.5&&gap<=bosses.getDouble("world-boss-targeting.range",50)){
                 bossLavaLungeAt.put(lavaId,lavaNow);
-                launchWarlord(boss,target,Math.max(0,target.getLocation().getY()-boss.getLocation().getY()));
+                /** A flat, directed pounce AT the target -- not launchWarlord(), which is the tower-climbing
+                 *  launch and always adds a large upward impulse. Reusing that here made the Warlord hop
+                 *  vertically on a timer regardless of where the player actually was, which read as flailing
+                 *  rather than attacking. Vertical is now only whatever is needed to clear the height gap. */
+                Vector at=target.getLocation().toVector().subtract(boss.getLocation().toVector());
+                double rise=target.getLocation().getY()-boss.getLocation().getY();
+                Vector flat=at.setY(0);
+                if(flat.lengthSquared()>0.0001){
+                    Vector pounce=flat.normalize().multiply(bosses.getDouble("world-boss-unreachable.warlord-lava-lunge-power",.95));
+                    pounce.setY(rise>1?Math.min(.85,.28+rise*.06):.28);
+                    boss.setVelocity(pounce);
+                    boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_HOGLIN_ANGRY,1.1f,.7f);
+                    boss.getWorld().spawnParticle(Particle.FLAME,boss.getLocation().add(0,1,0),20,.5,.3,.5,.03);
+                }
             }
         }
         if(!boss.isInWater())return;
@@ -1166,6 +1187,9 @@ final class BossEventService {
         if(mob.isInWater())return;
         Player target=mob.getTarget() instanceof Player p?p:null;
         if(target==null||!target.getWorld().equals(mob.getWorld()))return;
+        /** Never re-path toward someone already outside the leash. */
+        double leash=bosses.getDouble("world-boss-targeting.range",50);
+        if(mob.getLocation().distanceSquared(target.getLocation())>leash*leash){mob.setTarget(null);return;}
         UUID id=mob.getUniqueId();long now=System.currentTimeMillis();
         if(now-bossRepathAt.getOrDefault(id,0L)<900)return;
         bossRepathAt.put(id,now);

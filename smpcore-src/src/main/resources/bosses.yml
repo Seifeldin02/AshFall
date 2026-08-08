@@ -177,7 +177,9 @@ world-boss-targeting:
   # Minimum seconds to keep the current target before switching, so the boss commits to whoever it is
   # fighting instead of flip-flopping every time someone else lands a hit.
   target-stability-seconds: 4
-  # A target beyond range for this long is dropped and the boss re-acquires the nearest valid player.
+  # A target beyond range for this long is dropped, the in-flight path is cancelled, and the boss
+  # re-acquires the nearest valid player (or nobody). This is a hard leash: past `range` a boss will not
+  # follow you home, and none of the assist/anti-cheese behaviour fires either.
   lose-target-seconds: 3
 
 world-boss-unreachable:
@@ -230,6 +232,9 @@ world-boss-unreachable:
   # The Warlord wades slowly through lava on purpose; instead of speeding it up, it lunges on this much
   # shorter cycle while submerged so there is no safe window to trade hits from.
   warlord-lava-lunge-seconds: 2.5
+  # Horizontal power of the lava pounce. This is a flat lunge AT the target, distinct from the tower
+  # -climbing launch; vertical is only ever what is needed to clear the height difference.
+  warlord-lava-lunge-power: 0.95
 
 world-boss-swim:
   # Fallbacks; each boss overrides below. "authority" is how strongly steering overrides existing motion
