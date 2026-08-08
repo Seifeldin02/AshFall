@@ -62,18 +62,32 @@ final class NametagService implements Listener {
         followTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::follow,follow,follow);
         plugin.getServer().getScheduler().runTaskLater(plugin,this::purgeLegacyPrefixTeams,40L);
     }
+    /** Positions are DERIVED from the player rather than hard-coded, which is what previous attempts got
+     *  wrong. The vanilla nametag is anchored at the entity's own height + 0.5, and that height changes
+     *  constantly -- sneaking, crawling, swimming, riding, and any scale attribute all move it. A fixed
+     *  world Y is therefore correct for exactly one pose and wrong for every other, which is why it worked
+     *  for some situations and glitched in others. Everything here is expressed as a delta from the real
+     *  anchor, recomputed every pass, so it tracks the name wherever the client actually draws it. */
     private void follow(){
-        double balanceOffset=plugin.getConfig().getDouble("nametags.balance-offset",2.35);
-        double factionOffset=plugin.getConfig().getDouble("nametags.faction-offset",2.80);
+        double drop=plugin.getConfig().getDouble("nametags.balance-drop",.46);
         for(Player target:plugin.getServer().getOnlinePlayers()){
-            reposition(balanceDisplays.get(target.getUniqueId()),target,balanceOffset);
-            reposition(factionDisplays.get(target.getUniqueId()),target,factionOffset);
+            double nameY=nameAnchor(target);
+            /** Vanilla hides the nametag while sneaking; our lines follow suit rather than hovering over a
+             *  player who is deliberately not showing a tag. */
+            boolean visible=!target.isSneaking();
+            reposition(balanceDisplays.get(target.getUniqueId()),target,nameY-drop,visible);
+            reposition(factionDisplays.get(target.getUniqueId()),target,nameY,visible);
         }
     }
-    private void reposition(UUID id,Player target,double offset){
+    /** Where the client draws the nametag: entity height + 0.5, pose-aware via getHeight(). */
+    private double nameAnchor(Player target){
+        return target.getHeight()+plugin.getConfig().getDouble("nametags.anchor-lift",.5);
+    }
+    private void reposition(UUID id,Player target,double y,boolean visible){
         TextDisplay display=resolve(id);
         if(display==null)return;
-        Location want=target.getLocation().clone().add(0,offset,0);
+        display.setViewRange(visible?(float)plugin.getConfig().getDouble("nametags.view-range",1.0):0f);
+        Location want=target.getLocation().clone().add(0,y,0);
         want.setYaw(0);want.setPitch(0);
         if(!display.getWorld().equals(want.getWorld())||display.getLocation().distanceSquared(want)>0.0004)display.teleport(want);
     }
@@ -168,7 +182,7 @@ final class NametagService implements Listener {
         Database.FactionRow faction=eligible?plugin.db().factionOf(CoreUtil.id(target)):null;
         if(faction==null){removeDisplay(factionDisplays.remove(id));lastFactionText.remove(id);return;}
         TextDisplay display=resolve(factionDisplays.get(id));
-        if(display==null){display=spawnLine(target,(float)plugin.getConfig().getDouble("nametags.faction-offset",2.35));factionDisplays.put(id,display.getUniqueId());lastFactionText.remove(id);}
+        if(display==null){display=spawnLine(target,(float)nameAnchor(target));factionDisplays.put(id,display.getUniqueId());lastFactionText.remove(id);}
 
         String text="["+faction.tag()+"]";
         if(text.equals(lastFactionText.get(id)))return;
@@ -179,7 +193,7 @@ final class NametagService implements Listener {
     /** Mounted on its owner and nothing else. Scale and offset are configurable because how tightly this
      *  sits under the vanilla name depends on whether the below-name health line is also enabled. */
     private TextDisplay spawnBalance(Player target){
-        return spawnLine(target,(float)plugin.getConfig().getDouble("nametags.balance-offset",2.35));
+        return spawnLine(target,(float)(nameAnchor(target)-plugin.getConfig().getDouble("nametags.balance-drop",.46)));
     }
     private TextDisplay spawnLine(Player target,float offset){
         Location at=target.getLocation().clone().add(0,offset,0);

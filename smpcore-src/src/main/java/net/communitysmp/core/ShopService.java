@@ -203,7 +203,14 @@ final class ShopService {
 
     List<Map.Entry<Material,Price>> entries(boolean luxury){return prices.entrySet().stream().filter(entry->entry.getValue().luxury()==luxury).map(entry->Map.entry(entry.getKey(),entry.getValue())).toList();}
     Price price(Material material){return prices.get(material);}
-    ItemStack displayItem(Material material){Price price=prices.get(material);return price!=null&&price.luxury()?luxuryItem(material,price):new ItemStack(material);}
+    /** The shop ICON must match what is actually delivered. IRON_GOLEM_SPAWN_EGG is only the catalogue key
+     *  for the Warded Colossus Spawner -- showing the egg made the listing look like it sold a spawn egg,
+     *  so the icon is swapped for the real spawner here exactly as purchaseItem swaps the delivery. */
+    ItemStack displayItem(Material material){
+        Price price=prices.get(material);
+        if(material==Material.IRON_GOLEM_SPAWN_EGG)return plugin.spawners().purchasedSpawner(org.bukkit.entity.EntityType.IRON_GOLEM);
+        return price!=null&&price.luxury()?luxuryItem(material,price):new ItemStack(material);
+    }
 
     double configuredSell(Material material){Price price=prices.get(material);return price==null||price.luxury()?0:Math.max(0,price.sell());}
     boolean selfTest(){Price shell=prices.get(Material.SHULKER_SHELL),stone=prices.get(Material.COBBLESTONE),wind=prices.get(Material.WIND_CHARGE),dirt=prices.get(Material.DIRT),cane=prices.get(Material.SUGAR_CANE),tag=prices.get(Material.NAME_TAG),egg=prices.get(Material.DRAGON_EGG),single=prices.get(Material.TRIAL_KEY),reusable=prices.get(Material.OMINOUS_TRIAL_KEY);if(shell==null||Math.abs(shell.buy()-40000)>.001||stone==null||wind==null||Math.abs(wind.buy()-5000)>.001||dirt==null||Math.abs(dirt.buy()-.50)>.001||Math.abs(dirt.sell()-.05)>.001||cane==null||Math.abs(cane.buy()-12)>.001||Math.abs(cane.sell()-3.00)>.001||tag==null||tag.buy()!=10000||!tag.luxury()||egg==null||egg.buy()!=50000000||single==null||single.buy()!=100000||reusable==null||reusable.buy()!=1000000||dirt.reduced()!=.5||dirt.dailyLimit()!=Integer.MAX_VALUE)return false;ItemStack purchase=purchaseItem(Material.COBBLESTONE,stone,32),charge=purchaseItem(Material.WIND_CHARGE,wind,1),capsule=purchaseItem(Material.TRIAL_KEY,single,1);return purchase.getAmount()==32&&!purchase.hasItemMeta()&&!charge.hasItemMeta()&&capsule.getItemMeta().getPersistentDataContainer().has(capsuleKey)&&itemNames(true,"cobble").contains("cobblestone");}

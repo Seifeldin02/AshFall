@@ -305,6 +305,9 @@ net-worth:
     SHULKER_BOX: 25000
     ECHO_SHARD: 5000
   spawners:
+    # Virtual stacking made placed spawners a genuine income engine rather than decoration, so the highest
+    # earners are valued accordingly. IRON_GOLEM matches the Dragon Egg at 1,000,000 as the flagship buy.
+    IRON_GOLEM: 1000000
     default: 25000
     ZOMBIE: 30000
     SKELETON: 40000
@@ -334,10 +337,13 @@ nametags:
   scale: 1.15
   # Height ABOVE THE PLAYER'S FEET for each line. The vanilla name sits around 2.1 and the below-name
   # health line just under it, so these stack above without covering either. Nudge to taste.
-  # Money sits BELOW both the vanilla name and the below-name health line; the faction tag sits at the
-  # SAME height as the name and is pushed sideways (see faction-gap) rather than stacked above it.
-  balance-offset: 1.90
-  faction-offset: 2.35
+  # Both lines are positioned RELATIVE to where the client actually draws the nametag (entity height +
+  # anchor-lift), not at a fixed world height -- a fixed height is only correct for one pose and breaks
+  # for sneaking, riding, swimming or any scaled player. The faction tag sits exactly on that anchor
+  # (beside the name, see faction-gap); balance-drop is how far BELOW it the money line sits, which needs
+  # to clear the below-name health line too.
+  anchor-lift: 0.5
+  balance-drop: 0.46
   # How often the lines are repositioned. They follow by teleport rather than riding the player, because
   # a mounted passenger suppresses the player's entire vanilla nametag block.
   follow-ticks: 2
