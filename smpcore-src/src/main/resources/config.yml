@@ -161,6 +161,18 @@ bounties:
     base-amount: 5000
     treasury-percent-cap: 0.02
 
+trade-tax:
+  # Applies Ashfall's transaction tax to completed AxTrade direct trades. Requires AxTrade; if it is not
+  # installed (or its API changes) this silently does nothing and trades are unaffected.
+  enabled: true
+  # Defaults to the auction sale tax if unset.
+  percent: 5.0
+  # Charged on XP moved through a trade: $10 per 100 XP.
+  money-per-100-xp: 10
+  # AxTrade currency hook names to read. Adjust if your AxTrade uses different keys.
+  money-currency: money
+  xp-currency: exp
+
 auctions:
   listing-fee-percent: 3.0
   sale-tax-percent: 5.0
