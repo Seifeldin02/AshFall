@@ -49,18 +49,53 @@ final class NametagService implements Listener {
     private final Map<UUID,String> lastFactionText=new HashMap<>();
     private BukkitTask task;
 
+    private BukkitTask followTask;
     NametagService(SMPCore plugin){
         this.plugin=plugin;
         long period=Math.max(20,plugin.getConfig().getLong("nametags.refresh-ticks",40));
         task=plugin.getServer().getScheduler().runTaskTimer(plugin,this::tick,period,period);
+        /** Positioning runs on its own fast task. The displays are NOT mounted on the player: riding a
+         *  player suppresses their whole vanilla nametag block (name and the below-name health line
+         *  together), which is why both vanished. Following by teleport keeps the player's own tag
+         *  completely untouched, which was the requirement all along. */
+        long follow=Math.max(1,plugin.getConfig().getLong("nametags.follow-ticks",2));
+        followTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::follow,follow,follow);
+        plugin.getServer().getScheduler().runTaskLater(plugin,this::purgeLegacyPrefixTeams,40L);
+    }
+    private void follow(){
+        double balanceOffset=plugin.getConfig().getDouble("nametags.balance-offset",2.35);
+        double factionOffset=plugin.getConfig().getDouble("nametags.faction-offset",2.80);
+        for(Player target:plugin.getServer().getOnlinePlayers()){
+            reposition(balanceDisplays.get(target.getUniqueId()),target,balanceOffset);
+            reposition(factionDisplays.get(target.getUniqueId()),target,factionOffset);
+        }
+    }
+    private void reposition(UUID id,Player target,double offset){
+        TextDisplay display=resolve(id);
+        if(display==null)return;
+        Location want=target.getLocation().clone().add(0,offset,0);
+        want.setYaw(0);want.setPitch(0);
+        if(!display.getWorld().equals(want.getWorld())||display.getLocation().distanceSquared(want)>0.0004)display.teleport(want);
     }
     void shutdown(){
-        if(task!=null)task.cancel();
+        if(task!=null)task.cancel();if(followTask!=null)followTask.cancel();
         for(UUID id:balanceDisplays.values())removeDisplay(id);
         for(UUID id:factionDisplays.values())removeDisplay(id);
         balanceDisplays.clear();lastBalanceText.clear();factionDisplays.clear();lastFactionText.clear();
     }
     @EventHandler public void quit(PlayerQuitEvent event){clearFor(event.getPlayer().getUniqueId());}
+    /** Removes any leftover "aft*" scoreboard teams from the reverted prefix experiment. Those teams live
+     *  on a viewer's scoreboard for as long as their session lasts, so anyone who never reconnected after
+     *  the revert would still see the prefix decorating names in chat. Cheap, idempotent, and a no-op once
+     *  no stale teams remain. */
+    void purgeLegacyPrefixTeams(){
+        for(Player viewer:plugin.getServer().getOnlinePlayers()){
+            try{
+                for(org.bukkit.scoreboard.Team team:new java.util.ArrayList<>(viewer.getScoreboard().getTeams()))
+                    if(team.getName().startsWith("aft"))team.unregister();
+            }catch(Throwable ignored){}
+        }
+    }
     /** Death ejects passengers, so the display is dropped rather than left stranded; the next refresh
      *  rebuilds it on the respawned player. */
     @EventHandler public void death(PlayerDeathEvent event){
@@ -74,6 +109,7 @@ final class NametagService implements Listener {
     }
 
     private void tick(){
+        purgeLegacyPrefixTeams();
         boolean anyBalance=false,anyFaction=false;
         for(Player viewer:plugin.getServer().getOnlinePlayers()){
             if(plugin.settings().showBalanceNametags(viewer))anyBalance=true;
@@ -89,7 +125,7 @@ final class NametagService implements Listener {
                 /** Re-verify ownership every pass: if it was ejected (death, dismount, teleport oddity) it is
                  *  re-mounted, so it can never drift onto a grave or any other entity. */
                 if(display==null){display=spawnBalance(target);balanceDisplays.put(id,display.getUniqueId());}
-                else if(!target.equals(display.getVehicle()))target.addPassenger(display);
+
                 String text=compact(plugin.db().player(CoreUtil.id(target)).balance());
                 if(!text.equals(lastBalanceText.get(id))){
                     lastBalanceText.put(id,text);
@@ -128,20 +164,20 @@ final class NametagService implements Listener {
         Database.FactionRow faction=eligible?plugin.db().factionOf(CoreUtil.id(target)):null;
         if(faction==null){removeDisplay(factionDisplays.remove(id));lastFactionText.remove(id);return;}
         TextDisplay display=resolve(factionDisplays.get(id));
-        if(display==null){display=spawnLine(target,(float)plugin.getConfig().getDouble("nametags.faction-offset",.60));factionDisplays.put(id,display.getUniqueId());}
-        else if(!target.equals(display.getVehicle()))target.addPassenger(display);
+        if(display==null){display=spawnLine(target,(float)plugin.getConfig().getDouble("nametags.faction-offset",2.80));factionDisplays.put(id,display.getUniqueId());}
+
         String text="["+faction.tag()+"]";
         if(text.equals(lastFactionText.get(id)))return;
         lastFactionText.put(id,text);
-        display.text(Component.text(text,NamedTextColor.BLUE));
+        display.text(Component.text(text,factionColor()));
     }
     /** Mounted on its owner and nothing else. Scale and offset are configurable because how tightly this
      *  sits under the vanilla name depends on whether the below-name health line is also enabled. */
     private TextDisplay spawnBalance(Player target){
-        return spawnLine(target,(float)plugin.getConfig().getDouble("nametags.balance-offset",.32));
+        return spawnLine(target,(float)plugin.getConfig().getDouble("nametags.balance-offset",2.35));
     }
     private TextDisplay spawnLine(Player target,float offset){
-        Location at=target.getLocation();
+        Location at=target.getLocation().clone().add(0,offset,0);
         float scale=(float)plugin.getConfig().getDouble("nametags.scale",1.15);
         TextDisplay display=at.getWorld().spawn(at,TextDisplay.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,d->{
             d.setPersistent(false);d.setInvulnerable(true);d.setGravity(false);
@@ -149,11 +185,16 @@ final class NametagService implements Listener {
             d.setShadowed(true);d.setSeeThrough(false);
             d.setViewRange((float)plugin.getConfig().getDouble("nametags.view-range",1.0));
             d.setBackgroundColor(Color.fromARGB(0,0,0,0));
-            d.setTransformation(new Transformation(new Vector3f(0,offset,0),new AxisAngle4f(),new Vector3f(scale,scale,scale),new AxisAngle4f()));
+            d.setTransformation(new Transformation(new Vector3f(),new AxisAngle4f(),new Vector3f(scale,scale,scale),new AxisAngle4f()));
             d.setVisibleByDefault(false);
         });
-        target.addPassenger(display);
         return display;
+    }
+    /** Configurable so the tag can be kept in step with whatever accent the rest of the UI settles on. */
+    private NamedTextColor factionColor(){
+        String name=plugin.getConfig().getString("nametags.faction-color","AQUA");
+        NamedTextColor color=NamedTextColor.NAMES.value(name.toLowerCase(java.util.Locale.ROOT));
+        return color==null?NamedTextColor.AQUA:color;
     }
     private TextDisplay resolve(UUID id){
         if(id==null)return null;
