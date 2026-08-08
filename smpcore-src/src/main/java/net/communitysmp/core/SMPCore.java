@@ -116,6 +116,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             bulletin.purge(sender);
             return true;
         }
+        if(args[0].equalsIgnoreCase("bossscan")){
+            bosses.scanOrphanBosses(sender,args.length>1&&args[1].equalsIgnoreCase("clean"));
+            return true;
+        }
         /** Forensic-only: opens its OWN separate, read-only JDBC connection to an arbitrary sqlite file
          *  path (never the live plugin database connection, and never anything but SELECT) and dumps every
          *  ender_chest_items row for one player, across every page number that exists in that file (not

@@ -51,6 +51,12 @@ final class BossEventService {
     private final Map<UUID, Long> lastNearbyAt = new HashMap<>(), specialAbilityAt = new HashMap<>(), exposedUntil = new HashMap<>();
     private final Set<UUID> enraged = new HashSet<>();
     private final Map<UUID, Integer> enrageStageApplied = new HashMap<>();
+    /** When a player first actually damaged this boss — the basis for soft-enrage timing (see
+     *  worldBossSoftEnrage), replacing spawn time so enrage tracks fight duration rather than boss age. */
+    private final Map<UUID, Long> bossFirstEngagedAt = new HashMap<>();
+    /** Last moment an eligible player was within despawn range of this elite. Elites expire on continuous
+     *  abandonment (see expireElite), not on absolute age, so this resets whenever someone is around. */
+    private final Map<UUID, Long> eliteLastPlayerNear = new HashMap<>();
     private final Map<UUID, String> lastTarget = new HashMap<>();
     private final Map<UUID, Integer> rangedHits = new HashMap<>();
     private final Map<UUID, BossBar> healthBars = new HashMap<>();
@@ -183,6 +189,36 @@ final class BossEventService {
             return null;
         }
         broadcastWorldEvent("⚔ WORLD EVENT", awakenLine(kind), "Track the event for distance and direction. Last seen in a " + CoreUtil.pretty(loc.getBlock().getBiome().getKey().getKey()) + " biome.", "Full enchanted Diamond gear + potions recommended."); return boss;
+    }
+    /** Finds world-boss entities that are no longer the tracked encounter — leftovers from a spawn whose
+     *  reveal failed, a crash mid-fight, or a chunk that came back after the event had already been cleared.
+     *  They are easy to miss precisely because a failed reveal leaves them invisible and invulnerable, yet
+     *  they persist forever (setRemoveWhenFarAway(false)) and can keep driving mechanics. Reports by default
+     *  and only deletes when explicitly asked, so an in-progress fight is never destroyed by a diagnostic. */
+    int scanOrphanBosses(CommandSender sender,boolean clean){
+        int found=0,removed=0;
+        for(World world:plugin.getServer().getWorlds())for(Entity entity:world.getEntities()){
+            if(!(entity instanceof LivingEntity living))continue;
+            String tier=living.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);
+            if(!isWorldBossTier(tier))continue;
+            boolean tracked=living.getUniqueId().equals(worldBossId);
+            if(tracked)continue;
+            found++;
+            String detail="#"+living.getUniqueId()+" "+living.getType()+" tier="+tier+" at "+world.getName()+" "+living.getLocation().getBlockX()+","+living.getLocation().getBlockY()+","+living.getLocation().getBlockZ()
+                    +(living.isInvisible()?" [invisible]":"")+(living.isInvulnerable()?" [invulnerable]":"");
+            if(clean){
+                UUID id=living.getUniqueId();
+                living.remove();
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
+                removed++;
+                CoreUtil.msg(sender,"  removed "+detail);
+            }else CoreUtil.msg(sender,"  orphan "+detail);
+        }
+        CoreUtil.msg(sender,"Orphan world-boss scan: "+found+" untracked boss entity/entities across "+plugin.getServer().getWorlds().size()+" loaded world(s)"
+                +(clean?", "+removed+" removed.":". Re-run with 'clean' to remove them.")
+                +(worldBossId==null?" No world boss is currently tracked.":" Currently tracked boss "+worldBossId+" was left untouched."));
+        return clean?removed:found;
     }
     private WorldBossKind randomWorldBossKind(){WorldBossKind[] all=WorldBossKind.values();return all[ThreadLocalRandom.current().nextInt(all.length)];}
     private LivingEntity spawnBossEntity(World world,Location loc,WorldBossKind kind){
@@ -344,7 +380,7 @@ final class BossEventService {
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
 
     void onDeath(EntityDeathEvent e) {
-        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
+        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
         if (tier != null) { rewardElite(e, killer, tier); return; }
         if(isVanillaBoss(mob)){rewardVanillaBoss(e,mob,killer);return;}if(mob instanceof Warden)rewardWardenShards(mob,killer);if (killer == null) return;
         double penalty = friendlyPenalty(mob); if (penalty > 0) { double charged = db.takeUpTo(CoreUtil.id(killer), penalty); if(charged>0){plugin.bank().creditSink(charged,CoreUtil.id(killer),"FRIENDLY_"+mob.getType().name());db.recordEconomy(CoreUtil.id(killer),"FRIENDLY_PENALTY",-charged,mob.getType().name());killer.sendActionBar(Component.text("-" + CoreUtil.money(charged) + " " + CoreUtil.pretty(mob.getType().name()), NamedTextColor.RED));} return; } if (spawner) return;
@@ -622,7 +658,23 @@ final class BossEventService {
             viewer.spawnParticle(particle,location,Math.max(1,(int)Math.round(baseCount*scale)),offsetX,offsetY,offsetZ,extra);
         }
     }
-    private boolean expireElite(LivingEntity mob,String tier){if(tier==null||isWorldBossTier(tier))return false;PersistentDataContainer pdc=mob.getPersistentDataContainer();long now=System.currentTimeMillis(),spawned=pdc.getOrDefault(eliteSpawnedAtKey,PersistentDataType.LONG,now);if(!pdc.has(eliteSpawnedAtKey,PersistentDataType.LONG))pdc.set(eliteSpawnedAtKey,PersistentDataType.LONG,spawned);long fallback=switch(tier){case"legendary"->120;case"epic"->75;case"miniboss"->60;case"rare"->45;default->30;};long lifetime=Math.max(1,bosses.getLong("tiers."+tier+".despawn-minutes",fallback))*60000L;if(now-spawned<lifetime)return false;long grace=Math.max(30,bosses.getLong("elite-despawn.combat-grace-seconds",120))*1000L;if(now-lastEngaged.getOrDefault(mob.getUniqueId(),0L)<grace)return false;double radius=Math.max(16,bosses.getDouble("elite-despawn.nearby-player-radius",32)),radiusSq=radius*radius;for(Player player:plugin.getServer().getOnlinePlayers())if(player.getWorld().equals(mob.getWorld())&&player.getLocation().distanceSquared(mob.getLocation())<=radiusSq)return false;UUID id=mob.getUniqueId();mob.getWorld().spawnParticle(Particle.SMOKE,mob.getLocation().add(0,1,0),20,.5,.7,.5,.02);mob.remove();damage.remove(id);lastContribution.remove(id);abilityCooldown.remove(id);catchupCooldown.remove(id);lastEngaged.remove(id);healCooldown.remove(id);bossMechanicAt.remove(id);lastTarget.remove(id);rangedHits.remove(id);removeHealthBar(id);return true;}
+    private boolean expireElite(LivingEntity mob,String tier){if(tier==null||isWorldBossTier(tier))return false;PersistentDataContainer pdc=mob.getPersistentDataContainer();long now=System.currentTimeMillis(),spawned=pdc.getOrDefault(eliteSpawnedAtKey,PersistentDataType.LONG,now);if(!pdc.has(eliteSpawnedAtKey,PersistentDataType.LONG))pdc.set(eliteSpawnedAtKey,PersistentDataType.LONG,spawned);long fallback=switch(tier){case"legendary"->120;case"epic"->75;case"miniboss"->60;case"rare"->45;default->30;};long lifetime=Math.max(1,bosses.getLong("tiers."+tier+".despawn-minutes",fallback))*60000L;long grace=Math.max(30,bosses.getLong("elite-despawn.combat-grace-seconds",120))*1000L;if(now-lastEngaged.getOrDefault(mob.getUniqueId(),0L)<grace)return false;double radius=Math.max(16,bosses.getDouble("elite-despawn.nearby-player-radius",32)),radiusSq=radius*radius;
+        /** Expiry is driven by CONTINUOUS ABANDONMENT, not absolute age. The old order — "older than the tier
+         *  lifetime?" first, then "is anyone within 32 blocks right now?" — meant a long-lived Epic/Legendary
+         *  vanished the instant the last player stepped out of range, which is why they appeared to disappear
+         *  just for briefly leaving the area. Now any eligible player nearby continuously refreshes the timer,
+         *  and the elite only expires after elite-despawn.abandoned-minutes of nobody being around at all.
+         *  Hostile-Mobs-Off removal is deliberately untouched by this and still runs through its own separate
+         *  sweep (SettingsService.removableHostile), so an unwanted elite still disappears normally there. */
+        UUID id=mob.getUniqueId();
+        boolean anyoneNear=false;
+        for(Player player:plugin.getServer().getOnlinePlayers())
+            if(player.getGameMode()!=GameMode.SPECTATOR&&player.getWorld().equals(mob.getWorld())&&player.getLocation().distanceSquared(mob.getLocation())<=radiusSq){anyoneNear=true;break;}
+        if(anyoneNear){eliteLastPlayerNear.put(id,now);return false;}
+        long abandonedSince=eliteLastPlayerNear.computeIfAbsent(id,key->Math.max(spawned,now-lifetime));
+        long abandonWindow=Math.max(1,bosses.getLong("elite-despawn.abandoned-minutes",30))*60000L;
+        if(now-abandonedSince<abandonWindow)return false;
+        eliteLastPlayerNear.remove(id);mob.getWorld().spawnParticle(Particle.SMOKE,mob.getLocation().add(0,1,0),20,.5,.7,.5,.02);mob.remove();damage.remove(id);lastContribution.remove(id);abilityCooldown.remove(id);catchupCooldown.remove(id);lastEngaged.remove(id);healCooldown.remove(id);bossMechanicAt.remove(id);lastTarget.remove(id);rangedHits.remove(id);removeHealthBar(id);return true;}
     private void scaleWorldBoss(LivingEntity boss){long now=System.currentTimeMillis(),window=bosses.getLong("world-boss.active-seconds",60)*1000L;double radiusSq=Math.pow(bosses.getDouble("world-boss.active-radius",50),2);Map<String,Long> hits=lastContribution.getOrDefault(boss.getUniqueId(),Map.of());int active=0;for(var entry:hits.entrySet()){Player player=find(entry.getKey());if(player!=null&&player.getWorld().equals(boss.getWorld())&&now-entry.getValue()<=window&&player.getLocation().distanceSquared(boss.getLocation())<=radiusSq)active++;}active=Math.max(1,active);if(active==worldBossActiveCount)return;double oldMax=Math.max(1,boss.getAttribute(Attribute.MAX_HEALTH).getValue()),percent=Math.max(0.0001,boss.getHealth()/oldMax),base=worldBossBaseHealth>0?worldBossBaseHealth:bosses.getDouble("world-boss.health",18000),newMax=clampHealth(base*healthMultiplier(active));boss.getAttribute(Attribute.MAX_HEALTH).setBaseValue(newMax);boss.setHealth(Math.max(1,Math.min(newMax,newMax*percent)));worldBossActiveCount=active;persistWorldBoss();}
     /** No player nearby for 60+ continuous seconds → slow trickle of health back, instead of the fight
      *  resetting to full the moment someone disengages. Deliberately gentle (a full recovery from empty takes
@@ -661,7 +713,22 @@ final class BossEventService {
      *  one-shot machine. A fight finishing on time never triggers this at all. */
     private void worldBossSoftEnrage(LivingEntity boss,WorldBossKind kind){
         if(boss.getAttribute(Attribute.ATTACK_DAMAGE)==null)return;
-        double elapsedMinutes=(System.currentTimeMillis()-bossSpawnedAt)/60000.0,afterMinutes=bosses.getDouble("world-boss-enrage.after-minutes",14);
+        /** Enrage is an anti-stall measure for a fight that is DRAGGING ON, so it has to be measured from
+         *  when the fight actually started, not from when the boss spawned. Keyed off spawn time it would
+         *  (and did) fire on a boss no one had even found yet — including one that failed to reveal at all —
+         *  broadcasting "grows restless" to the whole server with no fight in progress. A boss that has never
+         *  been damaged now never enrages, and the ramp freezes if nobody has hit it for a while, so walking
+         *  away and coming back later doesn't hand the boss free permanent damage stages. */
+        UUID bossId=boss.getUniqueId();
+        Long lastHit=lastEngaged.get(bossId);
+        if(lastHit==null){
+            if(enrageStageApplied.getOrDefault(bossId,0)!=0){enrageStageApplied.put(bossId,0);boss.getAttribute(Attribute.ATTACK_DAMAGE).setBaseValue(bosses.getDouble(configPrefix(kind)+".damage",18));}
+            return;
+        }
+        bossFirstEngagedAt.putIfAbsent(bossId,lastHit);
+        long stallMillis=Math.max(15,bosses.getLong("world-boss-enrage.combat-idle-freeze-seconds",120))*1000L;
+        if(System.currentTimeMillis()-lastHit>stallMillis)return;
+        double elapsedMinutes=(System.currentTimeMillis()-bossFirstEngagedAt.get(bossId))/60000.0,afterMinutes=bosses.getDouble("world-boss-enrage.after-minutes",14);
         int stage=0;
         if(elapsedMinutes>=afterMinutes){
             double rampMinutes=Math.max(.5,bosses.getDouble("world-boss-enrage.ramp-interval-minutes",2));
@@ -938,8 +1005,24 @@ final class BossEventService {
             Entity live=plugin.getServer().getEntity(id);
             if(!(live instanceof LivingEntity boss2)||!live.isValid()){
                 if(attempt<15){revealWorldBoss(id,center,kind,particle,world,chunkX,chunkZ,20L,attempt+1);return;}
-                plugin.getLogger().warning("World boss "+id+" could not be revealed after summoning — its chunk never became resolvable.");
+                /** Previously this only warned and released the chunk, which left the worst possible state
+                 *  behind: the entity keeps the invisible/invulnerable/no-AI/silent flags it was spawned with
+                 *  (those are only cleared on a SUCCESSFUL reveal), while worldBossId and the WORLD_BOSS event
+                 *  both stay set. The result is an invisible, unkillable boss nobody can fight, blocking every
+                 *  new event for the full event duration, and — because soft-enrage used to run purely off
+                 *  spawn time — still broadcasting "grows restless" warnings server-wide for a fight that was
+                 *  never happening. That is exactly the phantom Cinder Warlord enrage seen with no boss active.
+                 *  Tear the whole thing down instead of leaving it half-born. */
+                plugin.getLogger().warning("World boss "+id+" could not be revealed after summoning — its chunk never became resolvable; cleaning it up rather than leaving a hidden, unfightable boss and a stuck event.");
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
+                Entity stuck=plugin.getServer().getEntity(id);
+                if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
+                if(id.equals(worldBossId)){
+                    worldBossId=null;
+                    if(eventType==EventType.WORLD_BOSS)finishEvent(false);
+                }
                 return;
             }
             boss2.setInvisible(false);boss2.setInvulnerable(false);boss2.setAI(true);boss2.setSilent(false);
@@ -972,7 +1055,7 @@ final class BossEventService {
      *  /ashfall boss despawn. */
     boolean despawnWorldBoss(){
         LivingEntity boss=worldBoss();if(boss==null)return false;
-        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
+        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
         if(eventType==EventType.WORLD_BOSS||eventType==EventType.HUNT)finishEvent(false);
         broadcastNotice(Component.text("⚔ The world boss was despawned by an administrator.",NamedTextColor.DARK_GRAY));
         return true;
@@ -982,7 +1065,7 @@ final class BossEventService {
     boolean forceStopEvent(){
         if(eventType==null&&worldBoss()==null)return false;
         LivingEntity boss=worldBoss();
-        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
+        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
         if(eventType!=null)finishEvent(false);
         return true;
     }
@@ -997,7 +1080,7 @@ final class BossEventService {
              *  worldBossId is being cleared, whether or not the entity itself is still resolvable. */
             if (worldBossId != null) {
                 eliteIds.remove(worldBossId); damage.remove(worldBossId); lastContribution.remove(worldBossId); removeHealthBar(worldBossId);
-                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId); bossMechanicAt.remove(worldBossId);
+                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId); bossMechanicAt.remove(worldBossId);
                 db.deleteBossState(worldBossId.toString());
             }
             if (boss != null) {

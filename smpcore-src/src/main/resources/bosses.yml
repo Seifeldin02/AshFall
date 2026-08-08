@@ -49,6 +49,11 @@ tiers:
 elite-despawn:
   combat-grace-seconds: 120
   nearby-player-radius: 32
+  # Continuous minutes with NO eligible player inside nearby-player-radius before an elite expires.
+  # This is an abandonment timer, not an age limit: anyone coming within range resets it, so an
+  # Epic/Legendary no longer vanishes just because everybody briefly stepped away. Hostile-Mobs-Off
+  # removal is separate and still takes effect immediately through its own sweep.
+  abandoned-minutes: 30
 
 capsule-drops:
   legendary:
@@ -158,10 +163,15 @@ piglin-brute-boss:
   second-hint-minutes: 20
 
 world-boss-enrage:
+  # Measured from the first time a player actually damages the boss, NOT from when it spawned -- a boss
+  # nobody has engaged never enrages and never announces anything.
   after-minutes: 14
   ramp-interval-minutes: 2
   damage-bonus-per-stage: 0.08
   max-stages: 5
+  # If nobody has landed a hit for this long the ramp freezes, so disengaging and returning later can't
+  # hand the boss free permanent damage stages.
+  combat-idle-freeze-seconds: 120
 
 legendary-sigil-drop-chance: 0.08
 
