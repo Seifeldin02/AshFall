@@ -386,6 +386,7 @@ final class SettingsService implements Listener {
         if("sidebar".equals(key)){if(enabled)plugin.ui().update(player);else plugin.ui().removeSidebar(player);}
         if("night_vision".equals(key)){if(enabled)applyNightVision(player);else removeNightVision(player);}
         if("natural_spawns".equals(key)&&!enabled)peacefulFor(player);
+        if(key.startsWith("nametag_"))plugin.packetNametags().viewerSettingChanged(player);
         CoreUtil.msg(player,displayKey(key)+" "+(enabled?"enabled":"disabled")+".");
     }
     private void cycleParticles(Player player){

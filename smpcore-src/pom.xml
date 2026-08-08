@@ -28,6 +28,12 @@
             <artifactId>packetevents-spigot</artifactId>
             <version>2.13.0</version>
             <scope>provided</scope>
+            <!-- PacketEvents ships its own older Adventure. On the compile classpath it shadows the newer
+                 copy Paper provides and breaks unrelated classes using current Adventure APIs, so it is
+                 excluded here. At runtime Paper's Adventure is the one actually present. -->
+            <exclusions>
+                <exclusion><groupId>net.kyori</groupId><artifactId>*</artifactId></exclusion>
+            </exclusions>
         </dependency>
     <dependency>
       <groupId>io.papermc.paper</groupId>
