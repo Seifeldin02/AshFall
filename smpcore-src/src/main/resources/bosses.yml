@@ -175,23 +175,38 @@ world-boss-targeting:
   lose-target-seconds: 3
 
 world-boss-unreachable:
-  # If an ENGAGED player cannot be pathed to for this long, the boss digs itself out (sideways/upward
-  # only, never downward, never through protected or permanent blocks) and, failing that, leaps at them.
+  # Seconds an ENGAGED target must be genuinely unpathable before the boss acts.
   seconds: 3
-  # Blocks cleared per breakout attempt, and the horizontal/vertical reach of that clearing.
-  max-blocks: 10
-  radius: 2
-  height: 3
-  # Controlled leap used against players camped above the boss. Height is derived from the actual
-  # vertical gap, so a tower of any height is reachable; these only bound the arc.
-  leap-horizontal: 0.9
-  leap-min-vertical: 0.8
-  # 0 = no ceiling: the impulse is solved from the real height gap, so a tower of any height is reachable.
-  leap-max-vertical: 0
-  # Ticks the upward impulse is re-applied while still ascending. Without this the mob's own pathfinding
-  # overwrites the launch velocity on the next tick and the leap collapses into a hop.
-  leap-sustain-ticks: 6
-  leap-cooldown-seconds: 4
+  # A path counts as reaching the target only if it ENDS within this distance of them. Without this,
+  # Pathfinder returns a partial path to the nearest reachable point and the boss thinks a player on a
+  # 30-block pillar is reachable, which is why the anti-cheese never fired.
+  path-tolerance: 3
+  action-cooldown-seconds: 2
+  # Safety ceiling on blocks removed per pulse across the whole operation.
+  max-blocks: 250
+  # Default demolition box around/above the boss (radius 2 = 5x5). Never digs below itself, and never
+  # touches bedrock, portals, other permanent blocks, spawn, or claims.
+  clear-radius: 2
+  clear-height: 4
+  # Per-boss footprints. The Colossus is the demolition specialist: widest and tallest reach. The Warlord
+  # is middling and closes with a lunge. The Knight is the most surgical but has the strongest downward
+  # grasp, which suits a caster-flavoured skeleton over brute force.
+  iron-golem-boss:
+    clear-radius: 3
+    clear-height: 6
+  piglin-brute-boss:
+    clear-radius: 2
+    clear-height: 5
+  world-boss:
+    clear-radius: 2
+    clear-height: 4
+  # Height camping: how far horizontally a camper can be and still be considered "above" the boss.
+  pillar-horizontal: 14
+  # The disc of blocks removed from under a high camper each pulse (radius 2 = 5x5), and how deep.
+  collapse-radius: 2
+  collapse-depth: 3
+  # Downward tug applied so they actually come off the perch. Cap only -- deals no damage itself.
+  pull-max: 1.1
 
 world-boss-swim:
   # Direct steering speed used while submerged. Land pathfinding cannot follow a route through open water,

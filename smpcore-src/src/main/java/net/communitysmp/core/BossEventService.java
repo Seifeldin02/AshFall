@@ -87,7 +87,7 @@ final class BossEventService {
     private final Map<String, Double> eventEarnings = new HashMap<>();
     private UUID worldBossId; private long bossSpawnedAt, nextHintAt; private int hintStage,worldBossActiveCount=1;private double worldBossBaseHealth;private Origin worldBossOrigin=Origin.NATURAL;private WorldBossKind worldBossKind=WorldBossKind.ASHEN_KNIGHT;
     private World forcedBossWorld;private int forcedBossChunkX,forcedBossChunkZ;private boolean forcedBossChunkSet;
-    private BukkitTask ticker, visuals;
+    private BukkitTask ticker, visuals, motionTask;
 
     BossEventService(SMPCore plugin, FactionService factions, RelicService relics) {
         this.plugin = plugin; this.db = plugin.db(); this.factions = factions; this.relics = relics;
@@ -167,7 +167,7 @@ final class BossEventService {
         if(nearest!=null){mob.setTarget(nearest);bossTargetSince.put(id,now);}
         else if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);}
     }
-    void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
+    void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); if (motionTask != null) motionTask.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
 
     void onSpawn(CreatureSpawnEvent e) {
         LivingEntity mob = e.getEntity(); String reason = e.getSpawnReason().name();
@@ -756,6 +756,7 @@ final class BossEventService {
         lastEventTimerTick=now;lastTimerPersist=now;
         ticker=plugin.getServer().getScheduler().runTaskTimer(plugin,this::tick,100L,100L);
         visuals=plugin.getServer().getScheduler().runTaskTimer(plugin,this::visualTick,20L,20L);
+        motionTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::bossMotionTick,20L,2L);
     }
     private void tick() {
         long now=System.currentTimeMillis();persistWorldBoss();tickHints(now);tickEventTimers(now);refreshSummonScrollLore();
@@ -788,7 +789,7 @@ final class BossEventService {
     private int onlineFactionCount(){Set<Long> ids=new HashSet<>();for(Player player:plugin.getServer().getOnlinePlayers()){if(player.getGameMode()==GameMode.SPECTATOR)continue;Database.FactionRow faction=db.factionOf(CoreUtil.id(player));if(faction!=null)ids.add(faction.id());}return ids.size();}
     private long randomRemaining(EventTier tier){String path="tiers."+tier.name().toLowerCase(Locale.ROOT);long fallbackMin=tier==EventTier.MICRO?1:tier==EventTier.MAJOR?12:72,fallbackMax=tier==EventTier.MICRO?4:tier==EventTier.MAJOR?36:120;long min=Math.max(1,events.getLong(path+".interval-active-hours-min",fallbackMin)),max=Math.max(min,events.getLong(path+".interval-active-hours-max",fallbackMax));return ThreadLocalRandom.current().nextLong(min*3600000L,max*3600000L+1);}
     private void persistEventTimers(){for(EventTier tier:EventTier.values()){String suffix=tier.name().toLowerCase(Locale.ROOT);db.state("event_remaining_"+suffix,Long.toString(eventRemaining.getOrDefault(tier,randomRemaining(tier))));EventType type=scheduledEvents.get(tier);if(type!=null)db.state("event_scheduled_"+suffix,type.name());}}
-    private void visualTick() {eliteIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity mob)||!mob.isValid()){removeHealthBar(id);return true;}String tier=mob.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);if(expireElite(mob,tier))return true;mob.setGlowing(true);String ability=mob.getPersistentDataContainer().get(abilityKey,PersistentDataType.STRING);Particle particle="FLAMEBOUND".equals(ability)||"VOLATILE".equals(ability)||"INFERNAL_RIFT".equals(ability)||"CINDERLORD".equals(ability)?Particle.FLAME:"STORMCALLER".equals(ability)||"FROSTBITE".equals(ability)?Particle.ELECTRIC_SPARK:"VAMPIRIC".equals(ability)||"VENOMOUS".equals(ability)?Particle.DAMAGE_INDICATOR:"PHASEWALKER".equals(ability)||"VOID_TETHER".equals(ability)?Particle.PORTAL:"COLOSSAL".equals(ability)?Particle.CRIT:Particle.ENCHANT;if(isWorldBossTier(tier)){WorldBossKind kind=kindFromTier(tier);scaleWorldBoss(mob);worldBossMechanic(mob,kind);worldBossRegen(mob,kind);worldBossSoftEnrage(mob,kind);worldBossElementTick(mob,kind);worldBossTargetTick(mob);worldBossSwimTick(mob,kind);worldBossUnreachableTick(mob,tier);trackBossChunk(mob.getLocation());}else if("epic".equals(tier)||"legendary".equals(tier))eliteMechanic(mob,tier);int count=isWorldBossTier(tier)?14:"legendary".equals(tier)?12:"epic".equals(tier)||"miniboss".equals(tier)?8:"rare".equals(tier)?5:3;settingsParticle(mob.getLocation().add(0,1,0),particle,count,.5,.7,.5,.01);updateHealthBar(mob,tier);antiCheeseTick(mob,tier);return false;});sharedBossIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity boss)||!boss.isValid()){damage.remove(id);lastContribution.remove(id);return true;}if(!isWorldBossTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))scaleSharedBoss(boss);return false;});}
+    private void visualTick() {eliteIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity mob)||!mob.isValid()){removeHealthBar(id);return true;}String tier=mob.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);if(expireElite(mob,tier))return true;mob.setGlowing(true);String ability=mob.getPersistentDataContainer().get(abilityKey,PersistentDataType.STRING);Particle particle="FLAMEBOUND".equals(ability)||"VOLATILE".equals(ability)||"INFERNAL_RIFT".equals(ability)||"CINDERLORD".equals(ability)?Particle.FLAME:"STORMCALLER".equals(ability)||"FROSTBITE".equals(ability)?Particle.ELECTRIC_SPARK:"VAMPIRIC".equals(ability)||"VENOMOUS".equals(ability)?Particle.DAMAGE_INDICATOR:"PHASEWALKER".equals(ability)||"VOID_TETHER".equals(ability)?Particle.PORTAL:"COLOSSAL".equals(ability)?Particle.CRIT:Particle.ENCHANT;if(isWorldBossTier(tier)){WorldBossKind kind=kindFromTier(tier);scaleWorldBoss(mob);worldBossMechanic(mob,kind);worldBossRegen(mob,kind);worldBossSoftEnrage(mob,kind);worldBossElementTick(mob,kind);worldBossTargetTick(mob);if(mob instanceof Mob navMob)worldBossSwimAssist(navMob);worldBossUnreachableTick(mob,tier);trackBossChunk(mob.getLocation());}else if("epic".equals(tier)||"legendary".equals(tier))eliteMechanic(mob,tier);int count=isWorldBossTier(tier)?14:"legendary".equals(tier)?12:"epic".equals(tier)||"miniboss".equals(tier)?8:"rare".equals(tier)?5:3;settingsParticle(mob.getLocation().add(0,1,0),particle,count,.5,.7,.5,.01);updateHealthBar(mob,tier);antiCheeseTick(mob,tier);return false;});sharedBossIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity boss)||!boss.isValid()){damage.remove(id);lastContribution.remove(id);return true;}if(!isWorldBossTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))scaleSharedBoss(boss);return false;});}
     private void settingsParticle(Location location,Particle particle,int baseCount,double offsetX,double offsetY,double offsetZ,double extra){
         if(location.getWorld()==null)return;
         for(Player viewer:location.getWorld().getPlayers()){
@@ -839,73 +840,65 @@ final class BossEventService {
      *  antiCheeseTick's "engaged" tracking (unlike the Piglin Brute lava-speed hack below) — the buff applies
      *  purely off the boss's own physical state, refreshed every visualTick (~1s) pass with a duration a
      *  little longer than that interval so a moment of tick jitter never lets it lapse early. */
-    /** Anti-trap / anti-height-cheese, replacing the removed catch-up teleport. A boss that has an engaged
-     *  target it genuinely cannot path to for world-boss-unreachable.seconds first tries to free ITSELF —
-     *  clearing obstructing blocks beside and above its own body only, never beneath it (digging down would
-     *  bury it and could drop it into the void) and never through protected, permanent or special blocks.
-     *  If it is still stuck and the target is above it, it makes a single controlled leap whose vertical
-     *  impulse is derived from the real height gap, so a pillar of any height is reachable without ever
-     *  teleporting. Both paths are cooldown-limited so this can't become a continuous terrain shredder. */
+    /** ---------------------------------------------------------------------------------------------
+     *  Boss reach system. Rewritten after live testing showed the previous version made things worse.
+     *
+     *  Three things were wrong:
+     *   1) MOTION RAN AT 1 Hz. visualTick fires once per second, and the swim assist was setting velocity
+     *      from there, so instead of swimming the boss got one shove per second and visibly twitched. All
+     *      continuous motion now runs on its own 2-tick task (bossMotionTick) and is smooth.
+     *   2) UNREACHABILITY WAS NEVER DETECTED. Pathfinder.findPath() returns a PARTIAL path to the closest
+     *      reachable point, so a non-null result is true even when the target sits on a pillar the boss
+     *      cannot possibly climb. Every anti-cheese branch was therefore dead code. Reachability is now
+     *      judged on whether the path actually ENDS near the target.
+     *   3) IT LEANED ON A LEAP. Fighting Minecraft mob physics to launch a heavy mob tens of blocks
+     *      straight up is unreliable at best, and the doubt about it was justified. The primary counter is
+     *      now deterministic and physics-independent: collapse the structure the camper stands on and drag
+     *      them down. A lunge is kept only for the Cinder Warlord, the one boss agile enough to sell it.
+     *
+     *  None of this raises damage or health -- it only addresses REACH.
+     *  --------------------------------------------------------------------------------------------- */
     private void worldBossUnreachableTick(LivingEntity boss,String tier){
         if(!(boss instanceof Mob mob))return;
         UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
         Player target=mob.getTarget() instanceof Player p?p:null;
         if(target==null||!validBossTarget(target)||!target.getWorld().equals(boss.getWorld())){bossUnreachableSince.remove(id);return;}
-        /** "Engaged" specifically — this must never fire on a boss that simply hasn't been found yet. */
         if(!lastEngaged.containsKey(id)){bossUnreachableSince.remove(id);return;}
-        boolean reachable=mob.getPathfinder().findPath(target.getLocation())!=null&&mob.hasLineOfSight(target);
-        if(reachable){bossUnreachableSince.remove(id);return;}
+        if(!bossCannotReach(mob,target)){bossUnreachableSince.remove(id);return;}
         long stuckFor=now-bossUnreachableSince.computeIfAbsent(id,key->now);
         if(stuckFor<(long)(bosses.getDouble("world-boss-unreachable.seconds",3)*1000))return;
-        if(now-bossLeapCooldown.getOrDefault(id,0L)<(long)(bosses.getDouble("world-boss-unreachable.leap-cooldown-seconds",4)*1000))return;
+        if(now-bossLeapCooldown.getOrDefault(id,0L)<(long)(bosses.getDouble("world-boss-unreachable.action-cooldown-seconds",2)*1000))return;
         bossLeapCooldown.put(id,now);
-        int cleared=clearAroundAndAbove(boss);
+        WorldBossKind kind=kindFromTier(tier);
         double dy=target.getLocation().getY()-boss.getLocation().getY();
-        if(dy>1.5)launchBossAt(boss,target,dy);
-        else if(cleared>0)boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_IRON_GOLEM_ATTACK,1.4f,.6f);
-        if(cleared>0||dy>1.5)mob.getPathfinder().moveTo(target,1.2);
+        double horizontal=Math.hypot(target.getLocation().getX()-boss.getLocation().getX(),target.getLocation().getZ()-boss.getLocation().getZ());
+        int freed=clearAroundAndAbove(boss,kind);
+        if(dy>3&&horizontal<=bosses.getDouble("world-boss-unreachable.pillar-horizontal",14))collapseUnder(boss,target,kind,dy);
+        else if(freed==0&&horizontal>2)mob.getPathfinder().moveTo(target,1.2);
     }
-    /** The leap, done properly. Two things made the first attempt useless in practice:
-     *  1) the impulse was far too small — Minecraft's ~0.08 b/tick^2 gravity with ~0.98 drag needs roughly
-     *     v = 0.098*sqrt(h) + 0.36 to clear h blocks, so a 20-block tower needs ~1.3 and a 40-block one
-     *     ~1.6, but the old formula also capped everything at 3.2 while producing ~2.2 at 20 blocks; and
-     *  2) far more importantly, a Mob's own movement/pathfinding overwrites setVelocity on the very next
-     *     tick, so most of the impulse was simply erased before it did anything.
-     *  This solves the impulse from the real gap with no artificial ceiling on how high it may go, then
-     *  re-applies the upward component for a few ticks while the boss is still rising, which is what
-     *  actually lets it clear a tall pillar instead of hopping. */
-    private void launchBossAt(LivingEntity boss,Player target,double dy){
-        double vertical=Math.max(bosses.getDouble("world-boss-unreachable.leap-min-vertical",.8),.098*Math.sqrt(Math.max(0,dy))+.36);
-        double cap=bosses.getDouble("world-boss-unreachable.leap-max-vertical",0);
-        if(cap>0)vertical=Math.min(cap,vertical);
-        Vector toward=target.getLocation().toVector().subtract(boss.getLocation().toVector()).setY(0);
-        Vector horizontal=toward.lengthSquared()>0.0001?toward.normalize().multiply(bosses.getDouble("world-boss-unreachable.leap-horizontal",.9)):new Vector();
-        final double up=vertical;
-        boss.setVelocity(horizontal.clone().setY(up));
-        boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_IRON_GOLEM_ATTACK,1.4f,.5f);
-        boss.getWorld().spawnParticle(Particle.CLOUD,boss.getLocation(),30,.5,.1,.5,.03);
-        target.sendActionBar(Component.text("It launches itself at you — height won't save you.",NamedTextColor.RED));
-        UUID id=boss.getUniqueId();
-        int sustain=Math.max(0,bosses.getInt("world-boss-unreachable.leap-sustain-ticks",6));
-        for(int t=1;t<=sustain;t++){
-            final int tick=t;
-            plugin.getServer().getScheduler().runTaskLater(plugin,()->{
-                Entity live=plugin.getServer().getEntity(id);
-                if(!(live instanceof LivingEntity flying)||!flying.isValid())return;
-                /** Only while still ascending — never turns into hovering or flight. */
-                if(flying.getVelocity().getY()<=0.01)return;
-                double decay=1.0-(tick/(double)(sustain+1));
-                flying.setVelocity(horizontal.clone().setY(Math.max(flying.getVelocity().getY(),up*decay)));
-            },t);
-        }
+    /** True only when the navigator cannot produce a path that actually ENDS at the target. Line of sight is
+     *  deliberately NOT treated as reachability -- a player on a tower is in plain view and completely
+     *  unreachable, which is exactly the case being defended against. */
+    private boolean bossCannotReach(Mob mob,Player target){
+        try{
+            var path=mob.getPathfinder().findPath(target.getLocation());
+            if(path==null)return true;
+            var end=path.getFinalPoint();
+            if(end==null)return true;
+            double tolerance=bosses.getDouble("world-boss-unreachable.path-tolerance",3);
+            return end.distanceSquared(target.getLocation())>tolerance*tolerance;
+        }catch(Throwable ignored){return false;}
     }
-    /** Clears obstructing blocks in a small box centred on the boss, from its own feet upward only.
-     *  Never touches anything at or below foot level, and reuses breakableShelterBlock() so bedrock,
-     *  portals/gateways, other permanent or special blocks, and all protected land stay untouchable. */
-    private int clearAroundAndAbove(LivingEntity boss){
-        int radius=Math.max(1,bosses.getInt("world-boss-unreachable.radius",2));
-        int height=Math.max(1,bosses.getInt("world-boss-unreachable.height",3));
-        int max=Math.max(1,bosses.getInt("world-boss-unreachable.max-blocks",10));
+    /** Per-boss demolition footprint. The old version capped the whole operation at 10 blocks, so a nominal
+     *  5x5 clear actually chewed one small notch and could be out-rebuilt -- the reported behaviour. The
+     *  entire box is now cleared, sized per boss: the Colossus is the demolition specialist and reaches
+     *  furthest, the Warlord is middling, the Knight is the most surgical. */
+    private int clearAroundAndAbove(LivingEntity boss,WorldBossKind kind){
+        int radius=bosses.getInt("world-boss-unreachable."+configPrefix(kind)+".clear-radius",
+                bosses.getInt("world-boss-unreachable.clear-radius",2));
+        int height=bosses.getInt("world-boss-unreachable."+configPrefix(kind)+".clear-height",
+                bosses.getInt("world-boss-unreachable.clear-height",4));
+        int max=bosses.getInt("world-boss-unreachable.max-blocks",250);
         Block feet=boss.getLocation().getBlock();int cleared=0;
         for(int dy=0;dy<=height&&cleared<max;dy++)
             for(int dx=-radius;dx<=radius&&cleared<max;dx++)
@@ -915,44 +908,88 @@ final class BossEventService {
                     if(!breakableShelterBlock(block))continue;
                     block.breakNaturally();cleared++;
                 }
-        if(cleared>0)boss.getWorld().spawnParticle(Particle.BLOCK,boss.getLocation().add(0,1,0),18,.6,.6,.6,.02,Material.STONE.createBlockData());
+        if(cleared>0){
+            boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_IRON_GOLEM_ATTACK,1.4f,.6f);
+            boss.getWorld().spawnParticle(Particle.BLOCK,boss.getLocation().add(0,1,0),24,.8,.8,.8,.02,Material.STONE.createBlockData());
+        }
         return cleared;
     }
-    /** Water turns the Colossus (and to a lesser degree the Knight) into a drifting, circling mess: vanilla
-     *  land pathfinding keeps steering toward a floor that isn't there, so it orbits the target instead of
-     *  closing. Giving it real swim capability plus a direct nudge toward the target while submerged makes
-     *  it actually pursue underwater; the element buffs from the previous pass then make water a genuinely
-     *  bad place to fight it rather than a safe one. */
-    private void worldBossSwimTick(LivingEntity boss,WorldBossKind kind){
-        if(!(boss instanceof Mob mob))return;
+    /** The real answer to height camping: take the ground away and pull them down. Deterministic, needs no
+     *  cooperation from mob physics, and cannot be out-built the way a slow nibbling dig could, because it
+     *  removes a whole disc of blocks beneath the player per pulse. Protected and permanent blocks remain
+     *  untouchable via breakableShelterBlock, so this can never damage spawn or a claim. Each boss dresses
+     *  it differently, and the Warlord additionally closes the gap physically since a brute lunging is in
+     *  character for it. */
+    private void collapseUnder(LivingEntity boss,Player target,WorldBossKind kind,double dy){
+        int radius=bosses.getInt("world-boss-unreachable.collapse-radius",2);
+        int depth=bosses.getInt("world-boss-unreachable.collapse-depth",3);
+        Block under=target.getLocation().getBlock().getRelative(0,-1,0);
+        int broken=0;
+        for(int d=0;d<depth;d++)
+            for(int dx=-radius;dx<=radius;dx++)
+                for(int dz=-radius;dz<=radius;dz++){
+                    Block block=under.getRelative(dx,-d,dz);
+                    if(!breakableShelterBlock(block))continue;
+                    block.breakNaturally();broken++;
+                }
+        /** A downward tug so they actually come off the perch instead of hopping the gap. Scaled by the
+         *  height difference but capped: this is a pull, not a slam, and deals no damage of its own. */
+        double pull=Math.min(bosses.getDouble("world-boss-unreachable.pull-max",1.1),.25+dy*.04);
+        Vector toward=boss.getLocation().toVector().subtract(target.getLocation().toVector()).setY(0);
+        Vector drag=toward.lengthSquared()>0.0001?toward.normalize().multiply(.18):new Vector();
+        target.setVelocity(target.getVelocity().add(drag.setY(-pull)));
+        switch(kind){
+            case ASHEN_KNIGHT -> {
+                target.getWorld().playSound(target.getLocation(),Sound.BLOCK_RESPAWN_ANCHOR_DEPLETE,1.2f,.5f);
+                target.getWorld().spawnParticle(Particle.SOUL,target.getLocation(),40,.6,.4,.6,.03);
+                target.sendActionBar(Component.text("The Ashen Knight's grasp drags you down as the ground crumbles!",NamedTextColor.RED));
+            }
+            case IRON_GOLEM -> {
+                target.getWorld().playSound(target.getLocation(),Sound.ENTITY_IRON_GOLEM_DAMAGE,1.4f,.5f);
+                target.getWorld().spawnParticle(Particle.EXPLOSION,target.getLocation(),2);
+                target.sendActionBar(Component.text("The Colossus shatters your footing!",NamedTextColor.GRAY));
+            }
+            case PIGLIN_BRUTE -> {
+                target.getWorld().playSound(target.getLocation(),Sound.ITEM_FIRECHARGE_USE,1.3f,.8f);
+                target.getWorld().spawnParticle(Particle.FLAME,target.getLocation(),30,.6,.4,.6,.04);
+                target.sendActionBar(Component.text("The Cinder Warlord burns your perch away!",NamedTextColor.GOLD));
+                Vector lunge=target.getLocation().toVector().subtract(boss.getLocation().toVector()).setY(0);
+                if(lunge.lengthSquared()>0.0001)boss.setVelocity(lunge.normalize().multiply(.85).setY(Math.min(1.4,.5+dy*.05)));
+            }
+        }
+        if(broken>0)boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_ZOMBIE_BREAK_WOODEN_DOOR,1.1f,.7f);
+    }
+    /** Smooth, continuous motion assistance on its own 2-tick task. Driving this from the 1 Hz visual tick
+     *  is what made the Knight visibly twitch in water. Underwater the navigator is abandoned entirely
+     *  (there is no walkable floor for it to follow, which is precisely why they orbited); on land vanilla
+     *  is left to drive and only the periodic re-path in worldBossSwimAssist nudges it. */
+    private void bossMotionTick(){
+        if(worldBossId==null)return;
+        Entity entity=plugin.getServer().getEntity(worldBossId);
+        if(!(entity instanceof LivingEntity boss)||!boss.isValid()||!(boss instanceof Mob mob))return;
         Player target=mob.getTarget() instanceof Player p?p:null;
         if(target==null||!target.getWorld().equals(boss.getWorld()))return;
-        boolean submerged=boss.isInWater();
-        double distSq=boss.getLocation().distanceSquared(target.getLocation());
-        /** The circling had one root cause: land pathfinding. In water there is no walkable floor to path
-         *  along, so the navigator keeps recomputing a route it can never follow and the boss drifts in
-         *  circles; on land the same thing happens whenever the target is somewhere unreachable. Issuing
-         *  ANOTHER moveTo() every tick (what the previous attempt did) actively made it worse — each call
-         *  resets the path mid-execution, so the mob restarts its route every tick and never commits to a
-         *  direction. So: on land, re-path only occasionally and let vanilla execute it; in water, abandon
-         *  pathfinding entirely and steer directly, which is the only thing that reliably closes distance. */
-        if(!submerged){
-            UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
-            if(now-bossRepathAt.getOrDefault(id,0L)>=900){
-                bossRepathAt.put(id,now);
-                if(distSq>4)mob.getPathfinder().moveTo(target,1.1);
-            }
-            return;
-        }
+        if(!boss.isInWater())return;
         Vector toward=target.getEyeLocation().toVector().subtract(boss.getEyeLocation().toVector());
-        if(toward.lengthSquared()<0.04)return;
-        Vector swim=toward.normalize().multiply(bosses.getDouble("world-boss-swim.speed",.32));
-        /** Direct steering, blended with current motion so it reads as swimming rather than teleport-drift,
-         *  and buoyancy that cancels the sink-to-the-bottom case without granting flight. */
-        Vector velocity=boss.getVelocity().multiply(.55).add(swim);
-        if(velocity.getY()<0)velocity.setY(Math.max(velocity.getY(),-.03));
+        if(toward.lengthSquared()<0.25)return;
+        Vector swim=toward.normalize().multiply(bosses.getDouble("world-boss-swim.speed",.28));
+        /** Blended with existing motion so it accelerates like swimming rather than snapping to a new
+         *  vector each pulse, and floored so it neither sinks to the seabed nor hovers. */
+        Vector velocity=boss.getVelocity().multiply(.72).add(swim.multiply(.45));
+        if(velocity.getY()<-.05)velocity.setY(-.05);
         boss.setVelocity(velocity);
-        boss.setRotation((float)Math.toDegrees(Math.atan2(-toward.getX(),toward.getZ())),boss.getLocation().getPitch());
+    }
+    /** Land-side pathing nudge, throttled on purpose. Calling moveTo() every tick restarts the route
+     *  mid-execution, which is itself what made bosses circle instead of committing to a direction; water
+     *  is handled separately by bossMotionTick since the navigator cannot path through it at all. */
+    private void worldBossSwimAssist(Mob mob){
+        if(mob.isInWater())return;
+        Player target=mob.getTarget() instanceof Player p?p:null;
+        if(target==null||!target.getWorld().equals(mob.getWorld()))return;
+        UUID id=mob.getUniqueId();long now=System.currentTimeMillis();
+        if(now-bossRepathAt.getOrDefault(id,0L)<900)return;
+        bossRepathAt.put(id,now);
+        if(mob.getLocation().distanceSquared(target.getLocation())>4)mob.getPathfinder().moveTo(target,1.1);
     }
     private void worldBossElementTick(LivingEntity boss,WorldBossKind kind){
         switch(kind){

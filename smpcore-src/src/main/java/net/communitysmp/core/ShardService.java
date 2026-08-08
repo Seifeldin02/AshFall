@@ -118,8 +118,8 @@ final class ShardService implements Listener {
             case"netherite_chestplate"->enchanted(Material.NETHERITE_CHESTPLATE,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
             case"netherite_leggings"->enchanted(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.SWIFT_SNEAK,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
             case"netherite_boots"->enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3,Enchantment.SOUL_SPEED,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
-            case"netherite_spear"->enchanted(Material.NETHERITE_SPEAR,Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
-            case"mace"->enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,2,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
+            case"netherite_spear"->enchanted(Material.NETHERITE_SPEAR,withOptional(Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),"lunge",3));
+            case"mace"->enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
             case"bow"->enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.INFINITY,1,Enchantment.UNBREAKING,3));
             case"crossbow"->enchanted(Material.CROSSBOW,Map.of(Enchantment.QUICK_CHARGE,3,Enchantment.MULTISHOT,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
             default->stock.key().startsWith("cosmetic_")?cosmeticToken(stock):new ItemStack(stock.icon());
@@ -132,14 +132,14 @@ final class ShardService implements Listener {
      *  what players can buy rather than a parallel definition that could drift. Admin-gated at the command. */
     void giveTestKit(Player player){
         List<ItemStack> kit=new ArrayList<>(List.of(
-                enchanted(Material.NETHERITE_HELMET,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1,Enchantment.RESPIRATION,3,Enchantment.AQUA_AFFINITY,1)),
+                enchanted(Material.NETHERITE_HELMET,Map.of(Enchantment.PROTECTION,4,Enchantment.RESPIRATION,3,Enchantment.AQUA_AFFINITY,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.NETHERITE_CHESTPLATE,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3)),
+                enchanted(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.SWIFT_SNEAK,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3,Enchantment.SOUL_SPEED,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.NETHERITE_SWORD,Map.of(Enchantment.SHARPNESS,5,Enchantment.LOOTING,3,Enchantment.SWEEPING_EDGE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.NETHERITE_AXE,Map.of(Enchantment.SHARPNESS,5,Enchantment.EFFICIENCY,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
-                enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.INFINITY,1,Enchantment.FLAME,1,Enchantment.UNBREAKING,3)),
+                enchanted(Material.NETHERITE_AXE,Map.of(Enchantment.EFFICIENCY,5,Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
+                enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.INFINITY,1,Enchantment.UNBREAKING,3)),
                 enchanted(Material.CROSSBOW,Map.of(Enchantment.QUICK_CHARGE,3,Enchantment.MULTISHOT,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.SHIELD,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.ELYTRA,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
@@ -147,15 +147,24 @@ final class ShardService implements Listener {
                 new ItemStack(Material.COOKED_BEEF,64),
                 new ItemStack(Material.ENDER_PEARL,32),
                 new ItemStack(Material.ARROW,64)));
-        /** Spear is version-gated: NETHERITE_SPEAR only exists on builds that ship the combat spear, and a
-         *  hard reference would fail to load the class entirely on ones that don't. */
+        /** Spear and its Lunge enchantment are both version-gated: NETHERITE_SPEAR only exists on builds
+         *  shipping the combat spear, and a hard reference would break class loading on ones that do not. */
         Material spear=Material.matchMaterial("NETHERITE_SPEAR");
-        if(spear!=null)kit.add(enchanted(spear,Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        if(spear!=null)kit.add(enchanted(spear,withOptional(Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),"lunge",3)));
         for(int i=0;i<2;i++)kit.add(new ItemStack(Material.WIND_CHARGE,64));
         for(int i=0;i<2;i++)kit.add(firework(64,1));
         for(int i=0;i<5;i++)kit.add(strengthPotion());
         for(ItemStack item:kit)CoreUtil.give(player,item);
         CoreUtil.msg(player,"Test kit issued: full maxed Shard Shop loadout, 30 e-apples, 5x Strength II, 64 steak, 32 pearls, 2x64 wind charges, elytra + 2x64 tier-1 rockets.");
+    }
+    /** Adds an enchantment that may not exist on every server build (e.g. Lunge, which ships with the
+     *  combat spear) by registry lookup, so the class still loads and the item is still granted on builds
+     *  that lack it rather than failing outright. */
+    private Map<Enchantment,Integer> withOptional(Map<Enchantment,Integer> base,String key,int level){
+        Map<Enchantment,Integer> result=new java.util.HashMap<>(base);
+        Enchantment extra=org.bukkit.Registry.ENCHANTMENT.get(org.bukkit.NamespacedKey.minecraft(key));
+        if(extra!=null)result.put(extra,level);
+        return result;
     }
     private ItemStack strengthPotion(){
         ItemStack potion=new ItemStack(Material.POTION);
