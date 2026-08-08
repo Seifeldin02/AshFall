@@ -359,10 +359,11 @@ mob-rewards:
   ZOMBIE: [2.0, 4.0]
   HUSK: [2.0, 5.0]
   ILLUSIONER: [12.0, 20.0]
-  # Highest of any common mob: ~$100 average, roughly 6x Ghast/Piglin Brute (16-18) and far above
-  # Enderman. Justifies the Iron Golem Spawner as a $50mil / 500-shard flagship purchase. Spawner-farmed
-  # golems still take the standard 50% spawner share, halved again past the anti-farm threshold.
-  IRON_GOLEM: [85.0, 115.0]
+  # ~$30 average -- still the highest common mob (roughly 2x Ghast/Piglin Brute at 16-18, 3x Enderman),
+  # but sized against the PROGRESSION MULTIPLIERS that scale hostile income on top of this, which is what
+  # made $100 look reasonable in the raw table. Spawner-farmed golems additionally take the 50% spawner
+  # share, halved again past the anti-farm threshold.
+  IRON_GOLEM: [25.0, 35.0]
   LLAMA: [0.10, 0.50]
   MAGMA_CUBE: [4.0, 7.0]
   MOOSHROOM: [0.05, 1.0]

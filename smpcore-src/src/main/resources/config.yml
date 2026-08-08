@@ -338,8 +338,9 @@ nametags:
   # Height of the replacement nametag above the mount point. Because the overlay REPLACES the vanilla
   # nametag (mounting suppresses it), this should sit roughly where that nametag used to be.
   lift: 0.30
-  # Background of the overlay. 1073741824 (0x40000000) is vanilla's own 25% black nametag backdrop.
-  background-argb: 1073741824
+  # Background of the overlay. 0 = fully transparent (no backdrop square). Vanilla's own nametag backdrop
+  # is 1073741824 (0x40000000) if you ever want it back.
+  background-argb: 0
   # Height of each overlay above the player's mount point. Kept clear of the vanilla nametag block so the
   # name and health line stay visible underneath.
   # Height ABOVE THE PLAYER'S FEET for each line. The vanilla name sits around 2.1 and the below-name
