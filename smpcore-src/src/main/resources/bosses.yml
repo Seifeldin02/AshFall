@@ -190,10 +190,11 @@ world-boss-unreachable:
   action-cooldown-seconds: 2
   # Safety ceiling on blocks removed per pulse across the whole operation.
   max-blocks: 250
-  # Default demolition box around/above the boss (radius 2 = 5x5). Never digs below itself, and never
-  # touches bedrock, portals, other permanent blocks, spawn, or claims.
+  # MARGIN added around the boss's real bounding box (they are large models, so a flat radius barely
+  # cleared their own shoulders). Never digs below itself except via the slam below, and never touches
+  # bedrock, portals, other permanent blocks, spawn, or claims.
   clear-radius: 2
-  clear-height: 4
+  clear-height: 3
   # Per-boss footprints. The Colossus is the demolition specialist: widest and tallest reach. The Warlord
   # is middling and closes with a lunge. The Knight is the most surgical but has the strongest downward
   # grasp, which suits a caster-flavoured skeleton over brute force.
@@ -218,6 +219,14 @@ world-boss-unreachable:
   warlord-lunge-horizontal: 0.9
   warlord-lunge-max: 0
   warlord-lunge-sustain-ticks: 8
+  # Approach corridor: how far ahead the boss carves a tunnel toward its target. Sized to the boss's real
+  # hitbox, so a wide boss opens a gap it can actually fit through instead of a 1x1 hole it snags on.
+  approach-reach: 12
+  # Downward breakout when shot from below through a small hole. Only fires when the attacker is genuinely
+  # beneath the boss AND unreachable; never digs near the world floor.
+  slam-min-drop: 2.5
+  slam-depth: 6
+  slam-cooldown-seconds: 4
 
 world-boss-swim:
   # Fallbacks; each boss overrides below. "authority" is how strongly steering overrides existing motion

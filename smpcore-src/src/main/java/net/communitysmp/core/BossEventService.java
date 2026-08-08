@@ -66,6 +66,8 @@ final class BossEventService {
     /** Throttles land re-pathing: calling moveTo() every tick restarts the route mid-execution and is
      *  itself what makes a boss circle instead of committing to a direction. */
     private final Map<UUID, Long> bossRepathAt = new HashMap<>();
+    /** Rate limit for the downward breakout (see groundSlam). */
+    private final Map<UUID, Long> bossSlamAt = new HashMap<>();
     /** End time for a player-summoned boss running ALONGSIDE a natural event (see startEvent's standalone
      *  branch). Zero when no standalone encounter is active. Kept separate from eventEnds so the concurrent
      *  natural event's own duration is never affected. */
@@ -290,7 +292,7 @@ final class BossEventService {
             if(clean){
                 UUID id=living.getUniqueId();
                 living.remove();
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 removed++;
                 CoreUtil.msg(sender,"  removed "+detail);
@@ -400,7 +402,43 @@ final class BossEventService {
         return true;
     }
 
+    /** Protected land is a hard sanctuary boundary for world-boss combat, in BOTH directions. A boss can
+     *  never break blocks inside spawn or a faction claim (breakableShelterBlock refuses), so if a fight
+     *  crosses that line one side becomes untouchable and the encounter turns into a free kill: stand in
+     *  your claim and shoot out, or claim land on top of a boss you already summoned and it can never
+     *  retaliate. Neither is allowed -- if EITHER the boss or the attacking player is standing on protected
+     *  land, players simply cannot damage the boss. The boss can still damage players in every case, so
+     *  hiding behind the border is not a safe way to fight; it just means no progress.
+     *  Deliberately one-directional: this only blocks player -> boss damage. */
+    private boolean bossCombatBlockedByClaim(LivingEntity boss,Player attacker){
+        return protectedGround(boss.getLocation())||protectedGround(attacker.getLocation());
+    }
+    private boolean protectedGround(Location location){
+        return plugin.spawnClaims().contains(location)||factions.claimAt(location)!=null;
+    }
     void onDamage(EntityDamageByEntityEvent e) {
+        if(e.getEntity() instanceof LivingEntity victimBoss&&isWorldBossTier(victimBoss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING))){
+            Player source=e.getDamager() instanceof Player direct?direct
+                    :e.getDamager() instanceof Projectile projectile&&projectile.getShooter() instanceof Player shooter?shooter:null;
+            if(source!=null&&bossCombatBlockedByClaim(victimBoss,source)){
+                e.setCancelled(true);
+                source.sendActionBar(Component.text("Protected land shields it from you \u2014 both of you must be in the open to fight.",NamedTextColor.RED));
+                return;
+            }
+            /** Shot from underneath while boxed in above: the boss stomps straight down through the floor.
+             *  Gated on the attacker genuinely being below it AND unreachable, so ordinary melee from lower
+             *  ground never triggers it, and rate-limited separately from the other breakout actions. */
+            if(source!=null&&victimBoss instanceof Mob boxedMob){
+                double below=victimBoss.getLocation().getY()-source.getLocation().getY();
+                UUID bossId=victimBoss.getUniqueId();long slamNow=System.currentTimeMillis();
+                if(below>=bosses.getDouble("world-boss-unreachable.slam-min-drop",2.5)
+                        &&slamNow-bossSlamAt.getOrDefault(bossId,0L)>=(long)(bosses.getDouble("world-boss-unreachable.slam-cooldown-seconds",4)*1000)
+                        &&bossCannotReach(boxedMob,source)){
+                    bossSlamAt.put(bossId,slamNow);
+                    groundSlam(victimBoss,source);
+                }
+            }
+        }
         if (e.getDamager() instanceof LivingEntity attacker) {
             applyAttackAbility(attacker, e);
             if(e.getEntity() instanceof Player&&attacker.getPersistentDataContainer().has(tierKey))lastMobHit.put(attacker.getUniqueId(),System.currentTimeMillis());
@@ -461,7 +499,7 @@ final class BossEventService {
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
 
     void onDeath(EntityDeathEvent e) {
-        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
+        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());bossSlamAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
         if (tier != null) { rewardElite(e, killer, tier); return; }
         if(isVanillaBoss(mob)){rewardVanillaBoss(e,mob,killer);return;}if(mob instanceof Warden)rewardWardenShards(mob,killer);if (killer == null) return;
         double penalty = friendlyPenalty(mob); if (penalty > 0) { double charged = db.takeUpTo(CoreUtil.id(killer), penalty); if(charged>0){plugin.bank().creditSink(charged,CoreUtil.id(killer),"FRIENDLY_"+mob.getType().name());db.recordEconomy(CoreUtil.id(killer),"FRIENDLY_PENALTY",-charged,mob.getType().name());killer.sendActionBar(Component.text("-" + CoreUtil.money(charged) + " " + CoreUtil.pretty(mob.getType().name()), NamedTextColor.RED));} return; } if (spawner) return;
@@ -880,7 +918,7 @@ final class BossEventService {
         WorldBossKind kind=kindFromTier(tier);
         double dy=target.getLocation().getY()-boss.getLocation().getY();
         double horizontal=Math.hypot(target.getLocation().getX()-boss.getLocation().getX(),target.getLocation().getZ()-boss.getLocation().getZ());
-        int freed=clearAroundAndAbove(boss,kind);
+        int freed=clearAroundAndAbove(boss,kind)+clearApproach(boss,target);
         if(dy>3&&horizontal<=bosses.getDouble("world-boss-unreachable.pillar-horizontal",14))collapseUnder(boss,target,kind,dy);
         else if(freed==0&&horizontal>2)mob.getPathfinder().moveTo(target,1.2);
     }
@@ -901,11 +939,19 @@ final class BossEventService {
      *  5x5 clear actually chewed one small notch and could be out-rebuilt -- the reported behaviour. The
      *  entire box is now cleared, sized per boss: the Colossus is the demolition specialist and reaches
      *  furthest, the Warlord is middling, the Knight is the most surgical. */
+    /** Demolition footprint, now derived from the boss's ACTUAL bounding box rather than a flat number.
+     *  These are big models (scale 1.35 to 1.8 on top of already-tall mobs), so a radius that looks
+     *  generous on paper barely clears their own shoulders -- which is how a boss could stand in a hole it
+     *  had dug and still be walled in. The configured radius/height are treated as MARGIN added around the
+     *  real hitbox, so each boss automatically clears enough room for its own size. */
     private int clearAroundAndAbove(LivingEntity boss,WorldBossKind kind){
-        int radius=bosses.getInt("world-boss-unreachable."+configPrefix(kind)+".clear-radius",
+        int marginR=bosses.getInt("world-boss-unreachable."+configPrefix(kind)+".clear-radius",
                 bosses.getInt("world-boss-unreachable.clear-radius",2));
-        int height=bosses.getInt("world-boss-unreachable."+configPrefix(kind)+".clear-height",
+        int marginH=bosses.getInt("world-boss-unreachable."+configPrefix(kind)+".clear-height",
                 bosses.getInt("world-boss-unreachable.clear-height",4));
+        org.bukkit.util.BoundingBox box=boss.getBoundingBox();
+        int radius=(int)Math.ceil(Math.max(box.getWidthX(),box.getWidthZ())/2.0)+marginR;
+        int height=(int)Math.ceil(box.getHeight())+marginH;
         int max=bosses.getInt("world-boss-unreachable.max-blocks",250);
         Block feet=boss.getLocation().getBlock();int cleared=0;
         for(int dy=0;dy<=height&&cleared<max;dy++)
@@ -921,6 +967,68 @@ final class BossEventService {
             boss.getWorld().spawnParticle(Particle.BLOCK,boss.getLocation().add(0,1,0),24,.8,.8,.8,.02,Material.STONE.createBlockData());
         }
         return cleared;
+    }
+    /** Clears a tunnel from the boss to its target, sized to the boss's own hitbox plus a margin.
+     *  Clearing only AROUND the boss left anything in the space BETWEEN them untouched -- the reported
+     *  case being a player under a tree whose roots got broken while the leaf canopy kept right on
+     *  blocking the approach. Sweeping the actual line of approach fixes that generally (canopies, walls,
+     *  overhangs) instead of special-casing leaves, and sizing it to the hitbox means a wide boss carves
+     *  an opening it can genuinely fit through rather than a one-block hole it gets stuck on. */
+    private int clearApproach(LivingEntity boss,Player target){
+        org.bukkit.util.BoundingBox box=boss.getBoundingBox();
+        int halfWidth=(int)Math.ceil(Math.max(box.getWidthX(),box.getWidthZ())/2.0);
+        int height=(int)Math.ceil(box.getHeight());
+        int max=bosses.getInt("world-boss-unreachable.max-blocks",250);
+        double reach=Math.min(bosses.getDouble("world-boss-unreachable.approach-reach",12),
+                boss.getLocation().distance(target.getLocation()));
+        Vector step=target.getLocation().toVector().subtract(boss.getLocation().toVector());
+        if(step.lengthSquared()<0.01)return 0;
+        step=step.normalize();
+        Location origin=boss.getLocation();int cleared=0;
+        for(double d=1;d<=reach&&cleared<max;d+=1){
+            Location point=origin.clone().add(step.clone().multiply(d));
+            for(int dy=0;dy<=height&&cleared<max;dy++)
+                for(int dx=-halfWidth;dx<=halfWidth&&cleared<max;dx++)
+                    for(int dz=-halfWidth;dz<=halfWidth&&cleared<max;dz++){
+                        Block block=point.getBlock().getRelative(dx,dy,dz);
+                        if(!breakableShelterBlock(block))continue;
+                        block.breakNaturally();cleared++;
+                    }
+        }
+        return cleared;
+    }
+    /** Answer to being shot from directly below through a small hole while the boss sits boxed above.
+     *  Downward digging is normally forbidden (a boss that mines under itself can bury itself or drop into
+     *  the void), so this is deliberately narrow: it only fires when a player actually damages the boss
+     *  from below and cannot be reached, it is sized to the boss's own footprint so it opens a hole it can
+     *  fit through, it is depth-limited, and it refuses to dig near the world floor. Protected and
+     *  permanent blocks still cannot be touched. */
+    private void groundSlam(LivingEntity boss,Player attacker){
+        org.bukkit.util.BoundingBox box=boss.getBoundingBox();
+        int halfWidth=(int)Math.ceil(Math.max(box.getWidthX(),box.getWidthZ())/2.0);
+        int depth=Math.max(1,bosses.getInt("world-boss-unreachable.slam-depth",6));
+        int floorGuard=boss.getWorld().getMinHeight()+5;
+        Block feet=boss.getLocation().getBlock();int broken=0;
+        for(int d=1;d<=depth;d++){
+            int y=feet.getY()-d;
+            if(y<=floorGuard)break;
+            /** Stop as soon as the column is open enough to drop through and continue the chase. */
+            boolean layerSolid=false;
+            for(int dx=-halfWidth;dx<=halfWidth;dx++)
+                for(int dz=-halfWidth;dz<=halfWidth;dz++){
+                    Block block=feet.getRelative(dx,-d,dz);
+                    if(!breakableShelterBlock(block))continue;
+                    block.breakNaturally();broken++;layerSolid=true;
+                }
+            if(!layerSolid&&d>1)break;
+        }
+        if(broken==0)return;
+        boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_GENERIC_EXPLODE,1.3f,.6f);
+        boss.getWorld().spawnParticle(Particle.EXPLOSION,boss.getLocation(),3);
+        boss.getWorld().spawnParticle(Particle.BLOCK,boss.getLocation(),40,1,.4,1,.05,Material.STONE.createBlockData());
+        attacker.sendActionBar(Component.text("It smashes through the floor after you!",NamedTextColor.RED));
+        /** A downward shove so it actually falls into the hole it just made instead of hovering on the rim. */
+        boss.setVelocity(boss.getVelocity().setY(-.6));
     }
     /** The real answer to height camping: take the ground away and pull them down. Deterministic, needs no
      *  cooperation from mob physics, and cannot be out-built the way a slow nibbling dig could, because it
@@ -1372,7 +1480,7 @@ final class BossEventService {
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 if(id.equals(worldBossId)){
                     worldBossId=null;
@@ -1410,7 +1518,7 @@ final class BossEventService {
      *  /ashfall boss despawn. */
     boolean despawnWorldBoss(){
         LivingEntity boss=worldBoss();if(boss==null)return false;
-        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
+        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
         if(eventType==EventType.WORLD_BOSS||eventType==EventType.HUNT)finishEvent(false);
         broadcastNotice(Component.text("⚔ The world boss was despawned by an administrator.",NamedTextColor.DARK_GRAY));
         return true;
@@ -1420,7 +1528,7 @@ final class BossEventService {
     boolean forceStopEvent(){
         if(eventType==null&&worldBoss()==null)return false;
         LivingEntity boss=worldBoss();
-        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
+        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
         if(eventType!=null)finishEvent(false);
         return true;
     }
@@ -1435,7 +1543,7 @@ final class BossEventService {
              *  worldBossId is being cleared, whether or not the entity itself is still resolvable. */
             if (worldBossId != null) {
                 eliteIds.remove(worldBossId); damage.remove(worldBossId); lastContribution.remove(worldBossId); removeHealthBar(worldBossId);
-                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId); bossMechanicAt.remove(worldBossId);
+                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId); bossMechanicAt.remove(worldBossId);
                 db.deleteBossState(worldBossId.toString());
             }
             if (boss != null) {
