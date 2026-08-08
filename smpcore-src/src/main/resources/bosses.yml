@@ -227,6 +227,9 @@ world-boss-unreachable:
   slam-min-drop: 2.5
   slam-depth: 6
   slam-cooldown-seconds: 4
+  # The Warlord wades slowly through lava on purpose; instead of speeding it up, it lunges on this much
+  # shorter cycle while submerged so there is no safe window to trade hits from.
+  warlord-lava-lunge-seconds: 2.5
 
 world-boss-swim:
   # Fallbacks; each boss overrides below. "authority" is how strongly steering overrides existing motion
@@ -234,6 +237,9 @@ world-boss-swim:
   speed: 0.28
   authority: 0.45
   buoyancy: -0.05
+  # Max climb/dive rate while swimming. Applies symmetrically: a boss chases downward as readily as up,
+  # so swimming underneath one is not a hiding place.
+  vertical-speed: 0.30
   # The Ashen Knight is an undead skeleton: vanilla makes it sink and try to walk the seabed, so it needs
   # the most help to look like it is actually swimming. Highest authority and real lift.
   world-boss:

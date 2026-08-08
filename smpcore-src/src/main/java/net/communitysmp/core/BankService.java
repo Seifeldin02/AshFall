@@ -103,11 +103,27 @@ final class BankService implements Listener {
     private void borrow(Player player,double amount){
         Database.LoanRow loan=accrue(player);Database.BankRow bank=db.bank();double allowed=available(player,loan,bank);
         if(loan!=null||amount<minimumLoan()||amount>allowed+.001){CoreUtil.error(player,"That loan is no longer available.");openMain(player);return;}
+        /** One successful issuance per real day. Deliberately counts loans ISSUED, not loans outstanding,
+         *  so repaying early does not buy another go -- otherwise the limit could be cycled indefinitely
+         *  within a day. Repayments themselves are entirely unaffected and never consume allowance. */
+        int perDay=Math.max(1,plugin.getConfig().getInt("bank.loans.max-per-day",1));
+        if(db.loansIssuedSince(CoreUtil.id(player),loanDayStart())>=perDay){
+            CoreUtil.error(player,"You have already taken a loan today. The allowance resets at "+plugin.getConfig().getInt("bank.loans.reset-hour",12)+":00 server time.");
+            openMain(player);return;
+        }
         double rate=plugin.getConfig().getDouble("bank.loans.daily-interest-percent",1)/100.0;long due=System.currentTimeMillis()+plugin.getConfig().getLong("bank.loans.due-days",7)*86400000L;
         if(!db.issueLoan(CoreUtil.id(player),amount,rate,due)){CoreUtil.error(player,"The treasury could not issue that loan.");openMain(player);return;}
         player.playSound(player.getLocation(),Sound.BLOCK_VAULT_OPEN_SHUTTER,.8f,1.1f);CoreUtil.msg(player,"Borrowed "+CoreUtil.money(amount)+". Due in "+plugin.getConfig().getInt("bank.loans.due-days",7)+" days.");openMain(player);
     }
 
+    /** Same noon boundary the shard allowance uses, so "today" means one thing across the server. */
+    private long loanDayStart(){
+        java.time.ZoneId zone=java.time.ZoneId.of(plugin.getConfig().getString("weekly-dragon.timezone","Asia/Riyadh"));
+        java.time.ZonedDateTime now=java.time.ZonedDateTime.now(zone);
+        java.time.ZonedDateTime start=now.with(java.time.LocalTime.of(plugin.getConfig().getInt("bank.loans.reset-hour",12),0));
+        if(now.isBefore(start))start=start.minusDays(1);
+        return start.toInstant().toEpochMilli();
+    }
     private void startCustom(Player player,InputKind kind){
         if(kind==InputKind.BORROW&&available(player,accrue(player),db.bank())<minimumLoan()){CoreUtil.error(player,"No custom loan is available right now.");openMain(player);return;}
         if(kind==InputKind.REPAY&&accrue(player)==null){CoreUtil.error(player,"You have no active loan.");openMain(player);return;}

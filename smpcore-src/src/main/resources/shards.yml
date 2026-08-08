@@ -1,4 +1,9 @@
 earning:
+  # Non-playtime shards a single player may earn per day. Passive playtime shards are completely
+  # outside this cap. A reward that would exceed the remainder is trimmed rather than dropped.
+  daily-cap: 10
+  # Hour (in weekly-dragon.timezone, i.e. Asia/Riyadh) at which everyone's allowance resets.
+  daily-reset-hour: 12
   active-seconds-per-shard: 2700
   afk-seconds-per-shard: 3600
   active-window-seconds: 300

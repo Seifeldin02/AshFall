@@ -161,9 +161,14 @@ bank:
   shop:
     nonsellable-margin-percent: 10
   loans:
+    # One successful issuance per real day (counts loans issued, so repaying early does not buy another).
+    max-per-day: 1
+    reset-hour: 12
     minimum-amount: 500
-    base-limit: 500
-    per-milestone-limit: 750
+    # Limits doubled to compensate for the once-per-day restriction: the same player can still reach a
+    # similar total over time, they simply cannot cycle many small loans in a single day.
+    base-limit: 1000
+    per-milestone-limit: 1500
     maximum-limit: 0
     daily-interest-percent: 1.0
     maximum-interest-percent: 25.0

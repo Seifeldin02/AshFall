@@ -68,6 +68,8 @@ final class BossEventService {
     private final Map<UUID, Long> bossRepathAt = new HashMap<>();
     /** Rate limit for the downward breakout (see groundSlam). */
     private final Map<UUID, Long> bossSlamAt = new HashMap<>();
+    /** Separate, much shorter lunge cycle used only while the Warlord is in lava. */
+    private final Map<UUID, Long> bossLavaLungeAt = new HashMap<>();
     /** End time for a player-summoned boss running ALONGSIDE a natural event (see startEvent's standalone
      *  branch). Zero when no standalone encounter is active. Kept separate from eventEnds so the concurrent
      *  natural event's own duration is never affected. */
@@ -292,7 +294,7 @@ final class BossEventService {
             if(clean){
                 UUID id=living.getUniqueId();
                 living.remove();
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 removed++;
                 CoreUtil.msg(sender,"  removed "+detail);
@@ -499,7 +501,7 @@ final class BossEventService {
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
 
     void onDeath(EntityDeathEvent e) {
-        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());bossSlamAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
+        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());bossSlamAt.remove(mob.getUniqueId());bossLavaLungeAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
         if (tier != null) { rewardElite(e, killer, tier); return; }
         if(isVanillaBoss(mob)){rewardVanillaBoss(e,mob,killer);return;}if(mob instanceof Warden)rewardWardenShards(mob,killer);if (killer == null) return;
         double penalty = friendlyPenalty(mob); if (penalty > 0) { double charged = db.takeUpTo(CoreUtil.id(killer), penalty); if(charged>0){plugin.bank().creditSink(charged,CoreUtil.id(killer),"FRIENDLY_"+mob.getType().name());db.recordEconomy(CoreUtil.id(killer),"FRIENDLY_PENALTY",-charged,mob.getType().name());killer.sendActionBar(Component.text("-" + CoreUtil.money(charged) + " " + CoreUtil.pretty(mob.getType().name()), NamedTextColor.RED));} return; } if (spawner) return;
@@ -1084,6 +1086,21 @@ final class BossEventService {
         if(!(entity instanceof LivingEntity boss)||!boss.isValid()||!(boss instanceof Mob mob))return;
         Player target=mob.getTarget() instanceof Player p?p:null;
         if(target==null||!target.getWorld().equals(boss.getWorld()))return;
+        WorldBossKind lavaKind=kindFromTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING));
+        /** Lava is the Warlord's home ground, but its movement there is deliberately slow, which let a
+         *  player sit in lava beside it and trade safely between its occasional lunges. Rather than making
+         *  it faster (which would erase the heavy, wading feel), it simply lunges much more frequently
+         *  while submerged in lava -- the same attack, just on a far shorter cycle, so there is no longer a
+         *  comfortable window to stand in. */
+        if(lavaKind==WorldBossKind.PIGLIN_BRUTE&&boss.isInLava()){
+            UUID lavaId=boss.getUniqueId();long lavaNow=System.currentTimeMillis();
+            long interval=(long)(bosses.getDouble("world-boss-unreachable.warlord-lava-lunge-seconds",2.5)*1000);
+            if(lavaNow-bossLavaLungeAt.getOrDefault(lavaId,0L)>=interval
+                    &&boss.getLocation().distanceSquared(target.getLocation())>4){
+                bossLavaLungeAt.put(lavaId,lavaNow);
+                launchWarlord(boss,target,Math.max(0,target.getLocation().getY()-boss.getLocation().getY()));
+            }
+        }
         if(!boss.isInWater())return;
         WorldBossKind kind=kindFromTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING));
         String prefix="world-boss-swim."+configPrefix(kind);
@@ -1102,8 +1119,16 @@ final class BossEventService {
         Vector velocity=boss.getVelocity().multiply(1-authority).add(swim.multiply(authority));
         /** Match the target's depth rather than merely refusing to sink -- without this an undead boss
          *  parks on the bottom while the player swims above it, which is the "circling uselessly" look. */
+        /** Depth matching has to work in BOTH directions. Previously only the "target is above" case was
+         *  handled, and the buoyancy floor then clamped Y to at least `buoyancy` -- which for the Ashen
+         *  Knight is 0.0, so it could physically never descend. Swimming underneath it was therefore a
+         *  clean cheese: it tracked horizontally forever and never once came down. It now dives just as
+         *  willingly as it rises, and the buoyancy floor applies only when roughly level (idle hover),
+         *  never while actively chasing downward. */
         double depthGap=target.getEyeLocation().getY()-boss.getEyeLocation().getY();
-        if(depthGap>0.6)velocity.setY(Math.max(velocity.getY(),Math.min(.28,depthGap*.12)));
+        double climb=bosses.getDouble("world-boss-swim.vertical-speed",.30);
+        if(depthGap>0.6)velocity.setY(Math.max(velocity.getY(),Math.min(climb,depthGap*.12)));
+        else if(depthGap<-0.6)velocity.setY(Math.min(velocity.getY(),Math.max(-climb,depthGap*.12)));
         else if(velocity.getY()<buoyancy)velocity.setY(buoyancy);
         boss.setVelocity(velocity);
         /** Face the direction of travel; a mob steered purely by velocity keeps its old yaw and reads as
@@ -1480,7 +1505,7 @@ final class BossEventService {
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 if(id.equals(worldBossId)){
                     worldBossId=null;
@@ -1518,7 +1543,7 @@ final class BossEventService {
      *  /ashfall boss despawn. */
     boolean despawnWorldBoss(){
         LivingEntity boss=worldBoss();if(boss==null)return false;
-        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
+        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
         if(eventType==EventType.WORLD_BOSS||eventType==EventType.HUNT)finishEvent(false);
         broadcastNotice(Component.text("⚔ The world boss was despawned by an administrator.",NamedTextColor.DARK_GRAY));
         return true;
@@ -1528,7 +1553,7 @@ final class BossEventService {
     boolean forceStopEvent(){
         if(eventType==null&&worldBoss()==null)return false;
         LivingEntity boss=worldBoss();
-        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
+        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
         if(eventType!=null)finishEvent(false);
         return true;
     }
@@ -1543,7 +1568,7 @@ final class BossEventService {
              *  worldBossId is being cleared, whether or not the entity itself is still resolvable. */
             if (worldBossId != null) {
                 eliteIds.remove(worldBossId); damage.remove(worldBossId); lastContribution.remove(worldBossId); removeHealthBar(worldBossId);
-                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId); bossMechanicAt.remove(worldBossId);
+                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId); bossMechanicAt.remove(worldBossId);
                 db.deleteBossState(worldBossId.toString());
             }
             if (boss != null) {

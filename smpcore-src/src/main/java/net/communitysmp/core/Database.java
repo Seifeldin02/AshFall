@@ -348,6 +348,13 @@ final class Database implements AutoCloseable {
         return one("SELECT * FROM shard_accounts WHERE player=?",rs->new ShardAccount(rs.getString("player"),rs.getInt("balance"),rs.getLong("active_seconds"),rs.getLong("afk_seconds"),rs.getLong("updated_at")),player);
     }
     synchronized int shardBalance(String player){return shardAccount(player).balance();}
+    /** Non-playtime shards a player has earned since a timestamp, for the daily allowance. Passive
+     *  playtime accrual (ACTIVE_PLAYTIME / AFK_PLAYTIME) is excluded at the query level so it can never
+     *  consume the cap, and negative ledger rows (spends, admin deductions) are ignored so spending shards
+     *  cannot refund allowance. */
+    synchronized int shardsEarnedSince(String player,long since){
+        return integer("SELECT COALESCE(SUM(amount),0) FROM shard_ledger WHERE player=? AND occurred_at>=? AND amount>0 AND source NOT IN ('ACTIVE_PLAYTIME','AFK_PLAYTIME')",player,since);
+    }
     synchronized int accrueShardTime(String player,boolean active,long seconds,int activeThreshold,int afkThreshold){
         if(seconds<=0)return 0;ShardAccount before=shardAccount(player);long activeSeconds=before.activeSeconds()+(active?seconds:0),afkSeconds=before.afkSeconds()+(active?0:seconds);int awarded=0;
         while(activeSeconds>=activeThreshold){activeSeconds-=activeThreshold;awarded++;}
@@ -695,6 +702,12 @@ final class Database implements AutoCloseable {
             update("INSERT INTO bank_ledger(occurred_at,player,category,amount,detail) VALUES(?,?,?,?,?)",now,player,"SHOP_PAYOUT",-gross,detail);
             if(payment>0)applyLoanPayment(loan,payment);if(own)connection.commit();return true;
         }catch(Exception e){if(own)rollbackQuietly();if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}finally{if(own)autoCommitQuietly();}
+    }
+    /** Loans ISSUED since a timestamp, counting every loan regardless of whether it was since repaid --
+     *  repaying must not hand back another issuance for the same day, which is the whole point of the
+     *  limit. Reads issued_at, which bank_loans already records, so no schema change is needed. */
+    synchronized int loansIssuedSince(String player,long since){
+        return integer("SELECT COUNT(*) FROM bank_loans WHERE player=? AND issued_at>=?",player,since);
     }
     synchronized boolean issueLoan(String player,double amount,double rateDaily,long dueAt){
         amount=roundMoney(amount);if(amount<=0||loan(player)!=null)return false;boolean own=false;

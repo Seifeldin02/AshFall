@@ -220,20 +220,53 @@ final class ShardService implements Listener {
         /** No boss reward exceeds 10 Shards — world bosses were previously the outlier at 50, well above
          *  every other tier (legendary tops out at 10, dragon/wither also cap at 10). Cooldowns and anti-farm
          *  gating are untouched by this — they live on the boss spawn/kill side (BossEventService), not here. */
-        int amount=switch(tier.toLowerCase(Locale.ROOT)){case"epic"->2;case"legendary"->10;case"worldboss","worldboss_ashen","worldboss_iron","worldboss_piglin"->10;default->0;};
-        if("rare".equalsIgnoreCase(tier)){if(Math.random()>=config.getDouble("earning.rare-chance",.12))return;amount=1;}
+        int amount=switch(tier.toLowerCase(Locale.ROOT)){case"epic"->1;case"legendary"->5;case"worldboss","worldboss_ashen","worldboss_iron","worldboss_piglin"->5;default->0;};
+        /** Sources that already paid the smallest possible amount (1) cannot be halved into a fraction, so
+         *  their CHANCE is halved instead -- same expected value, still a whole shard when it lands. */
+        if("rare".equalsIgnoreCase(tier)){if(Math.random()>=config.getDouble("earning.rare-chance",.12)/2)return;amount=1;}
         if(amount>0)award(player,amount,"ELITE_"+tier.toUpperCase(Locale.ROOT),0);
     }
     /** weekly is only meaningful for ENDER_DRAGON — a manually crystal-revived dragon keeps its reduced
      *  vanilla respawn rewards and gives no Shards at all, only the weekly-designated encounter does. */
     void rewardBoss(Player player,org.bukkit.entity.EntityType type,boolean weekly){
-        if(type==org.bukkit.entity.EntityType.ENDER_DRAGON){if(weekly)award(player,10,"DRAGON",config.getLong("earning.dragon-cooldown-hours",168)*3600000L);}
-        else if(type==org.bukkit.entity.EntityType.WITHER)award(player,10,"WITHER",config.getLong("earning.wither-cooldown-hours",24)*3600000L);
-        else if(type==org.bukkit.entity.EntityType.WARDEN)award(player,ThreadLocalRandom.current().nextInt(3,6),"WARDEN",config.getLong("earning.warden-cooldown-hours",24)*3600000L);
+        if(type==org.bukkit.entity.EntityType.ENDER_DRAGON){if(weekly)award(player,5,"DRAGON",config.getLong("earning.dragon-cooldown-hours",168)*3600000L);}
+        else if(type==org.bukkit.entity.EntityType.WITHER)award(player,5,"WITHER",config.getLong("earning.wither-cooldown-hours",24)*3600000L);
+        else if(type==org.bukkit.entity.EntityType.WARDEN)award(player,ThreadLocalRandom.current().nextInt(2,4),"WARDEN",config.getLong("earning.warden-cooldown-hours",24)*3600000L);
     }
+    /** Every non-playtime shard source funnels through here, so the daily allowance is enforced in exactly
+     *  one place. Passive playtime shards deliberately bypass this method entirely (see playtimeTick) and
+     *  are therefore completely outside the cap, as intended. A reward that would exceed the remaining
+     *  allowance is trimmed to the remainder rather than dropped, so a big kill still pays what it can.
+     *  The cooldown claim is only consumed once the award is actually going to pay out. */
     private void award(Player player,int amount,String source,long cooldown){
-        String id=CoreUtil.id(player);if(cooldown>0&&!db.claimShardCooldown(id,source,cooldown))return;db.addShards(id,amount,source,null);shardMessage(player,"+"+amount+" Shards • "+CoreUtil.pretty(source));if(plugin.settings().sounds(player))player.playSound(player.getLocation(),Sound.BLOCK_AMETHYST_CLUSTER_BREAK,.8f,1.25f);
+        if(amount<=0)return;
+        String id=CoreUtil.id(player);
+        int cap=config.getInt("earning.daily-cap",10);
+        int granted=amount;
+        if(cap>0){
+            int used=db.shardsEarnedSince(id,shardDayStart());
+            int remaining=Math.max(0,cap-used);
+            if(remaining<=0){shardMessage(player,"Daily Shard limit reached ("+cap+"/day). Playtime Shards are unaffected.");return;}
+            granted=Math.min(amount,remaining);
+        }
+        if(cooldown>0&&!db.claimShardCooldown(id,source,cooldown))return;
+        db.addShards(id,granted,source,null);
+        shardMessage(player,"+"+granted+" Shards • "+CoreUtil.pretty(source)+(granted<amount?" (daily limit reached)":""));
+        if(plugin.settings().sounds(player))player.playSound(player.getLocation(),Sound.BLOCK_AMETHYST_CLUSTER_BREAK,.8f,1.25f);
     }
+    /** Start of the current shard day: 12:00 in the configured zone, matching the rest of the server's
+     *  scheduling (Asia/Riyadh). Before noon we are still inside the day that began at noon YESTERDAY. */
+    long shardDayStart(){
+        java.time.ZoneId zone=java.time.ZoneId.of(plugin.getConfig().getString("weekly-dragon.timezone","Asia/Riyadh"));
+        java.time.LocalTime resetAt=java.time.LocalTime.of(config.getInt("earning.daily-reset-hour",12),0);
+        java.time.ZonedDateTime now=java.time.ZonedDateTime.now(zone);
+        java.time.ZonedDateTime start=now.with(resetAt);
+        if(now.isBefore(start))start=start.minusDays(1);
+        return start.toInstant().toEpochMilli();
+    }
+    /** Read-only view for /shards so players can see where they stand. */
+    int dailyShardsUsed(Player player){return db.shardsEarnedSince(CoreUtil.id(player),shardDayStart());}
+    int dailyShardCap(){return config.getInt("earning.daily-cap",10);}
 
     @EventHandler public void interact(PlayerInteractEvent event){
         Player player=event.getPlayer();activity(player);ItemStack item=event.getItem();if(item==null||!belongsTo(player,item))return;
