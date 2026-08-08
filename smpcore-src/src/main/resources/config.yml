@@ -105,7 +105,11 @@ spawners:
   # as an internal count (rendered "Blaze x50"). A new representative appears only once the current one
   # reaches the cap. Throughput is limited by the CYCLE alone -- never by how many mobs are already there.
   virtual-stack-cap: 100
-  virtual-merge-radius: 6
+  # Larger than the spawn range on purpose: representatives drift (Blazes fly), and a farm should settle
+  # into as few entities as the cap allows rather than leaving stacks stranded side by side.
+  virtual-merge-radius: 12
+  # How often stacked representatives are consolidated, in ticks.
+  consolidate-interval-ticks: 40
 
 graves:
   lifetime-hours: 48
@@ -320,6 +324,12 @@ net-worth:
 events:
   automatic: true
   protected-area-radius: 100
+
+nametags:
+  # How often balance/faction lines under player names are refreshed, in ticks. Deliberately slow --
+  # these do not need sub-second accuracy, and each player carries at most two shared displays whose
+  # per-viewer visibility is toggled rather than respawned.
+  refresh-ticks: 40
 
 settings:
   native-dialogs: true

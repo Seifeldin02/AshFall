@@ -120,10 +120,24 @@ final class SpawnerService {
      *  throughput is limited by the spawn CYCLE, not by an entity budget, so it does not slow down or stop
      *  because mobs are already present. Natural world spawners are untouched and behave exactly as vanilla.
      */
+    private org.bukkit.scheduler.BukkitTask consolidateTask;
+    void startConsolidation(){
+        long period=Math.max(20,plugin.getConfig().getLong("spawners.consolidate-interval-ticks",40));
+        consolidateTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::consolidateStacks,period,period);
+    }
+    void stopConsolidation(){if(consolidateTask!=null)consolidateTask.cancel();}
     void spawned(SpawnerSpawnEvent event){
         if(event.getEntity() instanceof Enemy&&pauseHostileSpawner(event.getSpawner())){event.setCancelled(true);return;}
         CreatureSpawner spawner=event.getSpawner();
         if(!spawner.getPersistentDataContainer().has(placedKey,PersistentDataType.BYTE))return;
+        /** Re-tune on every cycle, not just at placement. Tuning used to happen ONLY when a spawner was
+         *  placed or stacked, so every spawner that already existed kept vanilla's 200-800 tick delay --
+         *  an average of 500 ticks, i.e. the 25s that was measured, instead of the intended 5-10s. Doing it
+         *  here is cheap and makes every existing placed spawner heal itself on its next cycle. */
+        if(spawner.getMinSpawnDelay()!=plugin.getConfig().getInt("spawners.min-delay-ticks",100)
+                ||spawner.getMaxSpawnDelay()!=plugin.getConfig().getInt("spawners.max-delay-ticks",200)){
+            tunePlacedSpawner(spawner);spawner.update(true);
+        }
         if(!(event.getEntity() instanceof LivingEntity spawned))return;
         /** One spawner cycle contributes its whole stack size at once, so a x10 spawner adds 10 to the
          *  virtual count per cycle -- the stack multiplier lives here and nowhere else, which is what keeps
@@ -140,6 +154,43 @@ final class SpawnerService {
     }
     /** Nearest living representative of the same type that still has room. Deliberately a small radius:
      *  representatives should cluster at the farm, not merge across a whole chunk. */
+    /** Consolidation sweep. Merging previously happened only at the instant of spawning, so two
+     *  representatives that were created apart and later drifted together (Blazes especially, since they
+     *  fly) stayed separate forever -- the reported "Blaze x30 and Blaze x40 side by side". This runs on a
+     *  timer and folds any compatible neighbouring stack into the fullest one, so a farm naturally settles
+     *  into as few entities as the cap allows. */
+    void consolidateStacks(){
+        int cap=Math.max(2,plugin.getConfig().getInt("spawners.virtual-stack-cap",100));
+        double radius=Math.max(2,plugin.getConfig().getDouble("spawners.virtual-merge-radius",12));
+        for(World world:plugin.getServer().getWorlds()){
+            java.util.List<LivingEntity> stacked=new java.util.ArrayList<>();
+            for(Entity entity:world.getEntities())
+                if(entity instanceof LivingEntity living&&!living.isDead()&&virtualStack(living)>0)stacked.add(living);
+            if(stacked.size()<2)continue;
+            /** Fullest first, so smaller stacks are absorbed upward and we never split a big one. */
+            stacked.sort((a,b)->Integer.compare(virtualStack(b),virtualStack(a)));
+            java.util.Set<UUID> consumed=new java.util.HashSet<>();
+            for(LivingEntity host:stacked){
+                if(consumed.contains(host.getUniqueId()))continue;
+                int hostStack=virtualStack(host);
+                if(hostStack>=cap)continue;
+                for(LivingEntity other:stacked){
+                    if(other==host||consumed.contains(other.getUniqueId())||other.isDead())continue;
+                    if(other.getType()!=host.getType()||!other.getWorld().equals(host.getWorld()))continue;
+                    if(other.getLocation().distanceSquared(host.getLocation())>radius*radius)continue;
+                    int room=cap-hostStack;
+                    if(room<=0)break;
+                    int move=Math.min(room,virtualStack(other));
+                    if(move<=0)continue;
+                    hostStack+=move;
+                    int left=virtualStack(other)-move;
+                    if(left<=0){consumed.add(other.getUniqueId());other.remove();}
+                    else setVirtualStack(other,left);
+                }
+                if(hostStack!=virtualStack(host))setVirtualStack(host,hostStack);
+            }
+        }
+    }
     private LivingEntity findStackHost(LivingEntity spawned,int cap){
         double radius=Math.max(2,plugin.getConfig().getDouble("spawners.virtual-merge-radius",6));
         LivingEntity best=null;int bestStack=-1;

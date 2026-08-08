@@ -46,7 +46,14 @@ final class SettingsService implements Listener {
         final String key;final boolean fallback;
         TpaKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
-    private enum Page { MAIN, CONFIRMATIONS, TPA }
+    /** Viewer-side nametag extras. Independent on purpose: a player may want balances, faction tags,
+     *  both, or neither, and the choice only affects what THEY see above other players. */
+    enum NametagKind {
+        BALANCES("nametag_balances",false), FACTIONS("nametag_factions",false);
+        final String key;final boolean fallback;
+        NametagKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
+    }
+    private enum Page { MAIN, CONFIRMATIONS, TPA, NAMETAGS }
     private record Holder(Page page) implements InventoryHolder {@Override public Inventory getInventory(){return null;}}
     private record Toggle(String key,String title,Material icon,boolean fallback) {}
 
@@ -82,6 +89,7 @@ final class SettingsService implements Listener {
             if(!nativeDialogsSupported(player)){openChest(player,Page.MAIN);return true;}
             if(args.length>1&&args[1].equalsIgnoreCase("confirmations"))openNative(player,Page.CONFIRMATIONS);
             else if(args.length>1&&args[1].equalsIgnoreCase("tpa"))openNative(player,Page.TPA);
+            else if(args.length>1&&args[1].equalsIgnoreCase("nametags"))openNative(player,Page.NAMETAGS);
             else if(args.length>1&&args[1].equalsIgnoreCase("account"))plugin.account().openNative(player,args.length>2?args[2]:"");
             else openNative(player,Page.MAIN);
             return true;
@@ -91,6 +99,7 @@ final class SettingsService implements Listener {
         if(args.length>0&&args[0].equalsIgnoreCase("chest")){openChest(player,Page.MAIN);return true;}
         if(args.length>0&&args[0].equalsIgnoreCase("confirmations")){open(player,Page.CONFIRMATIONS);return true;}
         if(args.length>0&&args[0].equalsIgnoreCase("tpa")){open(player,Page.TPA);return true;}
+        if(args.length>0&&args[0].equalsIgnoreCase("nametags")){open(player,Page.NAMETAGS);return true;}
         if(args.length>2&&args[0].equalsIgnoreCase("set")){
             String key=args[1].toLowerCase(Locale.ROOT),value=args[2].toLowerCase(Locale.ROOT);
             if(!validKey(key)||!Set.of("on","off").contains(value)){CoreUtil.error(player,"Unknown setting selection.");return true;}
@@ -112,7 +121,7 @@ final class SettingsService implements Listener {
         }
         open(player,Page.MAIN);return true;
     }
-    private Page pageFor(String key){if(key.startsWith("confirm_"))return Page.CONFIRMATIONS;if(Arrays.stream(TpaKind.values()).anyMatch(kind->kind.key.equals(key)))return Page.TPA;return Page.MAIN;}
+    private Page pageFor(String key){if(key.startsWith("confirm_"))return Page.CONFIRMATIONS;if(Arrays.stream(TpaKind.values()).anyMatch(kind->kind.key.equals(key)))return Page.TPA;if(Arrays.stream(NametagKind.values()).anyMatch(kind->kind.key.equals(key)))return Page.NAMETAGS;return Page.MAIN;}
 
     void open(Player player){open(player,Page.MAIN);}
     void openChestRoot(Player player){if(!locked(player,true))openChest(player,Page.MAIN);}
@@ -137,12 +146,16 @@ final class SettingsService implements Listener {
                 buttons.add(nativeCycle(player));
                 buttons.add(nativeButton("Purchase Confirmations","settings native confirmations"));
                 buttons.add(nativeButton("TPA Requests","settings native tpa"));
+                buttons.add(nativeButton("Nametags","settings native nametags"));
                 buttons.add(nativeButton("Account","settings native account"));
                 buttons.add(nativeButton("Random Travel","rtp"));
                 buttons.add(nativeButton(plugin.teleports().isQueuedForRtp(player)?"Leave RTP Queue":"Join RTP Queue","rtp queue"));
             }else if(page==Page.CONFIRMATIONS){
                 buttons.add(nativeConfirmationToggle(player,null));
                 for(ConfirmationKind kind:ConfirmationKind.values())buttons.add(nativeConfirmationToggle(player,kind));
+                buttons.add(nativeButton("Back","settings native"));
+            }else if(page==Page.NAMETAGS){
+                for(NametagKind kind:NametagKind.values())buttons.add(nativeNametagToggle(player,kind));
                 buttons.add(nativeButton("Back","settings native"));
             }else{
                 buttons.add(nativeTpaToggle(player,TpaKind.OTHER));
@@ -196,6 +209,14 @@ final class SettingsService implements Listener {
                     set(online,kind.key,!enabled(online,kind.key,kind.fallback));openNative(online,Page.TPA);
                 }),ClickCallback.Options.builder().uses(100).build()));
     }
+    private ActionButton nativeNametagToggle(Player player,NametagKind kind){
+        boolean current=enabled(player,kind.key,kind.fallback);
+        return ActionButton.create(stateLabel(prettyNametag(kind),current),Component.empty(),150,DialogAction.customClick((response,audience)->
+                plugin.getServer().getScheduler().runTask(plugin,()->{
+                    Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null||locked(online,true))return;
+                    set(online,kind.key,!enabled(online,kind.key,kind.fallback));openNative(online,Page.NAMETAGS);
+                }),ClickCallback.Options.builder().uses(100).build()));
+    }
     private ActionButton nativeCycle(Player player){
         return ActionButton.create(Component.text("Particles: ",NamedTextColor.WHITE).append(Component.text(CoreUtil.pretty(particles(player)),NamedTextColor.AQUA)),Component.empty(),150,
                 DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
@@ -213,6 +234,7 @@ final class SettingsService implements Listener {
                 form.button("Particle Intensity\n§e"+CoreUtil.pretty(particles(player)));
                 form.button("Purchase Confirmations");
                 form.button("TPA Requests");
+                form.button("Nametags");
                 form.button("Random Travel");
                 form.button(plugin.teleports().isQueuedForRtp(player)?"RTP Queue\n§aQUEUED — tap to leave":"RTP Queue\n§7Tap to join");
                 form.button("Cosmetics");
@@ -220,6 +242,9 @@ final class SettingsService implements Listener {
             }else if(page==Page.CONFIRMATIONS){
                 form.button("All Routine Confirmations\n"+(allConfirmations(player)?"§aON":"§cOFF"));
                 for(ConfirmationKind kind:ConfirmationKind.values())form.button(prettyConfirmation(kind)+"\n"+(confirmationEnabled(player,kind)?"§aON":"§cOFF"));
+                form.button("Back");
+            }else if(page==Page.NAMETAGS){
+                for(NametagKind kind:NametagKind.values())form.button(prettyNametag(kind)+"\n"+(enabled(player,kind.key,kind.fallback)?"§aON":"§cOFF"));
                 form.button("Back");
             }else{
                 boolean factionOn=enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback);
@@ -235,13 +260,17 @@ final class SettingsService implements Listener {
                     else if(clicked==MAIN.size()){cycleParticles(player);openBedrock(player,Page.MAIN);}
                     else if(clicked==MAIN.size()+1)openBedrock(player,Page.CONFIRMATIONS);
                     else if(clicked==MAIN.size()+2)openBedrock(player,Page.TPA);
-                    else if(clicked==MAIN.size()+3)plugin.teleports().rtp(player);
-                    else if(clicked==MAIN.size()+4){plugin.teleports().toggleRtpQueue(player);openBedrock(player,Page.MAIN);}
-                    else if(clicked==MAIN.size()+5)plugin.shards().openCosmetics(player);
-                    else if(clicked==MAIN.size()+6)plugin.account().open(player);
+                    else if(clicked==MAIN.size()+3)openBedrock(player,Page.NAMETAGS);
+                    else if(clicked==MAIN.size()+4)plugin.teleports().rtp(player);
+                    else if(clicked==MAIN.size()+5){plugin.teleports().toggleRtpQueue(player);openBedrock(player,Page.MAIN);}
+                    else if(clicked==MAIN.size()+6)plugin.shards().openCosmetics(player);
+                    else if(clicked==MAIN.size()+7)plugin.account().open(player);
                 }else if(page==Page.CONFIRMATIONS){
                     if(clicked==0){setAllConfirmations(player,!allConfirmations(player));openBedrock(player,Page.CONFIRMATIONS);}
                     else if(clicked>0&&clicked<=ConfirmationKind.values().length){ConfirmationKind kind=ConfirmationKind.values()[clicked-1];set(player,kind.key,!confirmationEnabled(player,kind));openBedrock(player,Page.CONFIRMATIONS);}
+                    else openBedrock(player,Page.MAIN);
+                }else if(page==Page.NAMETAGS){
+                    if(clicked>=0&&clicked<NametagKind.values().length){NametagKind kind=NametagKind.values()[clicked];set(player,kind.key,!enabled(player,kind.key,kind.fallback));openBedrock(player,Page.NAMETAGS);}
                     else openBedrock(player,Page.MAIN);
                 }else{
                     if(clicked==0){set(player,TpaKind.OTHER.key,!enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback));openBedrock(player,Page.TPA);}
@@ -265,6 +294,7 @@ final class SettingsService implements Listener {
         if(page==Page.MAIN){
             for(int i=0;i<MAIN.size();i++){Toggle toggle=MAIN.get(i);inv.setItem(MAIN_SLOTS[i],toggle(toggle.icon(),toggle.title(),enabled(player,toggle.key(),toggle.fallback())));}
             inv.setItem(21,button(Material.ENDER_PEARL,"TPA Requests",List.of("Configure who can send you teleport requests.")));
+            inv.setItem(22,button(Material.NAME_TAG,"Nametags",List.of("Show balances or faction tags under player names.")));
             inv.setItem(23,cycle(Material.FIREWORK_STAR,"Particle Intensity",particles(player)));
             inv.setItem(31,button(Material.REPEATER,"Purchase Confirmations",List.of("Configure each marketplace section.")));
             inv.setItem(39,button(Material.ENDER_PEARL,"Random Travel",List.of("Travel safely in your current dimension.")));
@@ -275,6 +305,10 @@ final class SettingsService implements Listener {
         }else if(page==Page.CONFIRMATIONS){
             inv.setItem(13,toggle(Material.REPEATER,"All Routine Confirmations",allConfirmations(player)));
             int slot=19;for(ConfirmationKind kind:ConfirmationKind.values()){inv.setItem(slot++,stateBlock(prettyConfirmation(kind),confirmationEnabled(player,kind)));}
+            inv.setItem(49,button(Material.ARROW,"Back",List.of()));
+        }else if(page==Page.NAMETAGS){
+            int nameSlot=20;
+            for(NametagKind kind:NametagKind.values())inv.setItem(nameSlot++,tpaChestItem(prettyNametag(kind),nametagHint(kind),enabled(player,kind.key,kind.fallback)));
             inv.setItem(49,button(Material.ARROW,"Back",List.of()));
         }else{
             boolean factionOn=enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback);
@@ -292,12 +326,16 @@ final class SettingsService implements Listener {
         if(holder.page==Page.MAIN){
             for(int i=0;i<MAIN_SLOTS.length;i++)if(slot==MAIN_SLOTS[i]){Toggle toggle=MAIN.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
             if(slot==21)openChest(player,Page.TPA);
+            else if(slot==22)openChest(player,Page.NAMETAGS);
             else if(slot==23){cycleParticles(player);renderChest(event.getInventory(),player,Page.MAIN);}
             else if(slot==31)openChest(player,Page.CONFIRMATIONS);
             else if(slot==39){player.closeInventory();plugin.teleports().rtp(player);}
             else if(slot==40){plugin.teleports().toggleRtpQueue(player);renderChest(event.getInventory(),player,Page.MAIN);}
             else if(slot==41)plugin.shards().openCosmetics(player);
             else if(slot==49)plugin.account().open(player);
+        }else if(holder.page==Page.NAMETAGS){
+            if(slot>=20&&slot<20+NametagKind.values().length){NametagKind kind=NametagKind.values()[slot-20];set(player,kind.key,!enabled(player,kind.key,kind.fallback));renderChest(event.getInventory(),player,Page.NAMETAGS);}
+            else if(slot==49)openChest(player,Page.MAIN);
         }else if(holder.page==Page.CONFIRMATIONS){
             if(slot==13){setAllConfirmations(player,!allConfirmations(player));renderChest(event.getInventory(),player,Page.CONFIRMATIONS);}
             else if(slot>=19&&slot<19+ConfirmationKind.values().length){ConfirmationKind kind=ConfirmationKind.values()[slot-19];set(player,kind.key,!confirmationEnabled(player,kind));renderChest(event.getInventory(),player,Page.CONFIRMATIONS);}
@@ -325,6 +363,8 @@ final class SettingsService implements Listener {
     /** Runtime enforcement of "Auto-Accept requires Faction TPA Requests" lives here, not just in the UI —
      *  callers never need to separately check factionTpaRequests() before trusting this. */
     boolean tpaAutoAcceptFaction(Player player){return factionTpaRequests(player)&&enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback);}
+    boolean showBalanceNametags(Player player){return enabled(player,NametagKind.BALANCES.key,NametagKind.BALANCES.fallback);}
+    boolean showFactionNametags(Player player){return enabled(player,NametagKind.FACTIONS.key,NametagKind.FACTIONS.fallback);}
     boolean auctionNotifications(Player player){return enabled(player,"auction_notifications",true);}
     boolean sounds(Player player){return enabled(player,"sound_notifications",true);}
     void hostileDamage(Player player){hostileDamageAt.put(player.getUniqueId(),System.currentTimeMillis());}
@@ -352,13 +392,15 @@ final class SettingsService implements Listener {
         String next=switch(particles(player)){case"FULL"->"REDUCED";case"REDUCED"->"MINIMAL";default->"FULL";};
         db.preference(CoreUtil.id(player),"particle_intensity",next);CoreUtil.msg(player,"Particle Intensity: "+CoreUtil.pretty(next)+".");
     }
-    private boolean validKey(String key){return MAIN.stream().anyMatch(toggle->toggle.key().equals(key))||Arrays.stream(ConfirmationKind.values()).anyMatch(kind->kind.key.equals(key))||Arrays.stream(TpaKind.values()).anyMatch(kind->kind.key.equals(key));}
-    private boolean defaultFor(String key){if(ConfirmationKind.SHOP.key.equals(key))return false;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
+    private boolean validKey(String key){return MAIN.stream().anyMatch(toggle->toggle.key().equals(key))||Arrays.stream(ConfirmationKind.values()).anyMatch(kind->kind.key.equals(key))||Arrays.stream(TpaKind.values()).anyMatch(kind->kind.key.equals(key))||Arrays.stream(NametagKind.values()).anyMatch(kind->kind.key.equals(key));}
+    private boolean defaultFor(String key){if(ConfirmationKind.SHOP.key.equals(key))return false;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
     private String state(Player player,String key,boolean fallback){return enabled(player,key,fallback)?"ON":"OFF";}
-    private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
+    private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
     private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";};}
     private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"Other Players' TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
-    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";};}
+    private String prettyNametag(NametagKind kind){return switch(kind){case BALANCES->"Show Balances";case FACTIONS->"Show Faction Tags";};}
+    private String nametagHint(NametagKind kind){return switch(kind){case BALANCES->"Show each player's balance under their name.";case FACTIONS->"Show each player's faction tag under their name.";};}
+    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";};}
 
     private void nightVisionTick(){
         for(Player player:plugin.getServer().getOnlinePlayers()){
@@ -410,7 +452,7 @@ final class SettingsService implements Listener {
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest();}
+    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==2&&!defaultFor(NametagKind.BALANCES.key);}
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 
