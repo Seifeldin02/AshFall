@@ -165,7 +165,46 @@ final class BankService implements Listener {
 
     void creditFee(double amount,String player,String detail){db.creditBankRevenue(amount,"FEE",player,detail);}
     void creditSink(double amount,String player,String detail){db.creditBankRevenue(amount,"SINK",player,detail);}
-    boolean payServer(Player player,double amount,String category,String detail){return db.serverPayment(CoreUtil.id(player),amount,category,detail);}
+    /** Every money-out purchase in the plugin funnels through here — shop, luxury/marketplace, merchants,
+     *  Ender Storage tiers, extra homes and Boss Summoning Papers alike — so hooking the announcement at
+     *  this one choke point covers all of them without touching each call site, and it can only ever fire
+     *  on a payment the economy actually accepted. */
+    boolean payServer(Player player,double amount,String category,String detail){
+        boolean paid=db.serverPayment(CoreUtil.id(player),amount,category,detail);
+        if(paid)announceMajorPurchase(player,amount,detail);
+        return paid;
+    }
+    /** Server-wide flex for genuinely large buys. Threshold-gated so it stays an event rather than noise,
+     *  and routed through the same boss-notification preference players already use to opt out of
+     *  server-wide event spam. */
+    private void announceMajorPurchase(Player player,double amount,String detail){
+        double threshold=plugin.getConfig().getDouble("economy.major-purchase-announcement",1_000_000);
+        if(threshold<=0||amount<threshold)return;
+        String what=purchaseLabel(detail);
+        net.kyori.adventure.text.Component line=net.kyori.adventure.text.Component.text("❖ ",net.kyori.adventure.text.format.NamedTextColor.GOLD)
+                .append(net.kyori.adventure.text.Component.text(plugin.nicknames().displayName(player),net.kyori.adventure.text.format.NamedTextColor.YELLOW))
+                .append(net.kyori.adventure.text.Component.text(" just spent ",net.kyori.adventure.text.format.NamedTextColor.GRAY))
+                .append(net.kyori.adventure.text.Component.text(CoreUtil.money(amount),net.kyori.adventure.text.format.NamedTextColor.GOLD,net.kyori.adventure.text.format.TextDecoration.BOLD))
+                .append(net.kyori.adventure.text.Component.text(" on ",net.kyori.adventure.text.format.NamedTextColor.GRAY))
+                .append(net.kyori.adventure.text.Component.text(what,net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE))
+                .append(net.kyori.adventure.text.Component.text(".",net.kyori.adventure.text.format.NamedTextColor.GRAY));
+        for(Player online:plugin.getServer().getOnlinePlayers()){
+            if(!plugin.settings().bossNotifications(online))continue;
+            online.sendMessage(line);
+            online.playSound(online.getLocation(),org.bukkit.Sound.BLOCK_NOTE_BLOCK_CHIME,.5f,1.4f);
+        }
+        plugin.getLogger().info("[MajorPurchase] "+player.getName()+" spent "+CoreUtil.money(amount)+" on "+what+" ("+detail+")");
+    }
+    /** Turns the internal ledger detail token into something readable, with a deliberately punchy name for
+     *  a Summoning Paper since that purchase is itself a server-wide event. */
+    private String purchaseLabel(String detail){
+        if(detail==null||detail.isBlank())return "something extravagant";
+        String upper=detail.toUpperCase(Locale.ROOT);
+        if(upper.contains("SUMMON")||upper.contains("OMEN"))return "a World Boss Summoning Paper";
+        if(upper.startsWith("ENDER_STORAGE_TIER_"))return "an Ender Storage expansion";
+        if(upper.contains("HOME"))return "an extra home";
+        return CoreUtil.pretty(detail.replace('_',' ').toLowerCase(Locale.ROOT));
+    }
     boolean refundServerPayment(Player player,double amount,String category,String detail){return db.refundServerPayment(CoreUtil.id(player),amount,category,detail);}
     boolean payFaction(long faction,double amount,String player,String detail){return db.factionServerPayment(faction,amount,player,detail);}
     boolean payShopSeller(Player player,double amount,String detail){

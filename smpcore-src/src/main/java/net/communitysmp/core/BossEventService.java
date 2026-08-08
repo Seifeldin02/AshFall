@@ -57,6 +57,16 @@ final class BossEventService {
     /** Last moment an eligible player was within despawn range of this elite. Elites expire on continuous
      *  abandonment (see expireElite), not on absolute age, so this resets whenever someone is around. */
     private final Map<UUID, Long> eliteLastPlayerNear = new HashMap<>();
+    /** Target-commitment window and out-of-range grace, per boss (see onWorldBossTarget/worldBossTargetTick). */
+    private final Map<UUID, Long> bossTargetSince = new HashMap<>();
+    private final Map<UUID, Long> bossTargetOutOfRangeSince = new HashMap<>();
+    /** First tick at which an engaged target became genuinely unpathable, and the last breakout/leap time. */
+    private final Map<UUID, Long> bossUnreachableSince = new HashMap<>();
+    private final Map<UUID, Long> bossLeapCooldown = new HashMap<>();
+    /** End time for a player-summoned boss running ALONGSIDE a natural event (see startEvent's standalone
+     *  branch). Zero when no standalone encounter is active. Kept separate from eventEnds so the concurrent
+     *  natural event's own duration is never affected. */
+    private long standaloneBossEnds;
     private final Map<UUID, String> lastTarget = new HashMap<>();
     private final Map<UUID, Integer> rangedHits = new HashMap<>();
     private final Map<UUID, BossBar> healthBars = new HashMap<>();
@@ -90,9 +100,58 @@ final class BossEventService {
      *  never fires this event, so cancelling non-player targets here only ever blocks the AI's own automatic
      *  mob-targeting — it never interferes with that player-combat retargeting. */
     void onWorldBossTarget(EntityTargetLivingEntityEvent e){
-        if(!(e.getEntity() instanceof IronGolem golem))return;
-        if(!isWorldBossTier(golem.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))return;
-        if(!(e.getTarget() instanceof Player))e.setCancelled(true);
+        if(!(e.getEntity() instanceof LivingEntity living))return;
+        String tier=living.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);
+        if(!isWorldBossTier(tier))return;
+        /** No world boss ever picks its own non-player target: hostile mobs are a free distraction that can
+         *  be kited in to stall a fight (the Colossus was the worst offender via vanilla's
+         *  IronGolemAttackHostilesGoal, but the rule is sound for all three). */
+        if(!(e.getTarget() instanceof Player player)){e.setCancelled(true);return;}
+        /** Out-of-range acquisition is refused outright, so a boss can't latch onto someone who merely
+         *  wandered near the arena, and — combined with the stability window in worldBossTargetTick — it
+         *  can't be yanked between distant players either. */
+        double range=bosses.getDouble("world-boss-targeting.range",50);
+        if(!player.getWorld().equals(living.getWorld())||player.getLocation().distanceSquared(living.getLocation())>range*range||!validBossTarget(player)){e.setCancelled(true);return;}
+        UUID id=living.getUniqueId();
+        Long locked=bossTargetSince.get(id);
+        Player current=living instanceof Mob mob&&mob.getTarget() instanceof Player p?p:null;
+        long stability=(long)(bosses.getDouble("world-boss-targeting.target-stability-seconds",4)*1000);
+        /** Commit to the current target for a short window rather than flipping on every incoming hit —
+         *  the old behavior (retarget on any damage, with no range limit) made the boss visibly indecisive
+         *  in group fights while still never truly losing anyone. */
+        if(current!=null&&!current.equals(player)&&locked!=null&&System.currentTimeMillis()-locked<stability&&validBossTarget(current)
+                &&current.getLocation().distanceSquared(living.getLocation())<=range*range){e.setCancelled(true);return;}
+        bossTargetSince.put(id,System.currentTimeMillis());
+    }
+    /** Spectators, dead players and staff in creative/privileged mode are never valid boss targets. */
+    private boolean validBossTarget(Player player){
+        return player!=null&&player.isOnline()&&!player.isDead()&&player.getGameMode()!=GameMode.SPECTATOR
+                &&player.getGameMode()!=GameMode.CREATIVE&&!plugin.privileged(player);
+    }
+    /** Keeps targeting honest every visual tick: drops a target that has been out of range (or invalid)
+     *  for lose-target-seconds and re-acquires the nearest valid player, so a boss neither holds a
+     *  permanent lock on someone who ran away nor stands idle while a valid fighter is right next to it. */
+    private void worldBossTargetTick(LivingEntity boss){
+        if(!(boss instanceof Mob mob))return;
+        double range=bosses.getDouble("world-boss-targeting.range",50),rangeSq=range*range;
+        UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
+        Player current=mob.getTarget() instanceof Player p?p:null;
+        if(current!=null&&validBossTarget(current)&&current.getWorld().equals(boss.getWorld())&&current.getLocation().distanceSquared(boss.getLocation())<=rangeSq){
+            bossTargetOutOfRangeSince.remove(id);return;
+        }
+        if(current!=null){
+            long since=bossTargetOutOfRangeSince.computeIfAbsent(id,key->now);
+            if(now-since<(long)(bosses.getDouble("world-boss-targeting.lose-target-seconds",3)*1000))return;
+        }
+        bossTargetOutOfRangeSince.remove(id);
+        Player nearest=null;double best=rangeSq;
+        for(Player candidate:boss.getWorld().getPlayers()){
+            if(!validBossTarget(candidate))continue;
+            double d=candidate.getLocation().distanceSquared(boss.getLocation());
+            if(d<=best){best=d;nearest=candidate;}
+        }
+        if(nearest!=null){mob.setTarget(nearest);bossTargetSince.put(id,now);}
+        else if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);}
     }
     void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
 
@@ -168,7 +227,7 @@ final class BossEventService {
         LivingEntity boss = null;
         try {
             boss = spawnBossEntity(world, loc, kind); double rawHp = bosses.getDouble(prefix+".health", 18000); double hp = clampHealth(rawHp); boss.getAttribute(Attribute.MAX_HEALTH).setBaseValue(hp); boss.setHealth(hp); if(boss.getAttribute(Attribute.ATTACK_DAMAGE)!=null)boss.getAttribute(Attribute.ATTACK_DAMAGE).setBaseValue(bosses.getDouble(prefix+".damage", 18)); if(kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)boss.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, Integer.MAX_VALUE, 0, false, false));
-            if(boss.getAttribute(Attribute.FOLLOW_RANGE)!=null)boss.getAttribute(Attribute.FOLLOW_RANGE).setBaseValue(boss.getAttribute(Attribute.FOLLOW_RANGE).getBaseValue()*2);
+            if(boss.getAttribute(Attribute.FOLLOW_RANGE)!=null)boss.getAttribute(Attribute.FOLLOW_RANGE).setBaseValue(bosses.getDouble("world-boss-targeting.range",50));
             if((kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)&&boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE)!=null)boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE).setBaseValue(boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE).getBaseValue()+0.25);
             boss.getPersistentDataContainer().set(tierKey, PersistentDataType.STRING, tierFor(kind)); boss.getPersistentDataContainer().set(abilityKey, PersistentDataType.STRING, signatureAbility(kind)); boss.getPersistentDataContainer().set(phaseKey, PersistentDataType.INTEGER, 0); boss.setRemoveWhenFarAway(false); boss.customName(Component.text("⚔ " + displayName(kind), colorFor(kind))); boss.setCustomNameVisible(true); boss.setGlowing(true);
             boss.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,origin.name());
@@ -209,7 +268,7 @@ final class BossEventService {
             if(clean){
                 UUID id=living.getUniqueId();
                 living.remove();
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 removed++;
                 CoreUtil.msg(sender,"  removed "+detail);
@@ -380,7 +439,7 @@ final class BossEventService {
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
 
     void onDeath(EntityDeathEvent e) {
-        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
+        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
         if (tier != null) { rewardElite(e, killer, tier); return; }
         if(isVanillaBoss(mob)){rewardVanillaBoss(e,mob,killer);return;}if(mob instanceof Warden)rewardWardenShards(mob,killer);if (killer == null) return;
         double penalty = friendlyPenalty(mob); if (penalty > 0) { double charged = db.takeUpTo(CoreUtil.id(killer), penalty); if(charged>0){plugin.bank().creditSink(charged,CoreUtil.id(killer),"FRIENDLY_"+mob.getType().name());db.recordEconomy(CoreUtil.id(killer),"FRIENDLY_PENALTY",-charged,mob.getType().name());killer.sendActionBar(Component.text("-" + CoreUtil.money(charged) + " " + CoreUtil.pretty(mob.getType().name()), NamedTextColor.RED));} return; } if (spawner) return;
@@ -577,10 +636,29 @@ final class BossEventService {
     boolean startEvent(EventType requested, Location location,Origin origin) {return startEvent(requested,defaultTier(requested),location,origin,null);}
     boolean startEvent(EventType requested, Location location,Origin origin,WorldBossKind kind) {return startEvent(requested,defaultTier(requested),location,origin,kind);}
     boolean startEvent(EventType requested,EventTier selectedTier,Location location,Origin origin) { return startEvent(requested,selectedTier,location,origin,null); }
-    boolean startEvent(EventType requested,EventTier selectedTier,Location location,Origin origin,WorldBossKind requestedKind) { EventType type = requested == EventType.HUNT ? EventType.WORLD_BOSS : requested; WorldBossKind kind = type==EventType.WORLD_BOSS ? (requestedKind!=null?requestedKind:randomWorldBossKind()) : null;if(type==EventType.KOTH&&origin!=Origin.ADMIN_SUMMONED&&onlineFactionCount()<(selectedTier==EventTier.RARE?3:2))return false; if (eventType != null||type==EventType.WORLD_BOSS&&worldBoss()!=null) return false; World world = type==EventType.WORLD_BOSS?worldFor(kind):overworld(); if (world == null) return false;Location selected=location!=null?location:selectedTier==EventTier.MICRO?randomSafe(world,200,650):randomSafe(world,type==EventType.KOTH?500:800,type==EventType.KOTH?2000:3500);if(selected==null||!world.equals(selected.getWorld())||protectedEventLocation(selected))return false; eventType = type;eventTier=selectedTier;eventOrigin=origin;long fallback=selectedTier==EventTier.MICRO?30:selectedTier==EventTier.MAJOR?45:120;long duration=type==EventType.WORLD_BOSS?bosses.getLong(configPrefix(kind)+".event-duration-minutes",120):events.getLong("tiers."+selectedTier.name().toLowerCase(Locale.ROOT)+".duration-minutes",fallback);long fullInterval=origin==Origin.NATURAL?randomRemaining(selectedTier):0;activeTierNextDelay=origin==Origin.NATURAL?Math.max(300000L,fullInterval-duration*60000L):0;eventEnds = System.currentTimeMillis() + duration * 60000L; eventScores.clear(); scoreNames.clear(); eventParticipants.clear(); eventEarnings.clear(); eventCenter = selected;
+    boolean startEvent(EventType requested,EventTier selectedTier,Location location,Origin origin,WorldBossKind requestedKind) { EventType type = requested == EventType.HUNT ? EventType.WORLD_BOSS : requested; WorldBossKind kind = type==EventType.WORLD_BOSS ? (requestedKind!=null?requestedKind:randomWorldBossKind()) : null;if(type==EventType.KOTH&&origin!=Origin.ADMIN_SUMMONED&&onlineFactionCount()<(selectedTier==EventTier.RARE?3:2))return false; if(type==EventType.WORLD_BOSS&&worldBoss()!=null){if(origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"another world boss is still active");return false;}
+        /** One player-summoned world boss may run ALONGSIDE one natural non-boss event -- a paid summon
+         *  should not be silently eaten just because a Treasure Drop happens to be running. It runs as a
+         *  standalone encounter (see standaloneBossEnds) and deliberately does NOT take the event slot, so
+         *  the natural event's own state, timers and rewards are left completely untouched. Two world
+         *  bosses at once remain impossible via the check above. */
+        boolean standaloneBoss=false;
+        if(eventType!=null){
+            if(type==EventType.WORLD_BOSS&&origin!=Origin.NATURAL&&eventType!=EventType.WORLD_BOSS)standaloneBoss=true;
+            else{if(type==EventType.WORLD_BOSS&&origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"a "+eventType+" event is still running");return false;}
+        } World world = type==EventType.WORLD_BOSS?worldFor(kind):overworld(); if (world == null) return false;Location selected=location!=null?location:type==EventType.WORLD_BOSS?randomSafeBossSpawn(world,bosses.getInt(configPrefix(kind)+".spawn-radius-min",1200),bosses.getInt(configPrefix(kind)+".spawn-radius-max",4000)):selectedTier==EventTier.MICRO?randomSafe(world,200,650):randomSafe(world,type==EventType.KOTH?500:800,type==EventType.KOTH?2000:3500);
+        if(selected==null&&type==EventType.WORLD_BOSS){if(origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"no open terrain far enough from protected land");return false;}if(selected==null||!world.equals(selected.getWorld())||protectedEventLocation(selected))return false; if(standaloneBoss){
+            LivingEntity solo=spawnWorldBoss(selected,origin,kind);
+            if(solo==null)return false;
+            standaloneBossEnds=System.currentTimeMillis()+bosses.getLong(configPrefix(kind)+".event-duration-minutes",120)*60000L;
+            broadcastWorldEvent("⚔ WORLD BOSS",awakenLine(kind),"Summoned while another event is running — both are live.","Last seen in a "+CoreUtil.pretty(selected.getBlock().getBiome().getKey().getKey())+" biome.");
+            persistWorldBoss();
+            return true;
+        }
+        eventType = type;eventTier=selectedTier;eventOrigin=origin;long fallback=selectedTier==EventTier.MICRO?30:selectedTier==EventTier.MAJOR?45:120;long duration=type==EventType.WORLD_BOSS?bosses.getLong(configPrefix(kind)+".event-duration-minutes",120):events.getLong("tiers."+selectedTier.name().toLowerCase(Locale.ROOT)+".duration-minutes",fallback);long fullInterval=origin==Origin.NATURAL?randomRemaining(selectedTier):0;activeTierNextDelay=origin==Origin.NATURAL?Math.max(300000L,fullInterval-duration*60000L):0;eventEnds = System.currentTimeMillis() + duration * 60000L; eventScores.clear(); scoreNames.clear(); eventParticipants.clear(); eventEarnings.clear(); eventCenter = selected;
         switch (type) { case WORLD_BOSS -> { LivingEntity boss = spawnWorldBoss(eventCenter,origin,kind); if (boss == null){clearFailedEvent();return false;}eventCenter = boss.getLocation(); } case ELITE_HUNT -> { String eliteTier=selectedTier==EventTier.MICRO?"rare":selectedTier==EventTier.MAJOR?"miniboss":"legendary";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere."); case KOTH -> broadcastWorldEvent("♜ WORLD EVENT • KING OF THE HILL", "Hold the center for your faction until time expires.", locationLine() + " • claims remain protected"); case TREASURE -> { placeTreasure(); broadcastWorldEvent("✦ WORLD EVENT • TREASURE DROP", "Follow the tracker and open the hidden cache.", "Biome: " + CoreUtil.pretty(eventCenter.getBlock().getBiome().getKey().getKey()) + " • rough X " + rough(eventCenter.getBlockX(), 250) + ", Z " + rough(eventCenter.getBlockZ(), 250)); } default -> { } }
         if(origin==Origin.NATURAL){rememberNatural(type);scheduledEvents.put(selectedTier,chooseNatural(selectedTier));}
-        placeLandmark(type);for (Player p : plugin.getServer().getOnlinePlayers()) if(plugin.settings().bossNotifications(p))CoreUtil.msg(p, "Use /events for instructions or /events track off to disable navigation."); persistEvent();persistEventTimers(); return true;
+        for (Player p : plugin.getServer().getOnlinePlayers()) if(plugin.settings().bossNotifications(p))CoreUtil.msg(p, "Use /events for instructions or /events track off to disable navigation."); persistEvent();persistEventTimers(); return true;
     }
     private EventTier defaultTier(EventType type){return type==EventType.WORLD_BOSS||type==EventType.KOTH?EventTier.RARE:EventTier.MAJOR;}
     private int eventInt(String path,int fallback){return events.getInt("tiers."+eventTier.name().toLowerCase(Locale.ROOT)+"."+path,events.getInt(path,fallback));}
@@ -592,9 +670,50 @@ final class BossEventService {
      *  statistically triangulate someone's base, which is exactly the leak this anchors away from. */
     private Location eventAnchor(World world){Location configured=plugin.teleports().spawn();if(configured!=null&&configured.getWorld()!=null&&configured.getWorld().equals(world))return configured;return world.getSpawnLocation();}
     private Location randomSafe(World world, int min, int max) { Location anchor=eventAnchor(world); for (int i = 0; i < 48; i++) { double angle = Math.random() * Math.PI * 2; int distance = ThreadLocalRandom.current().nextInt(min, max + 1); int x=anchor.getBlockX()+(int)Math.round(Math.cos(angle)*distance),z=anchor.getBlockZ()+(int)Math.round(Math.sin(angle)*distance); Location loc = CoreUtil.findSafeAny(world, x, z); if (loc != null && !protectedEventLocation(loc)) return loc; } return null; }
+    /** World-boss placement, deliberately stricter than generic event placement. A wild boss must never
+     *  land near anyone's protected land, so this enforces a large explicit standoff
+     *  (world-boss-spawn.min-distance-from-protected, default 2000) measured against every spawn region and
+     *  faction claim, and additionally requires genuinely open terrain -- a solid floor with real headroom --
+     *  so a boss never materialises inside a cave, a ravine wall, or a one-block pocket it then has to
+     *  smash its way out of. The search is hard-bounded by max-attempts; if nothing qualifies it returns
+     *  null and the caller POSTPONES the event rather than forcing a bad spawn. */
+    private Location randomSafeBossSpawn(World world,int min,int max){
+        Location anchor=eventAnchor(world);
+        int attempts=Math.max(8,bosses.getInt("world-boss-spawn.max-attempts",64));
+        double standoff=Math.max(0,bosses.getDouble("world-boss-spawn.min-distance-from-protected",2000));
+        for(int i=0;i<attempts;i++){
+            double angle=Math.random()*Math.PI*2;
+            int distance=ThreadLocalRandom.current().nextInt(min,max+1);
+            int x=anchor.getBlockX()+(int)Math.round(Math.cos(angle)*distance),z=anchor.getBlockZ()+(int)Math.round(Math.sin(angle)*distance);
+            Location loc=CoreUtil.findSafeAny(world,x,z);
+            if(loc==null||protectedEventLocation(loc))continue;
+            if(standoff>0&&(plugin.spawnClaims().near(loc,(int)standoff)||factions.nearClaim(loc,(int)standoff)))continue;
+            if(!openBossTerrain(loc))continue;
+            return loc;
+        }
+        return null;
+    }
+    /** Solid ground underfoot plus continuous clear air above -- rejects caves and cramped pockets. */
+    private boolean openBossTerrain(Location loc){
+        int headroom=Math.max(2,bosses.getInt("world-boss-spawn.required-headroom",6));
+        if(!loc.clone().subtract(0,1,0).getBlock().getType().isSolid())return false;
+        for(int dy=0;dy<headroom;dy++){
+            Block b=loc.clone().add(0,dy,0).getBlock();
+            if(!b.getType().isAir()&&!b.isLiquid())return false;
+        }
+        return true;
+    }
+    /** Keeps a natural world boss SCHEDULED (rather than swapping it for another event type, which is what
+     *  the generic failure path does) and simply tries again later -- "postpone", per spec. */
+    private void postponeNaturalWorldBoss(EventTier tier,String why){
+        long delay=Math.max(1,bosses.getLong("world-boss-spawn.postpone-minutes",10))*60000L;
+        scheduledEvents.put(tier,EventType.WORLD_BOSS);
+        eventRemaining.put(tier,delay);
+        persistEventTimers();
+        plugin.getLogger().info("[WorldBoss] Natural world boss postponed "+(delay/60000L)+"m: "+why);
+    }
     private int eventProtectionRadius(){return Math.max(100,plugin.getConfig().getInt("events.protected-area-radius",100));}
     private boolean protectedEventLocation(Location location){int radius=eventProtectionRadius();return plugin.spawnClaims().near(location,radius)||factions.nearClaim(location,radius);}
-    private void placeLandmark(EventType type) { if (!events.getBoolean("landmarks-enabled", true) || eventCenter == null || factions.claimAt(eventCenter) != null) return; Material floor = switch (type) { case RESOURCE_RUSH -> Material.CUT_COPPER; case WORLD_BOSS, HUNT, ELITE_HUNT -> Material.POLISHED_BLACKSTONE_BRICKS; case KOTH -> Material.STONE_BRICKS; case TREASURE -> Material.MOSSY_STONE_BRICKS; }; Material pillar = (type == EventType.WORLD_BOSS || type == EventType.ELITE_HUNT) ? Material.CHISELED_POLISHED_BLACKSTONE : Material.CHISELED_STONE_BRICKS; int y = eventCenter.getBlockY() - 1; for (int x = -2; x <= 2; x++) for (int z = -2; z <= 2; z++) if (Math.abs(x) == 2 || Math.abs(z) == 2) eventCenter.getWorld().getBlockAt(eventCenter.getBlockX() + x, y, eventCenter.getBlockZ() + z).setType(floor, false); for (int x : new int[]{-2, 2}) for (int z : new int[]{-2, 2}) { eventCenter.getWorld().getBlockAt(eventCenter.getBlockX() + x, y + 1, eventCenter.getBlockZ() + z).setType(pillar, false); eventCenter.getWorld().getBlockAt(eventCenter.getBlockX() + x, y + 2, eventCenter.getBlockZ() + z).setType(Material.LANTERN, false); } }
     /** Every tier now gets the Ashfall Cache Trophy (previously MICRO-only excluded) plus a tier-appropriate
      *  guaranteed item beyond the scaled gems, so the barrel itself — not just whoever happens to find it
      *  fastest — carries real value against the purchase price: MICRO gets gold blocks, MAJOR gets a Totem of
@@ -624,6 +743,11 @@ final class BossEventService {
     }
     private void tick() {
         long now=System.currentTimeMillis();persistWorldBoss();tickHints(now);tickEventTimers(now);refreshSummonScrollLore();
+        /** A standalone (player-summoned) boss has no event slot to expire it, so it is timed out here. */
+        if(standaloneBossEnds>0){
+            if(worldBoss()==null)standaloneBossEnds=0;
+            else if(now>=standaloneBossEnds){standaloneBossEnds=0;despawnWorldBoss();}
+        }
         if(worldBossId==null&&forcedBossChunkSet)releaseBossChunk();
         if(eventType==EventType.WORLD_BOSS&&worldBoss()==null&&worldBossChunkObservedEmpty()){plugin.getLogger().warning("World boss event had no boss entity; recovering event state.");finishEvent(false);return;}
         if(eventType!=null){if(now>=eventEnds)finishEvent(false);else if(eventType==EventType.KOTH)tickKoth();return;}
@@ -648,7 +772,7 @@ final class BossEventService {
     private int onlineFactionCount(){Set<Long> ids=new HashSet<>();for(Player player:plugin.getServer().getOnlinePlayers()){if(player.getGameMode()==GameMode.SPECTATOR)continue;Database.FactionRow faction=db.factionOf(CoreUtil.id(player));if(faction!=null)ids.add(faction.id());}return ids.size();}
     private long randomRemaining(EventTier tier){String path="tiers."+tier.name().toLowerCase(Locale.ROOT);long fallbackMin=tier==EventTier.MICRO?1:tier==EventTier.MAJOR?12:72,fallbackMax=tier==EventTier.MICRO?4:tier==EventTier.MAJOR?36:120;long min=Math.max(1,events.getLong(path+".interval-active-hours-min",fallbackMin)),max=Math.max(min,events.getLong(path+".interval-active-hours-max",fallbackMax));return ThreadLocalRandom.current().nextLong(min*3600000L,max*3600000L+1);}
     private void persistEventTimers(){for(EventTier tier:EventTier.values()){String suffix=tier.name().toLowerCase(Locale.ROOT);db.state("event_remaining_"+suffix,Long.toString(eventRemaining.getOrDefault(tier,randomRemaining(tier))));EventType type=scheduledEvents.get(tier);if(type!=null)db.state("event_scheduled_"+suffix,type.name());}}
-    private void visualTick() {eliteIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity mob)||!mob.isValid()){removeHealthBar(id);return true;}String tier=mob.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);if(expireElite(mob,tier))return true;mob.setGlowing(true);String ability=mob.getPersistentDataContainer().get(abilityKey,PersistentDataType.STRING);Particle particle="FLAMEBOUND".equals(ability)||"VOLATILE".equals(ability)||"INFERNAL_RIFT".equals(ability)||"CINDERLORD".equals(ability)?Particle.FLAME:"STORMCALLER".equals(ability)||"FROSTBITE".equals(ability)?Particle.ELECTRIC_SPARK:"VAMPIRIC".equals(ability)||"VENOMOUS".equals(ability)?Particle.DAMAGE_INDICATOR:"PHASEWALKER".equals(ability)||"VOID_TETHER".equals(ability)?Particle.PORTAL:"COLOSSAL".equals(ability)?Particle.CRIT:Particle.ENCHANT;if(isWorldBossTier(tier)){WorldBossKind kind=kindFromTier(tier);scaleWorldBoss(mob);worldBossMechanic(mob,kind);worldBossRegen(mob,kind);worldBossSoftEnrage(mob,kind);worldBossElementTick(mob,kind);trackBossChunk(mob.getLocation());}else if("epic".equals(tier)||"legendary".equals(tier))eliteMechanic(mob,tier);int count=isWorldBossTier(tier)?14:"legendary".equals(tier)?12:"epic".equals(tier)||"miniboss".equals(tier)?8:"rare".equals(tier)?5:3;settingsParticle(mob.getLocation().add(0,1,0),particle,count,.5,.7,.5,.01);updateHealthBar(mob,tier);antiCheeseTick(mob,tier);return false;});sharedBossIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity boss)||!boss.isValid()){damage.remove(id);lastContribution.remove(id);return true;}if(!isWorldBossTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))scaleSharedBoss(boss);return false;});}
+    private void visualTick() {eliteIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity mob)||!mob.isValid()){removeHealthBar(id);return true;}String tier=mob.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);if(expireElite(mob,tier))return true;mob.setGlowing(true);String ability=mob.getPersistentDataContainer().get(abilityKey,PersistentDataType.STRING);Particle particle="FLAMEBOUND".equals(ability)||"VOLATILE".equals(ability)||"INFERNAL_RIFT".equals(ability)||"CINDERLORD".equals(ability)?Particle.FLAME:"STORMCALLER".equals(ability)||"FROSTBITE".equals(ability)?Particle.ELECTRIC_SPARK:"VAMPIRIC".equals(ability)||"VENOMOUS".equals(ability)?Particle.DAMAGE_INDICATOR:"PHASEWALKER".equals(ability)||"VOID_TETHER".equals(ability)?Particle.PORTAL:"COLOSSAL".equals(ability)?Particle.CRIT:Particle.ENCHANT;if(isWorldBossTier(tier)){WorldBossKind kind=kindFromTier(tier);scaleWorldBoss(mob);worldBossMechanic(mob,kind);worldBossRegen(mob,kind);worldBossSoftEnrage(mob,kind);worldBossElementTick(mob,kind);worldBossTargetTick(mob);worldBossSwimTick(mob,kind);worldBossUnreachableTick(mob,tier);trackBossChunk(mob.getLocation());}else if("epic".equals(tier)||"legendary".equals(tier))eliteMechanic(mob,tier);int count=isWorldBossTier(tier)?14:"legendary".equals(tier)?12:"epic".equals(tier)||"miniboss".equals(tier)?8:"rare".equals(tier)?5:3;settingsParticle(mob.getLocation().add(0,1,0),particle,count,.5,.7,.5,.01);updateHealthBar(mob,tier);antiCheeseTick(mob,tier);return false;});sharedBossIds.removeIf(id->{Entity entity=plugin.getServer().getEntity(id);if(!(entity instanceof LivingEntity boss)||!boss.isValid()){damage.remove(id);lastContribution.remove(id);return true;}if(!isWorldBossTier(boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))scaleSharedBoss(boss);return false;});}
     private void settingsParticle(Location location,Particle particle,int baseCount,double offsetX,double offsetY,double offsetZ,double extra){
         if(location.getWorld()==null)return;
         for(Player viewer:location.getWorld().getPlayers()){
@@ -699,6 +823,85 @@ final class BossEventService {
      *  antiCheeseTick's "engaged" tracking (unlike the Piglin Brute lava-speed hack below) — the buff applies
      *  purely off the boss's own physical state, refreshed every visualTick (~1s) pass with a duration a
      *  little longer than that interval so a moment of tick jitter never lets it lapse early. */
+    /** Anti-trap / anti-height-cheese, replacing the removed catch-up teleport. A boss that has an engaged
+     *  target it genuinely cannot path to for world-boss-unreachable.seconds first tries to free ITSELF —
+     *  clearing obstructing blocks beside and above its own body only, never beneath it (digging down would
+     *  bury it and could drop it into the void) and never through protected, permanent or special blocks.
+     *  If it is still stuck and the target is above it, it makes a single controlled leap whose vertical
+     *  impulse is derived from the real height gap, so a pillar of any height is reachable without ever
+     *  teleporting. Both paths are cooldown-limited so this can't become a continuous terrain shredder. */
+    private void worldBossUnreachableTick(LivingEntity boss,String tier){
+        if(!(boss instanceof Mob mob))return;
+        UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
+        Player target=mob.getTarget() instanceof Player p?p:null;
+        if(target==null||!validBossTarget(target)||!target.getWorld().equals(boss.getWorld())){bossUnreachableSince.remove(id);return;}
+        /** "Engaged" specifically — this must never fire on a boss that simply hasn't been found yet. */
+        if(!lastEngaged.containsKey(id)){bossUnreachableSince.remove(id);return;}
+        boolean reachable=mob.getPathfinder().findPath(target.getLocation())!=null&&mob.hasLineOfSight(target);
+        if(reachable){bossUnreachableSince.remove(id);return;}
+        long stuckFor=now-bossUnreachableSince.computeIfAbsent(id,key->now);
+        if(stuckFor<(long)(bosses.getDouble("world-boss-unreachable.seconds",3)*1000))return;
+        if(now-bossLeapCooldown.getOrDefault(id,0L)<(long)(bosses.getDouble("world-boss-unreachable.leap-cooldown-seconds",4)*1000))return;
+        bossLeapCooldown.put(id,now);
+        int cleared=clearAroundAndAbove(boss);
+        double dy=target.getLocation().getY()-boss.getLocation().getY();
+        if(dy>1.5){
+            /** Vertical impulse solved from the actual gap (v = sqrt(2*g*h) with Minecraft's ~0.08 b/t^2
+             *  gravity, empirically ~0.42 per block of rise), then clamped only to keep the arc sane —
+             *  the spec explicitly allows the leap to be as high as it needs to be. */
+            double needed=Math.min(bosses.getDouble("world-boss-unreachable.leap-max-vertical",3.2),
+                    Math.max(bosses.getDouble("world-boss-unreachable.leap-min-vertical",.8),Math.sqrt(Math.max(0,dy))*.42+.35));
+            Vector toward=target.getLocation().toVector().subtract(boss.getLocation().toVector()).setY(0);
+            Vector horizontal=toward.lengthSquared()>0.0001?toward.normalize().multiply(bosses.getDouble("world-boss-unreachable.leap-horizontal",.9)):new Vector();
+            boss.setVelocity(horizontal.setY(needed));
+            boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_IRON_GOLEM_ATTACK,1.3f,.55f);
+            boss.getWorld().spawnParticle(Particle.CLOUD,boss.getLocation(),24,.4,.1,.4,.02);
+            target.sendActionBar(Component.text("It launches itself at you — height won't save you.",NamedTextColor.RED));
+        }else if(cleared>0)boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_IRON_GOLEM_ATTACK,1.4f,.6f);
+        if(cleared>0||dy>1.5)mob.getPathfinder().moveTo(target,1.2);
+    }
+    /** Clears obstructing blocks in a small box centred on the boss, from its own feet upward only.
+     *  Never touches anything at or below foot level, and reuses breakableShelterBlock() so bedrock,
+     *  portals/gateways, other permanent or special blocks, and all protected land stay untouchable. */
+    private int clearAroundAndAbove(LivingEntity boss){
+        int radius=Math.max(1,bosses.getInt("world-boss-unreachable.radius",2));
+        int height=Math.max(1,bosses.getInt("world-boss-unreachable.height",3));
+        int max=Math.max(1,bosses.getInt("world-boss-unreachable.max-blocks",10));
+        Block feet=boss.getLocation().getBlock();int cleared=0;
+        for(int dy=0;dy<=height&&cleared<max;dy++)
+            for(int dx=-radius;dx<=radius&&cleared<max;dx++)
+                for(int dz=-radius;dz<=radius&&cleared<max;dz++){
+                    if(dx==0&&dz==0&&dy==0)continue;
+                    Block block=feet.getRelative(dx,dy,dz);
+                    if(!breakableShelterBlock(block))continue;
+                    block.breakNaturally();cleared++;
+                }
+        if(cleared>0)boss.getWorld().spawnParticle(Particle.BLOCK,boss.getLocation().add(0,1,0),18,.6,.6,.6,.02,Material.STONE.createBlockData());
+        return cleared;
+    }
+    /** Water turns the Colossus (and to a lesser degree the Knight) into a drifting, circling mess: vanilla
+     *  land pathfinding keeps steering toward a floor that isn't there, so it orbits the target instead of
+     *  closing. Giving it real swim capability plus a direct nudge toward the target while submerged makes
+     *  it actually pursue underwater; the element buffs from the previous pass then make water a genuinely
+     *  bad place to fight it rather than a safe one. */
+    private void worldBossSwimTick(LivingEntity boss,WorldBossKind kind){
+        if(!boss.isInWater())return;
+        if(boss instanceof Mob mob){
+            Player target=mob.getTarget() instanceof Player p?p:null;
+            if(target!=null&&target.getWorld().equals(boss.getWorld())){
+                Vector toward=target.getEyeLocation().toVector().subtract(boss.getEyeLocation().toVector());
+                if(toward.lengthSquared()>0.01){
+                    /** Small additive impulse rather than a velocity override, so vanilla movement still
+                     *  drives the fight and this only cancels the aimless orbit/sink. */
+                    Vector swim=toward.normalize().multiply(.22);
+                    boss.setVelocity(boss.getVelocity().add(swim).multiply(.92));
+                }
+                mob.getPathfinder().moveTo(target,1.15);
+            }
+        }
+        /** Cancels the sink-and-drown-out-of-reach case without granting flight. */
+        if(boss.getVelocity().getY()<-.08)boss.setVelocity(boss.getVelocity().setY(-.02));
+    }
     private void worldBossElementTick(LivingEntity boss,WorldBossKind kind){
         switch(kind){
             case IRON_GOLEM -> {if(boss.isInWater()){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,30,2,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.BUBBLE,boss.getLocation().add(0,1,0),12,.5,.5,.5,.02);}}
@@ -1017,7 +1220,7 @@ final class BossEventService {
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 if(id.equals(worldBossId)){
                     worldBossId=null;
@@ -1055,7 +1258,7 @@ final class BossEventService {
      *  /ashfall boss despawn. */
     boolean despawnWorldBoss(){
         LivingEntity boss=worldBoss();if(boss==null)return false;
-        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
+        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
         if(eventType==EventType.WORLD_BOSS||eventType==EventType.HUNT)finishEvent(false);
         broadcastNotice(Component.text("⚔ The world boss was despawned by an administrator.",NamedTextColor.DARK_GRAY));
         return true;
@@ -1065,7 +1268,7 @@ final class BossEventService {
     boolean forceStopEvent(){
         if(eventType==null&&worldBoss()==null)return false;
         LivingEntity boss=worldBoss();
-        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
+        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
         if(eventType!=null)finishEvent(false);
         return true;
     }
@@ -1080,7 +1283,7 @@ final class BossEventService {
              *  worldBossId is being cleared, whether or not the entity itself is still resolvable. */
             if (worldBossId != null) {
                 eliteIds.remove(worldBossId); damage.remove(worldBossId); lastContribution.remove(worldBossId); removeHealthBar(worldBossId);
-                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId); bossMechanicAt.remove(worldBossId);
+                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId); bossMechanicAt.remove(worldBossId);
                 db.deleteBossState(worldBossId.toString());
             }
             if (boss != null) {

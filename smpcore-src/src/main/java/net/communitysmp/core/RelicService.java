@@ -441,9 +441,39 @@ final class RelicService implements Listener {
         return false;
     }
 
+    /** A relic ability may never be used from inside protected spawn, and may never reach into it from
+     *  outside. Spawn is a no-combat sanctuary, but the Colossus Core's shockwave is pure knockback rather
+     *  than damage, so none of the normal damage/knockback guards caught it — a player standing safely in
+     *  spawn could be physically shoved out of it by someone standing beyond the border. Both the activation
+     *  site and every individual entity a relic effect touches are now checked (see relicEffectTarget). */
+    private boolean relicBlockedInSpawn(Player player,String relicKey){
+        if(!plugin.spawnClaims().contains(player.getLocation()))return false;
+        CoreUtil.error(player,displayName(relicKey)+" lies dormant inside spawn.");
+        return true;
+    }
+    /** Shared target filter for every active relic ability. Previously each one used
+     *  `instanceof Enemy || instanceof Player`, which both missed legitimate combat mobs that aren't tagged
+     *  Enemy (e.g. a provoked neutral) and offered no faction/friendly protection at all. This accepts any
+     *  genuine combat LivingEntity while refusing: the caster, anything inside protected spawn, NPC and
+     *  armor-stand style non-combat entities, invulnerable entities, tamed pets, and players the caster is
+     *  factionally friendly with. */
+    private boolean relicEffectTarget(Player caster,Entity entity){
+        if(entity==null||entity.equals(caster)||!(entity instanceof LivingEntity living))return false;
+        if(living.isDead()||!living.isValid()||living.isInvulnerable())return false;
+        if(entity instanceof org.bukkit.entity.ArmorStand||entity.hasMetadata("NPC"))return false;
+        if(plugin.spawnClaims().contains(entity.getLocation()))return false;
+        if(living instanceof Player other){
+            if(other.getGameMode()==GameMode.SPECTATOR||other.getGameMode()==GameMode.CREATIVE)return false;
+            if(plugin.factions().friendly(caster,other))return false;
+            return true;
+        }
+        if(living instanceof org.bukkit.entity.Tameable tame&&tame.isTamed())return false;
+        return living instanceof org.bukkit.entity.Mob;
+    }
     @EventHandler public void interact(PlayerInteractEvent event){
         if(!event.getAction().isRightClick()||event.getHand()!=EquipmentSlot.HAND)return;
         Player player=event.getPlayer();ItemStack item=player.getInventory().getItemInMainHand();String relicKey=keyOf(item);if(relicKey==null||!isActive(relicKey))return;
+        if(relicBlockedInSpawn(player,relicKey)){event.setCancelled(true);return;}
         switch(relicKey){
             case"ashen_reprisal"->ashenReprisal(player,event);
             case"colossus_core"->colossusWard(player,event);
@@ -466,7 +496,7 @@ final class RelicService implements Listener {
         double damage=config.getDouble("buffs.ashen-reprisal.damage",6),range=config.getDouble("buffs.ashen-reprisal.range",4.5);
         Location eye=player.getEyeLocation();Vector direction=eye.getDirection().normalize();int hits=0;
         for(Entity entity:player.getNearbyEntities(range,range,range)){
-            if(entity.equals(player)||!(entity instanceof LivingEntity target)||!(entity instanceof org.bukkit.entity.Enemy||entity instanceof Player))continue;
+            if(!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
             Vector to=target.getLocation().toVector().subtract(eye.toVector());if(to.length()>range)continue;
             if(direction.dot(to.normalize())<0.55)continue;
             target.damage(damage,player);target.setFireTicks(Math.max(target.getFireTicks(),60));target.setVelocity(target.getVelocity().add(new Vector(0,0.42,0)));hits++;
@@ -485,7 +515,7 @@ final class RelicService implements Listener {
         double radius=config.getDouble("buffs.colossus-core.radius",5),push=config.getDouble("buffs.colossus-core.knockback",1.4);
         Location center=player.getLocation();
         for(Entity entity:player.getNearbyEntities(radius,radius,radius)){
-            if(entity.equals(player)||!(entity instanceof org.bukkit.entity.Enemy||entity instanceof Player))continue;
+            if(!relicEffectTarget(player,entity))continue;
             Vector away=entity.getLocation().toVector().subtract(center.toVector());if(away.lengthSquared()<0.01)away=new Vector(1,0,0);
             away.normalize().multiply(push);away.setY(Math.max(away.getY(),0.35));
             entity.setVelocity(entity.getVelocity().add(away));
@@ -507,7 +537,7 @@ final class RelicService implements Listener {
         double radius=config.getDouble("buffs.warlords-ember.radius",2.2);
         Location center=player.getLocation().add(direction.clone().multiply(2));
         for(Entity entity:player.getWorld().getNearbyEntities(center,radius,radius,radius)){
-            if(entity.equals(player)||!(entity instanceof org.bukkit.entity.Enemy||entity instanceof Player)||!(entity instanceof LivingEntity target))continue;
+            if(!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
             target.setFireTicks(Math.max(target.getFireTicks(),40));target.setVelocity(target.getVelocity().add(direction.clone().multiply(.6).setY(.25)));
         }
         player.getWorld().playSound(player.getLocation(),Sound.ITEM_FIRECHARGE_USE,1.2f,1.1f);

@@ -1,6 +1,11 @@
 server-name: Ashfall Concord
 starting-balance: 250.0
 
+economy:
+  # A single purchase at or above this value is announced server-wide (0 disables). Covers every
+  # money-out purchase, Boss Summoning Papers included, since they all settle through one payment path.
+  major-purchase-announcement: 1000000
+
 maintenance:
   enabled: false
 

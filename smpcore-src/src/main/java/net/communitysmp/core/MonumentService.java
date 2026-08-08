@@ -648,8 +648,13 @@ final class MonumentService {
         if(!reconstruct(sender,new String[]{"monument","reconstruct",target,"confirm"}))return true;
         CoreUtil.msg(sender,"[2/3] refill scan…");
         if(!refill(sender,new String[]{"monument","refill",target,"scan"}))return true;
-        CoreUtil.msg(sender,"[3/3] refill confirm…");
-        if(!refill(sender,new String[]{"monument","refill",target,"confirm"}))return true;
+        /** 'force' is deliberate here. Every container in the registry was already proven to be a genuine
+         *  structure container by the scan step (player-placed ones are rejected there and never registered),
+         *  so the plain-confirm guards that skip a chest for still holding items are exactly wrong for a
+         *  revamp: a half-looted structure chest is precisely what needs re-arming. Without this, partially
+         *  looted chests were silently left untouched, which is the reported "refill does nothing" case. */
+        CoreUtil.msg(sender,"[3/3] refill confirm (force — re-arms genuine structure containers whether empty, partially looted, or untouched)…");
+        if(!refill(sender,new String[]{"monument","refill",target,"confirm","force"}))return true;
         CoreUtil.msg(sender,"Revamp of \""+row.name()+"\" finished — review the per-step output above for what each stage actually changed.");
         db.logAudit(sender.getName(),"MONUMENT_REVAMP","location=#"+row.id()+" \""+row.name()+"\"");
         return true;

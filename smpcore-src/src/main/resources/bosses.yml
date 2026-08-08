@@ -148,7 +148,9 @@ piglin-brute-boss:
   reward-min: 126562.5
   reward-max: 253125
   reward-gold-blocks: 64
-  excavator-drop-chance: 0.18
+  # Jackpot, not a routine payout: the 3x3 excavator pickaxe should be a rare story, not the expected
+  # reward for clearing the Cinder Warlord.
+  excavator-drop-chance: 0.005
   active-radius: 50
   active-seconds: 60
   mechanic-interval-seconds: 9
@@ -161,6 +163,42 @@ piglin-brute-boss:
   spawn-radius-max: 4000
   first-hint-minutes: 10
   second-hint-minutes: 20
+
+world-boss-targeting:
+  # How far a world boss will chase/acquire a player. Replaces the old doubled FOLLOW_RANGE, which let a
+  # boss lock onto someone from far outside the fight and never let go.
+  range: 50
+  # Minimum seconds to keep the current target before switching, so the boss commits to whoever it is
+  # fighting instead of flip-flopping every time someone else lands a hit.
+  target-stability-seconds: 4
+  # A target beyond range for this long is dropped and the boss re-acquires the nearest valid player.
+  lose-target-seconds: 3
+
+world-boss-unreachable:
+  # If an ENGAGED player cannot be pathed to for this long, the boss digs itself out (sideways/upward
+  # only, never downward, never through protected or permanent blocks) and, failing that, leaps at them.
+  seconds: 3
+  # Blocks cleared per breakout attempt, and the horizontal/vertical reach of that clearing.
+  max-blocks: 10
+  radius: 2
+  height: 3
+  # Controlled leap used against players camped above the boss. Height is derived from the actual
+  # vertical gap, so a tower of any height is reachable; these only bound the arc.
+  leap-horizontal: 0.9
+  leap-min-vertical: 0.8
+  leap-max-vertical: 3.2
+  leap-cooldown-seconds: 4
+
+world-boss-spawn:
+  # A randomly spawned boss must land this far from any protected land (spawn region or faction claim)
+  # so a wild spawn can never drop a fight on top of someone's base.
+  min-distance-from-protected: 2000
+  # Bounded search: give up and postpone the event rather than scanning forever or forcing a bad spot.
+  max-attempts: 64
+  # Rejects caves/tight pockets -- requires this much open air above the candidate and a solid floor.
+  required-headroom: 6
+  # Postpone this many minutes when no safe open candidate is found.
+  postpone-minutes: 10
 
 world-boss-enrage:
   # Measured from the first time a player actually damages the boss, NOT from when it spawned -- a boss
