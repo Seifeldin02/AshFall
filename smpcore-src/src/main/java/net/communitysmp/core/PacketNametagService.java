@@ -42,11 +42,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  *  health, plus whatever extras they asked for). A viewer with neither option enabled is sent nothing at
  *  all, so their client draws the ordinary vanilla nametag untouched.
  *
- *  Layout, by what the viewer enabled:
- *      money only    ->  Name              / 20 <3 / $Balance
- *      faction only  ->  Name [TAG]        / 20 <3
- *      both          ->  Name [TAG]        / 20 <3 / $Balance
- *      neither       ->  no packet sent; vanilla nametag
+ *  Layout is composed from the three viewer toggles. Balance is on by default; faction and hearts are
+ *  off. With EVERY option off nothing is sent at all, so that player keeps the untouched vanilla nametag
+ *  (which already carries the below-name health line) -- adding the hearts option does not change that
+ *  default. Examples:
+ *      money only          ->  Name              / $Balance
+ *      money + hearts      ->  Name              / 20 <3 / $Balance
+ *      faction + hearts    ->  Name [TAG]        / 20 <3
+ *      all three           ->  Name [TAG]        / 20 <3 / $Balance
+ *      none                ->  no packet sent; vanilla nametag
  *
  *  Positioning is entirely the client's job: the display is a passenger of the real player entity, so
  *  vanilla moves it through walking, sprinting, jumping, falling, riding and teleporting. There is no
@@ -134,10 +138,11 @@ final class PacketNametagService implements Listener {
             for(Player viewer:plugin.getServer().getOnlinePlayers()){
                 boolean money=plugin.settings().showBalanceNametags(viewer);
                 boolean faction=plugin.settings().showFactionNametags(viewer);
+                boolean hearts=plugin.settings().showHeartNametags(viewer);
                 Map<UUID,String> seen=sent.computeIfAbsent(viewer.getUniqueId(),k->new HashMap<>());
                 /** Neither option on, or target not eligible: send nothing and tear down anything we sent
                  *  before, so the viewer falls back to the untouched vanilla nametag. */
-                if(snapshot==null||(!money&&!faction)){
+                if(snapshot==null||(!money&&!faction&&!hearts)){
                     if(seen.remove(id)!=null){
                         Integer entity=entityIds.get(id);
                         if(entity!=null){send(viewer,new WrapperPlayServerDestroyEntities(entity));
@@ -145,7 +150,7 @@ final class PacketNametagService implements Listener {
                     }
                     continue;
                 }
-                String variant=render(snapshot,money,faction);
+                String variant=render(snapshot,money,faction,hearts);
                 String previous=seen.get(id);
                 if(variant.equals(previous))continue;
                 int entity=entityIds.computeIfAbsent(id,k->NEXT_ID.getAndDecrement());
@@ -164,10 +169,13 @@ final class PacketNametagService implements Listener {
     }
     /** The rendered nametag as a single string, using \n for line breaks. Doubling as the change-detection
      *  key means a packet is sent exactly when the visible result differs, with no separate bookkeeping. */
-    private String render(Snapshot s,boolean money,boolean faction){
+    private String render(Snapshot s,boolean money,boolean faction,boolean hearts){
         StringBuilder out=new StringBuilder(s.name());
         if(faction&&!s.faction().isEmpty())out.append(" [").append(s.faction()).append(']');
-        out.append('\n').append(s.health()).append(" ❤");
+        /** Hearts are drawn only when that viewer asked for them. With every option off no packet is sent
+         *  at all, so the player keeps the ordinary vanilla nametag, which already carries the below-name
+         *  health line -- that default is unchanged by this option existing. */
+        if(hearts)out.append('\n').append(s.health()).append(" ❤");
         if(money)out.append('\n').append(s.balance());
         return out.toString();
     }

@@ -49,7 +49,10 @@ final class SettingsService implements Listener {
     /** Viewer-side nametag extras. Independent on purpose: a player may want balances, faction tags,
      *  both, or neither, and the choice only affects what THEY see above other players. */
     enum NametagKind {
-        BALANCES("nametag_balances",false), FACTIONS("nametag_factions",false);
+        /** Balance is the only one ON by default. Hearts default OFF deliberately: with every toggle off we
+         *  send no packet at all, so the player keeps the ordinary vanilla nametag which already shows the
+         *  below-name health line -- the hearts toggle only matters once our replacement tag is in play. */
+        BALANCES("nametag_balances",true), FACTIONS("nametag_factions",false), HEARTS("nametag_hearts",false);
         final String key;final boolean fallback;
         NametagKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
@@ -365,6 +368,7 @@ final class SettingsService implements Listener {
     boolean tpaAutoAcceptFaction(Player player){return factionTpaRequests(player)&&enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback);}
     boolean showBalanceNametags(Player player){return enabled(player,NametagKind.BALANCES.key,NametagKind.BALANCES.fallback);}
     boolean showFactionNametags(Player player){return enabled(player,NametagKind.FACTIONS.key,NametagKind.FACTIONS.fallback);}
+    boolean showHeartNametags(Player player){return enabled(player,NametagKind.HEARTS.key,NametagKind.HEARTS.fallback);}
     boolean auctionNotifications(Player player){return enabled(player,"auction_notifications",true);}
     boolean sounds(Player player){return enabled(player,"sound_notifications",true);}
     void hostileDamage(Player player){hostileDamageAt.put(player.getUniqueId(),System.currentTimeMillis());}
@@ -399,8 +403,8 @@ final class SettingsService implements Listener {
     private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
     private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";};}
     private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"Other Players' TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
-    private String prettyNametag(NametagKind kind){return switch(kind){case BALANCES->"Show Balances";case FACTIONS->"Show Faction Tags";};}
-    private String nametagHint(NametagKind kind){return switch(kind){case BALANCES->"Show each player's balance under their name.";case FACTIONS->"Show each player's faction tag under their name.";};}
+    private String prettyNametag(NametagKind kind){return switch(kind){case BALANCES->"Show Balances";case FACTIONS->"Show Faction Tags";case HEARTS->"Show Hearts";};}
+    private String nametagHint(NametagKind kind){return switch(kind){case BALANCES->"Show each player's balance under their name.";case FACTIONS->"Show each player's faction tag beside their name.";case HEARTS->"Show the health line. Always shown when every option here is off.";};}
     private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";};}
 
     private void nightVisionTick(){
@@ -453,7 +457,7 @@ final class SettingsService implements Listener {
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==2&&!defaultFor(NametagKind.BALANCES.key);}
+    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 
