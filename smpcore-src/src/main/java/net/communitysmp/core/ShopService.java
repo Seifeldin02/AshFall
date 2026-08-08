@@ -53,7 +53,12 @@ final class ShopService {
         else if(material==Material.OMINOUS_TRIAL_KEY){meta.getPersistentDataContainer().set(capsuleKey,PersistentDataType.STRING,"REUSABLE");meta.setMaxStackSize(1);meta.lore(List.of(Component.text("Reusable villager transport.",NamedTextColor.GRAY)));}
         item.setItemMeta(meta);return item;
     }
-    private ItemStack purchaseItem(Material material,Price price,int amount){ItemStack item=price.luxury()?luxuryItem(material,price):new ItemStack(material);item.setAmount(amount);return item;}
+    /** IRON_GOLEM_SPAWN_EGG is only a shop-facing ICON for the Warded Colossus Spawner -- what the player
+     *  actually receives is a real, tagged SMPCore spawner, so it places, stacks and tracks like any other.
+     *  Handled here because purchaseItem is the single delivery point every shop purchase passes through. */
+    private ItemStack purchaseItem(Material material,Price price,int amount){
+        if(material==Material.IRON_GOLEM_SPAWN_EGG){ItemStack spawner=plugin.spawners().purchasedSpawner(org.bukkit.entity.EntityType.IRON_GOLEM);spawner.setAmount(Math.max(1,amount));return spawner;}
+        ItemStack item=price.luxury()?luxuryItem(material,price):new ItemStack(material);item.setAmount(amount);return item;}
 
     void click(InventoryClickEvent event){if(event.getInventory().getHolder(false) instanceof SellHolder holder)sellClick(event,holder);}
 

@@ -93,6 +93,18 @@ spawner-breaking:
 
 spawners:
   max-stack: 10
+  # Placed spawners only -- natural world spawners keep vanilla behaviour entirely.
+  # 5-10 second cycle (100-200 ticks).
+  min-delay-ticks: 100
+  max-delay-ticks: 200
+  # Vanilla suppresses a spawner once a few mobs are nearby, which throttles any real farm. Lifted here.
+  max-nearby-entities: 200
+  required-player-range: 32
+  spawn-range: 4
+  # Safety ceilings so a large stack cannot become a lag machine: most physical mobs one stack may add per
+  # cycle, and the local living-entity count at which a stack stops producing entirely.
+  max-spawns-per-cycle: 12
+  nearby-entity-ceiling: 80
 
 graves:
   lifetime-hours: 48
@@ -177,6 +189,9 @@ bank:
     input-timeout-seconds: 30
 
 mob-money:
+  # Share of the equivalent natural mob's money paid for a mob from a PLAYER-PLACED spawner. Halved again
+  # automatically once the killer is past the anti-farm threshold below (so 0.5 -> 0.25).
+  spawner-share: 0.5
   anti-farm-window-minutes: 10
   full-reward-kills: 20
   soft-reward-kills: 50

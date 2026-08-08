@@ -22,6 +22,7 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Transformation;
+import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
@@ -33,22 +34,28 @@ import java.util.*;
  *  each panel's own rendered content width (see halfWidth()) rather than a fixed spacing constant, so long
  *  names/numbers push neighbors further apart instead of overlapping. */
 final class BulletinService implements Listener {
-    private static final String STATE="bulletin.wall.v1";
+    /** Each panel is now a fully independent floating hologram with its own persisted location, rather than
+     *  four slices of one wall anchored to a block face. That means they can be placed, moved and removed
+     *  one at a time and put wherever they read best, instead of all four being forced into a single row
+     *  whose spacing had to be computed to stop them overlapping. Billboard.CENTER makes them readable from
+     *  any angle (the old FIXED billboard was only legible from the front). YOUR STATS stays private: it is
+     *  still one real TextDisplay per online player, spawned visibleByDefault(false) and shown only to its
+     *  owner, so everyone standing at the same hologram sees their own numbers. */
+    enum PanelKind {
+        STATS(0,"YOUR STATS"), PLAYERS(1,"TOP PLAYERS"), FACTIONS(2,"TOP FACTIONS"), BOUNTIES(3,"TOP BOUNTIES");
+        final int index;final String title;
+        PanelKind(int index,String title){this.index=index;this.title=title;}
+        String stateKey(){return "bulletin.panel."+name().toLowerCase(Locale.ROOT);}
+        static PanelKind of(String raw){for(PanelKind k:values())if(k.name().equalsIgnoreCase(raw))return k;return null;}
+        static PanelKind byIndex(int index){for(PanelKind k:values())if(k.index==index)return k;return null;}
+    }
     private record Holder(int panel) implements InventoryHolder {@Override public Inventory getInventory(){return null;}}
-    private final SMPCore plugin;private final Database db;private final NamespacedKey panelKey;private final List<UUID> panels=new ArrayList<>();private BukkitTask refreshTask;
-    /** Panel 0 (YOUR STATS) is one real TextDisplay entity per online player rather than a single shared
-     *  hologram — Minecraft has no problem with several entities occupying nearby points, and since each is
-     *  spawned with visibleByDefault=false and shown only to its own owner (Player#showEntity), every viewer
-     *  sees only their own live stats, never anyone else's. Not persisted across restarts
-     *  (setPersistent(false)): it only ever needs to exist for currently-online players, and is recomputed
-     *  deterministically from the same anchor block + face the three shared panels use. */
-    private Block bulletinAnchor;private BlockFace bulletinFace;
+    private final SMPCore plugin;private final Database db;private final NamespacedKey panelKey;private BukkitTask refreshTask;
+    /** Placed location per shared panel kind, and the live entity for each. */
+    private final Map<PanelKind,Location> placed=new EnumMap<>(PanelKind.class);
+    private final Map<PanelKind,UUID> shared=new EnumMap<>(PanelKind.class);
+    /** One private STATS display per online player, keyed by player id. */
     private final Map<UUID,UUID> personalDisplays=new HashMap<>();
-    /** Center offset + half-width of each currently-placed shared panel (index 0=players,1=factions,
-     *  2=bounties), refreshed every cycle — the personal panel positions itself immediately beside the
-     *  players panel using these, so a viewer's own stats slot never overlaps the shared row next to it. */
-    private final double[] sharedOffset=new double[3];
-    private final double[] sharedHalfWidth=new double[3];
 
     BulletinService(SMPCore plugin){
         this.plugin=plugin;db=plugin.db();panelKey=new NamespacedKey(plugin,"bulletin_panel");
@@ -56,91 +63,139 @@ final class BulletinService implements Listener {
         long period=Math.max(30,Math.min(60,plugin.getConfig().getLong("bulletin.refresh-seconds",40)))*20L;refreshTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::refresh,period,period);
     }
     void shutdown(){if(refreshTask!=null)refreshTask.cancel();for(UUID id:personalDisplays.values()){Entity entity=plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}personalDisplays.clear();}
+
     boolean command(Player player,String[] args){
         if(args.length<2){commandHelp(player);return true;}
-        return switch(args[1].toLowerCase(Locale.ROOT)){case"place"->place(player);case"remove"->{remove(true);CoreUtil.msg(player,"Bulletin removed.");yield true;}case"refresh"->{refresh();CoreUtil.msg(player,"Bulletin refreshed.");yield true;}default->{CoreUtil.error(player,"Bulletin options: place, remove, refresh.");yield true;}};
+        String action=args[1].toLowerCase(Locale.ROOT);
+        return switch(action){
+            case"place","move"->{
+                if(args.length<3){CoreUtil.error(player,"Usage: /ashfall bulletin "+action+" <stats|players|factions|bounties|all>");yield true;}
+                if(args[2].equalsIgnoreCase("all")){
+                    /** Placing "all" fans them out in a short row in front of the player purely as a
+                     *  convenience starting point -- each one can then be moved independently. */
+                    int offset=0;
+                    for(PanelKind kind:PanelKind.values()){placePanel(player,kind,player.getLocation().clone().add(player.getLocation().getDirection().clone().setY(0).normalize().multiply(2).add(sideways(player,(offset++-1.5)*3))));}
+                    CoreUtil.msg(player,"All four bulletins placed. Move any one with /ashfall bulletin move <name>.");
+                    yield true;
+                }
+                PanelKind kind=PanelKind.of(args[2]);
+                if(kind==null){CoreUtil.error(player,"Unknown panel. Use stats, players, factions, bounties, or all.");yield true;}
+                placePanel(player,kind,player.getLocation().clone().add(player.getLocation().getDirection().clone().setY(0).normalize().multiply(2)));
+                CoreUtil.msg(player,kind.title+" placed here.");
+                yield true;
+            }
+            case"remove"->{
+                if(args.length<3){CoreUtil.error(player,"Usage: /ashfall bulletin remove <stats|players|factions|bounties|all>");yield true;}
+                if(args[2].equalsIgnoreCase("all")){removeAll();CoreUtil.msg(player,"All bulletins removed.");yield true;}
+                PanelKind kind=PanelKind.of(args[2]);
+                if(kind==null){CoreUtil.error(player,"Unknown panel.");yield true;}
+                removePanel(kind);CoreUtil.msg(player,kind.title+" removed.");
+                yield true;
+            }
+            case"list"->{
+                CoreUtil.msg(player,"Bulletin panels:");
+                for(PanelKind kind:PanelKind.values()){
+                    Location at=placed.get(kind);
+                    CoreUtil.msg(player,"  "+kind.title+" — "+(at==null?"not placed":at.getWorld().getName()+" "+at.getBlockX()+","+at.getBlockY()+","+at.getBlockZ()));
+                }
+                yield true;
+            }
+            case"refresh"->{refresh();CoreUtil.msg(player,"Bulletins refreshed.");yield true;}
+            default->{commandHelp(player);yield true;}
+        };
     }
-    void commandHelp(org.bukkit.command.CommandSender sender){sender.sendMessage("§6§lBulletin");sender.sendMessage("§7  §f/ashfall bulletin place");sender.sendMessage("§7  §f/ashfall bulletin remove");sender.sendMessage("§7  §f/ashfall bulletin refresh");}
+    void commandHelp(org.bukkit.command.CommandSender sender){
+        sender.sendMessage("§6§lBulletins §7(independent floating holograms)");
+        sender.sendMessage("§7  §f/ashfall bulletin place <stats|players|factions|bounties|all>");
+        sender.sendMessage("§7  §f/ashfall bulletin move <name>   §7— re-place it where you stand");
+        sender.sendMessage("§7  §f/ashfall bulletin remove <name|all>");
+        sender.sendMessage("§7  §f/ashfall bulletin list");
+        sender.sendMessage("§7  §f/ashfall bulletin refresh");
+    }
+    /** Perpendicular offset used only by the "all" convenience placement. */
+    private Vector sideways(Player player,double distance){
+        Vector dir=player.getLocation().getDirection().setY(0).normalize();
+        return new Vector(-dir.getZ(),0,dir.getX()).multiply(distance);
+    }
 
-    private boolean place(Player player){
-        RayTraceResult ray=player.rayTraceBlocks(10,FluidCollisionMode.NEVER);if(ray==null||ray.getHitBlock()==null||ray.getHitBlockFace()==null||!ray.getHitBlock().getType().isSolid()){CoreUtil.error(player,"Look at any solid block face within 10 blocks.");return true;}
-        remove(false);spawn(ray.getHitBlock(),ray.getHitBlockFace());CoreUtil.msg(player,"Ashfall bulletin placed.");return true;
+    private void placePanel(Player player,PanelKind kind,Location at){
+        removePanel(kind);
+        Location location=at.clone();location.setY(player.getLocation().getY()+2);
+        placed.put(kind,location);
+        db.state(kind.stateKey(),location.getWorld().getName()+"|"+location.getX()+"|"+location.getY()+"|"+location.getZ());
+        if(kind!=PanelKind.STATS)shared.put(kind,spawnDisplay(location,kind.index,true).getUniqueId());
+        refresh();
     }
-    private void spawn(Block anchor,BlockFace face){
-        panels.clear();bulletinAnchor=anchor;bulletinFace=face;
-        for(int index=1;index<=3;index++){int panel=index;
-            TextDisplay display=anchor.getWorld().spawn(anchor.getLocation(),TextDisplay.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,text->{text.setPersistent(true);text.setInvulnerable(true);text.setGravity(false);text.setBillboard(Display.Billboard.FIXED);text.setAlignment(TextDisplay.TextAlignment.CENTER);text.setLineWidth(180);text.setShadowed(true);text.setSeeThrough(false);text.setViewRange(2.5f);text.setBrightness(new Display.Brightness(15,15));text.setBackgroundColor(Color.fromARGB(205,7,7,7));text.setTransformation(new Transformation(new Vector3f(),new AxisAngle4f(),new Vector3f(.72f,.72f,.72f),new AxisAngle4f()));text.getPersistentDataContainer().set(panelKey,PersistentDataType.INTEGER,panel);});panels.add(display.getUniqueId());
+    private void removePanel(PanelKind kind){
+        if(kind==PanelKind.STATS){
+            for(UUID id:personalDisplays.values()){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}
+            personalDisplays.clear();
+        }else{
+            UUID id=shared.remove(kind);
+            if(id!=null){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}
         }
-        db.state(STATE,anchor.getWorld().getName()+"|"+anchor.getX()+"|"+anchor.getY()+"|"+anchor.getZ()+"|"+face.name()+"|"+String.join(",",panels.stream().map(UUID::toString).toList()));refresh();
+        placed.remove(kind);
+        db.state(kind.stateKey(),"");
     }
-    private Location panelLocation(Block anchor,BlockFace face,double offset){
-        Vector3f normal=new Vector3f(face.getModX(),face.getModY(),face.getModZ()),right=(face==BlockFace.EAST||face==BlockFace.WEST)?new Vector3f(0,0,1):new Vector3f(1,0,0);if(face==BlockFace.DOWN)right.x=-1;
-        Location location=anchor.getLocation().add(.5,.5,.5).add(normal.x*.53+right.x*offset,normal.y*.53+right.y*offset,normal.z*.53+right.z*offset);location.setYaw(yaw(face));location.setPitch(pitch(face));return location;
-    }
-    /** Rough per-character width estimate for Minecraft's default font at this display's .72 transform
-     *  scale, in world-blocks. Bukkit exposes no real text-measurement API, so this is a deliberately
-     *  generous heuristic (errs toward more spacing, never less) rather than a pixel-exact font metric —
-     *  the goal is "never overlaps", not "perfectly flush". */
-    private static final double CHAR_WIDTH=0.052;
-    private static final double MIN_HALF_WIDTH=0.9;
-    private static final double GAP=0.55;
-    private double halfWidth(Component content){
-        String plain=PlainTextComponentSerializer.plainText().serialize(content);
-        int longest=0;for(String line:plain.split("\n",-1))longest=Math.max(longest,line.length());
-        return Math.max(MIN_HALF_WIDTH,longest*CHAR_WIDTH/2.0);
+    private void removeAll(){for(PanelKind kind:PanelKind.values())removePanel(kind);}
+
+    /** One shared factory so every hologram -- shared or private -- gets identical presentation. */
+    private TextDisplay spawnDisplay(Location location,int index,boolean persistent){
+        return location.getWorld().spawn(location,TextDisplay.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,text->{
+            text.setPersistent(persistent);text.setInvulnerable(true);text.setGravity(false);
+            /** CENTER, not FIXED: readable from any angle, which is the whole point of a floating billboard. */
+            text.setBillboard(Display.Billboard.CENTER);
+            text.setAlignment(TextDisplay.TextAlignment.CENTER);text.setLineWidth(200);text.setShadowed(true);
+            text.setSeeThrough(false);text.setViewRange(2.5f);text.setBrightness(new Display.Brightness(15,15));
+            text.setBackgroundColor(Color.fromARGB(205,7,7,7));
+            text.setTransformation(new Transformation(new Vector3f(),new AxisAngle4f(),new Vector3f(.72f,.72f,.72f),new AxisAngle4f()));
+            text.getPersistentDataContainer().set(panelKey,PersistentDataType.INTEGER,index);
+            if(!persistent)text.setVisibleByDefault(false);
+        });
     }
 
     void refresh(){
-        List<TextDisplay> displays=resolve();
-        if(displays.size()==3){
-            Map<Integer,TextDisplay> byIndex=new HashMap<>();
-            for(TextDisplay d:displays)byIndex.put(d.getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,0),d);
-            Component[] content={playerLeaderboardPanel(),factionLeaderboardPanel(),bountyLeaderboardPanel()};
-            for(int i=0;i<3;i++)sharedHalfWidth[i]=halfWidth(content[i]);
-            /** Centers the shared 3-panel row AS A GROUP on the placement block, instead of pinning Players'
-             *  own left edge there — the old math put sharedOffset[0] at exactly 0, which made Players sit at
-             *  the anchor and Factions/Bounties trail off entirely to one side (never balanced, regardless of
-             *  content width). TOP BOUNTIES is normally the narrowest and TOP PLAYERS/FACTIONS wider, so a
-             *  true group-center keeps the whole visible row looking centered on the block an admin clicked,
-             *  while GAP still guarantees a safe margin between every neighboring pair. */
-            double totalHalfWidth=sharedHalfWidth[0]+sharedHalfWidth[1]+sharedHalfWidth[2]+GAP;
-            double x=-totalHalfWidth;
-            for(int i=0;i<3;i++){if(i>0)x+=GAP;x+=sharedHalfWidth[i];sharedOffset[i]=x;x+=sharedHalfWidth[i];}
-            for(int i=1;i<=3;i++){TextDisplay d=byIndex.get(i);if(d==null)continue;d.text(content[i-1]);Location target=panelLocation(bulletinAnchor,bulletinFace,sharedOffset[i-1]);if(d.getLocation().distanceSquared(target)>0.0001)d.teleport(target);}
+        for(PanelKind kind:List.of(PanelKind.PLAYERS,PanelKind.FACTIONS,PanelKind.BOUNTIES)){
+            Location at=placed.get(kind);if(at==null)continue;
+            TextDisplay display=resolveShared(kind);
+            if(display==null){display=spawnDisplay(at,kind.index,true);shared.put(kind,display.getUniqueId());}
+            display.text(switch(kind){case PLAYERS->playerLeaderboardPanel();case FACTIONS->factionLeaderboardPanel();default->bountyLeaderboardPanel();});
+            if(display.getLocation().distanceSquared(at)>0.0001)display.teleport(at);
         }
         refreshPersonalPanels();
     }
-    /** One TextDisplay per online player, each visible only to its own owner, positioned immediately beside
-     *  the (shared) players panel using the CURRENT viewer's own content width — spawns one for anyone
-     *  newly online, updates/repositions everyone else's, despawns anyone who's since disconnected
-     *  (belt-and-suspenders alongside the join/quit handlers below, which handle the common case
-     *  immediately rather than waiting up to a minute for this to run). Loads every online player's stats
-     *  and shard balance from two bulk snapshot queries up front instead of one query pair per player. */
+    private TextDisplay resolveShared(PanelKind kind){
+        UUID id=shared.get(kind);if(id==null)return null;
+        Entity e=plugin.getServer().getEntity(id);return e instanceof TextDisplay td&&td.isValid()?td:null;
+    }
+    /** Loads every online player's stats and shard balance from two bulk snapshot queries rather than a
+     *  query pair per player, then updates each viewer's own private hologram. */
     private void refreshPersonalPanels(){
-        if(bulletinAnchor==null)return;
+        Location at=placed.get(PanelKind.STATS);
+        if(at==null){
+            if(!personalDisplays.isEmpty()){for(UUID id:personalDisplays.values()){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}personalDisplays.clear();}
+            return;
+        }
         Map<String,Database.StatsRow> stats=db.statsSnapshot();
         Map<String,Integer> shards=db.shardBalanceSnapshot();
         Set<UUID> online=new HashSet<>();
         for(Player player:plugin.getServer().getOnlinePlayers()){
             online.add(player.getUniqueId());
-            Component content=personalStatsPanel(player,stats.get(CoreUtil.id(player)),shards.getOrDefault(CoreUtil.id(player),0));
-            double statsOffset=sharedOffset[0]-sharedHalfWidth[0]-GAP-halfWidth(content);
             TextDisplay display=resolvePersonal(player.getUniqueId());
-            if(display==null)display=spawnPersonalDisplay(player);
-            display.text(content);
-            Location target=panelLocation(bulletinAnchor,bulletinFace,statsOffset);
-            if(display.getLocation().distanceSquared(target)>0.0001)display.teleport(target);
+            if(display==null)display=spawnPersonalDisplay(player,at);
+            display.text(personalStatsPanel(player,stats.get(CoreUtil.id(player)),shards.getOrDefault(CoreUtil.id(player),0)));
+            if(display.getLocation().distanceSquared(at)>0.0001)display.teleport(at);
         }
         personalDisplays.entrySet().removeIf(entry->{if(online.contains(entry.getKey()))return false;Entity e=plugin.getServer().getEntity(entry.getValue());if(e!=null)e.remove();return true;});
     }
-    private TextDisplay resolvePersonal(UUID playerId){UUID id=personalDisplays.get(playerId);if(id==null)return null;Entity e=plugin.getServer().getEntity(id);return e instanceof TextDisplay td?td:null;}
-    private TextDisplay spawnPersonalDisplay(Player player){
-        TextDisplay text=bulletinAnchor.getWorld().spawn(bulletinAnchor.getLocation(),TextDisplay.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,d->{d.setPersistent(false);d.setInvulnerable(true);d.setGravity(false);d.setBillboard(Display.Billboard.FIXED);d.setAlignment(TextDisplay.TextAlignment.CENTER);d.setLineWidth(180);d.setShadowed(true);d.setSeeThrough(false);d.setViewRange(2.5f);d.setBrightness(new Display.Brightness(15,15));d.setBackgroundColor(Color.fromARGB(205,7,7,7));d.setTransformation(new Transformation(new Vector3f(),new AxisAngle4f(),new Vector3f(.72f,.72f,.72f),new AxisAngle4f()));d.getPersistentDataContainer().set(panelKey,PersistentDataType.INTEGER,0);d.setVisibleByDefault(false);});
+    private TextDisplay resolvePersonal(UUID playerId){UUID id=personalDisplays.get(playerId);if(id==null)return null;Entity e=plugin.getServer().getEntity(id);return e instanceof TextDisplay td&&td.isValid()?td:null;}
+    private TextDisplay spawnPersonalDisplay(Player player,Location at){
+        TextDisplay text=spawnDisplay(at,PanelKind.STATS.index,false);
         player.showEntity(plugin,text);
         personalDisplays.put(player.getUniqueId(),text.getUniqueId());
         return text;
     }
-    @EventHandler public void join(PlayerJoinEvent event){if(bulletinAnchor!=null)spawnPersonalDisplay(event.getPlayer());}
+    @EventHandler public void join(PlayerJoinEvent event){Location at=placed.get(PanelKind.STATS);if(at!=null)spawnPersonalDisplay(event.getPlayer(),at);}
     @EventHandler public void quit(PlayerQuitEvent event){UUID id=personalDisplays.remove(event.getPlayer().getUniqueId());if(id!=null){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}}
     private Component playerLeaderboardPanel(){
         List<String> lines=new ArrayList<>();lines.add("TOP PLAYERS");List<Database.StatsRow> rows=db.topStats("balance",10,0);
@@ -218,32 +273,41 @@ final class BulletinService implements Listener {
         player.openInventory(inv);
     }
 
-    /** Force-removal for a bulletin that's become genuinely untrackable — e.g. its persisted state was
-     *  cleared (db.state(STATE,"")) by an earlier remove() while its physical entities happened to be in an
-     *  unloaded chunk, so removeEntitiesOnly() silently found nothing to delete via the now-empty UUID
-     *  list and the entities were simply left behind with no reference to them anywhere. Unlike normal
-     *  removal, this doesn't trust panels/personalDisplays or the STATE string at all — it force-loads
-     *  every currently-loaded world's entities (Bukkit already keeps spawn-adjacent chunks loaded, so this
-     *  reaches a "stuck at spawn" bulletin without needing manual chunk coordinates) and removes ANY entity
-     *  carrying the bulletin_panel tag, tracked or not, before resetting all in-memory/persisted state to
-     *  a clean slate. Safe to run even if a legitimate bulletin currently exists — it accounts for that by
-     *  requiring name/scope input, but here it intentionally purges everything, since the caller (an admin
-     *  command) is meant for exactly the "nothing else worked" case. */
+    /** Force-removal for holograms that have become untrackable -- e.g. their persisted state was cleared
+     *  while the entities were in an unloaded chunk, leaving them with no reference anywhere. Ignores all
+     *  tracking and simply deletes every entity carrying the bulletin_panel tag across loaded worlds. */
     int purge(org.bukkit.command.CommandSender sender){
         int removed=0;
-        for(World world:plugin.getServer().getWorlds())for(Entity entity:world.getEntities()){
+        for(World world:plugin.getServer().getWorlds())for(Entity entity:world.getEntities())
             if(entity instanceof TextDisplay&&entity.getPersistentDataContainer().has(panelKey,PersistentDataType.INTEGER)){entity.remove();removed++;}
-        }
         for(UUID id:personalDisplays.values()){Entity e=plugin.getServer().getEntity(id);if(e!=null&&e.isValid())e.remove();}
-        personalDisplays.clear();panels.clear();bulletinAnchor=null;bulletinFace=null;
-        db.state(STATE,"");
-        CoreUtil.msg(sender,"Bulletin purge: force-removed "+removed+" tagged entity/entities across all loaded worlds, and cleared all bulletin state. Use /ashfall bulletin place to set up a fresh one.");
+        personalDisplays.clear();shared.clear();placed.clear();
+        for(PanelKind kind:PanelKind.values())db.state(kind.stateKey(),"");
+        db.state("bulletin.wall.v1","");
+        CoreUtil.msg(sender,"Bulletin purge: force-removed "+removed+" tagged hologram(s) and cleared all panel state. Re-place with /ashfall bulletin place all.");
         return removed;
     }
-    private void restore(){String value=db.state(STATE);if(value==null||value.isBlank())return;String[] parts=value.split("\\|",6);if(parts.length<5)return;World world=plugin.getServer().getWorld(parts[0]);if(world==null)return;try{Block anchor=world.getBlockAt(Integer.parseInt(parts[1]),Integer.parseInt(parts[2]),Integer.parseInt(parts[3]));anchor.getChunk().load();panels.clear();if(parts.length==6)for(String id:parts[5].split(","))try{panels.add(UUID.fromString(id));}catch(IllegalArgumentException ignored){}removeEntitiesOnly();spawn(anchor,BlockFace.valueOf(parts[4]));}catch(Exception error){plugin.getLogger().warning("Could not restore bulletin: "+error.getMessage());}}
-    private List<TextDisplay> resolve(){List<TextDisplay> result=new ArrayList<>();for(UUID id:panels){Entity entity=plugin.getServer().getEntity(id);if(entity instanceof TextDisplay display&&display.getPersistentDataContainer().has(panelKey,PersistentDataType.INTEGER))result.add(display);}return result;}
-    private void remove(boolean clearState){removeEntitiesOnly();if(clearState)db.state(STATE,"");}
-    private void removeEntitiesOnly(){for(UUID id:panels){Entity entity=plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}panels.clear();for(UUID id:personalDisplays.values()){Entity entity=plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}personalDisplays.clear();bulletinAnchor=null;bulletinFace=null;}
+    /** Restores each panel's location independently. Any leftover tagged entity at that spot is cleared
+     *  first, so a restart cannot accumulate duplicates. */
+    private void restore(){
+        for(PanelKind kind:PanelKind.values()){
+            String value=db.state(kind.stateKey());
+            if(value==null||value.isBlank())continue;
+            String[] parts=value.split("\\|");
+            if(parts.length<4)continue;
+            World world=plugin.getServer().getWorld(parts[0]);
+            if(world==null)continue;
+            try{
+                Location at=new Location(world,Double.parseDouble(parts[1]),Double.parseDouble(parts[2]),Double.parseDouble(parts[3]));
+                at.getChunk().load();
+                for(Entity entity:world.getNearbyEntities(at,1.5,1.5,1.5))
+                    if(entity instanceof TextDisplay&&entity.getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,-1)==kind.index)entity.remove();
+                placed.put(kind,at);
+                if(kind!=PanelKind.STATS)shared.put(kind,spawnDisplay(at,kind.index,true).getUniqueId());
+            }catch(Exception error){plugin.getLogger().warning("Could not restore bulletin "+kind+": "+error.getMessage());}
+        }
+        refresh();
+    }
     boolean selfTest(){return plugin.getConfig().getLong("bulletin.refresh-seconds",40)>=30&&BlockFace.values().length>=6;}
     private ItemStack item(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
     private String shorten(String value,int max){return value.length()<=max?value:value.substring(0,max-1)+"…";}

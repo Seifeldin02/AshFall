@@ -626,7 +626,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"feedback"->filter(args[1],List.of("notify","list","view","done","reopen","delete"));
                 case"faction"->filter(args[1],List.of("inspect","resize","resetclaim","recalc"));
                 case"merchant"->filter(args[1],List.of("spawn","remove"));
-                case"bulletin"->filter(args[1],List.of("place","remove","refresh"));
+                case"bulletin"->filter(args[1],List.of("place","move","remove","list","refresh"));
                 case"spawnclaim"->filter(args[1],List.of("select","info","clear"));
                 case"relic"->filter(args[1],List.of("give","remove","forcerespawn"));
                 case"grave"->filter(args[1],List.of("repair"));
@@ -645,6 +645,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("ipban")&&args[1].equalsIgnoreCase("ban"))return filter(args[3],List.of("7d","3d","1d","12h","1h","30m","perm"));
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("ipban")&&Set.of("unban","duration").contains(args[1].toLowerCase(Locale.ROOT)))return onlineNames(sender,args[2]);
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("ipban")&&args[1].equalsIgnoreCase("duration"))return filter(args[3],List.of("7d","3d","1d","12h","1h","30m","perm"));
+        if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("bulletin")&&Set.of("place","move","remove").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],List.of("stats","players","factions","bounties","all"));
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("monument")&&args[1].equalsIgnoreCase("locate"))return filter(args[2],monuments.structureTypeKeys());
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("monument")&&Set.of("tp","remove","rename","snapshot","restore","inspect","history","refill","reconstruct","revamp","prism").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],monuments.cachedNames());
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("monument")&&args[1].equalsIgnoreCase("restore"))return filter(args[3],List.of("preview","confirm"));

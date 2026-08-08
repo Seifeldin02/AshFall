@@ -100,6 +100,7 @@ final class ShardService implements Listener {
             case"disposable_capsule"->plugin.capsules().empty(false);
             case"reusable_capsule"->plugin.capsules().empty(true);
             case"sealed_omen"->plugin.bosses().createSummonScroll();
+            case"iron_golem_spawner"->plugin.spawners().purchasedSpawner(org.bukkit.entity.EntityType.IRON_GOLEM);
             case"enchanted_golden_apple"->new ItemStack(Material.ENCHANTED_GOLDEN_APPLE);
             case"premium_supplies"->supplies();
             case"fortune_excavator"->tool(Material.NETHERITE_PICKAXE,"EXCAVATOR",Map.of(Enchantment.EFFICIENCY,5,Enchantment.FORTUNE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));

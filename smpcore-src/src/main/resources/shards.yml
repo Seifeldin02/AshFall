@@ -29,6 +29,7 @@ stock:
   market_axe: {icon: NETHERITE_AXE, name: Market Axe, price: 180, limit: 1, period: MONTH, category: TOOLS}
   haste_24h: {icon: HONEY_BOTTLE, name: Haste Draught, price: 32, limit: 2, period: WEEK, category: UTILITY}
 
+  iron_golem_spawner: {icon: IRON_GOLEM_SPAWN_EGG, name: Warded Colossus Spawner, price: 300, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
   netherite_pickaxe: {icon: NETHERITE_PICKAXE, name: Max Netherite Pickaxe, price: 120, limit: 1, period: WEEK, category: TOOLS}
   netherite_shovel: {icon: NETHERITE_SHOVEL, name: Max Netherite Shovel, price: 80, limit: 1, period: WEEK, category: TOOLS}
   netherite_axe: {icon: NETHERITE_AXE, name: Max Netherite Axe, price: 90, limit: 1, period: WEEK, category: TOOLS}
