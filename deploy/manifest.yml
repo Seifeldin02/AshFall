@@ -1,0 +1,72 @@
+# Deployment manifest: everything a staging -> production promotion must handle that Git does NOT track.
+#
+# Git tracks smpcore-src/ only. Every path below lives on the servers themselves, so a "git diff main..staging"
+# review will never mention it. Before this manifest existed, promotion relied on remembering these by hand --
+# which is how the Nether anti-xray config sat unpromoted for a full release: the approved setting lives in a
+# per-dimension paper-world.yml INSIDE the world folder, a directory deploys deliberately never touch because
+# it also holds world data. Anything added here is checked automatically by check_deploy.py.
+#
+# sync   : must be semantically identical on both servers; promote staging -> production.
+# env    : must exist on both and is INTENTIONALLY different (ports, secrets, motd). Never copy.
+#          `assert` pins the values production must have, so a careless copy is caught immediately.
+# plugins: jars that must be present on production for the current build to work.
+
+servers:
+  staging: C:/MinecraftServer-Staging
+  production: C:/MinecraftServer
+
+sync:
+  - path: plugins/SMPCore/config.yml
+    note: main plugin config
+  - path: plugins/SMPCore/bosses.yml
+  - path: plugins/SMPCore/shop.yml
+  - path: plugins/SMPCore/shards.yml
+  - path: plugins/SMPCore/relics.yml
+  - path: plugins/SMPCore/events.yml
+  - path: config/paper-world-defaults.yml
+    note: global Paper world defaults; per-dimension files below OVERRIDE this
+  # Per-dimension Paper configs. These live inside the world folder and override paper-world-defaults.yml.
+  # Easy to miss precisely because world/ is otherwise off-limits during a deploy.
+  - path: world/dimensions/minecraft/overworld/paper-world.yml
+  - path: world/dimensions/minecraft/the_nether/paper-world.yml
+    note: holds the approved Nether anti-xray engine-mode 2 override
+  - path: world/dimensions/minecraft/the_end/paper-world.yml
+  - path: world/dimensions/minecraft/ashfall_reconstruction_normal/paper-world.yml
+  - path: world/dimensions/minecraft/ashfall_reconstruction_the_end/paper-world.yml
+  - path: config/paper-global.yml
+  - path: spigot.yml
+  - path: bukkit.yml
+  - path: disable-quickedit.ps1
+    note: per-console QuickEdit fix for the Windows console stall; start.bat must invoke it
+
+env:
+  - path: server.properties
+    assert:
+      server-port: "25565"
+      rcon.port: "25575"
+      query.port: "25565"
+      max-players: "500"
+      motd: "Ashfall Concord"
+      level-name: "world"
+  - path: plugins/Geyser-Spigot/config.yml
+    note: Bedrock listener port differs (prod 19132 / staging 19133)
+
+plugins:
+  - packetevents-spigot-2.13.0.jar   # required by PacketNametagService
+  - worldedit-bukkit-7.4.4.jar       # hard depend in plugin.yml
+  - VaultUnlocked-2.20.2.jar         # hard depend in plugin.yml
+  - item-nbt-api-plugin-2.16.0.jar
+  - PunisherX-1.7.2-SNAPSHOT.jar
+  - prism-paper-v4.4.jar
+  - AxTrade-1.26.1.jar               # trade tax integration
+  - DonutOrders-1.3.0.jar            # SMPCore declares loadbefore for this
+
+# Files that must NEVER be synced or overwritten by a deploy, at any time.
+never_touch:
+  - plugins/SMPCore/smpcore.db
+  - plugins/*/database*
+  - world/dimensions/*/*/region
+  - world/dimensions/*/*/entities
+  - world/players
+  - plugins/AuthMe
+  - plugins/ReplayCore/recordings
