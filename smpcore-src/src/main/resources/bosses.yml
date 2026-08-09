@@ -181,6 +181,10 @@ world-boss-targeting:
   # re-acquires the nearest valid player (or nobody). This is a hard leash: past `range` a boss will not
   # follow you home, and none of the assist/anti-cheese behaviour fires either.
   lose-target-seconds: 3
+  # How long after being hit by a non-player a world boss will still retaliate against it, in seconds.
+  # A boss never picks a mob target on its own -- only something that actually damaged it becomes valid,
+  # and players always take priority -- so kiting mobs in still cannot pull it off a real fight.
+  retaliation-seconds: 8
 
 world-boss-unreachable:
   # Seconds an ENGAGED target must be genuinely unpathable before the boss acts.

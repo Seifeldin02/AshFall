@@ -64,9 +64,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class PacketNametagService implements Listener {
     /** Display metadata indices, stable since 1.19.4. */
     private static final int IDX_TRANSLATION=11, IDX_SCALE=12, IDX_BILLBOARD=15, IDX_VIEW_RANGE=17,
-            IDX_TEXT=23, IDX_LINE_WIDTH=24, IDX_BACKGROUND=25;
+            IDX_TEXT=23, IDX_LINE_WIDTH=24, IDX_BACKGROUND=25, IDX_STYLE=27;
+    /** Text display style bitmask. Only the see-through bit is used; shadow and background are left alone
+     *  so this changes occlusion only, not how the tag looks. */
+    private static final byte STYLE_SEE_THROUGH=0x02, STYLE_OCCLUDED=0x00;
     private static final byte BILLBOARD_CENTER=3;
     /** Counted DOWN from a high value; real entity ids count up, so these cannot collide. */
+    /** Appended to the change-detection key only; stripped before the text is drawn. */
+    private static final String SNEAK_MARK="\u0000sneak";
     private static final AtomicInteger NEXT_ID=new AtomicInteger(Integer.MAX_VALUE-1_000_000);
 
     /** Everything the overlay renders. Compared as a whole so a packet is only sent when something the
@@ -115,13 +120,24 @@ final class PacketNametagService implements Listener {
         if(event.getTo()==null||event.getFrom().getWorld()==null)return;
         if(!event.getFrom().getWorld().equals(event.getTo().getWorld())||event.getFrom().distanceSquared(event.getTo())>4096)forget(event.getPlayer());
     }
+    /** Drops our record of this player's tag AND destroys it on every client first. Clearing tracking alone
+     *  was not enough: the fake entity id is reused per player, so the next refresh re-spawned that same id
+     *  while clients still held the old one, stranding a tag at the previous position. */
     private void forget(Player target){
         if(!active)return;
         UUID id=target.getUniqueId();
-        for(Map<UUID,String> seen:sent.values())seen.remove(id);
+        Integer entity=entityIds.get(id);
+        for(Map.Entry<UUID,Map<UUID,String>> entry:sent.entrySet()){
+            if(entry.getValue().remove(id)==null||entity==null)continue;
+            Player viewer=plugin.getServer().getPlayer(entry.getKey());
+            if(viewer!=null){send(viewer,new WrapperPlayServerDestroyEntities(entity));
+                send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[0]));}
+        }
         lastSnapshot.remove(id);
         later(10L);
     }
+    /** Crouching changes occlusion, so it re-sends instead of waiting for the next periodic tick. */
+    @EventHandler public void sneak(org.bukkit.event.player.PlayerToggleSneakEvent event){if(active)later(1L);}
     void viewerSettingChanged(Player viewer){if(active)later(1L);}
     private void later(long ticks){plugin.getServer().getScheduler().runTaskLater(plugin,this::refresh,ticks);}
 
@@ -136,13 +152,22 @@ final class PacketNametagService implements Listener {
             Snapshot snapshot=eligible?snapshot(target):null;
             if(snapshot!=null)lastSnapshot.put(id,snapshot);else lastSnapshot.remove(id);
             for(Player viewer:plugin.getServer().getOnlinePlayers()){
+                Map<UUID,String> seen=sent.computeIfAbsent(viewer.getUniqueId(),k->new HashMap<>());
+                /** A viewer must never be sent their own tag. The display is a passenger of the player, so
+                 *  in first person it renders directly in front of the camera. Vanilla never shows you your
+                 *  own nametag either. */
+                boolean self=viewer.getUniqueId().equals(id);
                 boolean money=plugin.settings().showBalanceNametags(viewer);
                 boolean faction=plugin.settings().showFactionNametags(viewer);
                 boolean hearts=plugin.settings().showHeartNametags(viewer);
-                Map<UUID,String> seen=sent.computeIfAbsent(viewer.getUniqueId(),k->new HashMap<>());
-                /** Neither option on, or target not eligible: send nothing and tear down anything we sent
-                 *  before, so the viewer falls back to the untouched vanilla nametag. */
-                if(snapshot==null||(!money&&!faction&&!hearts)){
+                /** Beyond entity-tracking range the client holds no player entity to mount onto, so a tag
+                 *  sent now ends up stranded wherever that client last saw them -- the displaced tags. Tear
+                 *  down past the outer bound and re-spawn inside the inner one; the gap between the two
+                 *  keeps someone walking the boundary from flapping spawn/destroy every cycle. */
+                boolean tracked=viewer.getWorld().equals(target.getWorld())&&viewer.canSee(target)
+                        &&viewer.getLocation().distanceSquared(target.getLocation())
+                          <(seen.containsKey(id)?outerRangeSq():innerRangeSq());
+                if(self||snapshot==null||!tracked||(!money&&!faction&&!hearts)){
                     if(seen.remove(id)!=null){
                         Integer entity=entityIds.get(id);
                         if(entity!=null){send(viewer,new WrapperPlayServerDestroyEntities(entity));
@@ -150,12 +175,15 @@ final class PacketNametagService implements Listener {
                     }
                     continue;
                 }
-                String variant=render(snapshot,money,faction,hearts);
+                /** Sneaking is part of the change key so crouching re-sends at once, rather than waiting for
+                 *  the balance or health to happen to change. */
+                boolean sneaking=target.isSneaking();
+                String variant=render(snapshot,money,faction,hearts)+(sneaking?SNEAK_MARK:"");
                 String previous=seen.get(id);
                 if(variant.equals(previous))continue;
                 int entity=entityIds.computeIfAbsent(id,k->NEXT_ID.getAndDecrement());
-                if(previous==null)spawn(viewer,target,entity,variant);
-                else send(viewer,new WrapperPlayServerEntityMetadata(entity,List.of(text(variant))));
+                if(previous==null)spawn(viewer,target,entity,variant,sneaking);
+                else send(viewer,new WrapperPlayServerEntityMetadata(entity,List.of(text(variant),style(sneaking),viewRange(sneaking))));
                 seen.put(id,variant);
             }
         }
@@ -183,7 +211,7 @@ final class PacketNametagService implements Listener {
      *  colour, health white with a red heart, and the balance as a dark green sign plus a white value --
      *  matching the vanilla nametag and below-name health line as closely as possible. */
     private EntityData<?> text(String variant){
-        String[] lines=variant.split("\n",-1);
+        String[] lines=variant.replace(SNEAK_MARK,"").split("\n",-1);
         Component result=Component.empty();
         for(int i=0;i<lines.length;i++){
             if(i>0)result=result.append(Component.newline());
@@ -203,7 +231,21 @@ final class PacketNametagService implements Listener {
         }
         return new EntityData<>(IDX_TEXT,EntityDataTypes.ADV_COMPONENT,result);
     }
-    private void spawn(Player viewer,Player target,int entityId,String variant){
+    /** Vanilla draws a standing player's name through walls and stops once they crouch, which is what makes
+     *  crouching read as hidden and standing as exposed. Mirroring that is the point: the replacement tag
+     *  previously ignored occlusion entirely and stayed visible through terrain. */
+    private EntityData<?> style(boolean sneaking){
+        return new EntityData<>(IDX_STYLE,EntityDataTypes.BYTE,sneaking?STYLE_OCCLUDED:STYLE_SEE_THROUGH);
+    }
+    /** Crouching also shortens how far the name carries, again as vanilla does. */
+    private EntityData<?> viewRange(boolean sneaking){
+        float range=(float)plugin.getConfig().getDouble("nametags.view-range",1.0);
+        return new EntityData<>(IDX_VIEW_RANGE,EntityDataTypes.FLOAT,
+                sneaking?range*(float)plugin.getConfig().getDouble("nametags.sneak-view-range-factor",0.5):range);
+    }
+    private double innerRangeSq(){double d=plugin.getConfig().getDouble("nametags.max-distance",48);return d*d;}
+    private double outerRangeSq(){double d=plugin.getConfig().getDouble("nametags.max-distance",48)+16;return d*d;}
+    private void spawn(Player viewer,Player target,int entityId,String variant,boolean sneaking){
         Vector3d at=new Vector3d(target.getLocation().getX(),target.getLocation().getY(),target.getLocation().getZ());
         send(viewer,new WrapperPlayServerSpawnEntity(entityId,Optional.of(UUID.randomUUID()),EntityTypes.TEXT_DISPLAY,
                 at,0f,0f,0f,0,Optional.empty()));
@@ -213,7 +255,8 @@ final class PacketNametagService implements Listener {
         data.add(new EntityData<>(IDX_TRANSLATION,EntityDataTypes.VECTOR3F,new Vector3f(0,lift,0)));
         data.add(new EntityData<>(IDX_SCALE,EntityDataTypes.VECTOR3F,new Vector3f(scale,scale,scale)));
         data.add(new EntityData<>(IDX_BILLBOARD,EntityDataTypes.BYTE,BILLBOARD_CENTER));
-        data.add(new EntityData<>(IDX_VIEW_RANGE,EntityDataTypes.FLOAT,(float)plugin.getConfig().getDouble("nametags.view-range",1.0)));
+        data.add(viewRange(sneaking));
+        data.add(style(sneaking));
         data.add(new EntityData<>(IDX_LINE_WIDTH,EntityDataTypes.INT,200));
         data.add(new EntityData<>(IDX_BACKGROUND,EntityDataTypes.INT,plugin.getConfig().getInt("nametags.background-argb",1073741824)));
         data.add(text(variant));
@@ -233,8 +276,8 @@ final class PacketNametagService implements Listener {
         double abs=Math.abs(amount);
         if(abs<1000)return "$"+new DecimalFormat("0").format(amount);
         double scaled;String suffix;
-        if(abs>=1_000_000_000){scaled=amount/1_000_000_000;suffix="bil";}
-        else if(abs>=1_000_000){scaled=amount/1_000_000;suffix="mil";}
+        if(abs>=1_000_000_000){scaled=amount/1_000_000_000;suffix="b";}
+        else if(abs>=1_000_000){scaled=amount/1_000_000;suffix="m";}
         else{scaled=amount/1000;suffix="k";}
         return "$"+new DecimalFormat(Math.abs(scaled)>=100?"0":"0.#").format(scaled)+suffix;
     }

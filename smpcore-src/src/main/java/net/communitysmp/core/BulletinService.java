@@ -157,21 +157,55 @@ final class BulletinService implements Listener {
     void refresh(){
         for(PanelKind kind:List.of(PanelKind.PLAYERS,PanelKind.FACTIONS,PanelKind.BOUNTIES)){
             Location at=placed.get(kind);if(at==null)continue;
-            TextDisplay display=resolveShared(kind);
+            /** Skip entirely while the chunk is unloaded. getEntity() cannot see an entity in an unloaded
+             *  chunk, so refreshing there used to read as "the panel is gone" and spawn a replacement --
+             *  every 40s, persistently, forever. Nobody can see a hologram in an unloaded chunk anyway. */
+            if(!chunkReady(at))continue;
+            TextDisplay display=resolveShared(kind,at);
             if(display==null){display=spawnDisplay(at,kind.index,true);shared.put(kind,display.getUniqueId());}
+            sweepDuplicates(kind,at,display);
             display.text(switch(kind){case PLAYERS->playerLeaderboardPanel();case FACTIONS->factionLeaderboardPanel();default->bountyLeaderboardPanel();});
             if(display.getLocation().distanceSquared(at)>0.0001)display.teleport(at);
         }
         refreshPersonalPanels();
     }
-    private TextDisplay resolveShared(PanelKind kind){
-        UUID id=shared.get(kind);if(id==null)return null;
-        Entity e=plugin.getServer().getEntity(id);return e instanceof TextDisplay td&&td.isValid()?td:null;
+    /** A panel may only be resolved or spawned while its chunk is loaded; see refresh(). */
+    private boolean chunkReady(Location at){
+        return at!=null&&at.getWorld()!=null&&at.getWorld().isChunkLoaded(at.getBlockX()>>4,at.getBlockZ()>>4);
+    }
+    /** Every persistent panel of this kind sitting at this spot. Used both to adopt an existing hologram
+     *  instead of spawning a rival one, and to clean up any that already accumulated. */
+    private List<TextDisplay> panelsAt(PanelKind kind,Location at){
+        List<TextDisplay> found=new ArrayList<>();
+        for(Entity entity:at.getWorld().getNearbyEntities(at,2.0,2.0,2.0))
+            if(entity instanceof TextDisplay display&&display.isValid()&&display.isPersistent()
+                    &&display.getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,-1)==kind.index)
+                found.add(display);
+        return found;
+    }
+    /** Self-heal: whatever the cause, a spot may only ever hold one hologram per panel kind. Because this
+     *  runs on every refresh, any duplicate that does appear survives at most one cycle. */
+    private int sweepDuplicates(PanelKind kind,Location at,TextDisplay keep){
+        int removed=0;
+        for(TextDisplay other:panelsAt(kind,at))
+            if(!other.getUniqueId().equals(keep.getUniqueId())){other.remove();removed++;}
+        if(removed>0)plugin.getLogger().warning("[Bulletin] removed "+removed+" duplicate "+kind+" hologram(s).");
+        return removed;
+    }
+    private TextDisplay resolveShared(PanelKind kind,Location at){
+        UUID id=shared.get(kind);
+        if(id!=null){Entity e=plugin.getServer().getEntity(id);if(e instanceof TextDisplay td&&td.isValid())return td;}
+        /** Tracking was lost (restart, chunk churn, cleared state) but the hologram itself may still be
+         *  standing. Adopt it rather than adding a second one next to it. */
+        TextDisplay adopted=panelsAt(kind,at).stream().findFirst().orElse(null);
+        if(adopted!=null)shared.put(kind,adopted.getUniqueId());
+        return adopted;
     }
     /** Loads every online player's stats and shard balance from two bulk snapshot queries rather than a
      *  query pair per player, then updates each viewer's own private hologram. */
     private void refreshPersonalPanels(){
         Location at=placed.get(PanelKind.STATS);
+        if(at!=null&&!chunkReady(at))return;
         if(at==null){
             if(!personalDisplays.isEmpty()){for(UUID id:personalDisplays.values()){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}personalDisplays.clear();}
             return;
@@ -190,12 +224,22 @@ final class BulletinService implements Listener {
     }
     private TextDisplay resolvePersonal(UUID playerId){UUID id=personalDisplays.get(playerId);if(id==null)return null;Entity e=plugin.getServer().getEntity(id);return e instanceof TextDisplay td&&td.isValid()?td:null;}
     private TextDisplay spawnPersonalDisplay(Player player,Location at){
+        /** Replacing a tracked display without removing it first is how private panels leaked. */
+        UUID prior=personalDisplays.remove(player.getUniqueId());
+        if(prior!=null){Entity old=plugin.getServer().getEntity(prior);if(old!=null)old.remove();}
         TextDisplay text=spawnDisplay(at,PanelKind.STATS.index,false);
         player.showEntity(plugin,text);
         personalDisplays.put(player.getUniqueId(),text.getUniqueId());
         return text;
     }
-    @EventHandler public void join(PlayerJoinEvent event){Location at=placed.get(PanelKind.STATS);if(at!=null)spawnPersonalDisplay(event.getPlayer(),at);}
+    @EventHandler public void join(PlayerJoinEvent event){
+        Location at=placed.get(PanelKind.STATS);
+        if(at==null||!chunkReady(at))return;
+        /** A rejoin after an unclean quit can still have a live display tracked; keep it rather than
+         *  stacking a second one on top of it. */
+        if(resolvePersonal(event.getPlayer().getUniqueId())!=null)return;
+        spawnPersonalDisplay(event.getPlayer(),at);
+    }
     @EventHandler public void quit(PlayerQuitEvent event){UUID id=personalDisplays.remove(event.getPlayer().getUniqueId());if(id!=null){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}}
     private Component playerLeaderboardPanel(){
         List<String> lines=new ArrayList<>();lines.add("TOP PLAYERS");List<Database.StatsRow> rows=db.topStats("balance",10,0);
@@ -300,8 +344,10 @@ final class BulletinService implements Listener {
             try{
                 Location at=new Location(world,Double.parseDouble(parts[1]),Double.parseDouble(parts[2]),Double.parseDouble(parts[3]));
                 at.getChunk().load();
-                for(Entity entity:world.getNearbyEntities(at,1.5,1.5,1.5))
-                    if(entity instanceof TextDisplay&&entity.getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,-1)==kind.index)entity.remove();
+                /** Clears any backlog left by an older build before a single fresh panel is placed. */
+                int stale=0;
+                for(TextDisplay leftover:panelsAt(kind,at)){leftover.remove();stale++;}
+                if(stale>0)plugin.getLogger().info("[Bulletin] cleared "+stale+" leftover "+kind+" hologram(s) on restore.");
                 placed.put(kind,at);
                 if(kind!=PanelKind.STATS)shared.put(kind,spawnDisplay(at,kind.index,true).getUniqueId());
             }catch(Exception error){plugin.getLogger().warning("Could not restore bulletin "+kind+": "+error.getMessage());}

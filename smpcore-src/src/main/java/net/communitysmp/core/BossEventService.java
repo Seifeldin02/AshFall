@@ -121,10 +121,16 @@ final class BossEventService {
         if(!(e.getEntity() instanceof LivingEntity living))return;
         String tier=living.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);
         if(!isWorldBossTier(tier))return;
-        /** No world boss ever picks its own non-player target: hostile mobs are a free distraction that can
-         *  be kited in to stall a fight (the Colossus was the worst offender via vanilla's
-         *  IronGolemAttackHostilesGoal, but the rule is sound for all three). */
-        if(!(e.getTarget() instanceof Player player)){e.setCancelled(true);return;}
+        /** A world boss still never PICKS a non-player target of its own accord -- hostile mobs kited into
+         *  the arena would otherwise be a free distraction that stalls the fight (the Colossus was the worst
+         *  offender via vanilla's IronGolemAttackHostilesGoal). What it may now do is hit back: anything
+         *  that has actually damaged it recently is a legitimate target. That leaves the iron-golem tactic
+         *  intact -- golems can still be brought to a boss and still fight it -- but the boss no longer
+         *  stands there taking it. */
+        if(!(e.getTarget() instanceof Player player)){
+            if(e.getTarget() instanceof LivingEntity attacker&&recentlyAttackedBoss(living,attacker))return;
+            e.setCancelled(true);return;
+        }
         /** Out-of-range acquisition is refused outright, so a boss can't latch onto someone who merely
          *  wandered near the arena, and — combined with the stability window in worldBossTargetTick — it
          *  can't be yanked between distant players either. */
@@ -140,6 +146,38 @@ final class BossEventService {
         if(current!=null&&!current.equals(player)&&locked!=null&&System.currentTimeMillis()-locked<stability&&validBossTarget(current)
                 &&current.getLocation().distanceSquared(living.getLocation())<=range*range){e.setCancelled(true);return;}
         bossTargetSince.put(id,System.currentTimeMillis());
+    }
+    /** boss id -> (attacker id -> when it last damaged the boss). Only non-player attackers are tracked;
+     *  players have their own contribution accounting, which this deliberately does not touch. */
+    private final Map<UUID,Map<UUID,Long>> bossMobAttackers=new HashMap<>();
+    private long retaliationWindow(){return (long)(bosses.getDouble("world-boss-targeting.retaliation-seconds",8)*1000);}
+    private void noteMobAttacker(LivingEntity boss,LivingEntity attacker){
+        Map<UUID,Long> attackers=bossMobAttackers.computeIfAbsent(boss.getUniqueId(),k->new HashMap<>());
+        long now=System.currentTimeMillis();
+        attackers.put(attacker.getUniqueId(),now);
+        attackers.values().removeIf(when->now-when>retaliationWindow());
+    }
+    private boolean recentlyAttackedBoss(LivingEntity boss,LivingEntity attacker){
+        Map<UUID,Long> attackers=bossMobAttackers.get(boss.getUniqueId());
+        if(attackers==null)return false;
+        Long when=attackers.get(attacker.getUniqueId());
+        return when!=null&&System.currentTimeMillis()-when<=retaliationWindow()
+                &&attacker.isValid()&&!attacker.isDead()&&attacker.getWorld().equals(boss.getWorld());
+    }
+    /** The most recent living non-player attacker still inside the boss's range, or null. */
+    private LivingEntity pendingMobAttacker(LivingEntity boss,double rangeSq){
+        Map<UUID,Long> attackers=bossMobAttackers.get(boss.getUniqueId());
+        if(attackers==null||attackers.isEmpty())return null;
+        long now=System.currentTimeMillis();
+        attackers.values().removeIf(when->now-when>retaliationWindow());
+        LivingEntity best=null;long newest=Long.MIN_VALUE;
+        for(Map.Entry<UUID,Long> entry:attackers.entrySet()){
+            org.bukkit.entity.Entity found=plugin.getServer().getEntity(entry.getKey());
+            if(!(found instanceof LivingEntity living)||living.isDead()||!living.isValid())continue;
+            if(!living.getWorld().equals(boss.getWorld())||living.getLocation().distanceSquared(boss.getLocation())>rangeSq)continue;
+            if(entry.getValue()>newest){newest=entry.getValue();best=living;}
+        }
+        return best;
     }
     /** Spectators, dead players and staff in creative/privileged mode are never valid boss targets. */
     private boolean validBossTarget(Player player){
@@ -172,8 +210,16 @@ final class BossEventService {
             double d=candidate.getLocation().distanceSquared(boss.getLocation());
             if(d<=best){best=d;nearest=candidate;}
         }
-        if(nearest!=null){mob.setTarget(nearest);bossTargetSince.put(id,now);}
-        else if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);}
+        if(nearest!=null){mob.setTarget(nearest);bossTargetSince.put(id,now);return;}
+        /** No valid player in range: hit back at whatever has been attacking it rather than standing idle
+         *  while an iron golem chips it down. Players are always preferred, so this only ever applies once
+         *  nobody is actually fighting the boss. */
+        LivingEntity retaliate=pendingMobAttacker(boss,rangeSq);
+        if(retaliate!=null){
+            if(!retaliate.equals(mob.getTarget())){mob.setTarget(retaliate);bossTargetSince.put(id,now);}
+            return;
+        }
+        if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);bossMobAttackers.remove(id);}
     }
     void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); if (motionTask != null) motionTask.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
 
@@ -298,7 +344,7 @@ final class BossEventService {
             if(clean){
                 UUID id=living.getUniqueId();
                 living.remove();
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 removed++;
                 CoreUtil.msg(sender,"  removed "+detail);
@@ -451,6 +497,14 @@ final class BossEventService {
         }
         LivingEntity victim=bossVictim(e.getEntity());if(victim==null)return;String tier = victim.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING);boolean shardBoss=victim instanceof Warden,shared=isVanillaBoss(victim)||"miniboss".equals(tier);if(tier==null&&!shared&&!shardBoss)return;String ability = victim.getPersistentDataContainer().get(abilityKey, PersistentDataType.STRING);
         Player damager = playerDamager(e.getDamager());
+        /** Anything that is not a player but did land a hit is remembered, so the boss may retaliate
+         *  against it. Recorded for world-boss tiers only, and it feeds targeting alone -- damage
+         *  contribution and reward splitting stay players-only, exactly as before. */
+        if(damager==null&&isWorldBossTier(tier)){
+            org.bukkit.entity.Entity raw=e.getDamager();
+            if(raw instanceof Projectile shot&&shot.getShooter() instanceof LivingEntity shooter)raw=shooter;
+            if(raw instanceof LivingEntity attacker&&!attacker.equals(victim))noteMobAttacker(victim,attacker);
+        }
         if (damager != null) {
             double toughness=toughnessFor(victim,tier);if(exposedUntil.getOrDefault(victim.getUniqueId(),0L)>System.currentTimeMillis())toughness/=1.5;if(toughness>1)e.setDamage(e.getDamage()/toughness);
             if(tier!=null){double relicMultiplier=relics.eliteOutgoingMultiplier(damager);if(relicMultiplier!=1)e.setDamage(e.getDamage()*relicMultiplier);}
@@ -463,6 +517,9 @@ final class BossEventService {
              *  playerDamager() already resolves the shooter correctly, so just force the target explicitly
              *  for world bosses rather than leaving it to chance. */
             if(isWorldBossTier(tier)&&victim instanceof Mob mob)mob.setTarget(damager);
+            /** Players outrank mobs: a golem landing a hit must not pull the boss off the person fighting
+             *  it. The mob only becomes the target once no valid player is engaged, which is handled on the
+             *  targeting tick rather than here. */
             if(e.getDamager() instanceof Projectile||damager.getLocation().distanceSquared(victim.getLocation())>Math.pow(bosses.getDouble("anti-cheese.ranged-distance",18),2))rangedHits.merge(victim.getUniqueId(),1,Integer::sum);else rangedHits.put(victim.getUniqueId(),0);
             if(tier!=null){double lifesteal=relics.oathbladeLifesteal(damager);if(lifesteal>0&&dealt>0)damager.setHealth(Math.min(damager.getAttribute(Attribute.MAX_HEALTH).getValue(),damager.getHealth()+dealt*lifesteal));}
             boolean eventTarget = eventType != null && (isWorldBossTier(tier) || victim.getPersistentDataContainer().has(eventEliteKey));
@@ -505,7 +562,7 @@ final class BossEventService {
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
 
     void onDeath(EntityDeathEvent e) {
-        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());bossSlamAt.remove(mob.getUniqueId());bossLavaLungeAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
+        LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossMobAttackers.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());bossSlamAt.remove(mob.getUniqueId());bossLavaLungeAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
         if (tier != null) { rewardElite(e, killer, tier); return; }
         if(isVanillaBoss(mob)){rewardVanillaBoss(e,mob,killer);return;}if(mob instanceof Warden)rewardWardenShards(mob,killer);if (killer == null) return;
         double penalty = friendlyPenalty(mob); if (penalty > 0) { double charged = db.takeUpTo(CoreUtil.id(killer), penalty); if(charged>0){plugin.bank().creditSink(charged,CoreUtil.id(killer),"FRIENDLY_"+mob.getType().name());db.recordEconomy(CoreUtil.id(killer),"FRIENDLY_PENALTY",-charged,mob.getType().name());killer.sendActionBar(Component.text("-" + CoreUtil.money(charged) + " " + CoreUtil.pretty(mob.getType().name()), NamedTextColor.RED));} return; }
@@ -525,11 +582,27 @@ final class BossEventService {
          *  multiplied here rather than by re-entering this method per virtual mob, so vanilla's own reward
          *  path still runs exactly once and nothing is double-counted. */
         int virtual=Math.max(1,plugin.spawners().virtualStack(mob));
-        if(virtual>1)amount*=virtual;if(mob instanceof Enemy){
+        if(virtual>1)amount*=virtual;
+        if(combatIncome(mob)){
             /** Kill accounting reflects the whole stack too, so progression and the anti-farm curve both
              *  see the real number of mobs killed rather than one per representative. */
             for(int k=0;k<virtual;k++)plugin.progress().hostileKill(killer,mob.getType(),mob.getWorld().getEnvironment());amount*=plugin.progress().mobIncomeMultiplier(killer);}
         if (amount >= .01) { plugin.creditEarned(CoreUtil.id(killer),amount,"MOB_"+mob.getType().name());db.recordEconomy(CoreUtil.id(killer),"MOB_NORMAL",amount,mob.getType().name()); killer.sendActionBar(Component.text("+" + CoreUtil.money(amount) + " mob reward", NamedTextColor.GREEN)); }
+    }
+    /** Whether a kill counts as combat income: the progression multiplier and the kill accounting that
+     *  feeds the anti-farm curve are decided together, from one place, so the two can never disagree.
+     *
+     *  The test used to be a bare `instanceof Enemy`, which quietly excluded any mob that fights back
+     *  without being classified hostile. Iron Golems are the case that mattered -- they are Golem, not
+     *  Enemy, so a deliberately-farmed golem paid its base reward with no multiplier at all while every
+     *  hostile mob got one. Rather than special-casing that one type, the exceptions are configurable, so
+     *  another neutral-but-dangerous mob can be added without a code change. Passive livestock stay out:
+     *  they are in the reward tables too, and must not earn combat income. */
+    private boolean combatIncome(LivingEntity mob){
+        if(mob instanceof Enemy)return true;
+        for(String name:plugin.getConfig().getStringList("mob-money.combat-income-extra"))
+            if(name!=null&&name.equalsIgnoreCase(mob.getType().name()))return true;
+        return false;
     }
     private void rewardVanillaBoss(EntityDeathEvent event,LivingEntity boss,Player killer){
         UUID id=boss.getUniqueId();Map<String,Double> raw=damage.remove(id);Map<String,Long> hits=lastContribution.remove(id);sharedBossIds.remove(id);Map<String,Double> participants=meaningfulParticipants(boss,raw,hits);
@@ -1547,7 +1620,7 @@ final class BossEventService {
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 if(id.equals(worldBossId)){
                     worldBossId=null;
@@ -1585,7 +1658,7 @@ final class BossEventService {
      *  /ashfall boss despawn. */
     boolean despawnWorldBoss(){
         LivingEntity boss=worldBoss();if(boss==null)return false;
-        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
+        eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossMobAttackers.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;
         if(eventType==EventType.WORLD_BOSS||eventType==EventType.HUNT)finishEvent(false);
         broadcastNotice(Component.text("⚔ The world boss was despawned by an administrator.",NamedTextColor.DARK_GRAY));
         return true;
@@ -1595,7 +1668,7 @@ final class BossEventService {
     boolean forceStopEvent(){
         if(eventType==null&&worldBoss()==null)return false;
         LivingEntity boss=worldBoss();
-        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
+        if(boss!=null){eliteIds.remove(worldBossId);damage.remove(worldBossId);lastContribution.remove(worldBossId);removeHealthBar(worldBossId);lastNearbyAt.remove(worldBossId);specialAbilityAt.remove(worldBossId);exposedUntil.remove(worldBossId);enraged.remove(worldBossId);enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossMobAttackers.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId);bossMechanicAt.remove(worldBossId);db.deleteBossState(worldBossId.toString());boss.remove();worldBossId=null;hintStage=0;nextHintAt=0;}
         if(eventType!=null)finishEvent(false);
         return true;
     }
@@ -1610,7 +1683,7 @@ final class BossEventService {
              *  worldBossId is being cleared, whether or not the entity itself is still resolvable. */
             if (worldBossId != null) {
                 eliteIds.remove(worldBossId); damage.remove(worldBossId); lastContribution.remove(worldBossId); removeHealthBar(worldBossId);
-                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId); bossMechanicAt.remove(worldBossId);
+                lastNearbyAt.remove(worldBossId); specialAbilityAt.remove(worldBossId); exposedUntil.remove(worldBossId); enraged.remove(worldBossId); enrageStageApplied.remove(worldBossId);bossFirstEngagedAt.remove(worldBossId);eliteLastPlayerNear.remove(worldBossId);bossTargetSince.remove(worldBossId);bossMobAttackers.remove(worldBossId);bossTargetOutOfRangeSince.remove(worldBossId);bossUnreachableSince.remove(worldBossId);bossLeapCooldown.remove(worldBossId);bossRepathAt.remove(worldBossId);bossSlamAt.remove(worldBossId);bossLavaLungeAt.remove(worldBossId); bossMechanicAt.remove(worldBossId);
                 db.deleteBossState(worldBossId.toString());
             }
             if (boss != null) {

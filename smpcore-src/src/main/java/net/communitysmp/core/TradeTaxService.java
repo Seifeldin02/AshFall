@@ -61,14 +61,18 @@ final class TradeTaxService implements Listener {
             if(a==null||b==null)return;
             /** Each side pays only on what THEY are handing over, so a one-sided gift taxes the giver and
              *  a two-way trade taxes both proportionally — the same principle as the auction sale tax. */
-            double chargeA=chargeFor(first),chargeB=chargeFor(second);
-            if(chargeA<=0&&chargeB<=0)return;
-            if(!canPay(a,chargeA)||!canPay(b,chargeB)){
+            Charge chargeA=chargeFor(first),chargeB=chargeFor(second);
+            if(chargeA.total()<=0&&chargeB.total()<=0)return;
+            if(!canPay(a,chargeA.total())||!canPay(b,chargeB.total())){
                 setCancelled(event,true);
-                if(!canPay(a,chargeA))CoreUtil.error(a,"Trade cancelled — you cannot cover the "+CoreUtil.money(chargeA)+" transaction fee.");
-                if(!canPay(b,chargeB))CoreUtil.error(b,"Trade cancelled — you cannot cover the "+CoreUtil.money(chargeB)+" transaction fee.");
+                if(!canPay(a,chargeA.total()))CoreUtil.error(a,"Trade cancelled — you cannot cover the "+CoreUtil.money(chargeA.total())+" transaction fee.");
+                if(!canPay(b,chargeB.total()))CoreUtil.error(b,"Trade cancelled — you cannot cover the "+CoreUtil.money(chargeB.total())+" transaction fee.");
                 return;
             }
+            /** Guard against being taxed twice for one trade. AxTrade fires AxTradeCompleteEvent from a
+             *  single place per trade, so this should never trigger -- it exists so that a change on their
+             *  side, or any replay of the event, cannot silently double-charge real money. */
+            if(!taxedOnce(trade))return;
             collect(a,chargeA);
             collect(b,chargeB);
         }catch(Throwable error){
@@ -76,27 +80,48 @@ final class TradeTaxService implements Listener {
             plugin.getLogger().warning("[TradeTax] Skipped taxing a trade after an unexpected error: "+error);
         }
     }
+    /** What one side is handing over, and what each part of it costs them, kept together so the player can
+     *  be told exactly how the fee was arrived at instead of just a total. */
+    private record Charge(double money,double xp,double moneyTax,double xpFee){
+        double total(){return moneyTax+xpFee;}
+    }
     /** Money tax plus the XP charge, for one side of the trade. */
-    private double chargeFor(Object tradePlayer){
+    private Charge chargeFor(Object tradePlayer){
         double money=currency(tradePlayer,plugin.getConfig().getString("trade-tax.money-currency","money"));
         double xp=currency(tradePlayer,plugin.getConfig().getString("trade-tax.xp-currency","exp"));
         double taxPercent=plugin.getConfig().getDouble("trade-tax.percent",plugin.getConfig().getDouble("auctions.sale-tax-percent",5));
         double perXp=plugin.getConfig().getDouble("trade-tax.money-per-100-xp",10)/100.0;
-        return Math.max(0,money*taxPercent/100.0)+Math.max(0,xp*perXp);
+        return new Charge(money,xp,Math.max(0,money*taxPercent/100.0),Math.max(0,xp*perXp));
     }
+    /** Remembers the trades already settled, so one trade can only ever be charged once. Bounded: a trade
+     *  is recorded at commit and the set is trimmed, so this cannot grow over a long uptime. */
+    private final java.util.Set<Integer> taxed=java.util.Collections.newSetFromMap(new java.util.LinkedHashMap<>(){
+        @Override protected boolean removeEldestEntry(java.util.Map.Entry<Integer,Boolean> eldest){return size()>256;}
+    });
+    private boolean taxedOnce(Object trade){return taxed.add(System.identityHashCode(trade));}
     private double currency(Object tradePlayer,String key){
         if(key==null||key.isBlank())return 0;
         try{Object value=getCurrency.invoke(tradePlayer,key);return value instanceof Number number?Math.max(0,number.doubleValue()):0;}
         catch(Throwable ignored){return 0;}
     }
     private boolean canPay(Player player,double amount){return amount<=0||db().player(CoreUtil.id(player)).balance()>=amount;}
-    private void collect(Player player,double amount){
+    private void collect(Player player,Charge charge){
+        double amount=charge.total();
         if(amount<=0)return;
         if(!db().changeBalance(CoreUtil.id(player),-amount))return;
         plugin.bank().creditFee(amount,CoreUtil.id(player),"DIRECT_TRADE");
         db().recordEconomy(CoreUtil.id(player),"TRADE_TAX",-amount,"AXTRADE");
-        CoreUtil.msg(player,"Trade fee: "+CoreUtil.money(amount)+".");
+        /** Spell out what was charged and on what. A bare total left players unsure whether the fee applied
+         *  to the money, the XP, or the items, and unsure what they actually ended up with. */
+        StringBuilder detail=new StringBuilder();
+        double percent=plugin.getConfig().getDouble("trade-tax.percent",plugin.getConfig().getDouble("auctions.sale-tax-percent",5));
+        if(charge.moneyTax()>0)detail.append(CoreUtil.money(charge.moneyTax())).append(" (").append(trim(percent)).append("% of ").append(CoreUtil.money(charge.money())).append(")");
+        if(charge.xpFee()>0){if(detail.length()>0)detail.append(" + ");detail.append(CoreUtil.money(charge.xpFee())).append(" (").append((long)charge.xp()).append(" XP)");}
+        CoreUtil.msg(player,"Trade tax: "+CoreUtil.money(amount)+" — "+detail+".");
+        if(charge.money()>0)CoreUtil.msg(player,"You handed over "+CoreUtil.money(charge.money())+", so this trade cost you "+CoreUtil.money(charge.money()+amount)+" in total. Balance: "+CoreUtil.money(db().player(CoreUtil.id(player)).balance())+".");
+        else CoreUtil.msg(player,"Balance: "+CoreUtil.money(db().player(CoreUtil.id(player)).balance())+".");
     }
+    private String trim(double value){return value==Math.rint(value)?String.valueOf((long)value):String.valueOf(value);}
     private void setCancelled(Object event,boolean cancelled){
         try{event.getClass().getMethod("setCancelled",boolean.class).invoke(event,cancelled);}catch(Throwable ignored){}
     }

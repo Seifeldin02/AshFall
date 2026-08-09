@@ -167,8 +167,10 @@ final class SpawnerService {
             for(Entity entity:world.getEntities())
                 if(entity instanceof LivingEntity living&&!living.isDead()&&virtualStack(living)>0)stacked.add(living);
             if(stacked.size()<2)continue;
-            /** Fullest first, so smaller stacks are absorbed upward and we never split a big one. */
-            stacked.sort((a,b)->Integer.compare(virtualStack(b),virtualStack(a)));
+            /** Fullest first, and ties broken by id so the pass is deterministic rather than dependent on
+             *  whatever order the world happened to return entities in. */
+            stacked.sort(java.util.Comparator.<LivingEntity>comparingInt(e->-virtualStack(e))
+                    .thenComparing(e->e.getUniqueId()));
             java.util.Set<UUID> consumed=new java.util.HashSet<>();
             for(LivingEntity host:stacked){
                 if(consumed.contains(host.getUniqueId()))continue;
@@ -180,12 +182,18 @@ final class SpawnerService {
                     if(other.getLocation().distanceSquared(host.getLocation())>radius*radius)continue;
                     int room=cap-hostStack;
                     if(room<=0)break;
-                    int move=Math.min(room,virtualStack(other));
-                    if(move<=0)continue;
-                    hostStack+=move;
-                    int left=virtualStack(other)-move;
-                    if(left<=0){consumed.add(other.getUniqueId());other.remove();}
-                    else setVirtualStack(other,left);
+                    int donor=virtualStack(other);
+                    /** A representative at the cap is never a donor. It used to be: the cap check above only
+                     *  stopped a full stack acting as HOST, so an x40 host would take 60 from an x100
+                     *  neighbour and the two would trade places -- then trade back on the next sweep, which
+                     *  is the counts visibly swapping back and forth. */
+                    if(donor<=0||donor>=cap)continue;
+                    /** Only absorb a donor that fits whole. Partial transfers are the only way a surviving
+                     *  representative can lose count, so refusing them means every merge either removes the
+                     *  donor outright or does nothing -- counts can rise, never shuffle. */
+                    if(donor>room)continue;
+                    hostStack+=donor;
+                    consumed.add(other.getUniqueId());other.remove();
                 }
                 if(hostStack!=virtualStack(host))setVirtualStack(host,hostStack);
             }
@@ -214,7 +222,16 @@ final class SpawnerService {
         if(amount>1){
             entity.customName(net.kyori.adventure.text.Component.text(CoreUtil.pretty(entity.getType().name())+" ",net.kyori.adventure.text.format.NamedTextColor.GRAY)
                     .append(net.kyori.adventure.text.Component.text("x"+amount,net.kyori.adventure.text.format.NamedTextColor.AQUA)));
-            entity.setCustomNameVisible(true);
+            /** Deliberately NOT setCustomNameVisible(true). That flag renders the label permanently, through
+             *  terrain, out to the full 64-block name distance -- which turned every stacked farm into a
+             *  marker visible from across the map and gave away bases. Left false, the label behaves like any
+             *  other named mob: it appears when a player actually looks at it from close range. The label
+             *  itself is unchanged. */
+            entity.setCustomNameVisible(false);
+        }else{
+            /** Back down to a single mob: drop the stack label rather than leaving a stale "x2" on it. */
+            entity.customName(null);
+            entity.setCustomNameVisible(false);
         }
         /** A representative carrying many mobs' worth of value must not quietly despawn and take the whole
          *  stack with it; the cap plus the small merge radius keeps the entity count tiny regardless. */

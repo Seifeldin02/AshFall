@@ -46,7 +46,38 @@ final class SpawnClaimService implements Listener {
          *  until the next admin redefinition. Re-running this regularly makes the zone self-healing. */
         sweepTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::ejectUnmarked,20L,100L);
     }
-    void shutdown(){if(sweepTask!=null)sweepTask.cancel();}
+    /** Clearing the team on the way out is the other half of the persistence fix: Minecraft saves scoreboard
+     *  teams and their members to the world's scoreboard.dat, so anything still listed here at shutdown comes
+     *  back on the next boot -- with collision still disabled -- whether or not spawn protection still
+     *  applies to that player, or even still exists. */
+    void shutdown(){
+        if(sweepTask!=null)sweepTask.cancel();
+        clearCollisionTeam();
+    }
+    private void clearCollisionTeam(){
+        for(Scoreboard board:boards()){
+            Team team=board.getTeam(COLLISION_TEAM);
+            if(team==null)continue;
+            for(String entry:new java.util.HashSet<>(team.getEntries()))team.removeEntry(entry);
+        }
+    }
+    /** Every scoreboard a player could currently be displaying, plus the main one. UIService hands
+     *  sidebar-enabled players their own board, so an entry written to one board is invisible to the other --
+     *  which is how somebody ended up permanently non-collidable after a board switch. */
+    private java.util.List<Scoreboard> boards(){
+        java.util.List<Scoreboard> boards=new java.util.ArrayList<>();
+        Scoreboard main=mainBoard();
+        if(main!=null)boards.add(main);
+        for(Player player:plugin.getServer().getOnlinePlayers()){
+            Scoreboard board=player.getScoreboard();
+            if(board!=null&&boards.stream().noneMatch(existing->existing.equals(board)))boards.add(board);
+        }
+        return boards;
+    }
+    private Scoreboard mainBoard(){
+        org.bukkit.scoreboard.ScoreboardManager manager=plugin.getServer().getScoreboardManager();
+        return manager==null?null:manager.getMainScoreboard();
+    }
     @EventHandler public void vehicleMove(VehicleMoveEvent event){
         if(region==null||event.getVehicle().getPassengers().stream().allMatch(passenger->passenger instanceof Player||allowed(passenger)))return;
         if(!region.contains(event.getFrom())&&region.contains(event.getTo()))event.getVehicle().teleport(event.getFrom());
@@ -122,18 +153,53 @@ final class SpawnClaimService implements Listener {
      *  main one) — so the team has to be looked up/created on whichever board the player is CURRENTLY
      *  displaying, every sweep, not just on the main scoreboard once. */
     private void applyCollision(Player player,boolean inside){
-        Scoreboard board=player.getScoreboard();if(board==null)return;
+        /** Written to the player's own board AND the main board. Mirroring both means a scoreboard swap can
+         *  never strand a membership on the board that is no longer being displayed. */
+        setMembership(player.getScoreboard(),player,inside);
+        Scoreboard main=mainBoard();
+        if(main!=null&&!main.equals(player.getScoreboard()))setMembership(main,player,inside);
+    }
+    private void setMembership(Scoreboard board,Player player,boolean inside){
+        if(board==null)return;
         Team team=board.getTeam(COLLISION_TEAM);
-        if(team==null){team=board.registerNewTeam(COLLISION_TEAM);team.setOption(Team.Option.COLLISION_RULE,Team.OptionStatus.NEVER);}
+        if(team==null)team=board.registerNewTeam(COLLISION_TEAM);
+        /** Re-asserted every time: a team restored from scoreboard.dat can come back with a different rule. */
+        team.setOption(Team.Option.COLLISION_RULE,Team.OptionStatus.NEVER);
         boolean has=team.hasEntry(player.getName());
         if(inside&&!has)team.addEntry(player.getName());
         else if(!inside&&has)team.removeEntry(player.getName());
+    }
+    /** Drops memberships belonging to players who are not online. The sweep only ever visited online players,
+     *  so an offline entry was never revisited -- it simply persisted, and the player came back with player
+     *  collision still switched off for them wherever they went. */
+    private void pruneOfflineMemberships(){
+        for(Scoreboard board:boards()){
+            Team team=board.getTeam(COLLISION_TEAM);
+            if(team==null)continue;
+            for(String entry:new java.util.HashSet<>(team.getEntries())){
+                Player online=plugin.getServer().getPlayerExact(entry);
+                if(online==null||region==null||!region.contains(online.getLocation()))team.removeEntry(entry);
+            }
+        }
+    }
+    /** Anything that moves a player in or out of spawn reconciles at once instead of waiting up to 5s for the
+     *  sweep, which is what made the behaviour feel session-dependent. */
+    @EventHandler public void collisionJoin(org.bukkit.event.player.PlayerJoinEvent event){reconcile(event.getPlayer());}
+    @EventHandler public void collisionRespawn(org.bukkit.event.player.PlayerRespawnEvent event){reconcile(event.getPlayer());}
+    @EventHandler public void collisionWorld(org.bukkit.event.player.PlayerChangedWorldEvent event){reconcile(event.getPlayer());}
+    @EventHandler public void collisionTeleport(org.bukkit.event.player.PlayerTeleportEvent event){reconcile(event.getPlayer());}
+    private void reconcile(Player player){
+        plugin.getServer().getScheduler().runTask(plugin,()->{
+            if(!player.isOnline())return;
+            applyCollision(player,region!=null&&region.contains(player.getLocation()));
+        });
     }
     private void ejectUnmarked(){
         /** Runs on this same 5s sweep across ALL online players (not just those currently in the spawn world,
          *  and even with no region set at all) so anyone who leaves the region — or the world, or has
          *  protection cleared entirely — reliably gets collision back rather than being stuck non-collidable. */
         for(Player player:plugin.getServer().getOnlinePlayers())applyCollision(player,region!=null&&region.contains(player.getLocation()));
+        pruneOfflineMemberships();
         if(region==null)return;org.bukkit.World world=plugin.getServer().getWorld(region.world());if(world==null)return;
         for(LivingEntity entity:world.getLivingEntities()){
             if(entity instanceof Player||!region.contains(entity.getLocation())||allowed(entity))continue;
