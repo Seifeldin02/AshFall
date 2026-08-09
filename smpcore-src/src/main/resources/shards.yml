@@ -16,13 +16,13 @@ earning:
 # rewards therefore remain long-term goals; weekly limits prevent stockpiling abuse.
 stock:
   disposable_capsule: {icon: TRIAL_KEY, name: Disposable Villager Capsule, price: 40, limit: 2, period: WEEK, category: UTILITY}
-  reusable_capsule: {icon: OMINOUS_TRIAL_KEY, name: Reusable Villager Capsule, price: 200, limit: 1, period: LIFETIME, category: UTILITY, mandatory: true}
+  reusable_capsule: {icon: OMINOUS_TRIAL_KEY, name: Reusable Villager Capsule, price: 360, limit: 1, period: LIFETIME, category: UTILITY, mandatory: true}
   sealed_omen: {icon: PAPER, name: Sealed Omen, price: 200, limit: 1, period: WEEK, category: UTILITY, mandatory: true}
   enchanted_golden_apple: {icon: ENCHANTED_GOLDEN_APPLE, name: Enchanted Golden Apple, price: 40, limit: 2, period: WEEK, category: UTILITY}
   premium_supplies: {icon: BUNDLE, name: Expedition Supplies, price: 18, limit: 3, period: WEEK, category: UTILITY}
 
-  fortune_excavator: {icon: NETHERITE_PICKAXE, name: Ashen Excavator, price: 260, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
-  silk_excavator: {icon: NETHERITE_PICKAXE, name: Silk Excavator, price: 260, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
+  fortune_excavator: {icon: NETHERITE_PICKAXE, name: Ashen Excavator, price: 360, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
+  silk_excavator: {icon: NETHERITE_PICKAXE, name: Silk Excavator, price: 360, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
   fortune_shovel: {icon: NETHERITE_SHOVEL, name: Ashen Earthmover, price: 220, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
   silk_shovel: {icon: NETHERITE_SHOVEL, name: Silk Earthmover, price: 220, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
   feller_axe: {icon: NETHERITE_AXE, name: Concord Feller, price: 240, limit: 1, period: MONTH, category: TOOLS, mandatory: true}
@@ -36,13 +36,13 @@ stock:
   netherite_hoe: {icon: NETHERITE_HOE, name: Max Netherite Hoe, price: 60, limit: 1, period: WEEK, category: TOOLS}
   netherite_sword: {icon: NETHERITE_SWORD, name: Max Netherite Sword, price: 130, limit: 1, period: WEEK, category: WEAPONS}
   netherite_spear: {icon: NETHERITE_SPEAR, name: Max Netherite Spear, price: 140, limit: 1, period: WEEK, category: WEAPONS}
-  mace: {icon: MACE, name: Max Mace, price: 180, limit: 1, period: WEEK, category: WEAPONS}
-  bow: {icon: BOW, name: Max Bow, price: 65, limit: 1, period: WEEK, category: WEAPONS}
+  mace: {icon: MACE, name: Max Mace, price: 360, limit: 1, period: WEEK, category: WEAPONS}
+  bow: {icon: BOW, name: Max Bow, price: 80, limit: 1, period: WEEK, category: WEAPONS}
   crossbow: {icon: CROSSBOW, name: Max Crossbow, price: 70, limit: 1, period: WEEK, category: WEAPONS}
-  netherite_helmet: {icon: NETHERITE_HELMET, name: Max Netherite Helmet, price: 110, limit: 1, period: WEEK, category: ARMOR}
+  netherite_helmet: {icon: NETHERITE_HELMET, name: Max Netherite Helmet, price: 150, limit: 1, period: WEEK, category: ARMOR}
   netherite_chestplate: {icon: NETHERITE_CHESTPLATE, name: Max Netherite Chestplate, price: 140, limit: 1, period: WEEK, category: ARMOR}
-  netherite_leggings: {icon: NETHERITE_LEGGINGS, name: Max Netherite Leggings, price: 130, limit: 1, period: WEEK, category: ARMOR}
-  netherite_boots: {icon: NETHERITE_BOOTS, name: Max Netherite Boots, price: 110, limit: 1, period: WEEK, category: ARMOR}
+  netherite_leggings: {icon: NETHERITE_LEGGINGS, name: Max Netherite Leggings, price: 200, limit: 1, period: WEEK, category: ARMOR}
+  netherite_boots: {icon: NETHERITE_BOOTS, name: Max Netherite Boots, price: 170, limit: 1, period: WEEK, category: ARMOR}
 
 cosmetic-rotation: [ashen_halo, emberstep, void_crown, concord_wings]
 cosmetics:

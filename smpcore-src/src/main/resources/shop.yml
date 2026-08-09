@@ -1,46 +1,50 @@
 items:
-  # Buy-price policy for anything renewable: the shop is a convenience, never a substitute for the farm.
-  # Farm outputs sit at roughly 9-11x their sell price (crops highest, since they are the easiest to
-  # automate), against a ~5x median for mined and crafted goods. Before this, farmables were the CHEAPEST
-  # things in the shop at 3.2-4.3x, so buying wheat or iron outright beat building anything to produce it.
-  # Sell prices are deliberately untouched -- farming income is unchanged, only the shortcut got expensive.
+  # BUY PRICES ARE DERIVED, NOT AUTHORED: every commodity's buy price is exactly 5x its sell price, computed
+  # at load time (shop.buy-multiple). The values written here are kept in sync purely so the file reads
+  # truthfully -- editing one by hand does nothing, because the loader recomputes it. Change `sell` instead.
+  #
+  # This replaces the earlier 9-11x farm-output markup. That markup existed to stop the shop undercutting
+  # farming, and it is no longer the mechanism that does so: the shop can now only sell stock that players
+  # have actually sold it, so it cannot supply anything nobody farmed, at any price.
+  #
+  # Sell prices remain the authored economy and are untouched by this.
   # Common spawner-farm drops. Priced conservatively on purpose: a farm should be worthwhile through
   # volume, not because any single drop is valuable.
-  ROTTEN_FLESH: {buy: 1.1, sell: 0.12, daily-full: 4096}
-  SPIDER_EYE: {buy: 5.4, sell: 0.60, daily-full: 1536}
-  MAGMA_CREAM: {buy: 31.5, sell: 3.50, daily-full: 768}
-  PHANTOM_MEMBRANE: {buy: 81, sell: 9.00, daily-full: 384}
-  OAK_LOG: {buy: 18, sell: 2.0}
-  SPRUCE_LOG: {buy: 18, sell: 2.0}
-  BIRCH_LOG: {buy: 18, sell: 2.0}
-  COBBLESTONE: {buy: 3.0, sell: 0.5}
-  STONE: {buy: 4.0, sell: 0.75}
-  DIRT: {buy: 0.50, sell: 0.05}
+  ROTTEN_FLESH: {buy: 0.6, sell: 0.12, daily-full: 4096}
+  SPIDER_EYE: {buy: 3, sell: 0.60, daily-full: 1536}
+  MAGMA_CREAM: {buy: 17.5, sell: 3.50, daily-full: 768}
+  PHANTOM_MEMBRANE: {buy: 45, sell: 9.00, daily-full: 384}
+  OAK_LOG: {buy: 10, sell: 2.0}
+  SPRUCE_LOG: {buy: 10, sell: 2.0}
+  BIRCH_LOG: {buy: 10, sell: 2.0}
+  COBBLESTONE: {buy: 2.5, sell: 0.5}
+  STONE: {buy: 3.75, sell: 0.75}
+  DIRT: {buy: 0.25, sell: 0.05}
   SAND: {buy: 5.0, sell: 1.0}
   GRAVEL: {buy: 5.0, sell: 1.0}
-  GLASS: {buy: 7.0, sell: 1.25}
-  COAL: {buy: 27, sell: 3.0}
-  CHARCOAL: {buy: 27, sell: 3.0}
+  GLASS: {buy: 6.25, sell: 1.25}
+  COAL: {buy: 15, sell: 3.0}
+  CHARCOAL: {buy: 15, sell: 3.0}
   IRON_INGOT:
     # 5x sell, matching the shop's median margin. Raising sell to 12 without moving buy left iron at 2.5x,
     # the thinnest spread of any item and out of line with everything else.
-    buy: 108
+    buy: 60
     # Raised with the Iron Golem Spawner in mind (see net-worth 1,000,000 / $50mil / 500 shards). The old
     # daily-full of 64 was the real bottleneck: a farm hit reduced value almost immediately, so no iron
     # income was possible at any unit price.
     sell: 12.0
     daily-full: 20000
   COPPER_INGOT:
-    buy: 12.0
+    buy: 10
     sell: 2.0
     daily-full: 96
   REDSTONE: {buy: 10, sell: 2.0}
   LAPIS_LAZULI: {buy: 10.0, sell: 2.0}
   QUARTZ: {buy: 15, sell: 3.0}
-  BREAD: {buy: 9.0, sell: 1.0, daily-full: 64}
-  APPLE: {buy: 10, sell: 1.0, daily-full: 64}
-  COOKED_BEEF: {buy: 27, sell: 3.0}
-  COOKED_CHICKEN: {buy: 18, sell: 2.0}
+  BREAD: {buy: 5, sell: 1.0, daily-full: 64}
+  APPLE: {buy: 5, sell: 1.0, daily-full: 64}
+  COOKED_BEEF: {buy: 15, sell: 3.0}
+  COOKED_CHICKEN: {buy: 10, sell: 2.0}
   # Farming price tier, reviewed 2026-07-31: staple crops (wheat/carrot/potato/beetroot) get the highest
   # per-unit value and a generous daily-full threshold — they're only really automatable via villager farms,
   # which take real setup (breeding, professions, hoppers). Sugar cane/melon/pumpkin get a lower daily-full
@@ -48,28 +52,28 @@ items:
   # than any villager farm; the existing 50%-beyond-threshold rule (shop.sell-control.reduced-multiplier)
   # does the actual "no infinite-money" work — a smaller full-price window just makes it bite sooner for the
   # crops where scale is trivial. Nether wart/cocoa beans price higher: real extra travel/biome cost per run.
-  WHEAT: {buy: 12, sell: 1.10, daily-full: 350}
-  WHEAT_SEEDS: {buy: 3, sell: 0.30, daily-full: 350}
-  CARROT: {buy: 11, sell: 1.00, daily-full: 350}
-  POTATO: {buy: 11, sell: 1.00, daily-full: 350}
-  BEETROOT: {buy: 11, sell: 1.00, daily-full: 350}
-  BEETROOT_SEEDS: {buy: 3, sell: 0.30, daily-full: 350}
-  SUGAR_CANE: {buy: 32, sell: 3.00, daily-full: 250}
-  MELON_SLICE: {buy: 7.5, sell: 0.70, daily-full: 300}
-  MELON_SEEDS: {buy: 2.5, sell: 0.25, daily-full: 200}
-  PUMPKIN: {buy: 16, sell: 1.50, daily-full: 200}
-  PUMPKIN_SEEDS: {buy: 2.5, sell: 0.25, daily-full: 200}
-  NETHER_WART: {buy: 22, sell: 2.00, daily-full: 300}
-  COCOA_BEANS: {buy: 19, sell: 1.75, daily-full: 250}
-  LEATHER: {buy: 36, sell: 4.0}
-  STRING: {buy: 18, sell: 2.0}
-  GUNPOWDER: {buy: 45, sell: 5.0}
-  BONE: {buy: 13.5, sell: 1.5}
-  ARROW: {buy: 2.0, sell: 0.20, daily-full: 256}
-  SLIME_BALL: {buy: 45, sell: 5.0}
+  WHEAT: {buy: 5.5, sell: 1.10, daily-full: 350}
+  WHEAT_SEEDS: {buy: 1.5, sell: 0.30, daily-full: 350}
+  CARROT: {buy: 5, sell: 1.00, daily-full: 350}
+  POTATO: {buy: 5, sell: 1.00, daily-full: 350}
+  BEETROOT: {buy: 5, sell: 1.00, daily-full: 350}
+  BEETROOT_SEEDS: {buy: 1.5, sell: 0.30, daily-full: 350}
+  SUGAR_CANE: {buy: 15, sell: 3.00, daily-full: 250}
+  MELON_SLICE: {buy: 3.5, sell: 0.70, daily-full: 300}
+  MELON_SEEDS: {buy: 1.25, sell: 0.25, daily-full: 200}
+  PUMPKIN: {buy: 7.5, sell: 1.50, daily-full: 200}
+  PUMPKIN_SEEDS: {buy: 1.25, sell: 0.25, daily-full: 200}
+  NETHER_WART: {buy: 10, sell: 2.00, daily-full: 300}
+  COCOA_BEANS: {buy: 8.75, sell: 1.75, daily-full: 250}
+  LEATHER: {buy: 20, sell: 4.0}
+  STRING: {buy: 10, sell: 2.0}
+  GUNPOWDER: {buy: 25, sell: 5.0}
+  BONE: {buy: 7.5, sell: 1.5}
+  ARROW: {buy: 1, sell: 0.20, daily-full: 256}
+  SLIME_BALL: {buy: 25, sell: 5.0}
   OBSIDIAN: {buy: 40.0, sell: 8.0}
-  ENDER_PEARL: {buy: 85, sell: 9.0}
-  BLAZE_ROD: {buy: 110, sell: 12.0}
+  ENDER_PEARL: {buy: 45, sell: 9.0}
+  BLAZE_ROD: {buy: 60, sell: 12.0}
 
 luxuries:
   NAME_TAG:
@@ -103,22 +107,22 @@ luxuries:
     buy: 100000
     display: Disposable Villager Capsule
   OMINOUS_TRIAL_KEY:
-    buy: 1000000
+    buy: 5000000
     display: Reusable Villager Capsule
   BEACON:
-    buy: 300000
+    buy: 750000
     display: Concord Beacon
   NETHER_STAR:
-    buy: 350000
+    buy: 500000
     display: Captive Nether Star
   ELYTRA:
     buy: 10000000
     display: Veteran Explorer's Wings
   SILENCE_ARMOR_TRIM_SMITHING_TEMPLATE:
-    buy: 650000
+    buy: 1000000
     display: Silent Prestige Pattern
   HEAVY_CORE:
-    buy: 750000
+    buy: 10000000
     display: Relic-Weight Heavy Core
   ENCHANTED_GOLDEN_APPLE:
     buy: 1000000

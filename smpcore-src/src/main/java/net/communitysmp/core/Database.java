@@ -154,6 +154,17 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS saved_locations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, world TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, structure_type TEXT, manual INTEGER NOT NULL DEFAULT 0, registered_by TEXT, discovered_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE TABLE IF NOT EXISTS monument_refill_containers (id INTEGER PRIMARY KEY AUTOINCREMENT, monument_id INTEGER NOT NULL, world TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL, z INTEGER NOT NULL, loot_table TEXT, last_refilled_at INTEGER NOT NULL DEFAULT 0, refilled_by TEXT, UNIQUE(world,x,y,z))");
             s.execute("CREATE INDEX IF NOT EXISTS monument_refill_containers_monument ON monument_refill_containers(monument_id)");
+            /** The shop's own inventory, as a quantity ledger rather than stored ItemStacks. The shop may
+             *  only sell what players have actually sold it, so a row here is real owned stock. Storing
+             *  counts per canonical material -- not serialised items -- means custom names, lore and NBT can
+             *  never fragment or inflate stock, and there is no pile of thousands of ItemStacks to keep
+             *  consistent. Absent row == 0: stock starts empty and is never seeded with invented supply.
+             *  The CHECK is a last-resort guard; every mutation is already conditional. */
+            /** Last rendered YOUR STATS line per player, so a returning player's bulletin can be drawn the
+             *  instant they join instead of blank until the next 40s refresh. Purely a display cache: it is
+             *  never read back as authoritative, only shown until the real refresh overwrites it. */
+            s.execute("CREATE TABLE IF NOT EXISTS stats_snapshot (player TEXT PRIMARY KEY, panel TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS shop_stock (material TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0 CHECK(quantity>=0))");
             s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS staff_notes_player ON staff_notes(player_uuid,created_at DESC)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
@@ -631,6 +642,33 @@ final class Database implements AutoCloseable {
     private static StaffNoteRow mapStaffNote(ResultSet rs) throws SQLException{return new StaffNoteRow(rs.getLong("id"),rs.getString("player_uuid"),rs.getString("player_name"),rs.getString("note"),rs.getString("staff_name"),rs.getLong("created_at"));}
     synchronized List<HistoryRow> history(Long factionId,int limit,int offset){if(factionId==null)return list("SELECT * FROM history WHERE scope='SERVER' ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,limit,offset);return list("SELECT * FROM history WHERE scope='FACTION' AND faction_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?",Database::mapHistory,factionId,limit,offset);}
     synchronized int dailySold(String player,String item,String day){return integer("SELECT quantity FROM daily_sales WHERE player=? AND item=? AND day=?",player,item,day);}
+    synchronized String statsSnapshot(String player){return scalar("SELECT panel FROM stats_snapshot WHERE player=?",player);}
+    synchronized void statsSnapshot(String player,String panel){
+        update("INSERT INTO stats_snapshot(player,panel,updated_at) VALUES(?,?,?) ON CONFLICT(player) DO UPDATE SET panel=excluded.panel,updated_at=excluded.updated_at",
+                player,panel,System.currentTimeMillis());
+    }
+    /** Current owned stock for a material. No row means zero -- never a default or generated amount. */
+    synchronized int shopStock(String material){return integer("SELECT quantity FROM shop_stock WHERE material=?",material);}
+    synchronized Map<String,Integer> shopStockAll(){
+        Map<String,Integer> out=new HashMap<>();
+        for(String[] row:list("SELECT material,quantity FROM shop_stock WHERE quantity>0",rs->new String[]{rs.getString(1),String.valueOf(rs.getInt(2))}))
+            out.put(row[0],Integer.parseInt(row[1]));
+        return out;
+    }
+    /** Adds stock the shop has just bought from a player. Upsert so the first sale of a material creates
+     *  its row rather than needing every material pre-seeded. */
+    synchronized void shopStockAdd(String material,int amount){
+        if(material==null||amount<=0)return;
+        update("INSERT INTO shop_stock(material,quantity) VALUES(?,?) ON CONFLICT(material) DO UPDATE SET quantity=quantity+excluded.quantity",material,amount);
+    }
+    /** Removes stock for a sale to a player, atomically. The quantity>=? predicate lives in the UPDATE
+     *  itself, so the check and the decrement are one statement: two purchases racing for the last items
+     *  cannot both succeed, and stock can never be driven negative. Returns false when there is not enough,
+     *  in which case nothing was changed and the caller must abort the purchase. */
+    synchronized boolean shopStockTake(String material,int amount){
+        if(material==null||amount<=0)return false;
+        return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
+    }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
     synchronized void recordEconomy(String player,String category,double amount,String detail){if(!Double.isFinite(amount)||Math.abs(amount)<.0001)return;update("INSERT INTO economy_ledger(occurred_at,player,category,amount,detail) VALUES(?,?,?,?,?)",System.currentTimeMillis(),player,category,amount,detail);}
     synchronized List<EconomyTotal> economyTotals(long since){return list("SELECT category,SUM(amount) amount FROM economy_ledger WHERE occurred_at>=? GROUP BY category ORDER BY category",rs->new EconomyTotal(rs.getString("category"),rs.getDouble("amount")),since);}
@@ -815,6 +853,28 @@ final class Database implements AutoCloseable {
             if(!markMilestone("__selftest_a","test_milestone")||markMilestone("__selftest_a","test_milestone"))throw new SQLException("milestone uniqueness");checks.add("Milestone uniqueness guard: ok");
             long feedback=addFeedback("__selftest_a","SelfTestA","Test suggestion");if(feedback(feedback)==null)throw new SQLException("feedback round trip");checks.add("Feedback persistence round trip: ok");
             history("SERVER",null,"TEST","Self-test chronicle");if(history(null,1,0).isEmpty())throw new SQLException("history round trip");checks.add("History persistence round trip: ok");
+            /** Finite shop stock. Exercises the properties the economy now depends on: absent means zero
+             *  (no invented supply), a take of more than is held changes nothing, concurrent takes cannot
+             *  oversell, and stock survives as real persisted rows. */
+            String stockItem="__SELFTEST_STOCK";
+            update("DELETE FROM shop_stock WHERE material=?",stockItem);
+            if(shopStock(stockItem)!=0)throw new SQLException("stock of an unknown item must be zero, not generated");
+            if(shopStockTake(stockItem,1))throw new SQLException("took stock that was never sold to the shop");
+            shopStockAdd(stockItem,64);
+            if(shopStock(stockItem)!=64)throw new SQLException("stock did not increase on sale");
+            if(shopStockTake(stockItem,65))throw new SQLException("oversold: took more than the shop owned");
+            if(shopStock(stockItem)!=64)throw new SQLException("failed take must leave stock untouched");
+            if(!shopStockTake(stockItem,64)||shopStock(stockItem)!=0)throw new SQLException("exact-stock purchase failed");
+            if(shopStockTake(stockItem,1))throw new SQLException("stock went negative");
+            /** Two buyers racing for the last item: the conditional UPDATE means exactly one may win. */
+            shopStockAdd(stockItem,1);
+            boolean first=shopStockTake(stockItem,1),second=shopStockTake(stockItem,1);
+            if(!first||second||shopStock(stockItem)!=0)throw new SQLException("simultaneous purchase duplicated the last item");
+            /** A refunded purchase (payment failed after reserving) must restore exactly what it took. */
+            shopStockAdd(stockItem,10);shopStockTake(stockItem,4);shopStockAdd(stockItem,4);
+            if(shopStock(stockItem)!=10)throw new SQLException("rollback of a failed purchase lost stock");
+            update("DELETE FROM shop_stock WHERE material=?",stockItem);
+            checks.add("Finite shop stock: zero-start, no oversell, race-safe, rollback-safe: ok");
             recordSale("__selftest_a","IRON_INGOT","2099-01-01",64,100);if(dailySold("__selftest_a","IRON_INGOT","2099-01-01")!=64)throw new SQLException("daily sales round trip");checks.add("Daily full-value threshold persistence: ok");
             BossStateRow boss=new BossStateRow("00000000-0000-0000-0000-000000000001",plugin.getServer().getWorlds().getFirst().getName(),0,64,0,System.currentTimeMillis(),1,System.currentTimeMillis()+60000,"ACTIVE","ADMIN_SUMMONED",5000,2,"ASHEN_KNIGHT");saveBossState(boss);saveBossDamage(boss.entityId(),"__selftest_a",123.5,System.currentTimeMillis());if(bossStates().stream().noneMatch(row->row.entityId().equals(boss.entityId())&&row.origin().equals("ADMIN_SUMMONED"))||Math.abs(bossDamage(boss.entityId()).getOrDefault("__selftest_a",0.0)-123.5)>.001)throw new SQLException("boss persistence round trip");checks.add("Boss state/participation/scaling round trip: ok");
             update("INSERT INTO factions(name,tag,leader,balance,tier,home_slots,world,core_x,core_z) VALUES('__SelfTestFaction','TST','__selftest_a',50000,2,1,?,0,0)",plugin.getServer().getWorlds().getFirst().getName());long factionId=Long.parseLong(scalar("SELECT CAST(id AS TEXT) FROM factions WHERE name='__SelfTestFaction'"));if(!"TST".equals(faction(factionId).tag()))throw new SQLException("tag calculation");saveAsset(new AssetRow(factionId,"selftest","CONTAINER","DIAMOND",500,System.currentTimeMillis()));if(assetTotal(factionId)!=500)throw new SQLException("asset round trip");checks.add("Faction tag and net-worth cache: ok");

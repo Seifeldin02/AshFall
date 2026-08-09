@@ -119,7 +119,7 @@ final class ProgressService implements Listener {
         else sovereignActive.remove(id);
     }
     private void grantRankReward(Player player,int level){String id=CoreUtil.id(player);if(!db.markMilestone(id,"PROGRESS_V2_REWARD_"+level))return;double reward=rankReward(level);if(reward>0){plugin.creditEarned(id,reward,"PROGRESS_RANK_"+RANK_NAMES.get(level));db.recordEconomy(id,"MILESTONE",reward,"PROGRESS_RANK_"+RANK_NAMES.get(level));CoreUtil.msg(player,RANK_NAMES.get(level)+" completion reward: "+CoreUtil.money(reward)+".");}}
-    private double rankReward(int level){return plugin.getConfig().getDouble("progression.rank-rewards."+RANK_NAMES.get(level).toUpperCase(Locale.ROOT),switch(level){case 1->5000;case 2->25000;case 3->150000;case 4->1000000;default->0;});}
+    private double rankReward(int level){return plugin.getConfig().getDouble("progression.rank-rewards."+RANK_NAMES.get(level).toUpperCase(Locale.ROOT),switch(level){case 1->5000;case 2->25000;case 3->150000;case 4->250000;default->0;});}
     private double multiplier(String id,Set<String> done,Database.ProgressMetrics metrics){double total=1;for(Requirement requirement:allRequirements(id,done,metrics))if(requirement.complete()||done.contains("PROGRESS_V2_RANK_"+requirement.rank()))total+=requirement.multiplier();return Math.round(total*100.0)/100.0;}
     private final Map<String,double[]> multiplierCache=new HashMap<>();
     double mobIncomeMultiplier(Player player){
@@ -179,21 +179,40 @@ final class ProgressService implements Listener {
     /** Bukkit's armor-contents order is [boots, leggings, chestplate, helmet]. Each of the three Ashforged Paragon
      *  missions and the standalone Hoe bonus reuses qualifyEquipment() (the existing provenance/anti-reuse system)
      *  exactly as the Vanguard armor/tools checks above do, per explicit instruction to not invent a second system. */
+    /** Any item of the required TYPE carrying the required upgrades qualifies, whatever it is called.
+     *
+     *  Matching was already by Material and enchantment level -- display name and lore were never consulted,
+     *  so a renamed drop was never rejected for its name. What did reject it was WHICH copy got inspected:
+     *  the caller built one item per Material with putIfAbsent, i.e. the first stack encountered in slot
+     *  order, and every spec check ran against that single candidate. Carry an ordinary Netherite Pickaxe in
+     *  an earlier slot than the maxed one and the maxed one was never looked at, which reads exactly like
+     *  "my upgraded item doesn't count". Scanning all slots removes that ordering dependency.
+     *
+     *  Provenance is untouched: whichever item matches is still passed through qualifyEquipment() as before,
+     *  so the anti-reuse and direct-transfer rules apply exactly as they did. */
+    private ItemStack matching(Player player,EnchantSpec spec){
+        for(ItemStack item:player.getInventory().getContents())if(meetsSpec(item,spec))return item;
+        for(ItemStack item:player.getInventory().getArmorContents())if(meetsSpec(item,spec))return item;
+        return null;
+    }
     private boolean inspectMasterwork(Player player,String id,List<ItemStack> armorSet,Map<Material,ItemStack> owned){
         boolean changed=false;
         if(armorSet.size()==4){
             ItemStack boots=armorSet.get(0),legs=armorSet.get(1),chest=armorSet.get(2),helmet=armorSet.get(3);
+            /** Worn deliberately: this requirement is to EQUIP a full set, so it reads the armour slots
+             *  rather than the inventory. The pieces themselves may be any renamed or boss-dropped variant,
+             *  since meetsSpec only looks at type and upgrades. */
             if(meetsSpec(helmet,FULL_GEAR_HELMET)&&meetsSpec(chest,FULL_GEAR_CHEST)&&meetsSpec(legs,FULL_GEAR_LEGS)&&meetsSpec(boots,FULL_GEAR_BOOTS)&&qualifyEquipment(player,armorSet))
                 changed|=db.markMilestone(id,"ASHFORGED_FULL_GEAR");
         }
-        ItemStack sword=owned.get(Material.NETHERITE_SWORD),bow=owned.get(Material.BOW);
-        if(meetsSpec(sword,SWORD_SPEC)&&meetsSpec(bow,BOW_SPEC)&&qualifyEquipment(player,List.of(sword,bow)))
+        ItemStack sword=matching(player,SWORD_SPEC),bow=matching(player,BOW_SPEC);
+        if(sword!=null&&bow!=null&&qualifyEquipment(player,List.of(sword,bow)))
             changed|=db.markMilestone(id,"ASHFORGED_SWORD_BOW");
-        ItemStack pick=owned.get(Material.NETHERITE_PICKAXE),axe=owned.get(Material.NETHERITE_AXE),shovel=owned.get(Material.NETHERITE_SHOVEL);
-        if(meetsSpec(pick,PICKAXE_SPEC)&&meetsSpec(axe,AXE_SPEC)&&meetsSpec(shovel,SHOVEL_SPEC)&&qualifyEquipment(player,Arrays.asList(pick,axe,shovel)))
+        ItemStack pick=matching(player,PICKAXE_SPEC),axe=matching(player,AXE_SPEC),shovel=matching(player,SHOVEL_SPEC);
+        if(pick!=null&&axe!=null&&shovel!=null&&qualifyEquipment(player,Arrays.asList(pick,axe,shovel)))
             changed|=db.markMilestone(id,"ASHFORGED_TOOLS");
-        ItemStack hoe=owned.get(Material.NETHERITE_HOE);
-        if(meetsSpec(hoe,HOE_SPEC)&&qualifyEquipment(player,List.of(hoe))&&db.markMilestone(id,"HOE_MAXED_BONUS"))
+        ItemStack hoe=matching(player,HOE_SPEC);
+        if(hoe!=null&&qualifyEquipment(player,List.of(hoe))&&db.markMilestone(id,"HOE_MAXED_BONUS"))
             changed=true;
         return changed;
     }

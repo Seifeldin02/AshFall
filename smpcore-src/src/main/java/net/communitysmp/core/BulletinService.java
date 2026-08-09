@@ -217,12 +217,30 @@ final class BulletinService implements Listener {
             online.add(player.getUniqueId());
             TextDisplay display=resolvePersonal(player.getUniqueId());
             if(display==null)display=spawnPersonalDisplay(player,at);
-            display.text(personalStatsPanel(player,stats.get(CoreUtil.id(player)),shards.getOrDefault(CoreUtil.id(player),0)));
+            Component panel=personalStatsPanel(player,stats.get(CoreUtil.id(player)),shards.getOrDefault(CoreUtil.id(player),0));
+            display.text(panel);
+            /** Persist on the normal refresh cadence, so the cost rides along with work already being done
+             *  rather than adding a write of its own. */
+            rememberPanel(player,panel);
             if(display.getLocation().distanceSquared(at)>0.0001)display.teleport(at);
         }
         personalDisplays.entrySet().removeIf(entry->{if(online.contains(entry.getKey()))return false;Entity e=plugin.getServer().getEntity(entry.getValue());if(e!=null)e.remove();return true;});
     }
     private TextDisplay resolvePersonal(UUID playerId){UUID id=personalDisplays.get(playerId);if(id==null)return null;Entity e=plugin.getServer().getEntity(id);return e instanceof TextDisplay td&&td.isValid()?td:null;}
+    /** Draws a private panel immediately, from the last snapshot persisted for this player, so a returning
+     *  player sees their real numbers the moment they arrive rather than an empty hologram until the next
+     *  refresh tick. A first-ever player has no snapshot, so they get a neutral placeholder that the first
+     *  real refresh replaces. The snapshot is display text only -- nothing reads it back as truth. */
+    private Component cachedPanel(Player player){
+        String cached=db.statsSnapshot(CoreUtil.id(player));
+        if(cached!=null&&!cached.isBlank())return net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().deserialize(cached);
+        return Component.text("YOUR STATS",NamedTextColor.GOLD)
+                .append(Component.newline()).append(Component.text(plugin.nicknames().displayName(player),NamedTextColor.WHITE))
+                .append(Component.newline()).append(Component.text("Loading your stats...",NamedTextColor.GRAY));
+    }
+    private void rememberPanel(Player player,Component panel){
+        db.statsSnapshot(CoreUtil.id(player),net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().serialize(panel));
+    }
     private TextDisplay spawnPersonalDisplay(Player player,Location at){
         /** Replacing a tracked display without removing it first is how private panels leaked. */
         UUID prior=personalDisplays.remove(player.getUniqueId());
@@ -238,7 +256,10 @@ final class BulletinService implements Listener {
         /** A rejoin after an unclean quit can still have a live display tracked; keep it rather than
          *  stacking a second one on top of it. */
         if(resolvePersonal(event.getPlayer().getUniqueId())!=null)return;
-        spawnPersonalDisplay(event.getPlayer(),at);
+        TextDisplay display=spawnPersonalDisplay(event.getPlayer(),at);
+        /** Populated straight away from the cache. Without this the panel exists but stays empty until the
+         *  next bulk refresh, which is the "stats always take a while to appear" complaint. */
+        display.text(cachedPanel(event.getPlayer()));
     }
     @EventHandler public void quit(PlayerQuitEvent event){UUID id=personalDisplays.remove(event.getPlayer().getUniqueId());if(id!=null){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}}
     private Component playerLeaderboardPanel(){

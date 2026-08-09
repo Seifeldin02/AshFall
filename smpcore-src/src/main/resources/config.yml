@@ -356,6 +356,17 @@ nametags:
   max-distance: 48
   # Crouching shortens how far the name carries, as vanilla does, on top of hiding it behind blocks.
   sneak-view-range-factor: 0.5
+  # Alpha (0-255) of the see-through pass -- what you see when the player is behind terrain. Vanilla draws
+  # this pass at 32; slightly higher here because our tag carries more than a name. Set 0 to make tags
+  # vanish behind walls entirely instead of dimming.
+  obstructed-alpha: 40
+  # Alpha of the tag while its owner is crouching. Vanilla dims a crouched name and stops drawing it
+  # through terrain at all; 255 would keep it full strength.
+  crouch-alpha: 115
+  # How often one viewer's tags are torn down and rebuilt as a safety net. Track/untrack events normally
+  # keep everything correct, so this only exists so a single missed packet cannot leave one specific pairing
+  # permanently blank. One viewer per pass, so the cost does not grow with the player count.
+  resync-ticks: 100
 
 settings:
   native-dialogs: true
@@ -407,7 +418,7 @@ progression:
     TRAILBLAZER: 5000
     RIFTWALKER: 25000
     CONQUEROR: 150000
-    VANGUARD: 1000000
+    VANGUARD: 250000
 
 bulletin:
   refresh-seconds: 40

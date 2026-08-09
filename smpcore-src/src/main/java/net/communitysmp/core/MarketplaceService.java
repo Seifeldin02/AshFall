@@ -36,7 +36,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 final class MarketplaceService implements Listener {
     enum Section { SHOP, AUCTION, LUXURY, SHARDS }
-    private enum Sort { DEFAULT, CHEAPEST, EXPENSIVE, NAME }
+    /** IN_STOCK filters the shop down to what it can actually sell right now, which only means anything
+     *  since the shop became finite. It is a filter as well as an order: browsing a wall of out-of-stock
+     *  entries is the main annoyance of a player-supplied shop. */
+    private enum Sort { DEFAULT, CHEAPEST, EXPENSIVE, NAME, IN_STOCK }
     private enum InputType { ITEM, SELLER, LIST_PRICE }
     private record ItemRef(Material material,Long auction,String shard) {}
     private static final class View {
@@ -88,10 +91,15 @@ final class MarketplaceService implements Listener {
     private int renderShop(Player player,Inventory inv,Holder holder,View view,boolean luxury){
         List<Map.Entry<Material,ShopService.Price>> rows=new ArrayList<>(shop.entries(luxury));
         rows.removeIf(row->!matches(view,row.getKey(),row.getValue().display()));
+        /** Stock is read once per render, not once per row, so a full page costs a single query. */
+        Map<String,Integer> stock=luxury?Map.of():shop.allStock();
+        if(!luxury&&view.sort==Sort.IN_STOCK)rows.removeIf(row->stock.getOrDefault(row.getKey().name(),0)<=0);
         Comparator<Map.Entry<Material,ShopService.Price>> comparator=switch(view.sort){
             case CHEAPEST->Comparator.comparingDouble(row->row.getValue().buy());
             case EXPENSIVE->Comparator.<Map.Entry<Material,ShopService.Price>>comparingDouble(row->row.getValue().buy()).reversed();
             case NAME->Comparator.comparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
+            case IN_STOCK->Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->-stock.getOrDefault(row.getKey().name(),0))
+                    .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             case DEFAULT->luxury?Comparator.comparingDouble(row->row.getValue().buy()):null;
         };
         if(comparator!=null)rows.sort(comparator);
@@ -99,7 +107,18 @@ final class MarketplaceService implements Listener {
         for(int index=start,slot=0;index<rows.size()&&slot<PAGE_SIZE;index++,slot++){
             var row=rows.get(index);ShopService.Price price=row.getValue();ItemStack icon=shop.displayItem(row.getKey());ItemMeta meta=icon.getItemMeta();
             if(!luxury)meta.displayName(null);
-            List<Component> lore=new ArrayList<>();lore.add(Component.text("Buy: "+CoreUtil.money(price.buy()*buyMultiplier)+(luxury?"":" each"),NamedTextColor.GREEN));if(!luxury)lore.add(Component.text("Sell: "+CoreUtil.money(price.sell()*sellMultiplier)+" each",NamedTextColor.YELLOW));if(!luxury)lore.add(Component.text("Hold shift to buy/sell in bulk",NamedTextColor.DARK_GRAY));meta.lore(lore);icon.setItemMeta(meta);inv.setItem(slot,icon);holder.items.put(slot,new ItemRef(row.getKey(),null,null));
+            int have=luxury?Integer.MAX_VALUE:stock.getOrDefault(row.getKey().name(),0);
+            List<Component> lore=new ArrayList<>();
+            /** Out of stock is shown as unavailable rather than as a price, so nobody clicks a buy they
+             *  cannot complete. Selling stays open at all times -- that is how the shop restocks. */
+            if(!luxury&&have<=0)lore.add(Component.text("Buy: out of stock",NamedTextColor.RED));
+            else lore.add(Component.text("Buy: "+CoreUtil.money(price.buy()*buyMultiplier)+(luxury?"":" each"),NamedTextColor.GREEN));
+            if(!luxury){
+                lore.add(Component.text("Sell: "+CoreUtil.money(price.sell()*sellMultiplier)+" each",NamedTextColor.YELLOW));
+                lore.add(Component.text("In stock: "+(have>0?String.valueOf(have):"none"),have>0?NamedTextColor.AQUA:NamedTextColor.DARK_GRAY));
+                lore.add(Component.text(have>0?"Hold shift to buy/sell in bulk":"Sell some to the shop to restock it",NamedTextColor.DARK_GRAY));
+            }
+            meta.lore(lore);icon.setItemMeta(meta);inv.setItem(slot,icon);holder.items.put(slot,new ItemRef(row.getKey(),null,null));
         }
         return total;
     }
@@ -149,6 +168,16 @@ final class MarketplaceService implements Listener {
         View view=session.view();
         if(session.section==Section.SHOP||session.section==Section.LUXURY){
             ShopService.Price price=shop.price(ref.material());if(price==null)return;int amount=shift&&session.section==Section.SHOP?16:1;double multiplier=view.merchant?plugin.getConfig().getDouble("merchants.shop.buy-multiplier",.925):1;
+            /** Refuse the purchase up front when the shop does not hold enough. ShopService re-checks this
+             *  atomically at the moment of sale -- this is only so the click gives an immediate answer
+             *  rather than opening a confirmation for something that cannot happen. */
+            if(!right&&session.section==Section.SHOP&&!shop.inStock(ref.material(),amount)){
+                int have=shop.stock(ref.material());
+                CoreUtil.error(player,have<=0
+                        ?"The shop has no "+price.display()+" in stock. It only sells what players have sold it."
+                        :"The shop only has "+have+" "+price.display()+" in stock.");
+                plugin.settings().marketSound(player,"failed");return;
+            }
             if(right&&session.section==Section.SHOP){shop.sell(player,ref.material(),amount,view.merchant?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1);render(player,session);return;}
             double cost=Math.round(price.buy()*amount*multiplier*100)/100.0;boolean luxury=session.section==Section.LUXURY,mandatory=luxury&&cost>=plugin.getConfig().getDouble("confirmations.mandatory-luxury-price",2_000_000);
             plugin.confirmations().request(player,luxury?SettingsService.ConfirmationKind.LUXURY:SettingsService.ConfirmationKind.SHOP,mandatory,"Buy "+amount+" "+price.display(),List.of("Cost: "+CoreUtil.money(cost)),()->{shop.buy(player,ref.material(),amount,multiplier);render(player,session);},()->render(player,session));
@@ -255,12 +284,12 @@ final class MarketplaceService implements Listener {
         }
         return CoreUtil.pretty(item.getType().name());
     }
-    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==4&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
+    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==5&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
     private void resetSearch(View view){view.query="";view.seller="";view.page=0;}
     private Section nextSection(Section section){return switch(section){case SHOP->Section.LUXURY;case LUXURY->Section.SHARDS;case SHARDS->Section.AUCTION;case AUCTION->Section.SHOP;};}
     private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";};}
     private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;};}
-    private String sortName(Sort sort){return switch(sort){case DEFAULT->"Default / Newest";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";};}
+    private String sortName(Sort sort){return switch(sort){case DEFAULT->"Default / Newest";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
     private List<String> filterLore(View view){List<String> lore=new ArrayList<>();lore.add("Category: "+CoreUtil.pretty(view.category));if(!view.query.isBlank())lore.add("Item: "+view.query);if(!view.seller.isBlank())lore.add("Seller: "+view.seller);return lore;}
     private ItemStack nav(Material material,String name,boolean selected){return button(selected?Material.LIME_STAINED_GLASS_PANE:material,name,List.of(selected?"Current section":"Open section"));}
     private ItemStack button(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}

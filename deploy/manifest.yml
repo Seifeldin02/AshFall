@@ -17,10 +17,27 @@ servers:
 
 sync:
   - path: plugins/SMPCore/config.yml
-    note: main plugin config
+    note: |
+      Main plugin config. Owner-fixed values that have silently failed to reach production before:
+        progression.rank-rewards.VANGUARD  250000   (the code fallback in ProgressService must match)
+        shop.buy-multiple                  5        (commodity buy = 5x sell, derived at load)
   - path: plugins/SMPCore/bosses.yml
   - path: plugins/SMPCore/shop.yml
+    note: |
+      OWNER-FIXED PRICES - do not change without an explicit instruction, and never "tidy" them.
+      Commodity buy prices are DERIVED as exactly 5x sell at load time (shop.buy-multiple); editing a buy
+      value by hand does nothing. Luxury prices fixed by the owner on 2026-08-09:
+        OMINOUS_TRIAL_KEY (Reusable Villager Capsule) 5000000
+        HEAVY_CORE                                   10000000
+        SILENCE_ARMOR_TRIM_SMITHING_TEMPLATE          1000000
+        NETHER_STAR                                    500000
+        BEACON                                         750000
+      ShopService.selfTest() asserts every one of these plus the 5x rule, so a drift fails the self-test.
   - path: plugins/SMPCore/shards.yml
+    note: |
+      OWNER-FIXED SHARD PRICES (2026-08-09): mace 360, fortune_excavator 360, silk_excavator 360,
+      netherite_helmet 150, netherite_boots 170, netherite_leggings 200, bow 80, reusable_capsule 360.
+      Everything else is unchanged on purpose. ShardService.selfTest() pins these.
   - path: plugins/SMPCore/relics.yml
   - path: plugins/SMPCore/events.yml
   - path: config/paper-world-defaults.yml

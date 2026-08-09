@@ -64,7 +64,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class PacketNametagService implements Listener {
     /** Display metadata indices, stable since 1.19.4. */
     private static final int IDX_TRANSLATION=11, IDX_SCALE=12, IDX_BILLBOARD=15, IDX_VIEW_RANGE=17,
-            IDX_TEXT=23, IDX_LINE_WIDTH=24, IDX_BACKGROUND=25, IDX_STYLE=27;
+            IDX_TEXT=23, IDX_LINE_WIDTH=24, IDX_BACKGROUND=25, IDX_OPACITY=26, IDX_STYLE=27;
     /** Text display style bitmask. Only the see-through bit is used; shadow and background are left alone
      *  so this changes occlusion only, not how the tag looks. */
     private static final byte STYLE_SEE_THROUGH=0x02, STYLE_OCCLUDED=0x00;
@@ -79,11 +79,23 @@ final class PacketNametagService implements Listener {
     private record Snapshot(String name,int health,String faction,String balance) {}
 
     private final SMPCore plugin;
-    private final Map<UUID,Integer> entityIds=new HashMap<>();
+    /** Two fake displays per player, mirroring how vanilla actually draws a nametag.
+     *
+     *  Vanilla does not draw the name once. For a standing player it draws it TWICE: a dim pass in
+     *  see-through mode (alpha 32) that shows through terrain, then a full-brightness pass in normal mode
+     *  that only survives the depth test where the player is genuinely visible. That is why a real nametag
+     *  is bright in the open and faint through a wall. A single display can be one or the other, never
+     *  both -- see-through made ours a bright wall-hack marker, and occluded made it vanish entirely.
+     *
+     *  So: DIM is see-through and faint, SOLID is occluded and full strength. Both are mounted on the
+     *  player. Crouching does not despawn anything, it only re-sends opacity -- DIM drops to zero (nothing
+     *  through walls) and SOLID drops to the crouch alpha -- so a crouch can never leave a stale copy. */
+    private final Map<UUID,int[]> entityIds=new HashMap<>();
+    private int[] idsFor(UUID id){return entityIds.computeIfAbsent(id,k->new int[]{NEXT_ID.getAndDecrement(),NEXT_ID.getAndDecrement()});}
     private final Map<UUID,Snapshot> lastSnapshot=new HashMap<>();
     /** viewer id -> (target id -> last text variant sent), so unchanged viewers get nothing. */
     private final Map<UUID,Map<UUID,String>> sent=new HashMap<>();
-    private BukkitTask task;
+    private BukkitTask task,resyncTask;
     private final boolean active;
 
     PacketNametagService(SMPCore plugin){
@@ -92,12 +104,15 @@ final class PacketNametagService implements Listener {
         if(!active){plugin.getLogger().info("[Nametags] PacketEvents is not installed; overlays disabled.");return;}
         long period=Math.max(10,plugin.getConfig().getLong("nametags.refresh-ticks",20));
         task=plugin.getServer().getScheduler().runTaskTimer(plugin,this::refresh,period,period);
+        long resync=Math.max(40,plugin.getConfig().getLong("nametags.resync-ticks",100));
+        resyncTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::resyncSweep,resync,resync);
     }
     void shutdown(){
         if(task!=null)task.cancel();
+        if(resyncTask!=null)resyncTask.cancel();
         if(!active)return;
         for(Player viewer:plugin.getServer().getOnlinePlayers())
-            for(int id:entityIds.values())send(viewer,new WrapperPlayServerDestroyEntities(id));
+            for(int[] pair:entityIds.values())send(viewer,new WrapperPlayServerDestroyEntities(pair[0],pair[1]));
         entityIds.clear();lastSnapshot.clear();sent.clear();
     }
 
@@ -106,8 +121,8 @@ final class PacketNametagService implements Listener {
     @EventHandler public void quit(PlayerQuitEvent event){
         if(!active)return;
         UUID id=event.getPlayer().getUniqueId();
-        Integer entity=entityIds.remove(id);
-        if(entity!=null)for(Player viewer:plugin.getServer().getOnlinePlayers())send(viewer,new WrapperPlayServerDestroyEntities(entity));
+        int[] pair=entityIds.remove(id);
+        if(pair!=null)for(Player viewer:plugin.getServer().getOnlinePlayers())send(viewer,new WrapperPlayServerDestroyEntities(pair[0],pair[1]));
         lastSnapshot.remove(id);sent.remove(id);
         for(Map<UUID,String> seen:sent.values())seen.remove(id);
     }
@@ -126,15 +141,54 @@ final class PacketNametagService implements Listener {
     private void forget(Player target){
         if(!active)return;
         UUID id=target.getUniqueId();
-        Integer entity=entityIds.get(id);
+        int[] pair=entityIds.get(id);
         for(Map.Entry<UUID,Map<UUID,String>> entry:sent.entrySet()){
-            if(entry.getValue().remove(id)==null||entity==null)continue;
+            if(entry.getValue().remove(id)==null||pair==null)continue;
             Player viewer=plugin.getServer().getPlayer(entry.getKey());
-            if(viewer!=null){send(viewer,new WrapperPlayServerDestroyEntities(entity));
+            if(viewer!=null){send(viewer,new WrapperPlayServerDestroyEntities(pair[0],pair[1]));
                 send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[0]));}
         }
         lastSnapshot.remove(id);
         later(10L);
+    }
+    /** The client has just started tracking someone: anything we believed we had sent them is gone, so the
+     *  record is cleared and the next refresh re-establishes it from scratch. Without this the tag is only
+     *  restored by luck, whenever the rendered text next happens to change. */
+    @EventHandler public void track(io.papermc.paper.event.player.PlayerTrackEntityEvent event){
+        if(!active||!(event.getEntity() instanceof Player target))return;
+        Map<UUID,String> seen=sent.get(event.getPlayer().getUniqueId());
+        if(seen!=null)seen.remove(target.getUniqueId());
+        later(2L);
+    }
+    /** Stopped tracking: the client has dropped both displays along with the player, so drop our record to
+     *  match. Leaving it would make the next re-track look like "already sent". */
+    @EventHandler public void untrack(io.papermc.paper.event.player.PlayerUntrackEntityEvent event){
+        if(!active||!(event.getEntity() instanceof Player target))return;
+        Map<UUID,String> seen=sent.get(event.getPlayer().getUniqueId());
+        if(seen!=null)seen.remove(target.getUniqueId());
+    }
+    /** Cheap belt-and-braces sweep. The event handlers above should make this redundant, but a single
+     *  dropped or mis-ordered packet would otherwise leave one specific pairing broken indefinitely, and
+     *  that is precisely the symptom being fixed. Rebuilding one viewer's tags per pass keeps the cost
+     *  flat regardless of player count, and a full cycle completes in (players * interval). */
+    private int resyncCursor;
+    private void resyncSweep(){
+        if(!active)return;
+        List<Player> online=new ArrayList<>(plugin.getServer().getOnlinePlayers());
+        if(online.isEmpty())return;
+        Player viewer=online.get(Math.floorMod(resyncCursor++,online.size()));
+        Map<UUID,String> seen=sent.get(viewer.getUniqueId());
+        if(seen==null||seen.isEmpty())return;
+        /** Destroy before forgetting: the ids are reused per player, so simply clearing the record would
+         *  re-spawn the same ids on top of copies the client still holds. */
+        for(UUID targetId:new ArrayList<>(seen.keySet())){
+            int[] pair=entityIds.get(targetId);
+            Player target=plugin.getServer().getPlayer(targetId);
+            if(pair!=null)send(viewer,new WrapperPlayServerDestroyEntities(pair[0],pair[1]));
+            if(target!=null)send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[0]));
+        }
+        seen.clear();
+        later(2L);
     }
     /** Crouching changes occlusion, so it re-sends instead of waiting for the next periodic tick. */
     @EventHandler public void sneak(org.bukkit.event.player.PlayerToggleSneakEvent event){if(active)later(1L);}
@@ -164,13 +218,20 @@ final class PacketNametagService implements Listener {
                  *  sent now ends up stranded wherever that client last saw them -- the displaced tags. Tear
                  *  down past the outer bound and re-spawn inside the inner one; the gap between the two
                  *  keeps someone walking the boundary from flapping spawn/destroy every cycle. */
+                /** Whether the CLIENT actually holds the player entity, not merely whether it is nearby.
+                 *  Distance was a guess at the server's tracking range, and when the two disagreed we kept
+                 *  a `seen` entry for a target the client had already dropped -- so nothing was ever
+                 *  re-sent and that one player's tag stayed missing until something unrelated changed the
+                 *  text. That is exactly the "couldn't see MacoCT until we both /spawn" case: /spawn forced
+                 *  a re-track, which is the only thing that fixed it. Paper tells us directly. */
                 boolean tracked=viewer.getWorld().equals(target.getWorld())&&viewer.canSee(target)
+                        &&target.isTrackedBy(viewer)
                         &&viewer.getLocation().distanceSquared(target.getLocation())
                           <(seen.containsKey(id)?outerRangeSq():innerRangeSq());
                 if(self||snapshot==null||!tracked||(!money&&!faction&&!hearts)){
                     if(seen.remove(id)!=null){
-                        Integer entity=entityIds.get(id);
-                        if(entity!=null){send(viewer,new WrapperPlayServerDestroyEntities(entity));
+                        int[] pair=entityIds.get(id);
+                        if(pair!=null){send(viewer,new WrapperPlayServerDestroyEntities(pair[0],pair[1]));
                             send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[0]));}
                     }
                     continue;
@@ -181,9 +242,11 @@ final class PacketNametagService implements Listener {
                 String variant=render(snapshot,money,faction,hearts)+(sneaking?SNEAK_MARK:"");
                 String previous=seen.get(id);
                 if(variant.equals(previous))continue;
-                int entity=entityIds.computeIfAbsent(id,k->NEXT_ID.getAndDecrement());
-                if(previous==null)spawn(viewer,target,entity,variant,sneaking);
-                else send(viewer,new WrapperPlayServerEntityMetadata(entity,List.of(text(variant),style(sneaking),viewRange(sneaking))));
+                int[] pair=idsFor(id);
+                if(previous==null)spawn(viewer,target,pair,variant,sneaking);
+                else for(int pass=0;pass<2;pass++)
+                    send(viewer,new WrapperPlayServerEntityMetadata(pair[pass],
+                            List.of(text(variant),style(pass==0),viewRange(sneaking),opacity(pass==0,sneaking))));
                 seen.put(id,variant);
             }
         }
@@ -234,8 +297,22 @@ final class PacketNametagService implements Listener {
     /** Vanilla draws a standing player's name through walls and stops once they crouch, which is what makes
      *  crouching read as hidden and standing as exposed. Mirroring that is the point: the replacement tag
      *  previously ignored occlusion entirely and stayed visible through terrain. */
-    private EntityData<?> style(boolean sneaking){
-        return new EntityData<>(IDX_STYLE,EntityDataTypes.BYTE,sneaking?STYLE_OCCLUDED:STYLE_SEE_THROUGH);
+    /** The DIM pass is the see-through one; SOLID is always depth-tested. Which pass a display is never
+     *  changes -- only its opacity does -- so crouching cannot produce a spawn/destroy race. */
+    private EntityData<?> style(boolean dimPass){
+        return new EntityData<>(IDX_STYLE,EntityDataTypes.BYTE,dimPass?STYLE_SEE_THROUGH:STYLE_OCCLUDED);
+    }
+    /** Alpha per pass, reproducing vanilla's two-pass result.
+     *
+     *  Standing: DIM shows faintly through terrain, SOLID reads at full strength wherever the player is
+     *  actually visible. Crouching: DIM goes to zero so nothing shows through walls at all, and SOLID drops
+     *  to the crouch alpha, so a crouched player's tag is present but visibly dimmed -- which is the part
+     *  that was missing before, when crouching only toggled occlusion and left the colour untouched. */
+    private EntityData<?> opacity(boolean dimPass,boolean sneaking){
+        int alpha=dimPass
+                ?(sneaking?0:plugin.getConfig().getInt("nametags.obstructed-alpha",40))
+                :(sneaking?plugin.getConfig().getInt("nametags.crouch-alpha",115):255);
+        return new EntityData<>(IDX_OPACITY,EntityDataTypes.BYTE,(byte)Math.max(0,Math.min(255,alpha)));
     }
     /** Crouching also shortens how far the name carries, again as vanilla does. */
     private EntityData<?> viewRange(boolean sneaking){
@@ -245,24 +322,31 @@ final class PacketNametagService implements Listener {
     }
     private double innerRangeSq(){double d=plugin.getConfig().getDouble("nametags.max-distance",48);return d*d;}
     private double outerRangeSq(){double d=plugin.getConfig().getDouble("nametags.max-distance",48)+16;return d*d;}
-    private void spawn(Player viewer,Player target,int entityId,String variant,boolean sneaking){
+    private void spawn(Player viewer,Player target,int[] pair,String variant,boolean sneaking){
         Vector3d at=new Vector3d(target.getLocation().getX(),target.getLocation().getY(),target.getLocation().getZ());
-        send(viewer,new WrapperPlayServerSpawnEntity(entityId,Optional.of(UUID.randomUUID()),EntityTypes.TEXT_DISPLAY,
-                at,0f,0f,0f,0,Optional.empty()));
         float scale=(float)plugin.getConfig().getDouble("nametags.scale",1.0);
         float lift=(float)plugin.getConfig().getDouble("nametags.lift",.30);
-        List<EntityData<?>> data=new ArrayList<>();
-        data.add(new EntityData<>(IDX_TRANSLATION,EntityDataTypes.VECTOR3F,new Vector3f(0,lift,0)));
-        data.add(new EntityData<>(IDX_SCALE,EntityDataTypes.VECTOR3F,new Vector3f(scale,scale,scale)));
-        data.add(new EntityData<>(IDX_BILLBOARD,EntityDataTypes.BYTE,BILLBOARD_CENTER));
-        data.add(viewRange(sneaking));
-        data.add(style(sneaking));
-        data.add(new EntityData<>(IDX_LINE_WIDTH,EntityDataTypes.INT,200));
-        data.add(new EntityData<>(IDX_BACKGROUND,EntityDataTypes.INT,plugin.getConfig().getInt("nametags.background-argb",1073741824)));
-        data.add(text(variant));
-        send(viewer,new WrapperPlayServerEntityMetadata(entityId,data));
-        /** Attachment: the client is told this is a passenger of the real player, so IT owns positioning. */
-        send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[]{entityId}));
+        for(int pass=0;pass<2;pass++){
+            boolean dimPass=pass==0;
+            send(viewer,new WrapperPlayServerSpawnEntity(pair[pass],Optional.of(UUID.randomUUID()),EntityTypes.TEXT_DISPLAY,
+                    at,0f,0f,0f,0,Optional.empty()));
+            List<EntityData<?>> data=new ArrayList<>();
+            data.add(new EntityData<>(IDX_TRANSLATION,EntityDataTypes.VECTOR3F,new Vector3f(0,lift,0)));
+            data.add(new EntityData<>(IDX_SCALE,EntityDataTypes.VECTOR3F,new Vector3f(scale,scale,scale)));
+            data.add(new EntityData<>(IDX_BILLBOARD,EntityDataTypes.BYTE,BILLBOARD_CENTER));
+            data.add(viewRange(sneaking));
+            data.add(style(dimPass));
+            data.add(opacity(dimPass,sneaking));
+            data.add(new EntityData<>(IDX_LINE_WIDTH,EntityDataTypes.INT,200));
+            /** Background only on the dim pass. Vanilla draws the backdrop once; putting it on both would
+             *  stack two translucent panels and read as a darker box than a real nametag. */
+            data.add(new EntityData<>(IDX_BACKGROUND,EntityDataTypes.INT,dimPass?plugin.getConfig().getInt("nametags.background-argb",1073741824):0));
+            data.add(text(variant));
+            send(viewer,new WrapperPlayServerEntityMetadata(pair[pass],data));
+        }
+        /** Attachment: the client is told both are passengers of the real player, so IT owns positioning.
+         *  Both ids go in ONE packet -- a second SetPassengers would replace the first, not add to it. */
+        send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[]{pair[0],pair[1]}));
     }
     private void send(Player viewer,com.github.retrooper.packetevents.wrapper.PacketWrapper<?> packet){
         try{PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,packet);}

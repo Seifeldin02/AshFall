@@ -121,7 +121,7 @@ final class ShardService implements Listener {
             case"netherite_boots"->enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3,Enchantment.SOUL_SPEED,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
             case"netherite_spear"->enchanted(Material.NETHERITE_SPEAR,withOptional(Map.of(Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),"lunge",3));
             case"mace"->enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
-            case"bow"->enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.INFINITY,1,Enchantment.UNBREAKING,3));
+            case"bow"->enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.MENDING,1,Enchantment.UNBREAKING,3));
             case"crossbow"->enchanted(Material.CROSSBOW,Map.of(Enchantment.QUICK_CHARGE,3,Enchantment.MULTISHOT,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));
             default->stock.key().startsWith("cosmetic_")?cosmeticToken(stock):new ItemStack(stock.icon());
         };
@@ -143,7 +143,7 @@ final class ShardService implements Listener {
         /** Hotbar slots are 0-8 == displayed keys 1-9. Slot 4 (key 5) is deliberately left empty. */
         inv.setItem(0,enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
         inv.setItem(1,new ItemStack(Material.WIND_CHARGE,64));
-        inv.setItem(2,enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.INFINITY,1,Enchantment.UNBREAKING,3)));
+        inv.setItem(2,enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.MENDING,1,Enchantment.UNBREAKING,3)));
         inv.setItem(3,strengthPotion());
         /** Key 5 is gapples, not an empty gap -- "gaps" was slang for golden apples, not a blank slot. */
         inv.setItem(4,new ItemStack(Material.ENCHANTED_GOLDEN_APPLE,30));
@@ -418,7 +418,18 @@ final class ShardService implements Listener {
     private Material cosmeticIcon(String cosmetic){var section=config.getConfigurationSection("cosmetics."+cosmetic);Material material=section==null?null:Material.matchMaterial(section.getString("icon"));return material==null?Material.AMETHYST_SHARD:material;}
     private String weekKey(){LocalDate date=LocalDate.now();WeekFields fields=WeekFields.ISO;return date.get(fields.weekBasedYear())+"-W"+String.format(Locale.ROOT,"%02d",date.get(fields.weekOfWeekBasedYear()));}
     private int weekIndex(){LocalDate date=LocalDate.now();return date.get(WeekFields.ISO.weekOfWeekBasedYear())+date.getYear()*53;}
-    boolean selfTest(){Stock excavator=stock("fortune_excavator");ItemStack preview=excavator==null?null:displayItem(excavator);return config.getInt("earning.active-seconds-per-shard",0)==2700&&config.getInt("earning.afk-seconds-per-shard",0)==3600&&stock("sealed_omen")!=null&&preview!=null&&!preview.getItemMeta().hasDisplayName()&&stock().stream().noneMatch(row->row.icon()==Material.ELYTRA||row.icon()==Material.DRAGON_EGG);}
+    /** Shard prices the owner has fixed. Pinned so an accidental edit fails the self-test rather than
+     *  silently shipping; change these only alongside an explicit instruction to. */
+    private boolean selfTestFixedPrices(){
+        Map<String,Integer> pinned=Map.of("mace",360,"fortune_excavator",360,"silk_excavator",360,
+                "netherite_helmet",150,"netherite_boots",170,"netherite_leggings",200,"bow",80,"reusable_capsule",360);
+        for(var entry:pinned.entrySet()){
+            Stock item=stock(entry.getKey());
+            if(item==null||item.price()!=entry.getValue())return false;
+        }
+        return true;
+    }
+    boolean selfTest(){if(!selfTestFixedPrices())return false;Stock excavator=stock("fortune_excavator");ItemStack preview=excavator==null?null:displayItem(excavator);return config.getInt("earning.active-seconds-per-shard",0)==2700&&config.getInt("earning.afk-seconds-per-shard",0)==3600&&stock("sealed_omen")!=null&&preview!=null&&!preview.getItemMeta().hasDisplayName()&&stock().stream().noneMatch(row->row.icon()==Material.ELYTRA||row.icon()==Material.DRAGON_EGG);}
     private void shardMessage(Player player,String message){player.sendMessage(Component.text(message,NamedTextColor.RED));}
     private void consumeOne(Player player,EquipmentSlot slot,ItemStack item){ItemStack next=item.clone();next.setAmount(next.getAmount()-1);player.getInventory().setItem(slot,next.getAmount()<=0?null:next);}
     private long parseLong(String value){try{return value==null?0:Long.parseLong(value);}catch(NumberFormatException ignored){return 0;}}
