@@ -16,7 +16,7 @@ import java.time.LocalDate;
 import java.util.*;
 
 final class ShopService {
-    record Price(double buy,double sell,int dailyFull,int dailyLimit,double reduced,String display,boolean luxury){}
+    record Price(double buy,double sell,int dailyFull,int dailyLimit,double reduced,String display,boolean luxury,String category){}
     static final class SellHolder implements InventoryHolder {
         final double multiplier; boolean finalized;
         SellHolder(double multiplier){this.multiplier=multiplier;} @Override public Inventory getInventory(){return null;}
@@ -47,7 +47,11 @@ final class ShopService {
             int limit=Integer.MAX_VALUE;
             double reduced=plugin.getConfig().getDouble("shop.sell-control.reduced-multiplier",.5);
             String display=section.getString(key+".display",CoreUtil.pretty(key));
-            prices.put(material,new Price(buy,sell,Math.max(0,full),Math.max(full,limit),Math.max(0,Math.min(1,reduced)),display,luxury));
+            /** Authored per item rather than guessed from the material name. The old heuristic put slime
+             *  balls under redstone and dumped anything it did not recognise into a catch-all, which is no
+             *  basis for the shop's default grouping. */
+            String category=section.getString(key+".category",luxury?"LUXURY":"UTILITY");
+            prices.put(material,new Price(buy,sell,Math.max(0,full),Math.max(full,limit),Math.max(0,Math.min(1,reduced)),display,luxury,category));
         }
     }
 
@@ -57,6 +61,14 @@ final class ShopService {
     int stock(Material material){return stockLimited(material)?db.shopStock(material.name()):Integer.MAX_VALUE;}
     boolean inStock(Material material,int amount){return !stockLimited(material)||db.shopStock(material.name())>=amount;}
     java.util.Map<String,Integer> allStock(){return db.shopStockAll();}
+    /** The authored category for a material, or null when it is not a shop item (auction listings). */
+    String categoryOf(Material material){Price price=prices.get(material);return price==null?null:price.category();}
+    java.util.List<String> categories(boolean luxury){
+        java.util.List<String> out=new java.util.ArrayList<>();
+        for(Price price:prices.values())if(price.luxury()==luxury&&!out.contains(price.category()))out.add(price.category());
+        java.util.Collections.sort(out);
+        return out;
+    }
 
     void open(Player p){plugin.marketplace().open(p,MarketplaceService.Section.SHOP);}
     void open(Player p,boolean luxury){plugin.marketplace().open(p,luxury?MarketplaceService.Section.LUXURY:MarketplaceService.Section.SHOP);}

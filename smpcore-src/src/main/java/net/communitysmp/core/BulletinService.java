@@ -50,19 +50,30 @@ final class BulletinService implements Listener {
         static PanelKind byIndex(int index){for(PanelKind k:values())if(k.index==index)return k;return null;}
     }
     private record Holder(int panel) implements InventoryHolder {@Override public Inventory getInventory(){return null;}}
-    private final SMPCore plugin;private final Database db;private final NamespacedKey panelKey;private BukkitTask refreshTask;
+    private final SMPCore plugin;private final Database db;private final NamespacedKey panelKey;private BukkitTask refreshTask,presenceTask;
     /** Placed location per shared panel kind, and the live entity for each. */
     private final Map<PanelKind,Location> placed=new EnumMap<>(PanelKind.class);
     private final Map<PanelKind,UUID> shared=new EnumMap<>(PanelKind.class);
     /** One private STATS display per online player, keyed by player id. */
     private final Map<UUID,UUID> personalDisplays=new HashMap<>();
+    /** Last known panel text per online player, held in memory so the presence check below costs nothing.
+     *  Seeded from the persisted snapshot on join and refreshed by the normal cycle. */
+    private final Map<UUID,Component> panelCache=new HashMap<>();
 
     BulletinService(SMPCore plugin){
         this.plugin=plugin;db=plugin.db();panelKey=new NamespacedKey(plugin,"bulletin_panel");
         plugin.getServer().getScheduler().runTaskLater(plugin,this::restore,60L);
         long period=Math.max(30,Math.min(60,plugin.getConfig().getLong("bulletin.refresh-seconds",40)))*20L;refreshTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::refresh,period,period);
+        /** Presence is checked far more often than stats are recomputed, and the two are deliberately
+         *  separate jobs. Creating a missing panel is cheap -- it draws text already held in memory -- while
+         *  recomputing everyone's stats is two bulk queries and belongs on the slow cycle. Previously only
+         *  the slow cycle could create a panel, so anyone who logged in away from spawn (chunk unloaded, so
+         *  the join handler bails) waited up to a full refresh period after walking up to it before their
+         *  stats appeared. That is the "takes a while to show" complaint. */
+        long presence=Math.max(10,plugin.getConfig().getLong("bulletin.presence-ticks",20));
+        presenceTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::ensurePersonalPanels,presence,presence);
     }
-    void shutdown(){if(refreshTask!=null)refreshTask.cancel();for(UUID id:personalDisplays.values()){Entity entity=plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}personalDisplays.clear();}
+    void shutdown(){if(refreshTask!=null)refreshTask.cancel();if(presenceTask!=null)presenceTask.cancel();for(UUID id:personalDisplays.values()){Entity entity=plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}personalDisplays.clear();}
 
     boolean command(Player player,String[] args){
         if(args.length<2){commandHelp(player);return true;}
@@ -221,10 +232,23 @@ final class BulletinService implements Listener {
             display.text(panel);
             /** Persist on the normal refresh cadence, so the cost rides along with work already being done
              *  rather than adding a write of its own. */
+            panelCache.put(player.getUniqueId(),panel);
             rememberPanel(player,panel);
             if(display.getLocation().distanceSquared(at)>0.0001)display.teleport(at);
         }
         personalDisplays.entrySet().removeIf(entry->{if(online.contains(entry.getKey()))return false;Entity e=plugin.getServer().getEntity(entry.getValue());if(e!=null)e.remove();return true;});
+    }
+    /** Makes sure every online player has their private panel, showing whatever text we last knew. Runs
+     *  often and does no database work: the text comes from panelCache, and the duplicate-safe spawn path
+     *  is reused so this cannot reintroduce stacked displays. */
+    private void ensurePersonalPanels(){
+        Location at=placed.get(PanelKind.STATS);
+        if(at==null||!chunkReady(at))return;
+        for(Player player:plugin.getServer().getOnlinePlayers()){
+            if(resolvePersonal(player.getUniqueId())!=null)continue;
+            TextDisplay display=spawnPersonalDisplay(player,at);
+            display.text(panelCache.computeIfAbsent(player.getUniqueId(),k->cachedPanel(player)));
+        }
     }
     private TextDisplay resolvePersonal(UUID playerId){UUID id=personalDisplays.get(playerId);if(id==null)return null;Entity e=plugin.getServer().getEntity(id);return e instanceof TextDisplay td&&td.isValid()?td:null;}
     /** Draws a private panel immediately, from the last snapshot persisted for this player, so a returning
@@ -251,6 +275,9 @@ final class BulletinService implements Listener {
         return text;
     }
     @EventHandler public void join(PlayerJoinEvent event){
+        /** Seeded before the chunk check: a player who logs in far from spawn still needs their snapshot
+         *  ready in memory, so the panel is complete the instant they arrive rather than a tick later. */
+        panelCache.put(event.getPlayer().getUniqueId(),cachedPanel(event.getPlayer()));
         Location at=placed.get(PanelKind.STATS);
         if(at==null||!chunkReady(at))return;
         /** A rejoin after an unclean quit can still have a live display tracked; keep it rather than
@@ -259,9 +286,9 @@ final class BulletinService implements Listener {
         TextDisplay display=spawnPersonalDisplay(event.getPlayer(),at);
         /** Populated straight away from the cache. Without this the panel exists but stays empty until the
          *  next bulk refresh, which is the "stats always take a while to appear" complaint. */
-        display.text(cachedPanel(event.getPlayer()));
+        display.text(panelCache.get(event.getPlayer().getUniqueId()));
     }
-    @EventHandler public void quit(PlayerQuitEvent event){UUID id=personalDisplays.remove(event.getPlayer().getUniqueId());if(id!=null){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}}
+    @EventHandler public void quit(PlayerQuitEvent event){panelCache.remove(event.getPlayer().getUniqueId());UUID id=personalDisplays.remove(event.getPlayer().getUniqueId());if(id!=null){Entity e=plugin.getServer().getEntity(id);if(e!=null)e.remove();}}
     private Component playerLeaderboardPanel(){
         List<String> lines=new ArrayList<>();lines.add("TOP PLAYERS");List<Database.StatsRow> rows=db.topStats("balance",10,0);
         if(rows.isEmpty())lines.add("No players yet.");else{int rank=1;for(Database.StatsRow row:rows)lines.add((rank++)+". "+shorten(row.name(),16)+" — "+compactNumber(row.balance()));}

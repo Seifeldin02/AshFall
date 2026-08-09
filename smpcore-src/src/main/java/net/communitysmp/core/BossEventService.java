@@ -1368,28 +1368,6 @@ final class BossEventService {
     private String tierFor(WorldBossKind kind){return switch(kind){case ASHEN_KNIGHT->"worldboss_ashen";case IRON_GOLEM->"worldboss_iron";case PIGLIN_BRUTE->"worldboss_piglin";};}
     private WorldBossKind kindOf(String raw){try{return raw==null?WorldBossKind.ASHEN_KNIGHT:WorldBossKind.valueOf(raw);}catch(IllegalArgumentException ignored){return WorldBossKind.ASHEN_KNIGHT;}}
     private WorldBossKind kindFromTier(String tier){if(tier==null)return WorldBossKind.ASHEN_KNIGHT;return switch(tier){case"worldboss_iron"->WorldBossKind.IRON_GOLEM;case"worldboss_piglin"->WorldBossKind.PIGLIN_BRUTE;default->WorldBossKind.ASHEN_KNIGHT;};}
-    /** Scales down how hard a world boss punts the player it hits.
-     *
-     *  Separate from knockback-resistance, which is the opposite direction -- how hard the boss is to shove.
-     *  Only the Ashen Knight and the Cinder Warlord are reduced; the Colossus is a siege engine and is
-     *  supposed to hit like one. Applied to the knockback vector rather than to damage, so the hit lands
-     *  exactly as hard as before and only the launch is shortened. */
-    void bossKnockbackDealt(org.bukkit.event.entity.EntityKnockbackByEntityEvent event){
-        if(!(event.getSourceEntity() instanceof LivingEntity source))return;
-        String tier=source.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);
-        if(!isWorldBossTier(tier))return;
-        WorldBossKind kind=switch(source.getType()){
-            case WITHER_SKELETON->WorldBossKind.ASHEN_KNIGHT;
-            case PIGLIN_BRUTE->WorldBossKind.PIGLIN_BRUTE;
-            case IRON_GOLEM->WorldBossKind.IRON_GOLEM;
-            default->null;
-        };
-        if(kind==null)return;
-        double scale=bosses.getDouble(configPrefix(kind)+".knockback-dealt-multiplier",
-                kind==WorldBossKind.IRON_GOLEM?1.0:0.75);
-        if(scale>=1||scale<0)return;
-        event.setFinalKnockback(event.getFinalKnockback().multiply(scale));
-    }
     private String configPrefix(WorldBossKind kind){return switch(kind){case ASHEN_KNIGHT->"world-boss";case IRON_GOLEM->"iron-golem-boss";case PIGLIN_BRUTE->"piglin-brute-boss";};}
     String displayName(WorldBossKind kind){return switch(kind){case ASHEN_KNIGHT->bosses.getString("world-boss.name","The Ashen Knight");case IRON_GOLEM->bosses.getString("iron-golem-boss.name","The Warded Colossus");case PIGLIN_BRUTE->bosses.getString("piglin-brute-boss.name","The Cinder Warlord");};}
     private NamedTextColor colorFor(WorldBossKind kind){return switch(kind){case ASHEN_KNIGHT->NamedTextColor.DARK_RED;case IRON_GOLEM->NamedTextColor.GRAY;case PIGLIN_BRUTE->NamedTextColor.GOLD;};}

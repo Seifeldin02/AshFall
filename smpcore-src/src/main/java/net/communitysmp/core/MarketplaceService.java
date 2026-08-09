@@ -39,11 +39,13 @@ final class MarketplaceService implements Listener {
     /** IN_STOCK filters the shop down to what it can actually sell right now, which only means anything
      *  since the shop became finite. It is a filter as well as an order: browsing a wall of out-of-stock
      *  entries is the main annoyance of a player-supplied shop. */
-    private enum Sort { DEFAULT, CHEAPEST, EXPENSIVE, NAME, IN_STOCK }
+    /** CATEGORY is the shop's default: a survival shop is browsed by "what am I looking for", not by price,
+     *  and 65 items in one flat list is unusable. IN_STOCK filters to what the shop can actually sell. */
+    private enum Sort { CATEGORY, DEFAULT, CHEAPEST, EXPENSIVE, NAME, IN_STOCK }
     private enum InputType { ITEM, SELLER, LIST_PRICE }
     private record ItemRef(Material material,Long auction,String shard) {}
     private static final class View {
-        Sort sort=Sort.DEFAULT;String category="ALL",query="",seller="";int page;boolean mine,merchant;
+        Sort sort=Sort.CATEGORY;String category="ALL",query="",seller="";int page;boolean mine,merchant;
     }
     private static final class Session {
         Section section=Section.SHOP;final EnumMap<Section,View> views=new EnumMap<>(Section.class);
@@ -99,6 +101,10 @@ final class MarketplaceService implements Listener {
             case EXPENSIVE->Comparator.<Map.Entry<Material,ShopService.Price>>comparingDouble(row->row.getValue().buy()).reversed();
             case NAME->Comparator.comparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             case IN_STOCK->Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->-stock.getOrDefault(row.getKey().name(),0))
+                    .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
+            /** Luxuries keep their price ordering -- a single short list where price IS the hierarchy. */
+            case CATEGORY->luxury?Comparator.comparingDouble(row->row.getValue().buy())
+                    :Comparator.<Map.Entry<Material,ShopService.Price>,String>comparing(row->row.getValue().category())
                     .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             case DEFAULT->luxury?Comparator.comparingDouble(row->row.getValue().buy()):null;
         };
@@ -193,7 +199,7 @@ final class MarketplaceService implements Listener {
     private void openFilters(Player player,Session session){
         Inventory inv=plugin.getServer().createInventory(new FilterHolder(player.getUniqueId(),session.section),45,Component.text("Marketplace Filters",NamedTextColor.DARK_GRAY));
         inv.setItem(10,button(Material.BARRIER,"All Categories",List.of()));
-        List<String> categories=session.section==Section.SHARDS?Arrays.stream(ShardService.Category.values()).map(Enum::name).toList():List.of("BUILDING","WOOD","FOOD","ORES","COMBAT","REDSTONE","UTILITY");
+        List<String> categories=filterCategories(session);
         int slot=11;for(String category:categories)inv.setItem(slot++,button(categoryIcon(category),CoreUtil.pretty(category),List.of()));
         inv.setItem(28,button(Material.SPYGLASS,"Item Search",List.of("Search by item name.")));
         if(session.section==Section.AUCTION)inv.setItem(29,button(Material.PLAYER_HEAD,"Seller Search",List.of("Search by seller name.")));
@@ -203,7 +209,7 @@ final class MarketplaceService implements Listener {
     }
     private void filterClick(InventoryClickEvent event,FilterHolder holder){
         event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player)||!holder.player.equals(player.getUniqueId()))return;Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=holder.section;View view=session.view();int slot=event.getRawSlot();
-        List<String> categories=session.section==Section.SHARDS?Arrays.stream(ShardService.Category.values()).map(Enum::name).toList():List.of("BUILDING","WOOD","FOOD","ORES","COMBAT","REDSTONE","UTILITY");
+        List<String> categories=filterCategories(session);
         if(slot==10){view.category="ALL";view.page=0;render(player,session);}
         else if(slot>=11&&slot<11+categories.size()){view.category=categories.get(slot-11);view.page=0;render(player,session);}
         else if(slot==28)prompt(player,InputType.ITEM);
@@ -272,8 +278,23 @@ final class MarketplaceService implements Listener {
     }
 
     private boolean matches(View view,Material material,String display){return(view.query.isBlank()||display.toLowerCase(Locale.ROOT).contains(view.query.toLowerCase(Locale.ROOT))||material.name().toLowerCase(Locale.ROOT).contains(view.query.toLowerCase(Locale.ROOT)))&&("ALL".equals(view.category)||category(material).equals(view.category));}
-    private String category(Material material){String name=material.name();if(name.endsWith("_LOG")||name.endsWith("_WOOD")||name.endsWith("_PLANKS"))return"WOOD";if(name.contains("STONE")||Set.of(Material.COBBLESTONE,Material.DIRT,Material.SAND,Material.GRAVEL,Material.GLASS,Material.OBSIDIAN).contains(material))return"BUILDING";if(material.isEdible()||name.contains("SEED")||Set.of(Material.CARROT,Material.POTATO,Material.SUGAR_CANE).contains(material))return"FOOD";if(name.contains("INGOT")||Set.of(Material.COAL,Material.CHARCOAL,Material.QUARTZ,Material.LAPIS_LAZULI).contains(material))return"ORES";if(Set.of(Material.REDSTONE,Material.SLIME_BALL).contains(material))return"REDSTONE";if(name.contains("SWORD")||name.contains("BOW")||name.contains("ARROW")||Set.of(Material.GUNPOWDER,Material.BONE,Material.STRING,Material.ENDER_PEARL,Material.BLAZE_ROD).contains(material))return"COMBAT";return"UTILITY";}
-    private Material categoryIcon(String category){return switch(category){case"BUILDING"->Material.BRICKS;case"WOOD"->Material.OAK_LOG;case"FOOD"->Material.APPLE;case"ORES"->Material.IRON_INGOT;case"COMBAT","WEAPONS"->Material.IRON_SWORD;case"REDSTONE"->Material.REDSTONE;case"TOOLS"->Material.DIAMOND_PICKAXE;case"ARMOR"->Material.DIAMOND_CHESTPLATE;case"COSMETIC"->Material.AMETHYST_SHARD;default->Material.BUNDLE;};}
+    /** Prefers the category the shop declares for this item; the name-based guesswork below is only a
+     *  fallback for auction listings, which can be any material at all. */
+    private String category(Material material){
+        String declared=shop.categoryOf(material);
+        if(declared!=null)return declared;
+        String name=material.name();if(name.endsWith("_LOG")||name.endsWith("_WOOD")||name.endsWith("_PLANKS"))return"WOOD";if(name.contains("STONE")||Set.of(Material.COBBLESTONE,Material.DIRT,Material.SAND,Material.GRAVEL,Material.GLASS,Material.OBSIDIAN).contains(material))return"BUILDING";if(material.isEdible()||name.contains("SEED")||Set.of(Material.CARROT,Material.POTATO,Material.SUGAR_CANE).contains(material))return"FOOD";if(name.contains("INGOT")||Set.of(Material.COAL,Material.CHARCOAL,Material.QUARTZ,Material.LAPIS_LAZULI).contains(material))return"ORES";if(Set.of(Material.REDSTONE,Material.SLIME_BALL).contains(material))return"REDSTONE";if(name.contains("SWORD")||name.contains("BOW")||name.contains("ARROW")||Set.of(Material.GUNPOWDER,Material.BONE,Material.STRING,Material.ENDER_PEARL,Material.BLAZE_ROD).contains(material))return"COMBAT";return"UTILITY";}
+    /** One source of truth for the category buttons: the render and the click handler MUST agree, or a
+     *  click lands on a different category than the one drawn. Shop categories come from shop.yml rather
+     *  than the legacy hardcoded list, which no longer describes the items. Auctions keep the guessed set,
+     *  since a listing can be any material at all. */
+    private List<String> filterCategories(Session session){
+        if(session.section==Section.SHARDS)return Arrays.stream(ShardService.Category.values()).map(Enum::name).toList();
+        if(session.section==Section.SHOP)return shop.categories(false);
+        if(session.section==Section.LUXURY)return List.of();
+        return List.of("BUILDING","WOOD","FOOD","ORES","COMBAT","REDSTONE","UTILITY");
+    }
+    private Material categoryIcon(String category){return switch(category){case"FARMING"->Material.WHEAT;case"ANIMALS"->Material.LEATHER;case"MOB_DROPS"->Material.BONE;case"MINING"->Material.IRON_PICKAXE;case"BUILDING"->Material.BRICKS;case"WOOD"->Material.OAK_LOG;case"FOOD"->Material.APPLE;case"ORES"->Material.IRON_INGOT;case"COMBAT","WEAPONS"->Material.IRON_SWORD;case"REDSTONE"->Material.REDSTONE;case"TOOLS"->Material.DIAMOND_PICKAXE;case"ARMOR"->Material.DIAMOND_CHESTPLATE;case"COSMETIC"->Material.AMETHYST_SHARD;default->Material.BUNDLE;};}
     private String plainName(ItemStack item){
         if(item.hasItemMeta()&&item.getItemMeta().hasDisplayName()){
             Component display=item.getItemMeta().displayName();
@@ -284,12 +305,12 @@ final class MarketplaceService implements Listener {
         }
         return CoreUtil.pretty(item.getType().name());
     }
-    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==5&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
+    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==6&&new View().sort==Sort.CATEGORY&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
     private void resetSearch(View view){view.query="";view.seller="";view.page=0;}
     private Section nextSection(Section section){return switch(section){case SHOP->Section.LUXURY;case LUXURY->Section.SHARDS;case SHARDS->Section.AUCTION;case AUCTION->Section.SHOP;};}
     private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";};}
     private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;};}
-    private String sortName(Sort sort){return switch(sort){case DEFAULT->"Default / Newest";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
+    private String sortName(Sort sort){return switch(sort){case CATEGORY->"Category";case DEFAULT->"Default / Newest";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
     private List<String> filterLore(View view){List<String> lore=new ArrayList<>();lore.add("Category: "+CoreUtil.pretty(view.category));if(!view.query.isBlank())lore.add("Item: "+view.query);if(!view.seller.isBlank())lore.add("Seller: "+view.seller);return lore;}
     private ItemStack nav(Material material,String name,boolean selected){return button(selected?Material.LIME_STAINED_GLASS_PANE:material,name,List.of(selected?"Current section":"Open section"));}
     private ItemStack button(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}

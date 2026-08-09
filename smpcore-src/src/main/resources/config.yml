@@ -421,7 +421,12 @@ progression:
     VANGUARD: 250000
 
 bulletin:
+  # How often everyone's stats are recomputed (two bulk queries). Deliberately slow.
   refresh-seconds: 40
+  # How often a missing private panel is noticed and drawn from the in-memory snapshot. Cheap and separate
+  # from the recompute above, so logging in away from spawn no longer means waiting a whole refresh period
+  # after walking up to the bulletin before your stats appear.
+  presence-ticks: 20
 
 milestones:
   rewards:
