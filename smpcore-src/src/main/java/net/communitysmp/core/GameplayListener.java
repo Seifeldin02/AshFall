@@ -139,6 +139,9 @@ final class GameplayListener implements Listener {
      *  the NATURAL/SPAWNER spawn-prevention branch below — trial spawner activation is a player-triggered
      *  encounter mechanic, not ambient mob pressure, so it was never blocked from spawning in the first place;
      *  this only had to fix the separate removal sweep. */
+    /** World bosses punt players less hard than their raw attack would; routed here because
+     *  BossEventService is not itself a Listener. */
+    @EventHandler(ignoreCancelled=true) public void bossKnockback(org.bukkit.event.entity.EntityKnockbackByEntityEvent e){bosses.bossKnockbackDealt(e);}
     @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true) public void creatureSpawn(CreatureSpawnEvent e){if(graves.isMarker(e.getEntity()))return;if(e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.COMMAND&&spawnClaims.contains(e.getLocation())){spawnClaims.allow(e.getEntity());e.getEntity().setAI(false);e.getEntity().setPersistent(true);e.getEntity().setCollidable(false);e.getEntity().setInvulnerable(true);}if(spawnClaims.contains(e.getLocation())&&!spawnClaims.allowed(e.getEntity())){e.setCancelled(true);return;}if(e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.TRIAL_SPAWNER)e.getEntity().getPersistentDataContainer().set(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE,(byte)1);/** Warden is deliberately excluded here, not just from the later removal sweep (SettingsService.
  *  removableHostile() already exempts it via BossEventService.isPeacefulExempt()) — a Sculk Shrieker's
  *  summon must be allowed to actually happen in the first place, or the removal-sweep exemption never

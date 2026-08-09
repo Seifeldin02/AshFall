@@ -12,6 +12,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSe
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Location;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -179,16 +180,24 @@ final class PacketNametagService implements Listener {
         Player viewer=online.get(Math.floorMod(resyncCursor++,online.size()));
         Map<UUID,String> seen=sent.get(viewer.getUniqueId());
         if(seen==null||seen.isEmpty())return;
-        /** Destroy before forgetting: the ids are reused per player, so simply clearing the record would
-         *  re-spawn the same ids on top of copies the client still holds. */
+        /** Re-assert the attachment; never tear it down.
+         *
+         *  This used to destroy both displays, unmount them and re-spawn two ticks later, which is a
+         *  deliberate ~100ms hole in which the tag is simply gone -- and because a fresh spawn lands at the
+         *  spawn coordinate before the mount is applied, it came back via the ground. That is the brief
+         *  drop: the self-heal itself was causing it, once every resync interval per viewer.
+         *
+         *  SetPassengers is idempotent, so re-sending it costs one packet and is invisible when nothing is
+         *  wrong, while still repairing the case this sweep exists for -- a mount the client lost, which is
+         *  what strands a tag in place. The other failure it used to cover, the client not having the
+         *  entity at all, is handled properly by the track/untrack events, which know when that happens
+         *  instead of guessing. */
         for(UUID targetId:new ArrayList<>(seen.keySet())){
             int[] pair=entityIds.get(targetId);
             Player target=plugin.getServer().getPlayer(targetId);
-            if(pair!=null)send(viewer,new WrapperPlayServerDestroyEntities(pair[0],pair[1]));
-            if(target!=null)send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[0]));
+            if(pair!=null&&target!=null&&target.isTrackedBy(viewer))
+                send(viewer,new WrapperPlayServerSetPassengers(target.getEntityId(),new int[]{pair[0],pair[1]}));
         }
-        seen.clear();
-        later(2L);
     }
     /** Crouching changes occlusion, so it re-sends instead of waiting for the next periodic tick. */
     @EventHandler public void sneak(org.bukkit.event.player.PlayerToggleSneakEvent event){if(active)later(1L);}
@@ -323,7 +332,14 @@ final class PacketNametagService implements Listener {
     private double innerRangeSq(){double d=plugin.getConfig().getDouble("nametags.max-distance",48);return d*d;}
     private double outerRangeSq(){double d=plugin.getConfig().getDouble("nametags.max-distance",48)+16;return d*d;}
     private void spawn(Player viewer,Player target,int[] pair,String variant,boolean sneaking){
-        Vector3d at=new Vector3d(target.getLocation().getX(),target.getLocation().getY(),target.getLocation().getZ());
+        /** Spawned at head height rather than at the feet. The coordinate in the spawn packet only applies
+         *  until SetPassengers arrives and the client takes over positioning, but for that moment the
+         *  display renders exactly where it was spawned -- and target.getLocation() is the FEET, so any
+         *  rebuild flickered through a tag lying on the ground. Head height makes that instant
+         *  indistinguishable from the mounted position, so even a dropped or delayed mount packet cannot
+         *  produce a visible drop. */
+        Location origin=target.getEyeLocation();
+        Vector3d at=new Vector3d(origin.getX(),origin.getY(),origin.getZ());
         float scale=(float)plugin.getConfig().getDouble("nametags.scale",1.0);
         float lift=(float)plugin.getConfig().getDouble("nametags.lift",.30);
         for(int pass=0;pass<2;pass++){

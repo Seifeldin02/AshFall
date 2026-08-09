@@ -107,6 +107,9 @@ world-boss:
   scale: 1.35
   # Most movable of the three, so knockback stays a genuine tool against something.
   knockback-resistance: 0.35
+  # How hard THIS boss punts whoever it hits (the opposite direction to the resistance above). 0.75 is a
+  # 25% reduction; the hit still lands for full damage, it just stops throwing people so far.
+  knockback-dealt-multiplier: 0.75
   reward-min: 126562.5
   reward-max: 253125
   active-radius: 50
@@ -151,6 +154,8 @@ piglin-brute-boss:
   scale: 1.8
   # Was punt-able enough that keeping it permanently airborne was itself a soft cheese.
   knockback-resistance: 0.75
+  # 25% less launch on its hits, as for the Ashen Knight. The Colossus is deliberately left at full force.
+  knockback-dealt-multiplier: 0.75
   reward-min: 126562.5
   reward-max: 253125
   reward-gold-blocks: 64
