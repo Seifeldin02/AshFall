@@ -166,6 +166,12 @@ bounties:
     base-amount: 5000
     treasury-percent-cap: 0.02
 
+pay:
+  # Tax on /pay, taken OUT OF the transfer rather than added on top: /pay 100 debits the sender exactly 100,
+  # the recipient receives 99, and 1 goes to the Central Bank. Same principle as every other fee here --
+  # money leaving circulation is deposited, never deleted.
+  tax-percent: 1.0
+
 trade-tax:
   # Applies Ashfall's transaction tax to completed AxTrade direct trades. Requires AxTrade; if it is not
   # installed (or its API changes) this silently does nothing and trades are unaffected.

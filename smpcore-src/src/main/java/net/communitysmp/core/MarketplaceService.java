@@ -104,7 +104,7 @@ final class MarketplaceService implements Listener {
                     .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             /** Luxuries keep their price ordering -- a single short list where price IS the hierarchy. */
             case CATEGORY->luxury?Comparator.comparingDouble(row->row.getValue().buy())
-                    :Comparator.<Map.Entry<Material,ShopService.Price>,String>comparing(row->row.getValue().category())
+                    :Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->ShopService.categoryRank(row.getValue().category()))
                     .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             case DEFAULT->luxury?Comparator.comparingDouble(row->row.getValue().buy()):null;
         };

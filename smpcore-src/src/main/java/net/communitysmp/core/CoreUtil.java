@@ -27,8 +27,11 @@ final class CoreUtil {
     static String id(Player p){return id(p.getName());}
     static String money(double amount){return "$"+MONEY.format(amount);}
     static String compactMoney(double amount){return "$"+compact(amount);}
+    /** The one compact-number formatter. Everything that abbreviates a number goes through this, so
+     *  billions read as b and millions as m everywhere at once rather than per screen -- the leaderboards
+     *  used to say "bil" and the scoreboard "B" for the same value. */
     static String compact(double value){
-        double absolute=Math.abs(value);String[] suffixes={"","K","M","B","T","Q"};int suffix=0;
+        double absolute=Math.abs(value);String[] suffixes={"","k","m","b","t","q"};int suffix=0;
         while(absolute>=1000&&suffix<suffixes.length-1){absolute/=1000.0;value/=1000.0;suffix++;}
         String pattern=absolute>=100?"0":absolute>=10?"0.#":"0.##";
         return new DecimalFormat(pattern).format(value)+suffixes[suffix];

@@ -329,16 +329,8 @@ final class BulletinService implements Listener {
      *  every number on the wall that can realistically grow large (money, mob/boss kill counts, shards),
      *  not just money — a raw 5+ digit kill count would defeat the same width math this class works this
      *  hard to get right elsewhere. */
-    private String compactNumber(double amount){
-        double absolute=Math.abs(amount);
-        if(absolute<1000)return(amount==Math.rint(amount)?String.valueOf((long)amount):String.valueOf(amount));
-        double scaled;String suffix;
-        if(absolute>=1_000_000_000){scaled=amount/1_000_000_000;suffix="bil";}
-        else if(absolute>=1_000_000){scaled=amount/1_000_000;suffix="mil";}
-        else{scaled=amount/1000;suffix="k";}
-        String pattern=Math.abs(scaled)>=100?"0":Math.abs(scaled)>=10?"0.#":"0.##";
-        return new DecimalFormat(pattern).format(scaled)+suffix;
-    }
+    /** Delegates to the shared formatter so the leaderboards cannot drift from the rest of the UI. */
+    private String compactNumber(double amount){return CoreUtil.compact(amount);}
 
     @EventHandler public void interact(PlayerInteractAtEntityEvent event){if(!event.getRightClicked().getPersistentDataContainer().has(panelKey,PersistentDataType.INTEGER))return;event.setCancelled(true);openPersonal(event.getPlayer(),event.getRightClicked().getPersistentDataContainer().getOrDefault(panelKey,PersistentDataType.INTEGER,1));}
     @EventHandler public void click(InventoryClickEvent event){if(event.getInventory().getHolder() instanceof Holder)event.setCancelled(true);}

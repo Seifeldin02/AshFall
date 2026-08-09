@@ -63,10 +63,14 @@ final class ShopService {
     java.util.Map<String,Integer> allStock(){return db.shopStockAll();}
     /** The authored category for a material, or null when it is not a shop item (auction listings). */
     String categoryOf(Material material){Price price=prices.get(material);return price==null?null:price.category();}
+    /** Deliberate display order, not alphabetical: it runs from what a new player gathers first to what
+     *  needs a mob farm, so the shop reads as a progression rather than an index. */
+    private static final java.util.List<String> CATEGORY_ORDER=java.util.List.of("WOOD","MINING","FARMING","ANIMALS","MOB_DROPS");
+    static int categoryRank(String category){int index=CATEGORY_ORDER.indexOf(category);return index<0?CATEGORY_ORDER.size():index;}
     java.util.List<String> categories(boolean luxury){
         java.util.List<String> out=new java.util.ArrayList<>();
         for(Price price:prices.values())if(price.luxury()==luxury&&!out.contains(price.category()))out.add(price.category());
-        java.util.Collections.sort(out);
+        out.sort(java.util.Comparator.comparingInt(ShopService::categoryRank).thenComparing(java.util.Comparator.naturalOrder()));
         return out;
     }
 

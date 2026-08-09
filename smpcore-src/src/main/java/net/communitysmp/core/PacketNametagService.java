@@ -372,13 +372,6 @@ final class PacketNametagService implements Listener {
         NamedTextColor color=NamedTextColor.NAMES.value(plugin.getConfig().getString("nametags.faction-color","AQUA").toLowerCase(java.util.Locale.ROOT));
         return color==null?NamedTextColor.AQUA:color;
     }
-    private String compact(double amount){
-        double abs=Math.abs(amount);
-        if(abs<1000)return "$"+new DecimalFormat("0").format(amount);
-        double scaled;String suffix;
-        if(abs>=1_000_000_000){scaled=amount/1_000_000_000;suffix="b";}
-        else if(abs>=1_000_000){scaled=amount/1_000_000;suffix="m";}
-        else{scaled=amount/1000;suffix="k";}
-        return "$"+new DecimalFormat(Math.abs(scaled)>=100?"0":"0.#").format(scaled)+suffix;
-    }
+    /** Same shared formatter as every other screen; the leading $ is what text() colours separately. */
+    private String compact(double amount){return CoreUtil.compactMoney(amount);}
 }
