@@ -349,6 +349,9 @@ final class Database implements AutoCloseable {
     synchronized void grantServerAdmin(String player,String name){update("INSERT INTO server_admins(player,player_name,granted_at) VALUES(?,?,?) ON CONFLICT(player) DO UPDATE SET player_name=excluded.player_name",player,name,System.currentTimeMillis());}
     synchronized void revokeServerAdmin(String player){update("DELETE FROM server_admins WHERE player=?",player);}
     synchronized List<String> serverAdmins(){return strings("SELECT player_name FROM server_admins ORDER BY player_name");}
+    /** Removes a completed milestone. Used when a mission's requirements change and a player no longer
+     *  satisfies them; safe because the affected mission grants no one-time payout. */
+    synchronized boolean clearMilestone(String player,String milestone){return update("DELETE FROM milestones WHERE player=? AND milestone=?",player,milestone)>0;}
     synchronized boolean markMilestone(String player,String milestone){return update("INSERT OR IGNORE INTO milestones(player,milestone,achieved_at) VALUES(?,?,?)",player,milestone,System.currentTimeMillis())==1;}
     synchronized int milestoneCount(String player){return integer("SELECT COUNT(*) FROM milestones WHERE player=?",player);}
     synchronized boolean hasMilestone(String player,String milestone){return integer("SELECT COUNT(*) FROM milestones WHERE player=? AND milestone=?",player,milestone)>0;}

@@ -121,7 +121,7 @@ final class MarketplaceService implements Listener {
             else lore.add(Component.text("Buy: "+CoreUtil.money(price.buy()*buyMultiplier)+(luxury?"":" each"),NamedTextColor.GREEN));
             if(!luxury){
                 lore.add(Component.text("Sell: "+CoreUtil.money(price.sell()*sellMultiplier)+" each",NamedTextColor.YELLOW));
-                lore.add(Component.text("In stock: "+(have>0?String.valueOf(have):"none"),have>0?NamedTextColor.AQUA:NamedTextColor.DARK_GRAY));
+                lore.add(Component.text("In stock: "+(have>0?CoreUtil.compact(have):"none"),have>0?NamedTextColor.AQUA:NamedTextColor.DARK_GRAY));
                 lore.add(Component.text(have>0?"Hold shift to buy/sell in bulk":"Sell some to the shop to restock it",NamedTextColor.DARK_GRAY));
             }
             meta.lore(lore);icon.setItemMeta(meta);inv.setItem(slot,icon);holder.items.put(slot,new ItemRef(row.getKey(),null,null));
@@ -181,7 +181,7 @@ final class MarketplaceService implements Listener {
                 int have=shop.stock(ref.material());
                 CoreUtil.error(player,have<=0
                         ?"The shop has no "+price.display()+" in stock. It only sells what players have sold it."
-                        :"The shop only has "+have+" "+price.display()+" in stock.");
+                        :"The shop only has "+CoreUtil.compact(have)+" "+price.display()+" in stock.");
                 plugin.settings().marketSound(player,"failed");return;
             }
             if(right&&session.section==Section.SHOP){shop.sell(player,ref.material(),amount,view.merchant?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1);render(player,session);return;}

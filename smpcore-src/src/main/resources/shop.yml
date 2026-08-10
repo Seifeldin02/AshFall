@@ -33,6 +33,19 @@ items:
   DRIED_KELP: {buy: 1, sell: 0.2, daily-full: 1024, category: FARMING}  # AFK kelp farm plus a smelter
   STONE: {buy: 1.5, sell: 0.3, daily-full: 4096, category: MINING}  # cobblestone plus fuel
 
+  # Saplings and cactus: bulk output of tree and cactus farms, both fully automatable, so priced with the
+  # other easy renewables. Cherry, mangrove and pale oak sit slightly higher for being biome-gated; cactus
+  # lowest of all because a cactus farm is the most hands-off build in the game.
+  OAK_SAPLING: {buy: 2, sell: 0.4, daily-full: 1024, category: FARMING}
+  SPRUCE_SAPLING: {buy: 2, sell: 0.4, daily-full: 1024, category: FARMING}
+  BIRCH_SAPLING: {buy: 2, sell: 0.4, daily-full: 1024, category: FARMING}
+  JUNGLE_SAPLING: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  ACACIA_SAPLING: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  DARK_OAK_SAPLING: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  CHERRY_SAPLING: {buy: 4.5, sell: 0.9, daily-full: 512, category: FARMING}
+  MANGROVE_PROPAGULE: {buy: 3.5, sell: 0.7, daily-full: 512, category: FARMING}
+  PALE_OAK_SAPLING: {buy: 4.5, sell: 0.9, daily-full: 512, category: FARMING}
+  CACTUS: {buy: 1.75, sell: 0.35, daily-full: 2048, category: FARMING}
   # Ordinary renewable farm output. Automatable with modest effort, so these stay cheap per unit, but they are
   # the everyday items players will actually bulk-sell, which is what keeps the shop stocked at all.
   EGG: {buy: 2.25, sell: 0.45, daily-full: 512, category: ANIMALS}  # chicken farm, fully automatic

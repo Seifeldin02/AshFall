@@ -56,6 +56,16 @@ sync:
   - path: disable-quickedit.ps1
     note: per-console QuickEdit fix for the Windows console stall; start.bat must invoke it
 
+# Jars whose internal build string must match, because their filename does not carry the version.
+jar_versions:
+  - path: plugins/Geyser-Spigot.jar
+    entry: git.properties
+    contains: "2.11.1-b1214"
+    note: Bedrock 26.0-26.40. Older builds load fine but reject all Bedrock logins as outdated.
+  - path: plugins/floodgate-spigot.jar
+    entry: plugin.yml
+    contains: "b140"
+
 env:
   - path: server.properties
     assert:
@@ -69,6 +79,12 @@ env:
     note: Bedrock listener port differs (prod 19132 / staging 19133)
 
 plugins:
+  # Geyser and Floodgate are the Bedrock runtime. These are pinned by FILENAME here, but the filename is
+  # version-less, so the check below also asserts the build inside the jar -- an outdated Geyser silently
+  # rejects every Bedrock player with "Outdated Geyser proxy!" while loading perfectly cleanly, which is
+  # exactly how it went unnoticed. Bump both together and update the expected build when updating.
+  - Geyser-Spigot.jar
+  - floodgate-spigot.jar
   - packetevents-spigot-2.13.0.jar   # required by PacketNametagService
   - worldedit-bukkit-7.4.4.jar       # hard depend in plugin.yml
   - VaultUnlocked-2.20.2.jar         # hard depend in plugin.yml

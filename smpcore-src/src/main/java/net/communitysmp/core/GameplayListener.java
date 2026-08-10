@@ -44,7 +44,7 @@ final class GameplayListener implements Listener {
     @EventHandler public void serverList(ServerListPingEvent e){Iterator<Player> shown=e.iterator();while(shown.hasNext())if(plugin.adminTools().isHiddenFromPublic(shown.next()))shown.remove();if(plugin.getConfig().getBoolean("maintenance.enabled",false)){e.motd(net.kyori.adventure.text.Component.text("Server under maintenance",net.kyori.adventure.text.format.NamedTextColor.GOLD));return;}String name=plugin.getConfig().getString("server-name","Ashfall Concord");String line=bosses.serverListEventLine();e.motd(net.kyori.adventure.text.Component.text(name,net.kyori.adventure.text.format.NamedTextColor.GOLD).append(net.kyori.adventure.text.Component.newline()).append(net.kyori.adventure.text.Component.text(line,net.kyori.adventure.text.format.NamedTextColor.GRAY)));}
     @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e){Player p=e.getPlayer();syncSpectatorVisibility(p);if(!p.hasPlayedBefore())firstJoin.add(p.getUniqueId());db.ensurePlayer(CoreUtil.id(p),p.getName(),plugin.getConfig().getDouble("starting-balance",250));db.setIpHash(CoreUtil.id(p),CoreUtil.ipHash(p));if(plugin.getConfig().getBoolean("authentication.auto-authenticate-floodgate",true)&&isFloodgate(p)){plugin.getServer().getScheduler().runTaskLater(plugin,()->{try{AuthMeApi api=AuthMeApi.getInstance();if(!api.isRegistered(p.getName())){plugin.registration().openBedrock(p);return;}api.forceLogin(p);onAuthenticated(p);}catch(Exception ex){plugin.getLogger().severe("Could not authenticate Floodgate player "+p.getName()+": "+ex.getMessage());}},5L);}else if(plugin.getServer().getPluginManager().getPlugin("AuthMe")==null)plugin.getServer().getScheduler().runTask(plugin,()->onAuthenticated(p));}
     @EventHandler(priority=EventPriority.MONITOR) public void login(LoginEvent e){plugin.getServer().getScheduler().runTask(plugin,()->onAuthenticated(e.getPlayer()));}
-    private void onAuthenticated(Player p){if(!p.isOnline())return;Database.PlayerRow row=db.player(CoreUtil.id(p));boolean newPlayer=firstJoin.remove(p.getUniqueId());if(!row.firstSpawn()){if(newPlayer&&plugin.getConfig().getBoolean("random-spawn.enabled",true))randomSpawn(p,0);else db.setPlayerFlag(CoreUtil.id(p),"first_spawn",true);}progress.join(p);plugin.shards().join(p);spawners.migrateInventory(p);bosses.sanitizePlayerEffects(p);relics.confirmInventory(p);factions.join(p);if(!row.guide()){plugin.giveGuide(p);db.setPlayerFlag(CoreUtil.id(p),"guide",true);p.sendMessage("§6Welcome to "+plugin.getConfig().getString("server-name","Ashfall Concord"));p.sendMessage("§7Create or join a faction. Leaders claim land with §f/f claim§7.");}p.sendMessage("§8/settings • /progress • /feedback • /rules");plugin.getServer().getScheduler().runTaskLater(plugin,()->{plugin.ui().update(p);for(Player online:plugin.getServer().getOnlinePlayers())online.updateCommands();},10L);}
+    private void onAuthenticated(Player p){if(!p.isOnline())return;Database.PlayerRow row=db.player(CoreUtil.id(p));boolean newPlayer=firstJoin.remove(p.getUniqueId());if(!row.firstSpawn()){if(newPlayer&&plugin.getConfig().getBoolean("random-spawn.enabled",true))randomSpawn(p,0);else db.setPlayerFlag(CoreUtil.id(p),"first_spawn",true);}progress.join(p);plugin.settings().applyConfirmationDefaults(p);plugin.shards().join(p);spawners.migrateInventory(p);bosses.sanitizePlayerEffects(p);relics.confirmInventory(p);factions.join(p);if(!row.guide()){plugin.giveGuide(p);db.setPlayerFlag(CoreUtil.id(p),"guide",true);p.sendMessage("§6Welcome to "+plugin.getConfig().getString("server-name","Ashfall Concord"));p.sendMessage("§7Create or join a faction. Leaders claim land with §f/f claim§7.");}p.sendMessage("§8/settings • /progress • /feedback • /rules");plugin.getServer().getScheduler().runTaskLater(plugin,()->{plugin.ui().update(p);for(Player online:plugin.getServer().getOnlinePlayers())online.updateCommands();},10L);}
     /** Reuses /rtp's own safety search (world border, spawn-claim/faction-claim/active-event avoidance —
      *  see TeleportService.findSafeSpawnLocation()) instead of the old bare CoreUtil.findSafe() call, so a
      *  brand new player's very first spawn gets the same real safety guarantees a manual /rtp already has.
@@ -115,13 +115,28 @@ final class GameplayListener implements Listener {
      *  event being cancelled at all; getFinalDamage() is 0 either way. Neither case is a real fight, so
      *  neither should start the PvP teleport lock or the Ender Chest combat lock. */
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void pvpTag(EntityDamageByEntityEvent e){if(e.getFinalDamage()<=0)return;if(e.getEntity() instanceof Player victim&&!isSelfEnderPearl(e,victim)){Player attacker=playerDamager(e.getDamager());if(attacker!=null&&!plugin.privileged(attacker)&&!plugin.privileged(victim)){teleports.onPvpHit(attacker,victim);plugin.enderChests().combatStarted(attacker);plugin.enderChests().combatStarted(victim);}}}
+    /** Teleport warmup is cancelled here, at MONITOR, rather than in damaged() at HIGH.
+     *
+     *  combat() cancels friendly fire at HIGH, and damaged() also ran at HIGH. EntityDamageByEntityEvent
+     *  shares EntityDamageEvent's handler list, so both were in the same priority bucket and their relative
+     *  order was just registration order -- effectively arbitrary. Whether an ally's cancelled hit killed
+     *  your teleport therefore depended on which method the JVM happened to register first, which is exactly
+     *  why this worked and then silently stopped. At MONITOR every cancellation has already been applied, so
+     *  ignoreCancelled genuinely means "this hit landed".
+     *
+     *  The finalDamage guard matches pvpTag() directly above: a shield block or armour absorbing a hit to
+     *  nothing is not damage either, and should not interrupt a teleport. */
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void teleportDamage(EntityDamageEvent e){
+        if(e.getFinalDamage()<=0)return;
+        if(e.getEntity() instanceof Player p)teleports.onDamage(p);
+    }
     private Player playerDamager(Entity entity){if(entity instanceof Player p)return p;if(entity instanceof Projectile projectile&&projectile.getShooter() instanceof Player p)return p;return null;}
     private boolean isSelfEnderPearl(EntityDamageByEntityEvent event,Player victim){return event.getDamager() instanceof EnderPearl pearl&&pearl.getShooter() instanceof Player thrower&&thrower.getUniqueId().equals(victim.getUniqueId());}
     /** Blanket damage protection for players standing inside spawn — covers every DamageCause (fall, fire,
      *  drowning, explosions, environmental harm set up by another player) in one place instead of trying to
      *  special-case each one; the narrower spawn-PvP check in combat() above is left in place too since it
      *  runs on a different event type (EntityDamageByEntityEvent) and there's no harm in the redundancy. */
-    @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true) public void damaged(EntityDamageEvent e){bosses.onAnyDamage(e);if(e.isCancelled())return;if(e.getEntity() instanceof Player p){if(spawnClaims.contains(p.getLocation())&&!plugin.privileged(p)){e.setCancelled(true);return;}teleports.onDamage(p);if(hostileDamage(e))plugin.settings().hostileDamage(p);if((e.getCause()==EntityDamageEvent.DamageCause.FIRE||e.getCause()==EntityDamageEvent.DamageCause.FIRE_TICK||e.getCause()==EntityDamageEvent.DamageCause.LAVA)&&relics.activeItem(p.getInventory().getHelmet(),"crown_of_ash"))e.setDamage(e.getDamage()*.25);}else if(e.getEntity() instanceof Item item&&(e.getCause()==EntityDamageEvent.DamageCause.FIRE||e.getCause()==EntityDamageEvent.DamageCause.LAVA||e.getCause()==EntityDamageEvent.DamageCause.VOID||e.getCause()==EntityDamageEvent.DamageCause.BLOCK_EXPLOSION||e.getCause()==EntityDamageEvent.DamageCause.ENTITY_EXPLOSION))relics.itemLost(item);}
+    @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true) public void damaged(EntityDamageEvent e){bosses.onAnyDamage(e);if(e.isCancelled())return;if(e.getEntity() instanceof Player p){if(spawnClaims.contains(p.getLocation())&&!plugin.privileged(p)){e.setCancelled(true);return;}if(hostileDamage(e))plugin.settings().hostileDamage(p);if((e.getCause()==EntityDamageEvent.DamageCause.FIRE||e.getCause()==EntityDamageEvent.DamageCause.FIRE_TICK||e.getCause()==EntityDamageEvent.DamageCause.LAVA)&&relics.activeItem(p.getInventory().getHelmet(),"crown_of_ash"))e.setDamage(e.getDamage()*.25);}else if(e.getEntity() instanceof Item item&&(e.getCause()==EntityDamageEvent.DamageCause.FIRE||e.getCause()==EntityDamageEvent.DamageCause.LAVA||e.getCause()==EntityDamageEvent.DamageCause.VOID||e.getCause()==EntityDamageEvent.DamageCause.BLOCK_EXPLOSION||e.getCause()==EntityDamageEvent.DamageCause.ENTITY_EXPLOSION))relics.itemLost(item);}
     private boolean hostileDamage(EntityDamageEvent event){if(!(event instanceof EntityDamageByEntityEvent byEntity))return false;Entity source=byEntity.getDamager();if(source instanceof Projectile projectile&&projectile.getShooter() instanceof Entity shooter)source=shooter;return source instanceof Enemy;}
     @EventHandler(ignoreCancelled=true) public void worldBossTarget(EntityTargetLivingEntityEvent e){bosses.onWorldBossTarget(e);}
     @EventHandler(ignoreCancelled=true) public void eliteBlockChange(EntityChangeBlockEvent e){bosses.onEliteBlockChange(e);}
@@ -245,8 +260,22 @@ if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason
      *  faction-chat-mode (factionChat, LOW, logged separately by FactionService itself) messages are already
      *  cancelled by the time this runs, per ignoreCancelled. Admin-only /ashfall audit-style investigation
      *  tool, never shown to normal players. */
+    /** The chat log write is handed to a separate async task instead of running inline.
+     *
+     *  Every Database method is synchronized on one connection, and the main thread holds that lock
+     *  constantly. Writing the log inline meant the chat thread blocked on that lock before the message
+     *  finished being delivered -- and while the chat thread held it, the main thread waited in turn, which
+     *  is a tick stall and shows up to everyone as a stutter the moment somebody talks. Logging is not
+     *  something chat delivery should ever wait for, so it is queued and the event returns immediately.
+     *
+     *  The values are captured up front: the event object must not be touched once this returns. */
     @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void logPublicChat(AsyncPlayerChatEvent event){
-        Player player=event.getPlayer();db.logChat("PUBLIC",CoreUtil.id(player),player.getName(),null,null,event.getMessage());
+        Player player=event.getPlayer();
+        String id=CoreUtil.id(player),name=player.getName(),message=event.getMessage();
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin,()->{
+            try{db.logChat("PUBLIC",id,name,null,null,message);}
+            catch(Throwable error){plugin.getLogger().warning("[Chat] could not log a public message: "+error);}
+        });
     }
     private boolean nearDuplicate(String first,String second){if(first.isEmpty())return false;if(first.equals(second))return true;if(Math.min(first.length(),second.length())<8)return false;int difference=Math.abs(first.length()-second.length());if(difference>3)return false;int mismatches=difference,limit=2;for(int i=0;i<Math.min(first.length(),second.length())&&mismatches<=limit;i++)if(first.charAt(i)!=second.charAt(i))mismatches++;return mismatches<=limit;}
     @EventHandler(priority=EventPriority.HIGHEST) public void inventory(InventoryClickEvent e){shop.click(e);merchants.click(e);factions.click(e);if(e.getWhoClicked() instanceof Player p)plugin.getServer().getScheduler().runTask(plugin,()->{scanImportant(p);spawners.migrateInventory(p);});}

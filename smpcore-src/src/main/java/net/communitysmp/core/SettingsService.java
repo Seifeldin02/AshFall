@@ -32,9 +32,11 @@ import java.util.*;
 
 final class SettingsService implements Listener {
     enum ConfirmationKind {
-        SHOP("confirm_shop"), AUCTION("confirm_auction"), LUXURY("confirm_luxury"), SHARD("confirm_shard");
-        final String key;
-        ConfirmationKind(String key){this.key=key;}
+        /** Confirmations are on for everything that spends a lot or is hard to undo, and off for the
+         *  regular shop, where the amounts are small and a prompt on every purchase is just friction. */
+        SHOP("confirm_shop",false), AUCTION("confirm_auction",true), LUXURY("confirm_luxury",true), SHARD("confirm_shard",true);
+        final String key;final boolean fallback;
+        ConfirmationKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
     /** OTHER keeps the original "tpa_requests" key so nobody's existing preference silently resets when this
      *  splits into three settings — it now scopes to non-faction requesters only (see TeleportService).
@@ -398,7 +400,7 @@ final class SettingsService implements Listener {
         db.preference(CoreUtil.id(player),"particle_intensity",next);CoreUtil.msg(player,"Particle Intensity: "+CoreUtil.pretty(next)+".");
     }
     private boolean validKey(String key){return MAIN.stream().anyMatch(toggle->toggle.key().equals(key))||Arrays.stream(ConfirmationKind.values()).anyMatch(kind->kind.key.equals(key))||Arrays.stream(TpaKind.values()).anyMatch(kind->kind.key.equals(key))||Arrays.stream(NametagKind.values()).anyMatch(kind->kind.key.equals(key));}
-    private boolean defaultFor(String key){if(ConfirmationKind.SHOP.key.equals(key))return false;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
+    private boolean defaultFor(String key){for(ConfirmationKind kind:ConfirmationKind.values())if(kind.key.equals(key))return kind.fallback;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
     private String state(Player player,String key,boolean fallback){return enabled(player,key,fallback)?"ON":"OFF";}
     private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
     private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";};}
@@ -449,15 +451,51 @@ final class SettingsService implements Listener {
             if(!protectedByNearbyOnPlayer)enemy.remove();
         }
     }
+    /** Bastion garrison mobs, judged by BOTH what they are and where they stand.
+     *
+     *  Type alone is wrong -- piglins wander the whole Nether -- and location alone is wrong too, since a
+     *  stray skeleton standing in a bastion is not a bastion threat. Requiring both keeps the exemption to
+     *  the actual garrison, so Hostile Mobs Off cannot be used to walk an empty bastion, while a mob that
+     *  merely drifted inside is still cleared normally. */
+    private static final java.util.Set<org.bukkit.entity.EntityType> BASTION_GARRISON=java.util.Set.of(
+            org.bukkit.entity.EntityType.PIGLIN,org.bukkit.entity.EntityType.PIGLIN_BRUTE,
+            org.bukkit.entity.EntityType.HOGLIN,org.bukkit.entity.EntityType.ZOGLIN,
+            org.bukkit.entity.EntityType.MAGMA_CUBE);
+    private boolean inBastion(org.bukkit.entity.LivingEntity living){
+        if(!BASTION_GARRISON.contains(living.getType()))return false;
+        org.bukkit.Location at=living.getLocation();
+        if(at.getWorld()==null||at.getWorld().getEnvironment()!=org.bukkit.World.Environment.NETHER)return false;
+        try{
+            for(org.bukkit.generator.structure.GeneratedStructure structure:
+                    at.getWorld().getStructures(at.getBlockX()>>4,at.getBlockZ()>>4,org.bukkit.generator.structure.Structure.BASTION_REMNANT))
+                if(structure.getBoundingBox().contains(at.getX(),at.getY(),at.getZ()))return true;
+        }catch(Throwable ignored){}
+        return false;
+    }
+    /** One-time migration to the intended confirmation defaults. Applied per player and recorded, so a
+     *  later restart cannot re-apply it over a choice they have since made -- the whole point is that these
+     *  are DEFAULTS, not enforced values. Anyone who had already set a preference keeps it. */
+    void applyConfirmationDefaults(Player player){
+        String id=CoreUtil.id(player);
+        if("true".equalsIgnoreCase(plugin.db().preference(id,"confirm_defaults_v2")))return;
+        plugin.db().preference(id,"confirm_defaults_v2","true");
+        for(ConfirmationKind kind:ConfirmationKind.values()){
+            /** Only seeds a value where the player has never expressed one. */
+            if(plugin.db().preference(id,kind.key)==null)set(player,kind.key,defaultFor(kind.key));
+        }
+    }
     private boolean removableHostile(Enemy enemy){
         if(!(enemy instanceof org.bukkit.entity.LivingEntity living)||plugin.bosses().isPeacefulExempt(living))return false;
+        /** Reinforcements summoned by a world boss are part of that fight and must not be cleared. */
+        if(plugin.bosses().isWorldBossAdd(living))return false;
+        if(inBastion(living))return false;
         if(plugin.bosses().isOrdinaryElite(living))return true;
         if(enemy instanceof Tameable tame&&tame.isTamed())return false;
         if(living.customName()!=null)return false;
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
+    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 

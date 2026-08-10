@@ -41,7 +41,7 @@ final class ProgressService implements Listener {
     void shutdown(){tickPlaytime();if(playTask!=null)playTask.cancel();}
     void join(Player player){
         String id=CoreUtil.id(player);db.touchPlayer(id);try{db.setPlaySecondsAtLeast(id,player.getStatistic(Statistic.PLAY_ONE_MINUTE)/20L);}catch(Exception ignored){}
-        backfillLegacyProgress(player);inspectLoadout(player,false);if(db.hasSpawnerProgress(id))db.markMilestone(id,"VANGUARD_FACTION_SPAWNER");refreshRanks(player,false);
+        backfillLegacyProgress(player);revalidateFullGear(player);inspectLoadout(player,false);if(db.hasSpawnerProgress(id))db.markMilestone(id,"VANGUARD_FACTION_SPAWNER");refreshRanks(player,false);
         if("true".equalsIgnoreCase(db.preference(id,"dragon_participant_repair"))){grantAdvancement(player,"end/kill_dragon");CoreUtil.give(player,new ItemStack(Material.DRAGON_BREATH));CoreUtil.msg(player,"Dragon participation restored: achievement, progression, and reward credited.");db.preference(id,"dragon_participant_repair","false");}
     }
     void quit(Player player){db.touchPlayer(CoreUtil.id(player));multiplierCache.remove(CoreUtil.id(player));}
@@ -65,6 +65,32 @@ final class ProgressService implements Listener {
         Database.StatsRow row=db.statsByName(name);if(row==null||db.hasMilestone(row.id(),"DEFEAT_DRAGON")||!db.markMilestone(row.id(),"DEFEAT_DRAGON"))return;double reward=plugin.getConfig().getDouble("milestones.rewards.DEFEAT_DRAGON",6000);
         if(reward>0){plugin.creditEarned(row.id(),reward,"DRAGON_PARTICIPATION_REPAIR");db.recordEconomy(row.id(),"MILESTONE",reward,"DEFEAT_DRAGON_REPAIR");}
         db.state("major:"+row.id()+":ENDER_DRAGON",Long.toString(System.currentTimeMillis()));db.preference(row.id(),"dragon_participant_repair","true");db.history("SERVER",null,"MILESTONE",row.name()+" received restored Ender Dragon participation credit.");
+    }
+    /** Re-checks ASHFORGED_FULL_GEAR against the CURRENT spec once per player.
+     *
+     *  Adding Soul Speed III to the boots means some players hold a completion they no longer satisfy, and
+     *  the rank multiplier is derived live from completed missions -- so leaving it would keep paying an
+     *  ongoing bonus for a requirement that is no longer met. Revoked rather than grandfathered because
+     *  this mission carries no one-time money reward, so there is nothing to claw back or double-pay.
+     *  Guarded by a preference flag so it runs once and does not re-punish someone who simply logs in
+     *  without their armour on. */
+    private void revalidateFullGear(Player player){
+        String id=CoreUtil.id(player);
+        if("true".equalsIgnoreCase(db.preference(id,"fullgear_soulspeed_recheck")))return;
+        db.preference(id,"fullgear_soulspeed_recheck","true");
+        if(!db.hasMilestone(id,"ASHFORGED_FULL_GEAR"))return;
+        ItemStack[] armor=player.getInventory().getArmorContents();
+        boolean stillQualifies=armor.length==4
+                &&meetsSpec(armor[3],FULL_GEAR_HELMET)&&meetsSpec(armor[2],FULL_GEAR_CHEST)
+                &&meetsSpec(armor[1],FULL_GEAR_LEGS)&&meetsSpec(armor[0],FULL_GEAR_BOOTS);
+        /** Not wearing it right now is not proof they cannot meet it, so the inventory is checked too. */
+        if(!stillQualifies)stillQualifies=matching(player,FULL_GEAR_HELMET)!=null&&matching(player,FULL_GEAR_CHEST)!=null
+                &&matching(player,FULL_GEAR_LEGS)!=null&&matching(player,FULL_GEAR_BOOTS)!=null;
+        if(stillQualifies)return;
+        if(db.clearMilestone(id,"ASHFORGED_FULL_GEAR")){
+            multiplierCache.remove(id);
+            CoreUtil.msg(player,"The Ashforged Armor mission now requires Soul Speed III on the boots. Your completion has been reset until your set meets it again; use /progress to review.");
+        }
     }
     private void backfillLegacyProgress(Player player){
         String id=CoreUtil.id(player);if("true".equalsIgnoreCase(db.preference(id,"adventure_backfill_v1")))return;Set<String> existing=db.milestones(id);
@@ -229,7 +255,7 @@ final class ProgressService implements Listener {
     private static final EnchantSpec FULL_GEAR_HELMET=new EnchantSpec(Material.NETHERITE_HELMET,Map.of(Enchantment.PROTECTION,4,Enchantment.MENDING,1,Enchantment.UNBREAKING,3,Enchantment.RESPIRATION,3,Enchantment.AQUA_AFFINITY,1),List.of(),"Netherite Helmet");
     private static final EnchantSpec FULL_GEAR_CHEST=new EnchantSpec(Material.NETHERITE_CHESTPLATE,Map.of(Enchantment.PROTECTION,4,Enchantment.MENDING,1,Enchantment.UNBREAKING,3),List.of(),"Netherite Chestplate");
     private static final EnchantSpec FULL_GEAR_LEGS=new EnchantSpec(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.MENDING,1,Enchantment.UNBREAKING,3,Enchantment.SWIFT_SNEAK,3),List.of(),"Netherite Leggings");
-    private static final EnchantSpec FULL_GEAR_BOOTS=new EnchantSpec(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.MENDING,1,Enchantment.UNBREAKING,3,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3),List.of(),"Netherite Boots");
+    private static final EnchantSpec FULL_GEAR_BOOTS=new EnchantSpec(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.MENDING,1,Enchantment.UNBREAKING,3,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3,Enchantment.SOUL_SPEED,3),List.of(),"Netherite Boots (with Soul Speed III)");
     private static final EnchantSpec SWORD_SPEC=new EnchantSpec(Material.NETHERITE_SWORD,Map.of(Enchantment.SHARPNESS,5,Enchantment.LOOTING,3,Enchantment.SWEEPING_EDGE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),List.of(),"Netherite Sword");
     private static final EnchantSpec BOW_SPEC=new EnchantSpec(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.UNBREAKING,3),List.of(Map.entry(Enchantment.INFINITY,1),Map.entry(Enchantment.MENDING,1)),"Bow (Mending OR Infinity)");
     private static final EnchantSpec PICKAXE_SPEC=new EnchantSpec(Material.NETHERITE_PICKAXE,Map.of(Enchantment.EFFICIENCY,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1),List.of(Map.entry(Enchantment.FORTUNE,3),Map.entry(Enchantment.SILK_TOUCH,1)),"Netherite Pickaxe (Fortune III OR Silk Touch)");

@@ -246,7 +246,7 @@ final class ShopService {
         if(limited&&!db.shopStockTake(material.name(),amount)){
             int have=db.shopStock(material.name());
             CoreUtil.error(p,have<=0?"The shop has no "+price.display()+" in stock. Players must sell some first."
-                    :"The shop only has "+have+" "+price.display()+" in stock.");
+                    :"The shop only has "+CoreUtil.compact(have)+" "+price.display()+" in stock.");
             plugin.settings().marketSound(p,"failed");return;
         }
         if(!plugin.bank().payServer(p,cost,"SHOP_PURCHASE",material.name())){

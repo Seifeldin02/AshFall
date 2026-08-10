@@ -41,6 +41,7 @@ final class BossEventService {
     enum Origin { NATURAL, PLAYER_SUMMONED, ADMIN_SUMMONED }
     enum WorldBossKind { ASHEN_KNIGHT, IRON_GOLEM, PIGLIN_BRUTE }
     private final SMPCore plugin; private final Database db; private final FactionService factions; private final RelicService relics;
+    private final NamespacedKey bossAddKey;
     private final NamespacedKey tierKey, spawnerKey, phaseKey, treasureKey, abilityKey, curerKey, eventEliteKey, burstKey, originKey, summonKey, eliteSpawnedAtKey, sharedBaseHealthKey, sharedActiveCountKey, legendaryLootKey, movementScaledKey, summonKindKey;
     private YamlConfiguration bosses, events;
     private final Map<UUID, Map<String, Double>> damage = new HashMap<>();
@@ -95,6 +96,7 @@ final class BossEventService {
 
     BossEventService(SMPCore plugin, FactionService factions, RelicService relics) {
         this.plugin = plugin; this.db = plugin.db(); this.factions = factions; this.relics = relics;
+        bossAddKey = new NamespacedKey(plugin, "world_boss_add");
         tierKey = new NamespacedKey(plugin, "elite_tier"); spawnerKey = new NamespacedKey(plugin, "spawner_mob"); phaseKey = new NamespacedKey(plugin, "boss_phase"); treasureKey = new NamespacedKey(plugin, "event_treasure"); abilityKey = new NamespacedKey(plugin, "elite_ability"); curerKey = new NamespacedKey(plugin, "zombie_curer"); eventEliteKey = new NamespacedKey(plugin, "event_elite"); burstKey = new NamespacedKey(plugin, "elite_burst");originKey=new NamespacedKey(plugin,"boss_origin");summonKey=new NamespacedKey(plugin,"sealed_omen");eliteSpawnedAtKey=new NamespacedKey(plugin,"elite_spawned_at");sharedBaseHealthKey=new NamespacedKey(plugin,"shared_boss_base_health");sharedActiveCountKey=new NamespacedKey(plugin,"shared_boss_active_count");legendaryLootKey=new NamespacedKey(plugin,"legendary_loot");movementScaledKey=new NamespacedKey(plugin,"elite_movement_scaled");summonKindKey=new NamespacedKey(plugin,"summon_kind");
         reload(); loadEvent(); restoreBoss(); startTasks();
     }
@@ -127,6 +129,12 @@ final class BossEventService {
          *  that has actually damaged it recently is a legitimate target. That leaves the iron-golem tactic
          *  intact -- golems can still be brought to a boss and still fight it -- but the boss no longer
          *  stands there taking it. */
+        /** A null target is vanilla CLEARING the target -- the player died, logged out, or the mob simply
+         *  forgot. That must always be allowed through. Cancelling it (which "not a Player" used to do) left
+         *  the boss holding a dead player as its target forever: it kept pathing around, refused to engage
+         *  anyone else, and re-attacked that one player the moment they came back. Allowing the clear is
+         *  what lets vanilla's own acquisition pick the next person, which is the behaviour we want. */
+        if(e.getTarget()==null){bossTargetSince.remove(living.getUniqueId());return;}
         if(!(e.getTarget() instanceof Player player)){
             if(e.getTarget() instanceof LivingEntity attacker&&recentlyAttackedBoss(living,attacker))return;
             e.setCancelled(true);return;
@@ -136,16 +144,12 @@ final class BossEventService {
          *  can't be yanked between distant players either. */
         double range=bosses.getDouble("world-boss-targeting.range",50);
         if(!player.getWorld().equals(living.getWorld())||player.getLocation().distanceSquared(living.getLocation())>range*range||!validBossTarget(player)){e.setCancelled(true);return;}
-        UUID id=living.getUniqueId();
-        Long locked=bossTargetSince.get(id);
-        Player current=living instanceof Mob mob&&mob.getTarget() instanceof Player p?p:null;
-        long stability=(long)(bosses.getDouble("world-boss-targeting.target-stability-seconds",4)*1000);
-        /** Commit to the current target for a short window rather than flipping on every incoming hit —
-         *  the old behavior (retarget on any damage, with no range limit) made the boss visibly indecisive
-         *  in group fights while still never truly losing anyone. */
-        if(current!=null&&!current.equals(player)&&locked!=null&&System.currentTimeMillis()-locked<stability&&validBossTarget(current)
-                &&current.getLocation().distanceSquared(living.getLocation())<=range*range){e.setCancelled(true);return;}
-        bossTargetSince.put(id,System.currentTimeMillis());
+        /** No commitment window any more. It existed to stop the boss flip-flopping, but it also meant we
+         *  were overriding vanilla's own target selection, and a rule that says "refuse to switch" is one
+         *  bad state away from "refuse to switch, ever". Vanilla already sticks with a target sensibly on
+         *  its own; all we impose is the range gate above, so this behaves like ordinary mob aggro with a
+         *  50-block reach. */
+        bossTargetSince.put(living.getUniqueId(),System.currentTimeMillis());
     }
     /** boss id -> (attacker id -> when it last damaged the boss). Only non-player attackers are tracked;
      *  players have their own contribution accounting, which this deliberately does not touch. */
@@ -194,6 +198,12 @@ final class BossEventService {
         Player current=mob.getTarget() instanceof Player p?p:null;
         if(current!=null&&validBossTarget(current)&&current.getWorld().equals(boss.getWorld())&&current.getLocation().distanceSquared(boss.getLocation())<=rangeSq){
             bossTargetOutOfRangeSince.remove(id);return;
+        }
+        /** An INVALID target (dead, offline, spectator) is dropped immediately -- the grace period below is
+         *  only meant for someone who is still a legitimate opponent but has stepped out of range, and
+         *  applying it to a corpse is what delayed re-acquisition mid-fight. */
+        if(current!=null&&!validBossTarget(current)){
+            mob.setTarget(null);bossTargetSince.remove(id);bossTargetOutOfRangeSince.remove(id);current=null;
         }
         if(current!=null){
             long since=bossTargetOutOfRangeSince.computeIfAbsent(id,key->now);
@@ -550,7 +560,15 @@ final class BossEventService {
         else if(stage==2)spawnReinforcements(mob,mob instanceof Creeper?1:3);
         else{mob.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,1200,1,false,false));mob.addPotionEffect(new PotionEffect(PotionEffectType.SPEED,1200,2,false,false));for(Entity entity:mob.getNearbyEntities(7,4,7))if(entity instanceof Player player)player.addPotionEffect(new PotionEffect(PotionEffectType.DARKNESS,60,0));}
     }
-    private void spawnReinforcements(LivingEntity leader,int count){Class<? extends Mob> type;if(leader instanceof Spider)type=CaveSpider.class;else if(leader instanceof Enderman)type=Endermite.class;else if(leader instanceof AbstractSkeleton)type=Skeleton.class;else if(leader instanceof PigZombie)type=PigZombie.class;else if(leader instanceof Piglin)type=Piglin.class;else type=Zombie.class;for(int i=0;i<count;i++)leader.getWorld().spawn(leader.getLocation(),type,CreatureSpawnEvent.SpawnReason.CUSTOM,minion->{minion.getPersistentDataContainer().set(spawnerKey,PersistentDataType.BYTE,(byte)1);minion.setRemoveWhenFarAway(true);});}
+    private void spawnReinforcements(LivingEntity leader,int count){Class<? extends Mob> type;if(leader instanceof Spider)type=CaveSpider.class;else if(leader instanceof Enderman)type=Endermite.class;else if(leader instanceof AbstractSkeleton)type=Skeleton.class;else if(leader instanceof PigZombie)type=PigZombie.class;else if(leader instanceof Piglin)type=Piglin.class;else type=Zombie.class;for(int i=0;i<count;i++)leader.getWorld().spawn(leader.getLocation(),type,CreatureSpawnEvent.SpawnReason.CUSTOM,minion->{minion.getPersistentDataContainer().set(spawnerKey,PersistentDataType.BYTE,(byte)1);
+        /** Marked separately from spawnerKey, which SpawnerService also uses for ordinary player-spawner
+         *  mobs. Only an add belonging to a world boss should survive Hostile Mobs Off; a farm mob should
+         *  still be cleared like any other. */
+        if(isWorldBossTier(leader.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING)))
+            minion.getPersistentDataContainer().set(bossAddKey,PersistentDataType.BYTE,(byte)1);
+        minion.setRemoveWhenFarAway(true);});}
+    /** True for a mob summoned as reinforcements by one of the three world bosses. */
+    boolean isWorldBossAdd(LivingEntity entity){return entity!=null&&entity.getPersistentDataContainer().has(bossAddKey,PersistentDataType.BYTE);}
     private void worldBossBurst(LivingEntity boss, WorldBossKind kind, int phase) {
         switch(kind){
             case ASHEN_KNIGHT -> { boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_WITHER_SPAWN, 1.2f, phase == 1 ? 1.3f : .8f); boss.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, boss.getLocation().add(0, 1, 0), 90, 3, 1, 3, .08); for (Entity entity : boss.getNearbyEntities(7, 4, 7)) if (entity instanceof Player p) p.setFireTicks(80); for (int i = 0; i < phase + 1; i++) boss.getWorld().spawn(boss.getLocation(), WitherSkeleton.class, CreatureSpawnEvent.SpawnReason.CUSTOM, s -> { s.customName(Component.text("Ashen Squire", NamedTextColor.GRAY)); s.getPersistentDataContainer().set(spawnerKey, PersistentDataType.BYTE, (byte) 1); }); }

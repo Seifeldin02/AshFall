@@ -105,6 +105,24 @@ def main() -> int:
     rows.append((OK, "plugins/SMPCore*.jar", f"exactly one ({smp[0]})") if len(smp) == 1
                 else (DIFF, "plugins/SMPCore*.jar", f"expected exactly 1, found {len(smp)}: {sorted(smp)}"))
 
+    # --- jars whose version lives inside the file, not in its name --------------
+    import zipfile
+    for entry in man.get("jar_versions", []):
+        rel, want = entry["path"], str(entry["contains"])
+        p_jar = prod / rel
+        if not p_jar.exists():
+            rows.append((MISSING, rel, "NOT INSTALLED on production"))
+            continue
+        try:
+            with zipfile.ZipFile(p_jar) as zf:
+                blob = zf.read(entry["entry"]).decode("utf-8", "replace")
+            ok = want in blob
+        except Exception as exc:
+            rows.append((DIFF, rel, f"could not read {entry['entry']}: {exc}"))
+            continue
+        rows.append((OK, rel, f"build {want}") if ok
+                    else (DIFF, rel, f"build is NOT {want} - outdated runtime"))
+
     # --- guard: nothing in never_touch was clobbered by a sync entry ------------
     synced = [e["path"] for e in man.get("sync", [])]
     for pattern in man.get("never_touch", []):

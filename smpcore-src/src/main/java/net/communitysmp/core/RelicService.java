@@ -478,8 +478,41 @@ final class RelicService implements Listener {
             case"ashen_reprisal"->ashenReprisal(player,event);
             case"colossus_core"->colossusWard(player,event);
             case"warlords_ember"->warlordsDash(player,event);
+            case"skyward_anchor"->skywardLaunch(player,event);
             default->{}
         }
+    }
+    /** Throws the holder straight up roughly a fixed number of blocks.
+     *
+     *  Ground-only on purpose: without that it is a flight relic, since each activation would refresh
+     *  mid-air. isOnGround() alone is unreliable -- it is client-reported and can be spoofed or simply be
+     *  stale for a tick -- so it is confirmed against the block underneath, which also correctly allows a
+     *  launch from a slab, fence or stair the client may not report as ground.
+     *
+     *  The velocity is derived from the requested height rather than hardcoded: with vanilla player gravity
+     *  the apex of an upward throw is v^2 / (2g), so v = sqrt(2 * g * h). Tuning the height in config
+     *  therefore lands within about a block, instead of needing a magic velocity number retuned by hand. */
+    private void skywardLaunch(Player player,PlayerInteractEvent event){
+        event.setCancelled(true);
+        if(!onSolidGround(player)){CoreUtil.error(player,"The Skyward Anchor only answers with your feet on solid ground.");return;}
+        if(onCooldown(player,"skyward_anchor",config.getLong("buffs.skyward-anchor.cooldown-seconds",10)*1000L))return;
+        double height=Math.max(1,config.getDouble("buffs.skyward-anchor.height",12));
+        double velocity=Math.sqrt(2*0.08*height);
+        player.setVelocity(player.getVelocity().setY(velocity));
+        /** Cancels the fall damage the launch itself would cause, without granting general fall immunity. */
+        player.setFallDistance(0);
+        player.getWorld().playSound(player.getLocation(),Sound.ENTITY_BREEZE_JUMP,1f,.7f);
+        player.getWorld().spawnParticle(Particle.CLOUD,player.getLocation(),25,.4,.1,.4,.02);
+        CoreUtil.msg(player,"The Skyward Anchor hurls you upward.");
+    }
+    /** True only when the player is genuinely standing on something. */
+    private boolean onSolidGround(Player player){
+        if(player.isFlying()||player.isGliding()||player.isSwimming())return false;
+        Location feet=player.getLocation();
+        for(double dy:new double[]{-0.1,-0.35}){
+            if(!feet.clone().add(0,dy,0).getBlock().isPassable())return true;
+        }
+        return player.isOnGround()&&!feet.clone().add(0,-1,0).getBlock().isPassable();
     }
     /** Cooldowns are bound to the relic itself (persisted in the state table), not the player holding
      *  it — so dropping, relogging, dying, trading, or a server restart can never reset or bypass one;
