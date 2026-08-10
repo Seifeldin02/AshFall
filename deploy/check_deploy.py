@@ -105,6 +105,20 @@ def main() -> int:
     rows.append((OK, "plugins/SMPCore*.jar", f"exactly one ({smp[0]})") if len(smp) == 1
                 else (DIFF, "plugins/SMPCore*.jar", f"expected exactly 1, found {len(smp)}: {sorted(smp)}"))
 
+    # --- values production must hold, independent of the staging comparison -----
+    for entry in man.get("yaml_asserts", []):
+        rel, keypath, want = entry["path"], entry["key"], entry["contains"]
+        p_file = prod / rel
+        if not p_file.exists():
+            rows.append((MISSING, rel, "absent on PRODUCTION"))
+            continue
+        node = yaml.safe_load(read(p_file))
+        for part in keypath.split("."):
+            node = (node or {}).get(part) if isinstance(node, dict) else None
+        present = (want in node) if isinstance(node, (list, str)) else (node == want)
+        rows.append((OK, f"{rel}:{keypath}", f"contains {want!r}") if present
+                    else (DIFF, f"{rel}:{keypath}", f"MISSING {want!r} - got {node!r}"))
+
     # --- jars whose version lives inside the file, not in its name --------------
     import zipfile
     for entry in man.get("jar_versions", []):

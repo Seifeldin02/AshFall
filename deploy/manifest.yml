@@ -56,6 +56,15 @@ sync:
   - path: disable-quickedit.ps1
     note: per-console QuickEdit fix for the Windows console stall; start.bat must invoke it
 
+# Values production must actually have, asserted independently of the staging<->production comparison.
+# A sync check can only prove the two servers match -- if a setting is dropped from BOTH at once it looks
+# perfectly in sync while being wrong, which is exactly how ReplayCore came back on.
+yaml_asserts:
+  - path: plugins/SMPCore/config.yml
+    key: integrations.disabled-plugins
+    contains: ReplayCore
+    note: ReplayCore is deliberately disabled; its recording can only be turned off from its own cloud dashboard.
+
 # Jars whose internal build string must match, because their filename does not carry the version.
 jar_versions:
   - path: plugins/Geyser-Spigot.jar

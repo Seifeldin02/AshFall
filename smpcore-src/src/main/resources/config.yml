@@ -4,6 +4,18 @@ starting-balance: 250.0
 maintenance:
   enabled: false
 
+integrations:
+  # Plugins SMPCore disables at startup. ReplayCore is deliberately off: its recording is controlled only
+  # from its own cloud dashboard, so switching it off locally is the only way to keep it off, and it must
+  # stay that way unless explicitly re-enabled.
+  #
+  # This block used to exist ONLY in the live config.yml on each server and never in the repo, so promoting
+  # the repo copy silently dropped it from both servers at once -- and because the deploy checker compares
+  # staging against production, losing it in both places read as "in sync". It is tracked here now, and the
+  # checker asserts it separately, so neither failure mode can repeat.
+  disabled-plugins:
+  - ReplayCore
+
 roles:
   admin-player: ""
 
