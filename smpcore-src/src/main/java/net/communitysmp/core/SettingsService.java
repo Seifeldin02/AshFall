@@ -461,7 +461,10 @@ final class SettingsService implements Listener {
             org.bukkit.entity.EntityType.PIGLIN,org.bukkit.entity.EntityType.PIGLIN_BRUTE,
             org.bukkit.entity.EntityType.HOGLIN,org.bukkit.entity.EntityType.ZOGLIN,
             org.bukkit.entity.EntityType.MAGMA_CUBE);
-    private boolean inBastion(org.bukkit.entity.LivingEntity living){
+    /** Package-private on purpose: the spawn gate in GameplayListener uses this exact same test, so the
+     *  exemption cannot end up scoped differently on the two halves of the lifecycle. Blocking the spawn
+     *  and then removing the survivors are the same rule applied twice. */
+    boolean isBastionThreat(org.bukkit.entity.LivingEntity living){
         if(!BASTION_GARRISON.contains(living.getType()))return false;
         org.bukkit.Location at=living.getLocation();
         if(at.getWorld()==null||at.getWorld().getEnvironment()!=org.bukkit.World.Environment.NETHER)return false;
@@ -488,7 +491,7 @@ final class SettingsService implements Listener {
         if(!(enemy instanceof org.bukkit.entity.LivingEntity living)||plugin.bosses().isPeacefulExempt(living))return false;
         /** Reinforcements summoned by a world boss are part of that fight and must not be cleared. */
         if(plugin.bosses().isWorldBossAdd(living))return false;
-        if(inBastion(living))return false;
+        if(isBastionThreat(living))return false;
         if(plugin.bosses().isOrdinaryElite(living))return true;
         if(enemy instanceof Tameable tame&&tame.isTamed())return false;
         if(living.customName()!=null)return false;

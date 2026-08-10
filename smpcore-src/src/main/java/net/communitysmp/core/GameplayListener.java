@@ -160,7 +160,11 @@ final class GameplayListener implements Listener {
  *  gets a chance to matter. Ordinary hostiles are completely unaffected: this only widens the "instanceof
  *  Enemy" check by one specific type, the same cancellation logic (radius, "does anyone nearby have it
  *  ON") still applies to everything else exactly as before. */
-if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.SPAWNER)&&e.getEntity() instanceof Enemy&&!(e.getEntity() instanceof Warden)){Collection<Player> nearby=e.getLocation().getNearbyPlayers(plugin.getConfig().getDouble("settings.natural-spawn-influence-radius",128));if(!nearby.isEmpty()&&nearby.stream().noneMatch(plugin.settings()::naturalSpawns)){e.setCancelled(true);return;}}bosses.onSpawn(e);}
+if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.SPAWNER)&&e.getEntity() instanceof Enemy&&!(e.getEntity() instanceof Warden)
+        /** Bastion garrison mobs are exempt on the SPAWN side as well, not just from the removal sweep.
+         *  Exempting only removal still let Hostile Mobs Off empty a bastion, because the mobs simply never
+         *  spawned in the first place -- the same shape of bug the Warden exemption above was fixed for. */
+        &&!(e.getEntity() instanceof org.bukkit.entity.LivingEntity bastionCandidate&&plugin.settings().isBastionThreat(bastionCandidate))){Collection<Player> nearby=e.getLocation().getNearbyPlayers(plugin.getConfig().getDouble("settings.natural-spawn-influence-radius",128));if(!nearby.isEmpty()&&nearby.stream().noneMatch(plugin.settings()::naturalSpawns)){e.setCancelled(true);return;}}bosses.onSpawn(e);}
     @EventHandler(priority=EventPriority.LOWEST) public void advancement(PlayerAdvancementDoneEvent e){
         net.kyori.adventure.text.Component original=e.message();if(original==null)return;e.message(null);
         io.papermc.paper.advancement.AdvancementDisplay display=e.getAdvancement().getDisplay();

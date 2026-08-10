@@ -86,6 +86,9 @@ anti-cheese:
   idle-heal-percent: 0.05
 
 boss-participation:
+  # A contribution this recent keeps a player eligible even if they died and respawned far away by the time
+  # the boss fell. Share and recency rules unchanged; only the proximity gate is waived.
+  recent-contribution-seconds: 60
   vanilla-types: [ENDER_DRAGON, WITHER]
   active-radius: 50
   active-seconds: 60
@@ -188,6 +191,15 @@ world-boss-targeting:
   # A boss never picks a mob target on its own -- only something that actually damaged it becomes valid,
   # and players always take priority -- so kiting mobs in still cannot pull it off a real fight.
   retaliation-seconds: 8
+  # Ordinary acquisition is HORIZONTAL (range above) plus this vertical bound, so a boss will not aggro
+  # someone flying far overhead who is not involved. The bound is waived for anyone actively attacking it,
+  # which closes vertical bow cheese without letting bosses chase across the map.
+  vertical-range: 30
+  # How long after hitting the boss a player still counts as actively engaged with it.
+  attacker-memory-seconds: 12
+  # How long the boss commits to a mob that hurt it before returning to its normal target, so several
+  # attacking mobs cannot make it pivot every tick.
+  retaliation-commit-seconds: 4
 
 world-boss-unreachable:
   # Seconds an ENGAGED target must be genuinely unpathable before the boss acts.
@@ -242,6 +254,12 @@ world-boss-unreachable:
   # Horizontal power of the lava pounce. This is a flat lunge AT the target, distinct from the tower
   # -climbing launch; vertical is only ever what is needed to clear the height difference.
   warlord-lava-lunge-power: 0.95
+  # Upper bound once the lunge scales with the distance it actually has to cover.
+  warlord-lava-lunge-max-power: 2.4
+  # Used only when the Warlord is submerged in lava and its target is on dry land -- the ordinary hop cannot
+  # clear a pool, which let players safely shoot it while it wallowed.
+  warlord-lava-escape-power: 2.2
+  warlord-lava-escape-lift: 0.95
 
 world-boss-swim:
   # Fallbacks; each boss overrides below. "authority" is how strongly steering overrides existing motion

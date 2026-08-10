@@ -142,8 +142,7 @@ final class BossEventService {
         /** Out-of-range acquisition is refused outright, so a boss can't latch onto someone who merely
          *  wandered near the arena, and — combined with the stability window in worldBossTargetTick — it
          *  can't be yanked between distant players either. */
-        double range=bosses.getDouble("world-boss-targeting.range",50);
-        if(!player.getWorld().equals(living.getWorld())||player.getLocation().distanceSquared(living.getLocation())>range*range||!validBossTarget(player)){e.setCancelled(true);return;}
+        if(!withinEncounter(living,player)||!validBossTarget(player)){e.setCancelled(true);return;}
         /** No commitment window any more. It existed to stop the boss flip-flopping, but it also meant we
          *  were overriding vanilla's own target selection, and a rule that says "refuse to switch" is one
          *  bad state away from "refuse to switch, ever". Vanilla already sticks with a target sensibly on
@@ -168,6 +167,28 @@ final class BossEventService {
         return when!=null&&System.currentTimeMillis()-when<=retaliationWindow()
                 &&attacker.isValid()&&!attacker.isDead()&&attacker.getWorld().equals(boss.getWorld());
     }
+    /** boss -> the mob it is currently answering, and until when. Committing to one attacker for a short
+     *  window is what keeps several mobs from making it pivot every tick. */
+    private final Map<UUID,UUID> bossRetaliating=new HashMap<>();
+    private final Map<UUID,Long> bossRetaliatingUntil=new HashMap<>();
+    private LivingEntity retaliationTarget(LivingEntity boss,double rangeSq){
+        UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
+        UUID held=bossRetaliating.get(id);
+        if(held!=null&&now<bossRetaliatingUntil.getOrDefault(id,0L)){
+            org.bukkit.entity.Entity found=plugin.getServer().getEntity(held);
+            /** Stay on it while it is alive and reachable; if it dies or flees, the commitment ends early
+             *  and the boss goes straight back to players rather than waiting out the timer. */
+            if(found instanceof LivingEntity living&&!living.isDead()&&living.isValid()
+                    &&living.getWorld().equals(boss.getWorld())
+                    &&living.getLocation().distanceSquared(boss.getLocation())<=rangeSq)return living;
+        }
+        bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);
+        LivingEntity fresh=pendingMobAttacker(boss,rangeSq);
+        if(fresh==null)return null;
+        bossRetaliating.put(id,fresh.getUniqueId());
+        bossRetaliatingUntil.put(id,now+(long)(bosses.getDouble("world-boss-targeting.retaliation-commit-seconds",4)*1000));
+        return fresh;
+    }
     /** The most recent living non-player attacker still inside the boss's range, or null. */
     private LivingEntity pendingMobAttacker(LivingEntity boss,double rangeSq){
         Map<UUID,Long> attackers=bossMobAttackers.get(boss.getUniqueId());
@@ -183,6 +204,33 @@ final class BossEventService {
         }
         return best;
     }
+    /** Encounter range, measured HORIZONTALLY.
+     *
+     *  A plain 3D sphere was the vertical bow-cheese hole: perch 55 blocks above the arena and you fall
+     *  outside a 50-block radius, so the boss never considers you a target and you shoot it for free. Using
+     *  horizontal distance closes that without letting a boss chase someone across the map, which is what a
+     *  simple "increase the range" fix would have done.
+     *
+     *  A vertical bound still applies to ORDINARY acquisition, so a boss does not aggro someone flying far
+     *  overhead who is not involved. That bound is waived for a player who is actively attacking it -- see
+     *  activeAttacker() -- which is exactly the case anti-cheese and the leap response exist to answer. */
+    private boolean withinEncounter(LivingEntity boss,Player player){
+        if(!player.getWorld().equals(boss.getWorld()))return false;
+        double range=bosses.getDouble("world-boss-targeting.range",50);
+        double dx=player.getLocation().getX()-boss.getLocation().getX();
+        double dz=player.getLocation().getZ()-boss.getLocation().getZ();
+        if(dx*dx+dz*dz>range*range)return false;
+        double dy=Math.abs(player.getLocation().getY()-boss.getLocation().getY());
+        return dy<=bosses.getDouble("world-boss-targeting.vertical-range",30)||activeAttacker(boss,player);
+    }
+    /** Has this player damaged the boss recently enough to still count as engaged with it? Reuses the
+     *  contribution timestamps the reward system already maintains rather than tracking it twice. */
+    private boolean activeAttacker(LivingEntity boss,Player player){
+        Map<String,Long> hits=lastContribution.get(boss.getUniqueId());
+        if(hits==null)return false;
+        Long last=hits.get(CoreUtil.id(player));
+        return last!=null&&System.currentTimeMillis()-last<=bosses.getLong("world-boss-targeting.attacker-memory-seconds",12)*1000L;
+    }
     /** Spectators, dead players and staff in creative/privileged mode are never valid boss targets. */
     private boolean validBossTarget(Player player){
         return player!=null&&player.isOnline()&&!player.isDead()&&player.getGameMode()!=GameMode.SPECTATOR
@@ -195,8 +243,16 @@ final class BossEventService {
         if(!(boss instanceof Mob mob))return;
         double range=bosses.getDouble("world-boss-targeting.range",50),rangeSq=range*range;
         UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
+        /** A mob that just hurt the boss is an immediate threat and briefly outranks the player it was
+         *  fighting -- the boss turns, deals with it, then goes back to its normal target. Committing to one
+         *  attacker for the whole window is what stops it spinning between several mobs every tick. */
+        LivingEntity avenging=retaliationTarget(boss,rangeSq);
+        if(avenging!=null){
+            if(!avenging.equals(mob.getTarget()))mob.setTarget(avenging);
+            return;
+        }
         Player current=mob.getTarget() instanceof Player p?p:null;
-        if(current!=null&&validBossTarget(current)&&current.getWorld().equals(boss.getWorld())&&current.getLocation().distanceSquared(boss.getLocation())<=rangeSq){
+        if(current!=null&&validBossTarget(current)&&withinEncounter(boss,current)){
             bossTargetOutOfRangeSince.remove(id);return;
         }
         /** An INVALID target (dead, offline, spectator) is dropped immediately -- the grace period below is
@@ -214,22 +270,20 @@ final class BossEventService {
             mob.getPathfinder().stopPathfinding();
         }
         bossTargetOutOfRangeSince.remove(id);
-        Player nearest=null;double best=rangeSq;
+        Player nearest=null;double best=Double.MAX_VALUE;
         for(Player candidate:boss.getWorld().getPlayers()){
-            if(!validBossTarget(candidate))continue;
+            if(!validBossTarget(candidate)||!withinEncounter(boss,candidate))continue;
             double d=candidate.getLocation().distanceSquared(boss.getLocation());
-            if(d<=best){best=d;nearest=candidate;}
+            if(d<best){best=d;nearest=candidate;}
         }
         if(nearest!=null){mob.setTarget(nearest);bossTargetSince.put(id,now);return;}
-        /** No valid player in range: hit back at whatever has been attacking it rather than standing idle
-         *  while an iron golem chips it down. Players are always preferred, so this only ever applies once
-         *  nobody is actually fighting the boss. */
+        /** Still nobody: fall back to any lingering mob attacker rather than standing idle. */
         LivingEntity retaliate=pendingMobAttacker(boss,rangeSq);
         if(retaliate!=null){
             if(!retaliate.equals(mob.getTarget())){mob.setTarget(retaliate);bossTargetSince.put(id,now);}
             return;
         }
-        if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);bossMobAttackers.remove(id);}
+        if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);}
     }
     void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); if (motionTask != null) motionTask.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
 
@@ -354,7 +408,7 @@ final class BossEventService {
             if(clean){
                 UUID id=living.getUniqueId();
                 living.remove();
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 removed++;
                 CoreUtil.msg(sender,"  removed "+detail);
@@ -692,7 +746,13 @@ final class BossEventService {
              *  proximity gate is meant to exclude players who wandered off and stopped participating, not
              *  ones killed by the very fight they were actively part of. Still requires the same recency
              *  window and minimum-damage-share as every other participant. */
-            if(nearby||player.isDead())eligible.put(entry.getKey(),entry.getValue());
+            /** Where somebody happens to be standing at the instant the boss dies must not erase a
+             *  legitimate participant. Dying to the fight already moved them (respawn), and a player who
+             *  landed a real hit seconds ago is plainly still part of it. So proximity is waived for anyone
+             *  whose last valid contribution is inside the grace window. Every other rule is unchanged:
+             *  they still need the recency window and the same minimum damage share as everyone else. */
+            boolean recentlyContributed=now-last<=bosses.getLong("boss-participation.recent-contribution-seconds",60)*1000L;
+            if(nearby||player.isDead()||recentlyContributed)eligible.put(entry.getKey(),entry.getValue());
         }
         if(eligible.isEmpty())raw.entrySet().stream().max(Map.Entry.comparingByValue()).ifPresent(entry->{Player player=find(entry.getKey());if(player!=null&&player.getWorld().equals(boss.getWorld())&&player.getLocation().distanceSquared(boss.getLocation())<=radiusSq)eligible.put(entry.getKey(),entry.getValue());});return eligible;
     }
@@ -1213,7 +1273,8 @@ final class BossEventService {
             UUID lavaId=boss.getUniqueId();long lavaNow=System.currentTimeMillis();
             long interval=(long)(bosses.getDouble("world-boss-unreachable.warlord-lava-lunge-seconds",2.5)*1000);
             double gap=boss.getLocation().distance(target.getLocation());
-            if(lavaNow-bossLavaLungeAt.getOrDefault(lavaId,0L)>=interval&&gap>2.5&&gap<=bosses.getDouble("world-boss-targeting.range",50)){
+            /** Uses the same encounter test as targeting, so a raised attacker is reachable here too. */
+            if(lavaNow-bossLavaLungeAt.getOrDefault(lavaId,0L)>=interval&&gap>2.5&&withinEncounter(boss,target)){
                 bossLavaLungeAt.put(lavaId,lavaNow);
                 /** A flat, directed pounce AT the target -- not launchWarlord(), which is the tower-climbing
                  *  launch and always adds a large upward impulse. Reusing that here made the Warlord hop
@@ -1223,8 +1284,22 @@ final class BossEventService {
                 double rise=target.getLocation().getY()-boss.getLocation().getY();
                 Vector flat=at.setY(0);
                 if(flat.lengthSquared()>0.0001){
-                    Vector pounce=flat.normalize().multiply(bosses.getDouble("world-boss-unreachable.warlord-lava-lunge-power",.95));
-                    pounce.setY(rise>1?Math.min(.85,.28+rise*.06):.28);
+                    /** Strength scales with the gap it actually has to cross instead of being one fixed
+                     *  hop, so a distant or elevated target is reached rather than approached. */
+                    double base=bosses.getDouble("world-boss-unreachable.warlord-lava-lunge-power",.95);
+                    double reach=Math.min(bosses.getDouble("world-boss-unreachable.warlord-lava-lunge-max-power",2.4),
+                            base*(1+Math.max(0,flat.length()-4)/12.0));
+                    double lift=rise>1?Math.min(1.25,.28+rise*.09):.28;
+                    /** Submerged in lava while the target is shooting from dry land is the cheese case: the
+                     *  ordinary hop cannot clear the pool, so it just wallows and takes free damage. When
+                     *  that is happening it gets a genuine escape leap, strong enough to actually get out. */
+                    boolean submerged=boss.isInLava(),targetDry=!target.isInLava();
+                    if(submerged&&targetDry){
+                        reach=Math.max(reach,bosses.getDouble("world-boss-unreachable.warlord-lava-escape-power",2.2));
+                        lift=Math.max(lift,bosses.getDouble("world-boss-unreachable.warlord-lava-escape-lift",.95));
+                    }
+                    Vector pounce=flat.normalize().multiply(reach);
+                    pounce.setY(lift);
                     boss.setVelocity(pounce);
                     boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_HOGLIN_ANGRY,1.1f,.7f);
                     boss.getWorld().spawnParticle(Particle.FLAME,boss.getLocation().add(0,1,0),20,.5,.3,.5,.03);
@@ -1638,7 +1713,7 @@ final class BossEventService {
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 if(id.equals(worldBossId)){
                     worldBossId=null;
