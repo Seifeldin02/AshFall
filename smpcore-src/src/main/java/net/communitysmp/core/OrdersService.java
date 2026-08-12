@@ -516,6 +516,38 @@ final class OrdersService implements Listener {
      *  just hidden from these listings via a plain key in SMPCore's own state table (same generic store
      *  already used for relic cooldowns/last-used tracking, no schema migration needed). archiveOrder()
      *  below is the only writer; both listings filter reads. */
+    /** One-line summary on login of orders that expired while the player was away.
+     *
+     *  Deliberately the same shape as the auction summary: read the CURRENT state rather than caching
+     *  expiry events. A cache would have to catch every expiry, survive restarts and be cleared exactly
+     *  once, whereas counting what is presently sitting in EXPIRED cannot miss anything, cannot deliver
+     *  twice, and collapses to one line however many expired.
+     *
+     *  Runs off the main thread because getPlayerOrders() reaches DonutOrders' storage layer, and a join
+     *  handler must not block on that. Silent when DonutOrders is absent or its API does not match. */
+    void loginSummary(Player player){
+        if(storageManager==null||getPlayerOrders==null||orderStatus==null)return;
+        java.util.UUID id=player.getUniqueId();
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin,()->{
+            int expired=0;
+            try{
+                for(Object order:(Collection<?>)getPlayerOrders.invoke(storageManager,id)){
+                    if(isHidden(order))continue;
+                    Object status=orderStatus.invoke(order);
+                    if(status!=null&&"EXPIRED".equalsIgnoreCase(String.valueOf(status)))expired++;
+                }
+            }catch(Throwable error){
+                plugin.getLogger().fine("[Orders] login summary skipped: "+error);
+                return;
+            }
+            if(expired<=0)return;
+            int count=expired;
+            plugin.getServer().getScheduler().runTask(plugin,()->{
+                if(!player.isOnline())return;
+                CoreUtil.msg(player,count+" order"+(count==1?"":"s")+" expired while you were away. Use /orders to collect what is waiting.");
+            });
+        });
+    }
     private boolean isHidden(Object order){try{return "true".equals(plugin.db().state("order_hidden:"+orderId.invoke(order)));}catch(Exception ignored){return false;}}
     private void openYourOrdersChest(Player player,int page){
         List<Object> all;

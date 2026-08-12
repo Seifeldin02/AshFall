@@ -44,7 +44,7 @@ final class MarketplaceService implements Listener {
      *  category order underneath. The old IN_STOCK hid out-of-stock rows entirely, which made the catalogue
      *  look broken and hid the very entries a player might want to go and supply. "Default / Newest" is gone
      *  -- for a fixed catalogue it never meant anything. */
-    private enum Sort { STOCK, CATEGORY, CHEAPEST, EXPENSIVE, NAME }
+    private enum Sort { STOCK, CATEGORY, CHEAPEST, EXPENSIVE, NAME, IN_STOCK }
     private enum InputType { ITEM, SELLER, LIST_PRICE }
     private record ItemRef(Material material,Long auction,String shard) {}
     private static final class View {
@@ -99,12 +99,19 @@ final class MarketplaceService implements Listener {
         rows.removeIf(row->!matches(view,row.getKey(),row.getValue().display()));
         /** Stock is read once per render, not once per row, so a full page costs a single query. */
         Map<String,Integer> stock=luxury?Map.of():shop.allStock();
+        /** IN_STOCK is the only sort that FILTERS. STOCK (the default) keeps everything visible and merely
+         *  lifts the stocked entries; this one is for when you just want the buyable list. */
+        if(!luxury&&view.sort==Sort.IN_STOCK)rows.removeIf(row->stock.getOrDefault(row.getKey().name(),0)<=0);
         Comparator<Map.Entry<Material,ShopService.Price>> comparator=switch(view.sort){
             case CHEAPEST->Comparator.comparingDouble(row->row.getValue().buy());
             case EXPENSIVE->Comparator.<Map.Entry<Material,ShopService.Price>>comparingDouble(row->row.getValue().buy()).reversed();
             case NAME->Comparator.comparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             /** In stock first, then the ordinary category order within each half, so the list still reads
              *  the same way -- it is the category view with the stocked entries lifted to the front. */
+            /** Most-stocked first, out-of-stock already filtered out above. */
+            case IN_STOCK->luxury?Comparator.comparingDouble(row->row.getValue().buy())
+                    :Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->-stock.getOrDefault(row.getKey().name(),0))
+                    .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             case STOCK->luxury?Comparator.comparingDouble(row->row.getValue().buy())
                     :Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->stock.getOrDefault(row.getKey().name(),0)>0?0:1)
                     .thenComparingInt(row->ShopService.categoryRank(row.getValue().category()))
@@ -329,12 +336,12 @@ final class MarketplaceService implements Listener {
     private void savePreference(Player player,Section section,String field,String value){
         plugin.db().preference(CoreUtil.id(player),prefKey(section,field),value);
     }
-    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==5&&new View().sort==Sort.STOCK&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
+    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==6&&new View().sort==Sort.STOCK&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
     private void resetSearch(View view){view.query="";view.seller="";view.page=0;}
     private Section nextSection(Section section){return switch(section){case SHOP->Section.LUXURY;case LUXURY->Section.SHARDS;case SHARDS->Section.AUCTION;case AUCTION->Section.SHOP;};}
     private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";};}
     private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;};}
-    private String sortName(Sort sort){return switch(sort){case STOCK->"In Stock First";case CATEGORY->"Category";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";};}
+    private String sortName(Sort sort){return switch(sort){case STOCK->"In Stock First";case CATEGORY->"Category";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
     private List<String> filterLore(View view){List<String> lore=new ArrayList<>();lore.add("Category: "+CoreUtil.pretty(view.category));if(!view.query.isBlank())lore.add("Item: "+view.query);if(!view.seller.isBlank())lore.add("Seller: "+view.seller);return lore;}
     private ItemStack nav(Material material,String name,boolean selected){return button(selected?Material.LIME_STAINED_GLASS_PANE:material,name,List.of(selected?"Current section":"Open section"));}
     private ItemStack button(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}

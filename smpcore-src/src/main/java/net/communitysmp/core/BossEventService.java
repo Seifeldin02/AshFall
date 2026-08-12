@@ -307,7 +307,7 @@ final class BossEventService {
             if(!retaliate.equals(mob.getTarget())){mob.setTarget(retaliate);bossTargetSince.put(id,now);}
             return;
         }
-        if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);}
+        if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossImpulseUntil.remove(id);bossImpulseRank.remove(id);bossImpulseReason.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);}
     }
     void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); if (motionTask != null) motionTask.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
 
@@ -432,7 +432,7 @@ final class BossEventService {
             if(clean){
                 UUID id=living.getUniqueId();
                 living.remove();
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossImpulseUntil.remove(id);bossImpulseRank.remove(id);bossImpulseReason.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 removed++;
                 CoreUtil.msg(sender,"  removed "+detail);
@@ -1147,7 +1147,7 @@ final class BossEventService {
              *  instead of milling about at the bottom where nobody can fight it. */
             climbOut(boss,target,kind);
         }
-        else if(freed==0&&horizontal>2)mob.getPathfinder().moveTo(target,1.2);
+        else if(freed==0&&horizontal>2&&!impulseHeld(boss))mob.getPathfinder().moveTo(target,1.2);
     }
     /** Whether the player is standing on something they built up, rather than on the local ground.
      *
@@ -1181,7 +1181,7 @@ final class BossEventService {
         double lift=Math.min(bosses.getDouble("world-boss-unreachable.climb-out-max-lift",1.35),
                 0.55+(target.getLocation().getY()-boss.getLocation().getY())*0.05);
         Vector up=flat.lengthSquared()>0.0001?flat.normalize().multiply(0.45):new Vector();
-        boss.setVelocity(up.setY(lift));
+        if(!impulse(boss,up.setY(lift),IMPULSE_ESCAPE,900L,"climb-out"))return;
         boss.getWorld().spawnParticle(Particle.CLOUD,boss.getLocation(),18,.5,.2,.5,.02);
     }
     /** True only when the navigator cannot produce a path that actually ENDS at the target. Line of sight is
@@ -1383,7 +1383,8 @@ final class BossEventService {
                     }
                     Vector pounce=flat.normalize().multiply(reach);
                     pounce.setY(lift);
-                    boss.setVelocity(pounce);
+                    if(!impulse(boss,pounce,submerged&&targetDry?IMPULSE_ESCAPE:IMPULSE_AGGRESSION,700L,
+                            submerged&&targetDry?"lava-escape":"lava-lunge"))return;
                     boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_HOGLIN_ANGRY,1.1f,.7f);
                     boss.getWorld().spawnParticle(Particle.FLAME,boss.getLocation().add(0,1,0),20,.5,.3,.5,.03);
                 }
@@ -1423,6 +1424,47 @@ final class BossEventService {
          *  drifting sideways, which is a large part of why this looked so wrong. */
         boss.setRotation((float)Math.toDegrees(Math.atan2(-toward.getX(),toward.getZ())),boss.getLocation().getPitch());
     }
+    /** Single owner of every world-boss movement impulse.
+     *
+     *  Five systems could each call setVelocity on a boss -- the tower launch, the lava lunge, the sunken
+     *  climb-out, the ground slam and the breakout charge -- and three more could call moveTo(). Nothing
+     *  coordinated them, so two impulses landing in the same tick meant the last one silently won, and the
+     *  navigator could erase a launch on the very next tick. That is the erratic, twitchy movement: not any
+     *  single bad impulse, but several good ones fighting.
+     *
+     *  Everything now routes through here, which does three things: it refuses a weaker impulse while a
+     *  stronger one is still in flight, it turns the boss to FACE where it is being thrown before throwing
+     *  it, and it cancels in-flight pathfinding so the navigator cannot immediately undo the launch. The
+     *  reason is recorded so a lunge can always be attributed to something.
+     *
+     *  Priorities: anti-cheese responses outrank escapes, escapes outrank ordinary aggression. Anti-cheese
+     *  therefore always wins, which is the required behaviour. */
+    private static final int IMPULSE_AGGRESSION=1, IMPULSE_ESCAPE=2, IMPULSE_ANTICHEESE=3;
+    private final Map<UUID,Long> bossImpulseUntil=new HashMap<>();
+    private final Map<UUID,Integer> bossImpulseRank=new HashMap<>();
+    private final Map<UUID,String> bossImpulseReason=new HashMap<>();
+
+    private boolean impulse(LivingEntity boss,Vector velocity,int rank,long lockMs,String reason){
+        UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
+        Long until=bossImpulseUntil.get(id);Integer active=bossImpulseRank.get(id);
+        /** An equal or stronger impulse still in flight keeps the boss; a weaker one is dropped rather than
+         *  layered on top, which is what produced the flailing. */
+        if(until!=null&&now<until&&active!=null&&rank<=active)return false;
+        if(velocity.lengthSquared()>0.0001){
+            Vector look=velocity.clone();
+            boss.setRotation((float)Math.toDegrees(Math.atan2(-look.getX(),look.getZ())),boss.getLocation().getPitch());
+        }
+        /** Stop the navigator before launching, or it steers straight out of the impulse next tick. */
+        if(boss instanceof Mob mob)mob.getPathfinder().stopPathfinding();
+        boss.setVelocity(velocity);
+        bossImpulseUntil.put(id,now+lockMs);bossImpulseRank.put(id,rank);bossImpulseReason.put(id,reason);
+        return true;
+    }
+    /** True while an impulse still owns this boss; pathing defers instead of overwriting it. */
+    private boolean impulseHeld(LivingEntity boss){
+        Long until=bossImpulseUntil.get(boss.getUniqueId());
+        return until!=null&&System.currentTimeMillis()<until;
+    }
     /** The Warlord is the mobile boss, so its answer to height is to actually get up there. Two fixes over
      *  the previous attempt: the ceiling was 1.4 (roughly 12 blocks) which simply was not enough against a
      *  taller tower, and a single setVelocity is erased by the mob's own movement on the very next tick.
@@ -1433,7 +1475,9 @@ final class BossEventService {
         double solved=Math.max(.9,.115*Math.sqrt(Math.max(0,dy))+.5);
         double cap=bosses.getDouble("world-boss-unreachable.warlord-lunge-max",0);
         final double up=cap>0?Math.min(cap,solved):solved;
-        boss.setVelocity(horizontal.clone().setY(up));
+        /** Anti-cheese: outranks everything, and holds the boss for the whole sustained climb. */
+        int sustainTicks=Math.max(0,bosses.getInt("world-boss-unreachable.warlord-lunge-sustain-ticks",8));
+        if(!impulse(boss,horizontal.clone().setY(up),IMPULSE_ANTICHEESE,(sustainTicks+6)*50L,"tower-launch"))return;
         UUID id=boss.getUniqueId();
         int sustain=Math.max(0,bosses.getInt("world-boss-unreachable.warlord-lunge-sustain-ticks",8));
         for(int t=1;t<=sustain;t++){
@@ -1443,6 +1487,8 @@ final class BossEventService {
                 if(!(live instanceof LivingEntity rising)||!rising.isValid())return;
                 if(rising.getVelocity().getY()<=0.01)return;
                 double decay=1.0-(tick/(double)(sustain+1));
+                /** Re-applied directly: this is the SAME impulse continuing, not a competing one, so it
+                 *  deliberately bypasses the arbiter rather than re-acquiring the lock each tick. */
                 rising.setVelocity(horizontal.clone().setY(Math.max(rising.getVelocity().getY(),up*decay)));
             },t);
         }
@@ -1460,7 +1506,7 @@ final class BossEventService {
         UUID id=mob.getUniqueId();long now=System.currentTimeMillis();
         if(now-bossRepathAt.getOrDefault(id,0L)<900)return;
         bossRepathAt.put(id,now);
-        if(mob.getLocation().distanceSquared(target.getLocation())>4)mob.getPathfinder().moveTo(target,1.1);
+        if(!impulseHeld(mob)&&mob.getLocation().distanceSquared(target.getLocation())>4)mob.getPathfinder().moveTo(target,1.1);
     }
     private void worldBossElementTick(LivingEntity boss,WorldBossKind kind){
         switch(kind){
@@ -1690,7 +1736,9 @@ final class BossEventService {
          *  Enderman only (see below), which left world bosses with nothing but a speed buff when NOT blocked
          *  and the close-range breakout lunge when stalemated, and no help at all for "far away or line of
          *  sight blocked by terrain". Cheap to reissue every second at this cadence. */
-        if(isWorldBossTier(tier)&&mob instanceof Mob navigator)navigator.getPathfinder().moveTo(target,1.15);
+        /** Deferred while an impulse is in flight -- this runs every visual tick and would otherwise
+         *  cancel every launch the tick after it happened. */
+        if(isWorldBossTier(tier)&&mob instanceof Mob navigator&&!impulseHeld(mob))navigator.getPathfinder().moveTo(target,1.15);
         /** Shelter-breaking is reserved for actual world bosses ("main bosses") — an uncommon/rare/epic/legendary
          *  elite reaching a stalemate must never start removing player blocks. It still gets the teleport/lunge
          *  catch-up below (no block damage), which is a separate, older kiting-prevention mechanic. */
@@ -1708,7 +1756,9 @@ final class BossEventService {
      *  hastily-built box no longer trivializes a fight, without touching legitimate builds or raw boss stats. */
     private void breakout(LivingEntity mob,Player target){
         Vector toward=target.getLocation().toVector().subtract(mob.getLocation().toVector());if(toward.lengthSquared()<=0)return;
-        Vector direction=toward.normalize();mob.setVelocity(direction.clone().multiply(1.6).setY(.6));
+        Vector direction=toward.normalize();
+        /** Anti-cheese: breaking out of a box outranks ordinary movement. */
+        impulse(mob,direction.clone().multiply(1.6).setY(.6),IMPULSE_ANTICHEESE,900L,"breakout");
         int broken=0;
         for(int step=1;step<=3&&broken<6;step++){
             Location probe=mob.getLocation().add(direction.clone().multiply(step));
@@ -1807,7 +1857,7 @@ final class BossEventService {
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossImpulseUntil.remove(id);bossImpulseRank.remove(id);bossImpulseReason.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 if(id.equals(worldBossId)){
                     worldBossId=null;
