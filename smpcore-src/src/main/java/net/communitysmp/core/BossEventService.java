@@ -36,7 +36,9 @@ import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
 final class BossEventService {
-    enum EventType { RESOURCE_RUSH, ELITE_HUNT, TREASURE, KOTH, WORLD_BOSS, HUNT }
+    /** TREASURE and KOTH are retired; TASK_MASTER replaces them. The constants are deleted rather than
+     *  left unreachable so the compiler enumerates every remaining reference instead of hiding them. */
+    enum EventType { RESOURCE_RUSH, ELITE_HUNT, TASK_MASTER, WORLD_BOSS, HUNT }
     enum EventTier { MICRO, MAJOR, RARE }
     enum Origin { NATURAL, PLAYER_SUMMONED, ADMIN_SUMMONED }
     enum WorldBossKind { ASHEN_KNIGHT, IRON_GOLEM, PIGLIN_BRUTE }
@@ -904,7 +906,7 @@ final class BossEventService {
     boolean startEvent(EventType requested, Location location,Origin origin) {return startEvent(requested,defaultTier(requested),location,origin,null);}
     boolean startEvent(EventType requested, Location location,Origin origin,WorldBossKind kind) {return startEvent(requested,defaultTier(requested),location,origin,kind);}
     boolean startEvent(EventType requested,EventTier selectedTier,Location location,Origin origin) { return startEvent(requested,selectedTier,location,origin,null); }
-    boolean startEvent(EventType requested,EventTier selectedTier,Location location,Origin origin,WorldBossKind requestedKind) { EventType type = requested == EventType.HUNT ? EventType.WORLD_BOSS : requested; WorldBossKind kind = type==EventType.WORLD_BOSS ? (requestedKind!=null?requestedKind:randomWorldBossKind()) : null;if(type==EventType.KOTH&&origin!=Origin.ADMIN_SUMMONED&&onlineFactionCount()<(selectedTier==EventTier.RARE?3:2))return false; if(type==EventType.WORLD_BOSS&&worldBoss()!=null){if(origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"another world boss is still active");return false;}
+    boolean startEvent(EventType requested,EventTier selectedTier,Location location,Origin origin,WorldBossKind requestedKind) { EventType type = requested == EventType.HUNT ? EventType.WORLD_BOSS : requested; WorldBossKind kind = type==EventType.WORLD_BOSS ? (requestedKind!=null?requestedKind:randomWorldBossKind()) : null; if(type==EventType.WORLD_BOSS&&worldBoss()!=null){if(origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"another world boss is still active");return false;}
         /** One player-summoned world boss may run ALONGSIDE one natural non-boss event -- a paid summon
          *  should not be silently eaten just because a Treasure Drop happens to be running. It runs as a
          *  standalone encounter (see standaloneBossEnds) and deliberately does NOT take the event slot, so
@@ -917,7 +919,7 @@ final class BossEventService {
              *  at a time. Two world bosses stay impossible via the worldBoss() check above. */
             if(type==EventType.WORLD_BOSS&&eventType!=EventType.WORLD_BOSS)standaloneBoss=true;
             else{if(type==EventType.WORLD_BOSS&&origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"a "+eventType+" event is still running");return false;}
-        } World world = type==EventType.WORLD_BOSS?worldFor(kind):overworld(); if (world == null) return false;Location selected=location!=null?location:type==EventType.WORLD_BOSS?randomSafeBossSpawn(world,bosses.getInt(configPrefix(kind)+".spawn-radius-min",1200),bosses.getInt(configPrefix(kind)+".spawn-radius-max",4000)):selectedTier==EventTier.MICRO?randomSafe(world,200,650):randomSafe(world,type==EventType.KOTH?500:800,type==EventType.KOTH?2000:3500);
+        } World world = type==EventType.WORLD_BOSS?worldFor(kind):overworld(); if (world == null) return false;Location selected=location!=null?location:type==EventType.WORLD_BOSS?randomSafeBossSpawn(world,bosses.getInt(configPrefix(kind)+".spawn-radius-min",1200),bosses.getInt(configPrefix(kind)+".spawn-radius-max",4000)):selectedTier==EventTier.MICRO?randomSafe(world,200,650):randomSafe(world,800,3500);
         if(selected==null&&type==EventType.WORLD_BOSS){if(origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"no open terrain far enough from protected land");return false;}if(selected==null||!world.equals(selected.getWorld())||protectedEventLocation(selected))return false; if(standaloneBoss){
             LivingEntity solo=spawnWorldBoss(selected,origin,kind);
             if(solo==null)return false;
@@ -930,11 +932,11 @@ final class BossEventService {
         switch (type) { case WORLD_BOSS -> { LivingEntity boss = spawnWorldBoss(eventCenter,origin,kind); if (boss == null){clearFailedEvent();return false;}eventCenter = boss.getLocation(); } case ELITE_HUNT -> { /** Elite Hunt is now a straight 90/10 epic-to-legendary roll regardless of event tier: the tiered
                   *  ladder meant most hunts produced a merely "rare" mob, which is not worth tracking across
                   *  the map. Both tiers spawn in the overworld, which is where the hunt marker sends people. */
-                 String eliteTier=ThreadLocalRandom.current().nextDouble()<bosses.getDouble("elite-hunt.legendary-chance",0.10)?"legendary":"epic";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere."); case KOTH -> broadcastWorldEvent("♜ WORLD EVENT • KING OF THE HILL", "Hold the center for your faction until time expires.", locationLine() + " • claims remain protected"); case TREASURE -> { placeTreasure(); broadcastWorldEvent("✦ WORLD EVENT • TREASURE DROP", "Follow the tracker and open the hidden cache.", "Biome: " + CoreUtil.pretty(eventCenter.getBlock().getBiome().getKey().getKey()) + " • rough X " + rough(eventCenter.getBlockX(), 250) + ", Z " + rough(eventCenter.getBlockZ(), 250)); } default -> { } }
+                 String eliteTier=ThreadLocalRandom.current().nextDouble()<bosses.getDouble("elite-hunt.legendary-chance",0.10)?"legendary":"epic";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere.");  case TASK_MASTER -> { plugin.taskMaster().begin(eventCenter,eventEnds); broadcastWorldEvent("✦ WORLD EVENT • TASK MASTER","A courier is taking contracts. Seek him out.",locationLine()); } default -> { } }
         if(origin==Origin.NATURAL){rememberNatural(type);scheduledEvents.put(selectedTier,chooseNatural(selectedTier));}
         for (Player p : plugin.getServer().getOnlinePlayers()) if(plugin.settings().bossNotifications(p))CoreUtil.msg(p, "Use /events for instructions or /events track off to disable navigation."); persistEvent();persistEventTimers(); return true;
     }
-    private EventTier defaultTier(EventType type){return type==EventType.WORLD_BOSS||type==EventType.KOTH?EventTier.RARE:EventTier.MAJOR;}
+    private EventTier defaultTier(EventType type){return type==EventType.WORLD_BOSS?EventTier.RARE:EventTier.MAJOR;}
     private int eventInt(String path,int fallback){return events.getInt("tiers."+eventTier.name().toLowerCase(Locale.ROOT)+"."+path,events.getInt(path,fallback));}
     private double eventDouble(String path,double fallback){return events.getDouble("tiers."+eventTier.name().toLowerCase(Locale.ROOT)+"."+path,events.getDouble(path,fallback));}
     private void clearFailedEvent(){eventType=null;eventCenter=null;eventEnds=0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventOrigin=Origin.NATURAL;db.state("current_event","");}
@@ -995,8 +997,6 @@ final class BossEventService {
      *  Audited: MICRO was $8,000 for a $2,500-or-nothing gamble with no guaranteed floor worth mentioning;
      *  RARE was ~13% of price back even in the best case. Both now have a real guaranteed reward, not just a
      *  lucky-finder cash chance, while staying a net loss overall (still a money sink by design). */
-    private void placeTreasure() { Block block = eventCenter.getBlock(); block.setType(Material.BARREL, false); if (block.getState() instanceof Container container) { container.getPersistentDataContainer().set(treasureKey, PersistentDataType.BYTE, (byte) 1); int scale=eventTier==EventTier.MICRO?1:eventTier==EventTier.MAJOR?2:4;container.getInventory().addItem(new ItemStack(Material.DIAMOND, scale), new ItemStack(Material.EMERALD, 6*scale), new ItemStack(Material.GOLDEN_APPLE, scale));container.getInventory().addItem(CoreUtil.named(Material.NAUTILUS_SHELL, "Ashfall Cache Trophy", List.of("Found during an Ashfall Treasure Drop.")));if(eventTier==EventTier.MICRO)container.getInventory().addItem(new ItemStack(Material.GOLD_BLOCK,4));else container.getInventory().addItem(new ItemStack(Material.TOTEM_OF_UNDYING)); container.update(true); } }
-    void onTreasureInteract(PlayerInteractEvent e) { if (eventType != EventType.TREASURE || e.getClickedBlock() == null) return; if (!(e.getClickedBlock().getState() instanceof Container container) || !container.getPersistentDataContainer().has(treasureKey)) return; double reward = eventDouble("treasure.finder-money",1500); plugin.creditEarned(CoreUtil.id(e.getPlayer()),reward,"TREASURE");db.recordEconomy(CoreUtil.id(e.getPlayer()),"EVENT",reward,"TREASURE"); db.incrementStat(CoreUtil.id(e.getPlayer()), "event_wins"); plugin.progress().eventWon(e.getPlayer(), "Treasure Drop"); broadcastNotice(Component.text("✦ " + plugin.nicknames().displayName(e.getPlayer()) + " found the Ashfall cache and earned " + CoreUtil.money(reward) + "!", NamedTextColor.GOLD)); finishEvent(true); }
     void onResourceBreak(Player p, Block block) { if (eventType != EventType.RESOURCE_RUSH) return; String name = block.getType().name(); if (!(name.endsWith("_ORE") || name.equals("ANCIENT_DEBRIS"))) return; double base=eventDouble("resource-rush.ore-money",8),reward=Math.round(base*plugin.progress().mobIncomeMultiplier(p)*100)/100.0; plugin.creditEarned(CoreUtil.id(p),reward,"RESOURCE_RUSH");db.recordEconomy(CoreUtil.id(p),"EVENT",reward,"RESOURCE_RUSH");eventEarnings.merge(CoreUtil.id(p),reward,Double::sum);eventScores.merge(CoreUtil.id(p),1,Integer::sum);scoreNames.put(CoreUtil.id(p),p.getName()); p.sendActionBar(Component.text("+" + CoreUtil.money(reward) + " Resource Rush", NamedTextColor.AQUA)); if (eventParticipants.add(CoreUtil.id(p))){db.incrementStat(CoreUtil.id(p), "event_participations");plugin.progress().eventParticipated(p);} if (Math.random() < eventDouble("resource-rush.double-drop-chance",.12)) block.getDrops(p.getInventory().getItemInMainHand(), p).forEach(item -> block.getWorld().dropItemNaturally(block.getLocation(), item)); }
     private boolean sameArea(Location loc, double radius) { return eventCenter != null && loc.getWorld().equals(eventCenter.getWorld()) && Math.pow(loc.getX() - eventCenter.getX(), 2) + Math.pow(loc.getZ() - eventCenter.getZ(), 2) <= radius * radius; }
 
@@ -1025,7 +1025,7 @@ final class BossEventService {
         }
         if(worldBossId==null&&forcedBossChunkSet)releaseBossChunk();
         if(eventType==EventType.WORLD_BOSS&&worldBoss()==null&&worldBossChunkObservedEmpty()){plugin.getLogger().warning("World boss event had no boss entity; recovering event state.");finishEvent(false);return;}
-        if(eventType!=null){if(now>=eventEnds)finishEvent(false);else if(eventType==EventType.KOTH)tickKoth();return;}
+        if(eventType!=null){if(now>=eventEnds)finishEvent(false);else if(eventType==EventType.TASK_MASTER)plugin.taskMaster().tick();return;}
         if(!plugin.getConfig().getBoolean("events.automatic",true))return;
         for(EventTier tier:List.of(EventTier.RARE,EventTier.MAJOR,EventTier.MICRO)){
             if(eventRemaining.getOrDefault(tier,Long.MAX_VALUE)>0||!enoughPlayers(tier))continue;
@@ -1037,7 +1037,11 @@ final class BossEventService {
     private void tickEventTimers(long now){long elapsed=Math.max(0,Math.min(30_000,now-lastEventTimerTick));lastEventTimerTick=now;if(!plugin.getServer().getOnlinePlayers().isEmpty())for(EventTier tier:EventTier.values())eventRemaining.compute(tier,(key,value)->Math.max(0,(value==null?randomRemaining(tier):value)-elapsed));if(now-lastTimerPersist>=60_000){persistEventTimers();lastTimerPersist=now;}}
     private boolean enoughPlayers(EventTier tier){long active=plugin.getServer().getOnlinePlayers().stream().filter(player->player.getGameMode()!=GameMode.SPECTATOR).count();return active>=events.getInt("tiers."+tier.name().toLowerCase(Locale.ROOT)+".minimum-online-players",1);}
     private EventType chooseNatural(EventTier tier){
-        List<EventType> choices=new ArrayList<>(switch(tier){case MICRO->List.of(EventType.TREASURE,EventType.RESOURCE_RUSH,EventType.ELITE_HUNT);case MAJOR->onlineFactionCount()>=2?List.of(EventType.RESOURCE_RUSH,EventType.ELITE_HUNT,EventType.KOTH):List.of(EventType.RESOURCE_RUSH,EventType.ELITE_HUNT,EventType.TREASURE);case RARE->onlineFactionCount()>=3?List.of(EventType.WORLD_BOSS,EventType.KOTH,EventType.TREASURE):List.of(EventType.WORLD_BOSS,EventType.TREASURE);});
+        List<EventType> choices=new ArrayList<>(switch(tier){
+            case MICRO->List.of(EventType.RESOURCE_RUSH,EventType.ELITE_HUNT,EventType.TASK_MASTER);
+            case MAJOR->List.of(EventType.RESOURCE_RUSH,EventType.ELITE_HUNT,EventType.TASK_MASTER);
+            case RARE->List.of(EventType.WORLD_BOSS,EventType.ELITE_HUNT,EventType.TASK_MASTER);
+        });
         List<EventType> preferred=choices.stream().filter(type->!recentNaturalEvents.contains(type)).toList();
         if(!preferred.isEmpty())choices=new ArrayList<>(preferred);
         else if(recentNaturalEvents.peekLast()!=null&&choices.size()>1)choices.remove(recentNaturalEvents.peekLast());
@@ -1889,9 +1893,8 @@ final class BossEventService {
     }
     private Particle summoningParticle(WorldBossKind kind){return switch(kind){case ASHEN_KNIGHT->Particle.SOUL_FIRE_FLAME;case IRON_GOLEM->Particle.CRIT;case PIGLIN_BRUTE->Particle.FLAME;};}
     private void celebrateWorldBoss(Player killer,Location location,WorldBossKind kind){broadcastWorldEvent("⚔ WORLD BOSS DEFEATED",displayName(kind)+" has fallen.",killer==null?"Ash settles over the battlefield.":plugin.nicknames().displayName(killer)+" struck the final blow; rewards were divided by damage.");location.getWorld().spawnParticle(kind==WorldBossKind.IRON_GOLEM?Particle.CRIT:kind==WorldBossKind.PIGLIN_BRUTE?Particle.FLAME:Particle.SOUL_FIRE_FLAME,location.clone().add(0,1,0),160,3,2,3,.08);Sound[] sequence={kind==WorldBossKind.IRON_GOLEM?Sound.ENTITY_IRON_GOLEM_DEATH:kind==WorldBossKind.PIGLIN_BRUTE?Sound.ENTITY_PIGLIN_BRUTE_DEATH:Sound.ENTITY_WITHER_DEATH,Sound.BLOCK_BELL_RESONATE,Sound.UI_TOAST_CHALLENGE_COMPLETE};for(int i=0;i<sequence.length;i++){int index=i;plugin.getServer().getScheduler().runTaskLater(plugin,()->{for(Player player:plugin.getServer().getOnlinePlayers())if(plugin.settings().sounds(player))player.playSound(player.getLocation(),sequence[index],1f,index==1?.75f:1f);},i*12L);}}
-    private void tickKoth() { int radius = eventInt("koth.radius",12); Map<String, List<Player>> present = new HashMap<>(); for (Player p : plugin.getServer().getOnlinePlayers()) if (sameArea(p.getLocation(), radius)) { Database.FactionRow f = db.factionOf(CoreUtil.id(p));if(f==null)continue;String key="f:"+f.id();present.computeIfAbsent(key, x -> new ArrayList<>()).add(p); scoreNames.put(key,f.name()); if (eventParticipants.add(CoreUtil.id(p))){db.incrementStat(CoreUtil.id(p), "event_participations");plugin.progress().eventParticipated(p);} } if (present.size() == 1) { String key = present.keySet().iterator().next(); eventScores.merge(key, 1, Integer::sum); } }
     /** Admin-only: removes a live world-boss entity with no rewards/drops, without touching any unrelated
-     *  active event (KOTH/Treasure/etc.) the way forceStopEvent()'s blanket clear would. Used by
+     *  active event (Task Master / Resource Rush / etc.) the way forceStopEvent()'s blanket clear would. Used by
      *  /ashfall boss despawn. */
     boolean despawnWorldBoss(){
         LivingEntity boss=worldBoss();if(boss==null)return false;
@@ -1929,17 +1932,8 @@ final class BossEventService {
             }
             worldBossId = null; hintStage = 0; nextHintAt = 0;
         }
-        if (finished == EventType.KOTH && !eventScores.isEmpty()) {
-            String winner = eventScores.entrySet().stream().max(Map.Entry.comparingByValue()).orElseThrow().getKey(), display = scoreNames.getOrDefault(winner, winner);
-            if (winner.startsWith("f:")) {
-                long id = Long.parseLong(winner.substring(2));double reward=eventDouble("koth.winner-faction",3000);db.changeFactionBalance(id,reward);db.recordEconomy(null,"EVENT",reward,"KOTH_FACTION");db.incrementFactionStat(id, "event_wins");
-                for(String name:db.factionMembers(id)){Database.StatsRow member=db.statsByName(name);if(member!=null)db.incrementStat(member.id(),"event_wins");}
-                db.history("FACTION", id, "EVENT", display + " won King of the Hill.");db.history("SERVER",null,"EVENT",display+" won King of the Hill.");
-            } else {
-                String id = winner.substring(2);double reward=events.getDouble("koth.winner-personal", 2000);plugin.creditEarned(id,reward,"KOTH_PERSONAL");db.recordEconomy(id,"EVENT",reward,"KOTH_PERSONAL");db.incrementStat(id, "event_wins");Player player = find(id);if (player != null) plugin.progress().eventWon(player, "King of the Hill");
-            }
-            broadcastNotice(Component.text("♜ " + display + " won King of the Hill!", NamedTextColor.GOLD));
-        } else if (!success && finished != EventType.WORLD_BOSS && finished != EventType.HUNT) broadcastNotice(Component.text("The world event has ended.", NamedTextColor.GRAY));
+        /** King of the Hill retired; nothing to award here any more. */
+        if (!success && finished != EventType.WORLD_BOSS && finished != EventType.HUNT) broadcastNotice(Component.text("The world event has ended.", NamedTextColor.GRAY));
         if(finished==EventType.RESOURCE_RUSH)for(var entry:eventEarnings.entrySet()){Player earner=find(entry.getKey());if(earner!=null&&entry.getValue()>=.01)CoreUtil.msg(earner,"You made "+CoreUtil.money(entry.getValue())+" during Resource Rush!");}
         EventTier finishedTier=eventTier;Origin finishedOrigin=eventOrigin;long nextDelay=activeTierNextDelay;eventType = null;eventCenter = null;eventEnds = 0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventEarnings.clear();db.state("current_event", "");
         if(finishedOrigin==Origin.NATURAL){eventRemaining.put(finishedTier,nextDelay>0?nextDelay:randomRemaining(finishedTier));scheduledEvents.computeIfAbsent(finishedTier,this::chooseNatural);persistEventTimers();}
@@ -1983,7 +1977,7 @@ final class BossEventService {
         }
         return new TimedEvent(name,best==Long.MAX_VALUE?"":duration(best-now));
     }
-    private String shortEventName(EventType type){return switch(type){case RESOURCE_RUSH->"Resource Rush";case ELITE_HUNT->"Elite Hunt";case TREASURE->"Treasure";case KOTH->"KOTH";case WORLD_BOSS,HUNT->"World Boss";};}
+    private String shortEventName(EventType type){return switch(type){case RESOURCE_RUSH->"Resource Rush";case ELITE_HUNT->"Elite Hunt";case TASK_MASTER->"Task Master";case WORLD_BOSS,HUNT->"World Boss";};}
     private EventTier nextTier(){return Arrays.stream(EventTier.values()).min(Comparator.comparingLong(t->eventRemaining.getOrDefault(t,Long.MAX_VALUE))).orElse(EventTier.MICRO);}
     private String duration(long millis){long minutes=Math.max(0,millis)/60000;if(minutes<1)return"under 1m";long days=minutes/1440,hours=minutes%1440/60,mins=minutes%60;if(days>0)return days+"d "+hours+"h";if(hours>0)return hours+"h "+mins+"m";return mins+"m";}
     boolean active(){return eventType!=null&&eventCenter!=null;}
@@ -1991,8 +1985,8 @@ final class BossEventService {
     String trackingLine(Player p) { if (eventType == null || eventCenter == null) return "No active event";if(eventType==EventType.RESOURCE_RUSH)return"⛏ Mine natural ores anywhere";
         Location target = (eventType==EventType.WORLD_BOSS||eventType==EventType.HUNT) && worldBoss()!=null ? worldBoss().getLocation() : eventCenter;
         if (!p.getWorld().equals(target.getWorld())) return "Event: enter " + CoreUtil.pretty(target.getWorld().getEnvironment().name()); double dx = target.getX() - p.getLocation().getX(), dz = target.getZ() - p.getLocation().getZ(), distance = Math.sqrt(dx * dx + dz * dz); double angle = Math.toDegrees(Math.atan2(-dx, dz)); if (angle < 0) angle += 360; String[] directions = {"S", "SW", "W", "NW", "N", "NE", "E", "SE"}; String direction = directions[(int) Math.round(angle / 45.0) % 8]; return "◆ " + CoreUtil.pretty(eventType.name()) + " • " + direction + " • " + Math.round(distance) + "m"; }
-    private String instruction() { return switch (eventType) { case RESOURCE_RUSH -> "Mine natural ores anywhere to earn bonus money."; case ELITE_HUNT -> "Follow the tracker and defeat the marked elite."; case TREASURE -> "Follow the tracker and open the marked barrel."; case KOTH -> "Your faction must hold the center within " + eventInt("koth.radius",12) + " blocks."; case WORLD_BOSS, HUNT -> "Damage " + worldBossLine() + ", stay active, and survive its phases."; }; }
-    private String rewardLine(){return switch(eventType){case RESOURCE_RUSH->"Reward: "+CoreUtil.money(eventDouble("resource-rush.ore-money",8))+" per qualifying ore plus a drop chance.";case TREASURE->"Reward: cache contents and "+CoreUtil.money(eventDouble("treasure.finder-money",1500))+".";case KOTH->"Reward: faction treasury and event-win credit.";case ELITE_HUNT->"Reward: shared elite money, themed loot and participation.";case WORLD_BOSS,HUNT->"Reward: shared boss pool, participation loot and rare drops.";};}
+    private String instruction() { return switch (eventType) { case RESOURCE_RUSH -> "Mine natural ores anywhere to earn bonus money."; case ELITE_HUNT -> "Follow the tracker and defeat the marked elite."; case TASK_MASTER -> "Find the Task Master and take a contract.";  case WORLD_BOSS, HUNT -> "Damage " + worldBossLine() + ", stay active, and survive its phases."; }; }
+    private String rewardLine(){return switch(eventType){case RESOURCE_RUSH->"Reward: "+CoreUtil.money(eventDouble("resource-rush.ore-money",8))+" per qualifying ore plus a drop chance.";case TASK_MASTER->"Reward: paid per contract delivered, scaled to its difficulty.";case ELITE_HUNT->"Reward: shared elite money, themed loot and participation.";case WORLD_BOSS,HUNT->"Reward: shared boss pool, participation loot and rare drops.";};}
     private void persistEvent() { if (eventType == null || eventCenter == null) { db.state("current_event", ""); return; } db.state("current_event", String.join(",", eventType.name(), eventCenter.getWorld().getName(), Double.toString(eventCenter.getX()), Double.toString(eventCenter.getY()), Double.toString(eventCenter.getZ()), Long.toString(eventEnds),eventOrigin.name(),eventTier.name(),Long.toString(activeTierNextDelay))); }
     private void loadEvent() { String raw = db.state("current_event"); if (raw == null || raw.isBlank()) return; try { String[] parts = raw.split(","); if (Long.parseLong(parts[5]) <= System.currentTimeMillis()) return; World world = plugin.getServer().getWorld(parts[1]); if (world == null) return; EventType loaded = EventType.valueOf(parts[0]); eventType = loaded == EventType.HUNT ? EventType.WORLD_BOSS : loaded; eventCenter = new Location(world, Double.parseDouble(parts[2]), Double.parseDouble(parts[3]), Double.parseDouble(parts[4])); eventEnds = Long.parseLong(parts[5]);eventOrigin=parts.length>6?Origin.valueOf(parts[6]):Origin.NATURAL;eventTier=parts.length>7?EventTier.valueOf(parts[7]):defaultTier(eventType);activeTierNextDelay=parts.length>8?parseLong(parts[8],0):eventOrigin==Origin.NATURAL?randomRemaining(eventTier):0; } catch (Exception e) { plugin.getLogger().warning("Ignored invalid saved event state."); } }
 

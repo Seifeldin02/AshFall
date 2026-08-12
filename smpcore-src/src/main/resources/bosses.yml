@@ -239,6 +239,9 @@ world-boss-unreachable:
   # tower-cheesed. Below this it digs upward and launches back toward the surface instead of milling about
   # at the bottom of a ravine where nobody can reach it.
   sunken-depth: 6
+  # A lunge needs a navigation reason, not just a timer. Beyond this horizontal distance a boss is allowed
+  # to treat closing as a traversal problem and leap; inside it, it walks and swings like anything else.
+  catchup-distance: 18
   climb-out-seconds: 2.0
   climb-out-max-lift: 1.35
   # The disc of blocks removed from under a high camper each pulse (radius 2 = 5x5), and how deep.
