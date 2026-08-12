@@ -106,7 +106,7 @@ boss-participation:
 world-boss:
   name: The Ashen Knight
   health: 2000.0
-  damage: 38.2
+  damage: 17
   scale: 1.35
   # Still the most movable of the three, so knockback remains a real tool against something -- but it now
   # absorbs 25% more of what it used to take. Resistance is the fraction of incoming knockback ignored, so
@@ -132,7 +132,7 @@ world-boss:
 iron-golem-boss:
   name: The Warded Colossus
   health: 6300.0
-  damage: 41.6
+  damage: 18.5
   scale: 1.5
   # A siege engine should not be shoved around.
   knockback-resistance: 0.8
@@ -156,7 +156,7 @@ iron-golem-boss:
 piglin-brute-boss:
   name: The Cinder Warlord
   health: 3100.0
-  damage: 41.2
+  damage: 18
   scale: 1.8
   # Was punt-able enough that keeping it permanently airborne was itself a soft cheese; now takes a further
   # 25% less shove on top of that.
