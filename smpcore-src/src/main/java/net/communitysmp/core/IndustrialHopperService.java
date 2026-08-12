@@ -264,12 +264,22 @@ final class IndustrialHopperService implements Listener {
         if (!(block.getState(false) instanceof TileState tile)) return;
         /** A leftover Bay here would mean a previous hopper at this exact spot vanished without an event.
          *  Return its contents rather than letting a new hopper silently inherit them. */
+        if (!install(block)) return;
+        CoreUtil.msg(event.getPlayer(), "Industrial Hopper placed: 27 slots, 9 items per tick.");
+    }
+
+    /** Turns a hopper block into an industrial one and gives it its inventory. Shared by placement and by
+     *  the admin command, so both produce byte-identical state -- there is no second way to create one. */
+    boolean install(Block block) {
+        if (block == null || block.getType() != Material.HOPPER) return false;
+        if (!(block.getState(false) instanceof TileState tile)) return false;
+        /** A leftover Bay here would mean a previous hopper at this exact spot vanished without an event.
+         *  Return its contents rather than letting a new hopper silently inherit them. */
         Bay stale = bays.get(key(block.getLocation()));
         if (stale != null) { spill(stale); forget(stale); }
         tile.getPersistentDataContainer().set(blockKey, PersistentDataType.BYTE, (byte) 1);
         tile.update(true, false);
-        bay(block);
-        CoreUtil.msg(event.getPlayer(), "Industrial Hopper placed: 27 slots, 9 items per tick.");
+        return bay(block) != null;
     }
 
     /** MONITOR, so a protection plugin that cancels the break at HIGHEST has already had its say. Returning
@@ -331,13 +341,30 @@ final class IndustrialHopperService implements Listener {
         bays.remove(key(bay.at));
     }
 
+    /** Returns the contents to the world when the block went away without an event we could see. Logged,
+     *  because it means something outside this plugin removed a populated hopper and an admin should be
+     *  able to see how much came back and where. */
     private void spill(Bay bay) {
         World world = bay.at.getWorld();
-        if (world == null) return;
+        if (world == null) {
+            plugin.getLogger().warning("[IndustrialHopper] " + key(bay.at)
+                    + " lost its world reference; contents could not be returned.");
+            return;
+        }
         Location at = bay.at.clone().add(.5, .5, .5);
-        for (ItemStack item : bay.inv.getContents())
-            if (item != null && !item.getType().isAir()) world.dropItemNaturally(at, item);
+        int returned = 0, stacks = 0;
+        for (ItemStack item : bay.inv.getContents()) {
+            if (item == null || item.getType().isAir()) continue;
+            ItemStack copy = item.clone();
+            world.dropItemNaturally(at, copy);
+            returned += copy.getAmount();
+            stacks++;
+        }
         bay.inv.clear();
+        if (returned > 0)
+            plugin.getLogger().warning("[IndustrialHopper] " + key(bay.at)
+                    + " disappeared without a break event; returned " + returned + " item(s) in "
+                    + stacks + " stack(s) to the world.");
     }
 
     // ------------------------------------------------------------------ the screen
@@ -426,7 +453,7 @@ final class IndustrialHopperService implements Listener {
         for (Iterator<Bay> it = bays.values().iterator(); it.hasNext(); ) {
             Bay bay = it.next();
             World world = bay.at.getWorld();
-            if (world == null) { it.remove(); continue; }
+            if (world == null) { spill(bay); it.remove(); continue; }
             if (!world.isChunkLoaded(bay.at.getBlockX() >> 4, bay.at.getBlockZ() >> 4)) continue;
             Block block = bay.at.getBlock();
             if (block.getType() != Material.HOPPER || !(block.getState(false) instanceof TileState tile)
@@ -455,8 +482,10 @@ final class IndustrialHopperService implements Listener {
         if (!(block.getState(false) instanceof Container container)) return;
         Inventory own = container.getInventory();
         for (int slot = 0; slot < own.getSize(); slot++) {
-            ItemStack item = own.getItem(slot);
-            if (item == null || item.getType().isAir()) continue;
+            ItemStack live = own.getItem(slot);
+            if (live == null || live.getType().isAir()) continue;
+            /** Detached before the slot is cleared, for the same reason as in move(). */
+            ItemStack item = live.clone();
             own.setItem(slot, null);
             for (ItemStack rejected : bay.inv.addItem(item).values())
                 for (ItemStack lost : own.addItem(rejected).values()) dropAt(bay.at, lost);
@@ -505,9 +534,11 @@ final class IndustrialHopperService implements Listener {
     private int moveIntoSlot(Inventory from, Inventory to, int index, int budget) {
         int moved = 0;
         for (int slot = 0; slot < from.getSize() && moved < budget; slot++) {
-            ItemStack item = from.getItem(slot);
-            if (item == null || item.getType().isAir()) continue;
-            ItemStack current = to.getItem(index);
+            ItemStack live = from.getItem(slot);
+            if (live == null || live.getType().isAir()) continue;
+            ItemStack item = live.clone();
+            ItemStack existing = to.getItem(index);
+            ItemStack current = existing == null ? null : existing.clone();
             boolean empty = current == null || current.getType().isAir();
             if (!empty && !current.isSimilar(item)) continue;
             int room = empty ? item.getMaxStackSize() : Math.max(0, current.getMaxStackSize() - current.getAmount());
@@ -533,8 +564,12 @@ final class IndustrialHopperService implements Listener {
     private int move(Inventory from, Inventory to, int budget, Location spillAt) {
         int moved = 0, rejections = 0;
         for (int slot = 0; slot < from.getSize() && moved < budget; slot++) {
-            ItemStack item = from.getItem(slot);
-            if (item == null || item.getType().isAir()) continue;
+            ItemStack live = from.getItem(slot);
+            if (live == null || live.getType().isAir()) continue;
+            /** getItem hands back a LIVE MIRROR of the slot, not a copy: the moment the slot is overwritten
+             *  that reference changes underneath us, and reading it afterwards to build a refund would
+             *  produce air. Detach from the slot before touching it. */
+            ItemStack item = live.clone();
             int take = Math.min(item.getAmount(), budget - moved);
             ItemStack piece = item.clone();
             piece.setAmount(take);
@@ -575,6 +610,94 @@ final class IndustrialHopperService implements Listener {
     private static void dropAt(Location at, ItemStack item) {
         if (at == null || at.getWorld() == null || item == null || item.getType().isAir()) return;
         at.getWorld().dropItemNaturally(at.clone().add(.5, .5, .5), item);
+    }
+
+    // ------------------------------------------------------------------ diagnostics
+    /** Reports the authoritative state of one hopper. This is the measurement instrument for conservation
+     *  testing as much as a support tool: the contents live in a live inventory and in serialised block
+     *  data, neither of which can be read with /data get, so without this there is no way to state what a
+     *  hopper is actually holding at a given moment. */
+    String describe(World world, int x, int y, int z) {
+        Block block = world.getBlockAt(x, y, z);
+        Bay bay = bay(block);
+        if (bay == null) return "No Industrial Hopper at " + world.getName() + " " + x + " " + y + " " + z
+                + " (block is " + block.getType() + ").";
+        Map<Material, Integer> tally = new java.util.LinkedHashMap<>();
+        int stored = 0;
+        for (ItemStack item : bay.inv.getContents())
+            if (item != null && !item.getType().isAir()) {
+                stored += item.getAmount();
+                tally.merge(item.getType(), item.getAmount(), Integer::sum);
+            }
+        int nativeHeld = 0;
+        if (block.getState(false) instanceof Container container)
+            for (ItemStack item : container.getInventory().getContents())
+                if (item != null && !item.getType().isAir()) nativeHeld += item.getAmount();
+        boolean enabled = !(block.getBlockData() instanceof org.bukkit.block.data.type.Hopper data) || data.isEnabled();
+        return "Industrial Hopper " + world.getName() + " " + x + " " + y + " " + z
+                + " | facing=" + (block.getBlockData() instanceof Directional d ? d.getFacing() : "?")
+                + " enabled=" + enabled + " dirty=" + bay.dirty + " viewers=" + bay.inv.getViewers().size()
+                + " STORED=" + stored + " native=" + nativeHeld + " " + tally;
+    }
+
+    /** Exact item count at a position, computed server-side. Console tooling cannot count a container
+     *  reliably from /data get -- long NBT is truncated in the reply -- and it cannot see an industrial
+     *  hopper's contents at all, so measurement has to happen here. */
+    String count(World world, int x, int y, int z) {
+        Block block = world.getBlockAt(x, y, z);
+        Bay bay = bays.get(key(block.getLocation()));
+        int stored = 0;
+        if (bay != null)
+            for (ItemStack item : bay.inv.getContents())
+                if (item != null && !item.getType().isAir()) stored += item.getAmount();
+        int held = 0;
+        if (block.getState(false) instanceof Container container)
+            for (ItemStack item : container.getInventory().getContents())
+                if (item != null && !item.getType().isAir()) held += item.getAmount();
+        return "COUNT " + x + " " + y + " " + z + " type=" + block.getType() + " container=" + held
+                + " industrial=" + (bay == null ? -1 : stored) + " TOTAL=" + (held + stored);
+    }
+
+    /** All three positions of a source-above / hopper / destination-below column, counted in ONE tick.
+     *
+     *  Counting them with three separate commands is not a measurement of conservation: at nine items a
+     *  tick the contents move between the reads, and the same items get counted twice or not at all. This
+     *  exists so the invariant can be checked against a state that actually existed at one instant. */
+    String rig(World world, int x, int y, int z) {
+        int above = totalAt(world, x, y + 1, z), self = totalAt(world, x, y, z), below = totalAt(world, x, y - 1, z);
+        /** Items lying on the floor count too. A hopper whose block is removed returns its contents to the
+         *  world rather than deleting them, and a conservation check that ignored the ground would score
+         *  that as a loss. */
+        int ground = 0;
+        for (org.bukkit.entity.Entity entity : world.getNearbyEntities(new Location(world, x + .5, y + .5, z + .5), 8, 8, 8))
+            if (entity instanceof Item dropped) ground += dropped.getItemStack().getAmount();
+        return "RIG source=" + above + " hopper=" + self + " dest=" + below + " ground=" + ground
+                + " TOTAL=" + (above + self + below + ground);
+    }
+
+    private int totalAt(World world, int x, int y, int z) {
+        Block block = world.getBlockAt(x, y, z);
+        int sum = 0;
+        Bay bay = bays.get(key(block.getLocation()));
+        if (bay != null)
+            for (ItemStack item : bay.inv.getContents())
+                if (item != null && !item.getType().isAir()) sum += item.getAmount();
+        if (block.getState(false) instanceof Container container)
+            for (ItemStack item : container.getInventory().getContents())
+                if (item != null && !item.getType().isAir()) sum += item.getAmount();
+        return sum;
+    }
+
+    /** Every hopper currently in memory, with what it holds. */
+    List<String> describeAll() {
+        List<String> out = new ArrayList<>();
+        for (Bay bay : bays.values()) {
+            int stored = 0;
+            for (ItemStack item : bay.inv.getContents())
+                if (item != null && !item.getType().isAir()) stored += item.getAmount();
+            out.add(key(bay.at) + " stored=" + stored + " dirty=" + bay.dirty);
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ self test

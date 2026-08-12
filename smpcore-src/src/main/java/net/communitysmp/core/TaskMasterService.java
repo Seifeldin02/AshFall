@@ -125,10 +125,20 @@ final class TaskMasterService implements Listener {
                 world.getHighestBlockYAt(center.getBlockX(), center.getBlockZ()) + 1, center.getBlockZ() + .5);
     }
 
-    /** The courier is deliberately conspicuous. He was previously invisible with his name hidden, which is
-     *  why nobody could find him even standing on the announced coordinates. He is now visible, named,
-     *  outlined, and has no AI -- so he stays exactly where the announcement says he is instead of
-     *  wandering off the moment somebody sets out to find him. */
+    /** Invisible, and reading like a wandering trader who has drunk an invisibility potion: the swirl of
+     *  effect particles is emitted directly rather than left to a potion effect.
+     *
+     *  addPotionEffect was tried first and does not stick on this entity -- active_effects came back empty
+     *  in staging both from inside the spawn consumer and immediately after the spawn, while /effect give
+     *  on the same trader populated it fine. Rather than ship something depending on a call that is being
+     *  dropped somewhere below the API, the invisibility flag is set directly and the swirl is drawn by us.
+     *  Same look, and nothing between us and the result.
+     *
+     *  The swirl matters: it is the only thing marking him. An invisible courier with a hidden name and no
+     *  particles is nothing at all to find, which is exactly what went wrong before.
+     *
+     *  He keeps his AI and wanders normally; tick() tethers him to LEASH blocks of where he was placed so
+     *  he stays findable in the announced area instead of walking off across the world. */
     private void spawnCourier() {
         if (home == null || home.getWorld() == null) return;
         WanderingTrader trader = home.getWorld().spawn(home, WanderingTrader.class,
@@ -138,15 +148,43 @@ final class TaskMasterService implements Listener {
             t.setPersistent(true);
             t.setRemoveWhenFarAway(false);
             t.setDespawnDelay(Integer.MAX_VALUE);
-            t.setAI(false);
-            t.setCollidable(false);
-            t.setGlowing(true);
             t.customName(Component.text("The Task Master", NamedTextColor.LIGHT_PURPLE));
-            t.setCustomNameVisible(true);
+            t.setCustomNameVisible(false);
+            t.setInvisible(true);
             t.getPersistentDataContainer().set(markerKey(), PersistentDataType.BYTE, (byte) 1);
         });
         traderId = trader.getUniqueId();
+        startSwirl();
+        plugin.getLogger().info("[TaskMaster] courier placed at " + home.getWorld().getName() + " "
+                + home.getBlockX() + " " + home.getBlockY() + " " + home.getBlockZ()
+                + " (surface " + home.getWorld().getHighestBlockYAt(home.getBlockX(), home.getBlockZ()) + ")");
     }
+
+    /** How far the courier may wander from where he was placed. */
+    private static final double LEASH = 50;
+    /** The colour a vanilla invisibility potion tints its particles. */
+    private static final org.bukkit.Color SWIRL = org.bukkit.Color.fromRGB(0x7F, 0x83, 0x92);
+    private org.bukkit.scheduler.BukkitTask swirl;
+
+    /** Draws the effect swirl around the courier twice a second while he exists. Costs nothing while his
+     *  chunk is unloaded, and stops the moment the event ends. */
+    private void startSwirl() {
+        stopSwirl();
+        swirl = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
+            if (traderId == null || home == null || home.getWorld() == null) return;
+            if (!home.getWorld().isChunkLoaded(home.getBlockX() >> 4, home.getBlockZ() >> 4)) return;
+            Entity courier = plugin.getServer().getEntity(traderId);
+            if (courier == null || !courier.isValid()) return;
+            /** The invisibility flag is synced entity state, NOT saved NBT -- verified in staging, where a
+             *  reloaded courier came back visible. Re-asserting it here is what makes it survive a chunk
+             *  unload, a reload, and a restart. */
+            if (!courier.isInvisible()) courier.setInvisible(true);
+            courier.getWorld().spawnParticle(org.bukkit.Particle.ENTITY_EFFECT,
+                    courier.getLocation().add(0, 1.1, 0), 6, .28, .55, .28, 1, SWIRL);
+        }, 10L, 10L);
+    }
+
+    private void stopSwirl() { if (swirl != null) { swirl.cancel(); swirl = null; } }
 
     /** Called on the event tick. Keeps the courier present without any scanning: it only ever looks up the
      *  one entity it spawned, by id. */
@@ -159,7 +197,21 @@ final class TaskMasterService implements Listener {
         Entity trader = plugin.getServer().getEntity(traderId);
         /** Loaded chunk and no courier means something removed him. Put him back rather than leaving the
          *  event running with nothing to walk up to. */
-        if (trader == null || !trader.isValid()) spawnCourier();
+        if (trader == null || !trader.isValid()) { spawnCourier(); return; }
+        tether(trader);
+    }
+
+    /** Keeps the courier inside his announced area without taking his AI away.
+     *
+     *  Nudged home once he drifts past four fifths of the leash, and pulled back outright past the leash
+     *  itself. The event ticker runs every five seconds and a wandering trader covers only a couple of
+     *  blocks in that time, so he can never get meaningfully beyond 50 before being corrected. */
+    private void tether(Entity trader) {
+        if (!trader.getWorld().equals(home.getWorld())) { trader.teleport(home); return; }
+        double away = trader.getLocation().distanceSquared(home);
+        if (away > LEASH * LEASH) { trader.teleport(surface(home)); return; }
+        if (away > (LEASH * .8) * (LEASH * .8) && trader instanceof org.bukkit.entity.Mob mob)
+            mob.getPathfinder().moveTo(home, 1.0);
     }
 
     /** Where the courier is standing, for the event's own status lines. */
@@ -175,6 +227,7 @@ final class TaskMasterService implements Listener {
                 for (Entity entity : world.getEntitiesByClass(WanderingTrader.class))
                     if (isTaskMaster(entity)) entity.remove();
         }
+        stopSwirl();
         traderId = null;
         home = null;
         assigned.clear();

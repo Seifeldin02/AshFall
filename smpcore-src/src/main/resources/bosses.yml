@@ -106,7 +106,7 @@ boss-participation:
 world-boss:
   name: The Ashen Knight
   health: 2000.0
-  damage: 17
+  damage: 18.7
   scale: 1.35
   # Still the most movable of the three, so knockback remains a real tool against something -- but it now
   # absorbs 25% more of what it used to take. Resistance is the fraction of incoming knockback ignored, so
@@ -132,7 +132,7 @@ world-boss:
 iron-golem-boss:
   name: The Warded Colossus
   health: 6300.0
-  damage: 18.5
+  damage: 20.35
   scale: 1.5
   # A siege engine should not be shoved around.
   knockback-resistance: 0.8
