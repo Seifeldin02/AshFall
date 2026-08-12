@@ -387,6 +387,29 @@ final class RelicService implements Listener {
         if(hours>0)return hours+"h";
         return "under an hour";
     }
+    /** A relic is identified ONLY by its persistent key, never by material or enchantments.
+     *
+     *  That is deliberate: these are one-of-one artifacts players are meant to keep and improve. Upgrading
+     *  the Oathblade from diamond to netherite, adding Knockback or Looting, renaming it, or repairing it
+     *  all preserve the item's custom data, so the relic keeps working. This test pins that contract --
+     *  it rebuilds a relic on a DIFFERENT material with extra enchantments and asserts the key still
+     *  resolves, so any future change that starts matching on material or enchantments fails here rather
+     *  than silently disabling somebody's upgraded artifact. */
+    boolean upgradeSelfTest(){
+        ItemStack original=create("oathblade");
+        if(!"oathblade".equals(keyOf(original)))return false;
+        ItemStack upgraded=new ItemStack(Material.NETHERITE_SWORD);
+        ItemMeta from=original.getItemMeta(),to=upgraded.getItemMeta();
+        to.getPersistentDataContainer().set(key,PersistentDataType.STRING,
+                from.getPersistentDataContainer().get(key,PersistentDataType.STRING));
+        to.displayName(from.displayName());
+        upgraded.setItemMeta(to);
+        upgraded.addUnsafeEnchantment(Enchantment.KNOCKBACK,2);
+        upgraded.addUnsafeEnchantment(Enchantment.LOOTING,3);
+        upgraded.addUnsafeEnchantment(Enchantment.SHARPNESS,5);
+        /** Different material, three extra enchantments, still the same relic. */
+        return "oathblade".equals(keyOf(upgraded));
+    }
     boolean activeItem(ItemStack item,String relicKey){return relicKey.equals(keyOf(item))&&isActive(relicKey);}
 
     /** Self-service trace for a relic's CURRENT recorded owner: checks their own inventory/Ender Storage,
