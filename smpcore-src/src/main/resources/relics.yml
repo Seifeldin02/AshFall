@@ -90,6 +90,15 @@ buffs:
     cooldown-seconds: 10
 
   warlords-ember:
+    # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its
+    # momentum so the wielder can swap weapons mid-flight and land a heavy follow-up while the target is
+    # still burning and staggered. Shortest cooldown of the set, because committing forward is the risk.
     cooldown-seconds: 20
-    power: 2.1
-    radius: 2.2
+    power: 2.6
+    radius: 4.5
+    # Impact damage on everything caught by the charge; bosses take the same hit but are thrown less far.
+    impact-damage: 24.0
+    knockback: 1.6
+    boss-knockback: 1.1
+    # Burn long enough to still be ticking when the follow-up weapon hit lands.
+    burn-seconds: 6.0

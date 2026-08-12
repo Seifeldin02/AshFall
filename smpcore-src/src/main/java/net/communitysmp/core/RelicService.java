@@ -571,13 +571,31 @@ final class RelicService implements Listener {
         Vector direction=player.getLocation().getDirection().normalize();double power=config.getDouble("buffs.warlords-ember.power",2.1);
         Location destination=player.getLocation().add(direction.clone().multiply(power*2));
         if(plugin.spawnClaims().contains(destination)&&!plugin.isAdmin(player)){CoreUtil.error(player,"You cannot dash into protected spawn territory.");return;}
+        /** The launch is the combo opener: velocity is SET, never re-zeroed afterwards, so the wielder keeps
+         *  the momentum and can swap to a heavier weapon mid-flight and land the follow-up while the target
+         *  is still burning from the charge. */
         player.setVelocity(direction.clone().multiply(power).setY(Math.max(0.28,direction.getY()*.5+0.28)));
-        player.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE,60,0,false,true,true));
-        double radius=config.getDouble("buffs.warlords-ember.radius",2.2);
+        player.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE,140,0,false,true,true));
+        double radius=config.getDouble("buffs.warlords-ember.radius",4.5);
+        double impact=config.getDouble("buffs.warlords-ember.impact-damage",24);
+        double push=config.getDouble("buffs.warlords-ember.knockback",1.6);
+        double bossPush=config.getDouble("buffs.warlords-ember.boss-knockback",1.1);
+        int burn=(int)Math.round(config.getDouble("buffs.warlords-ember.burn-seconds",6)*20);
         Location center=player.getLocation().add(direction.clone().multiply(2));
         for(Entity entity:player.getWorld().getNearbyEntities(center,radius,radius,radius)){
+            /** relicEffectTarget keeps friendly faction members, NPCs, tamed pets and protected entities
+             *  out; the spawn check above already refused the dash itself inside protected territory. */
             if(!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
-            target.setFireTicks(Math.max(target.getFireTicks(),40));target.setVelocity(target.getVelocity().add(direction.clone().multiply(.6).setY(.25)));
+            boolean boss=plugin.bosses().isWorldBoss(target);
+            /** Real damage, credited to the wielder so it counts as their contribution on a boss. */
+            target.damage(impact,player);
+            target.setFireTicks(Math.max(target.getFireTicks(),burn));
+            double force=boss?bossPush:push;
+            if(boss){
+                var resist=target.getAttribute(org.bukkit.attribute.Attribute.KNOCKBACK_RESISTANCE);
+                if(resist!=null&&resist.getValue()<1)force/=Math.max(0.15,1-resist.getValue());
+                target.setVelocity(direction.clone().multiply(force).setY(.35));
+            }else target.setVelocity(target.getVelocity().add(direction.clone().multiply(force).setY(.35)));
         }
         player.getWorld().playSound(player.getLocation(),Sound.ITEM_FIRECHARGE_USE,1.2f,1.1f);
         player.getWorld().playSound(player.getLocation(),Sound.ENTITY_PIGLIN_BRUTE_ANGRY,.8f,1.3f);

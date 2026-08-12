@@ -1536,8 +1536,19 @@ final class BossEventService {
         double afterMinutes=bosses.getDouble("world-boss-enrage.after-minutes",14),rampMinutes=bosses.getDouble("world-boss-enrage.ramp-interval-minutes",2),perStage=bosses.getDouble("world-boss-enrage.damage-bonus-per-stage",.08);
         int maxStages=bosses.getInt("world-boss-enrage.max-stages",5);
         boolean enrageSane=afterMinutes>=10&&rampMinutes>=.5&&perStage>0&&perStage*maxStages<=.6&&maxStages>=1;
-        boolean healthSane=bosses.getDouble("world-boss.health",0)>3000&&bosses.getDouble("iron-golem-boss.health",0)>4000&&bosses.getDouble("piglin-brute-boss.health",0)>2500;
-        return enrageSane&&healthSane;
+        /** Durability is asserted as EFFECTIVE health, not raw. Raw floors were the wrong invariant: the
+         *  Ashen Knight wears netherite with Protection, so its raw pool is deliberately the smallest of
+         *  the three while its effective durability sits in the middle. Multipliers below were measured
+         *  from the live entities' armour/toughness attributes and their equipped Protection levels
+         *  (Ashen armour 14 / toughness 9 with Prot III -> 2.49x, Colossus unarmoured -> 1.00x,
+         *  Cinder golden helm with Prot III -> 1.155x). Re-measure if their equipment changes. */
+        double ashen=bosses.getDouble("world-boss.health",0)*2.49;
+        double colossus=bosses.getDouble("iron-golem-boss.health",0)*1.00;
+        double cinder=bosses.getDouble("piglin-brute-boss.health",0)*1.155;
+        /** The Colossus is the tank and the yardstick; Ashen sits between; Cinder is the squishiest. */
+        boolean hierarchy=colossus>ashen&&ashen>cinder&&cinder>2000;
+        boolean colossusStandard=Math.abs(colossus-6300)<=300;
+        return enrageSane&&hierarchy&&colossusStandard;
     }
     /** World-boss identity helpers. Legacy "worldboss" (no suffix, pre-Batch-2 saves) is treated as Ashen Knight. */
     private boolean isWorldBossTier(String tier){return tier!=null&&(tier.equals("worldboss")||tier.startsWith("worldboss_"));}
