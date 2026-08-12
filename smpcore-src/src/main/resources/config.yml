@@ -107,8 +107,10 @@ spawners:
   max-stack: 10
   # Placed spawners only -- natural world spawners keep vanilla behaviour entirely.
   # 5-10 second cycle (100-200 ticks).
-  min-delay-ticks: 100
-  max-delay-ticks: 200
+  # 8-12 seconds. Was 5-10s (100-200); this is roughly a 25% throughput cut, which reduces drops, XP and
+  # money together rather than nerfing any one of them separately.
+  min-delay-ticks: 160
+  max-delay-ticks: 240
   # Vanilla suppresses a spawner once a few mobs are nearby, which throttles any real farm. Lifted here.
   max-nearby-entities: 2048
   required-player-range: 32
@@ -148,7 +150,7 @@ random-spawn:
 
 teleport:
   warmup-seconds: 3
-  pvp-lock-seconds: 60
+  pvp-lock-seconds: 30
   cooldown-seconds: 10
   move-tolerance: 0.35
   request-seconds: 60

@@ -513,7 +513,8 @@ final class BossEventService {
             loc=CoreUtil.findSafeAny(player.getWorld(),player.getLocation().getBlockX(),player.getLocation().getBlockZ());
             if(loc==null||protectedEventLocation(loc)){CoreUtil.error(player,"The seal needs wilderness at least "+eventProtectionRadius()+" blocks from protected land.");return false;}
         }
-        if(worldBoss()!=null||eventType!=null){CoreUtil.error(player,"A major encounter is already active.");return false;}
+        /** Only another WORLD BOSS blocks a summon; an ordinary event running alongside is fine. */
+        if(worldBoss()!=null||eventType==EventType.WORLD_BOSS){CoreUtil.error(player,"A world boss is already active.");return false;}
         if(!startEvent(EventType.WORLD_BOSS,defaultTier(EventType.WORLD_BOSS),loc,Origin.PLAYER_SUMMONED,resolved)){CoreUtil.error(player,"The omen resists this location.");return false;}
         return true;
     }
@@ -736,11 +737,17 @@ final class BossEventService {
     private boolean majorRewardAvailable(String player,EntityType type){String path="major-rewards."+type.name(),key="major:"+player+":"+type.name();long last=parseLong(db.state(key),0),cooldown=bosses.getLong(path+".cooldown-hours",type==EntityType.WITHER?24:168)*3600000L;if(System.currentTimeMillis()-last<cooldown)return false;db.state(key,Long.toString(System.currentTimeMillis()));return true;}
     private double participantRewardMultiplier(int count){return 1+bosses.getDouble("boss-participation.reward-extra-player-factor",.25)*Math.sqrt(Math.max(0,count-1));}
     private Map<String,Double> meaningfulParticipants(LivingEntity boss,Map<String,Double> raw,Map<String,Long> hits){
-        if(raw==null||raw.isEmpty())return Map.of();long now=System.currentTimeMillis(),window=bosses.getLong("boss-participation.active-seconds",120)*1000L;double radiusSq=Math.pow(bosses.getDouble("boss-participation.reward-radius",100),2),total=raw.values().stream().mapToDouble(Double::doubleValue).sum(),minimum=bosses.getDouble("reward-splitting.minimum-damage-percent",.02);Map<String,Double> eligible=new LinkedHashMap<>();
+        /** Damage contribution lives for the whole encounter.
+         *
+         *  Recency and proximity were both really asking "are you still here at the end", but the damage was
+         *  already legitimately dealt -- dying to the boss, respawning, or standing across the arena when it
+         *  finally drops should not delete it. The minimum damage SHARE still stops a single token hit from
+         *  earning a payout, and reward multipliers are unchanged. */
+        if(raw==null||raw.isEmpty())return Map.of();long now=System.currentTimeMillis(),window=Long.MAX_VALUE/4;double radiusSq=Math.pow(bosses.getDouble("boss-participation.reward-radius",100),2),total=raw.values().stream().mapToDouble(Double::doubleValue).sum(),minimum=bosses.getDouble("reward-splitting.minimum-damage-percent",.02);Map<String,Double> eligible=new LinkedHashMap<>();
         for(var entry:raw.entrySet()){
             Player player=find(entry.getKey());long last=hits==null?now:hits.getOrDefault(entry.getKey(),0L);
             if(player==null||now-last>window||entry.getValue()/Math.max(1,total)<minimum)continue;
-            boolean nearby=player.getWorld().equals(boss.getWorld())&&player.getLocation().distanceSquared(boss.getLocation())<=radiusSq;
+            boolean nearby=true;
             /** A substantial contributor who dies near the end (e.g. caught by the boss's final burst)
              *  shouldn't lose their reward just because dying moved/respawned them out of range — the
              *  proximity gate is meant to exclude players who wandered off and stopped participating, not
@@ -881,7 +888,10 @@ final class BossEventService {
          *  bosses at once remain impossible via the check above. */
         boolean standaloneBoss=false;
         if(eventType!=null){
-            if(type==EventType.WORLD_BOSS&&origin!=Origin.NATURAL&&eventType!=EventType.WORLD_BOSS)standaloneBoss=true;
+            /** Origin no longer matters. A NATURAL world boss was still postponed whenever any event was
+             *  running, which is the regression: the rule is one world boss at a time, not one major thing
+             *  at a time. Two world bosses stay impossible via the worldBoss() check above. */
+            if(type==EventType.WORLD_BOSS&&eventType!=EventType.WORLD_BOSS)standaloneBoss=true;
             else{if(type==EventType.WORLD_BOSS&&origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"a "+eventType+" event is still running");return false;}
         } World world = type==EventType.WORLD_BOSS?worldFor(kind):overworld(); if (world == null) return false;Location selected=location!=null?location:type==EventType.WORLD_BOSS?randomSafeBossSpawn(world,bosses.getInt(configPrefix(kind)+".spawn-radius-min",1200),bosses.getInt(configPrefix(kind)+".spawn-radius-max",4000)):selectedTier==EventTier.MICRO?randomSafe(world,200,650):randomSafe(world,type==EventType.KOTH?500:800,type==EventType.KOTH?2000:3500);
         if(selected==null&&type==EventType.WORLD_BOSS){if(origin==Origin.NATURAL)postponeNaturalWorldBoss(selectedTier,"no open terrain far enough from protected land");return false;}if(selected==null||!world.equals(selected.getWorld())||protectedEventLocation(selected))return false; if(standaloneBoss){
@@ -893,7 +903,10 @@ final class BossEventService {
             return true;
         }
         eventType = type;eventTier=selectedTier;eventOrigin=origin;long fallback=selectedTier==EventTier.MICRO?30:selectedTier==EventTier.MAJOR?45:120;long duration=type==EventType.WORLD_BOSS?bosses.getLong(configPrefix(kind)+".event-duration-minutes",120):events.getLong("tiers."+selectedTier.name().toLowerCase(Locale.ROOT)+".duration-minutes",fallback);long fullInterval=origin==Origin.NATURAL?randomRemaining(selectedTier):0;activeTierNextDelay=origin==Origin.NATURAL?Math.max(300000L,fullInterval-duration*60000L):0;eventEnds = System.currentTimeMillis() + duration * 60000L; eventScores.clear(); scoreNames.clear(); eventParticipants.clear(); eventEarnings.clear(); eventCenter = selected;
-        switch (type) { case WORLD_BOSS -> { LivingEntity boss = spawnWorldBoss(eventCenter,origin,kind); if (boss == null){clearFailedEvent();return false;}eventCenter = boss.getLocation(); } case ELITE_HUNT -> { String eliteTier=selectedTier==EventTier.MICRO?"rare":selectedTier==EventTier.MAJOR?"miniboss":"legendary";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere."); case KOTH -> broadcastWorldEvent("♜ WORLD EVENT • KING OF THE HILL", "Hold the center for your faction until time expires.", locationLine() + " • claims remain protected"); case TREASURE -> { placeTreasure(); broadcastWorldEvent("✦ WORLD EVENT • TREASURE DROP", "Follow the tracker and open the hidden cache.", "Biome: " + CoreUtil.pretty(eventCenter.getBlock().getBiome().getKey().getKey()) + " • rough X " + rough(eventCenter.getBlockX(), 250) + ", Z " + rough(eventCenter.getBlockZ(), 250)); } default -> { } }
+        switch (type) { case WORLD_BOSS -> { LivingEntity boss = spawnWorldBoss(eventCenter,origin,kind); if (boss == null){clearFailedEvent();return false;}eventCenter = boss.getLocation(); } case ELITE_HUNT -> { /** Elite Hunt is now a straight 90/10 epic-to-legendary roll regardless of event tier: the tiered
+                  *  ladder meant most hunts produced a merely "rare" mob, which is not worth tracking across
+                  *  the map. Both tiers spawn in the overworld, which is where the hunt marker sends people. */
+                 String eliteTier=ThreadLocalRandom.current().nextDouble()<bosses.getDouble("elite-hunt.legendary-chance",0.10)?"legendary":"epic";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere."); case KOTH -> broadcastWorldEvent("♜ WORLD EVENT • KING OF THE HILL", "Hold the center for your faction until time expires.", locationLine() + " • claims remain protected"); case TREASURE -> { placeTreasure(); broadcastWorldEvent("✦ WORLD EVENT • TREASURE DROP", "Follow the tracker and open the hidden cache.", "Biome: " + CoreUtil.pretty(eventCenter.getBlock().getBiome().getKey().getKey()) + " • rough X " + rough(eventCenter.getBlockX(), 250) + ", Z " + rough(eventCenter.getBlockZ(), 250)); } default -> { } }
         if(origin==Origin.NATURAL){rememberNatural(type);scheduledEvents.put(selectedTier,chooseNatural(selectedTier));}
         for (Player p : plugin.getServer().getOnlinePlayers()) if(plugin.settings().bossNotifications(p))CoreUtil.msg(p, "Use /events for instructions or /events track off to disable navigation."); persistEvent();persistEventTimers(); return true;
     }

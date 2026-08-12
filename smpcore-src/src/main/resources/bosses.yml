@@ -453,3 +453,8 @@ dimension-mob-rewards:
     ENDERMAN: [14.0, 20.0]
     ENDERMITE: [8.0, 12.0]
     SHULKER: [22.0, 35.0]
+
+elite-hunt:
+  # Elite Hunt rolls a single mob: epic by default, legendary on this chance. Replaces the old per-event-tier
+  # ladder, which mostly produced "rare" mobs that were not worth crossing the map for.
+  legendary-chance: 0.10

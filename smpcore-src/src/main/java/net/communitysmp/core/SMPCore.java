@@ -327,7 +327,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         int i=from+1;for(Database.StatsRow row:rows){String value=switch(column){case"balance"->CoreUtil.money(row.balance());case"play_seconds"->row.playSeconds()/3600+"h "+row.playSeconds()%3600/60+"m";case"player_kills"->row.playerKills()+" kills";case"deaths"->row.deaths()+" deaths";case"mob_kills"->row.mobKills()+" mobs";case"boss_kills"->row.bossKills()+" bosses";default->row.eventWins()+" wins";};CoreUtil.msg(p,(i++)+". "+nicknames.displayName(row.name())+" — "+value);}
     }
 
-    void giveGuide(Player p){guides.givePreferred(p);}
+    void giveGuide(Player p){guides.giveBoth(p);}
     private void playerHelp(Player p){p.sendMessage("§6§lASHFALL");p.sendMessage("§eFactions: §f/f create, /f claim, /f relations, /f expand, /f <player>");p.sendMessage("§eEconomy: §f/balance, /pay, /bounty, /bounties");p.sendMessage("§eMarketplace: §f/shop, /ah, /luxuryshop, /shardshop, /orders, /myorders");p.sendMessage("§eTravel: §f/home, /tpa, /spawn, /rtp, /rtp queue");p.sendMessage("§eSocial: §f/msg, /r, /trade, /feedback");p.sendMessage("§eMore: §f/settings, /events, /progress, /stats, /graves, /enderchest, /guide, /afk");}
 
     private boolean admin(CommandSender sender,String[] args){

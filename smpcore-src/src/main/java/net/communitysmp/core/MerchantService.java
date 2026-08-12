@@ -28,7 +28,11 @@ final class MerchantService {
         CoreUtil.error(admin,"Usage: /ashfall merchant <spawn|remove> ...");return true;
     }
 
-    boolean interact(Player player,Entity entity){String type=entity.getPersistentDataContainer().get(merchantTypeKey,PersistentDataType.STRING);if(type==null)return false;Type parsed=parse(type);if(parsed==null)return false;if(parsed==Type.SHOP)shop.openPremium(player);else if(parsed==Type.AUCTION)auctions.openFromMerchant(player);else if(parsed==Type.BANKER)bank.open(player);else openOffers(player,parsed);return true;}
+    boolean interact(Player player,Entity entity){String type=entity.getPersistentDataContainer().get(merchantTypeKey,PersistentDataType.STRING);if(type==null)return false;Type parsed=parse(type);if(parsed==null)return false;/** The Event Keeper's stock was not worth the click, so it is closed rather than left as a trap.
+         *  Kept as an entity (not removed) so its placement, protection and spawn state stay intact and it
+         *  can simply be re-opened later. */
+        if(parsed==Type.EVENT){CoreUtil.msg(player,"The Event Keeper is under maintenance. Try again later.");plugin.settings().marketSound(player,"failed");return true;}
+        if(parsed==Type.SHOP)shop.openPremium(player);else if(parsed==Type.AUCTION)auctions.openFromMerchant(player);else if(parsed==Type.BANKER)bank.open(player);else openOffers(player,parsed);return true;}
     boolean isMerchant(Entity entity){return entity.getPersistentDataContainer().has(merchantIdKey);}
     void click(InventoryClickEvent event){bank.click(event);if(!(event.getInventory().getHolder(false) instanceof Holder holder))return;event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;String action=holder.actions.get(event.getRawSlot());if(action==null)return;if(!bank.allowNonessential(player,holder.type==Type.BOSS?"boss summons":"event purchases"))return;
         if(holder.type==Type.BOSS){

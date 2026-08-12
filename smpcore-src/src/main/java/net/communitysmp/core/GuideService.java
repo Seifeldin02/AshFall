@@ -94,6 +94,11 @@ final class GuideService implements Listener {
         player.openInventory(inventory);
     }
 
+    /** First spawn hands over BOTH language editions, because a brand-new player has never had the chance
+     *  to express a language preference and givePreferred() would silently default them to English. Only the
+     *  first-join path calls this, and that path is already gated by the players.guide flag, so a returning
+     *  player cannot accumulate duplicate books. /guide and the language picker still give one book. */
+    void giveBoth(Player player){give(player,"en");give(player,"ar");}
     void givePreferred(Player player){give(player,"ar".equals(db.preference(CoreUtil.id(player),"guide_language"))?"ar":"en");}
 
     @EventHandler public void click(InventoryClickEvent event){

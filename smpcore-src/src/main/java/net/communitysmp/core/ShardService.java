@@ -139,21 +139,24 @@ final class ShardService implements Listener {
         inv.setChestplate(enchanted(Material.NETHERITE_CHESTPLATE,Map.of(Enchantment.PROTECTION,4,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
         inv.setLeggings(enchanted(Material.NETHERITE_LEGGINGS,Map.of(Enchantment.PROTECTION,4,Enchantment.SWIFT_SNEAK,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
         inv.setBoots(enchanted(Material.NETHERITE_BOOTS,Map.of(Enchantment.PROTECTION,4,Enchantment.FEATHER_FALLING,4,Enchantment.DEPTH_STRIDER,3,Enchantment.SOUL_SPEED,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
-        inv.setItemInOffHand(enchanted(Material.SHIELD,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        /** Totem in the offhand -- the slot that actually matters when testing boss damage. The shield is
+         *  still in the kit, just moved into storage below. */
+        inv.setItemInOffHand(new ItemStack(Material.TOTEM_OF_UNDYING));
         /** Hotbar slots are 0-8 == displayed keys 1-9. Slot 4 (key 5) is deliberately left empty. */
-        inv.setItem(0,enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
+        inv.setItem(0,enchanted(Material.MACE,Map.of(Enchantment.DENSITY,5,Enchantment.WIND_BURST,3,Enchantment.FIRE_ASPECT,2,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)));
         inv.setItem(1,new ItemStack(Material.WIND_CHARGE,64));
         inv.setItem(2,enchanted(Material.BOW,Map.of(Enchantment.POWER,5,Enchantment.PUNCH,2,Enchantment.FLAME,1,Enchantment.MENDING,1,Enchantment.UNBREAKING,3)));
         inv.setItem(3,strengthPotion());
         /** Key 5 is gapples, not an empty gap -- "gaps" was slang for golden apples, not a blank slot. */
         inv.setItem(4,new ItemStack(Material.ENCHANTED_GOLDEN_APPLE,30));
-        inv.setItem(5,new ItemStack(Material.COOKED_BEEF,64));
+        inv.setItem(5,new ItemStack(Material.GOLDEN_CARROT,64));
         inv.setItem(6,new ItemStack(Material.TOTEM_OF_UNDYING));
         inv.setItem(7,new ItemStack(Material.OBSIDIAN,64));
         inv.setItem(8,new ItemStack(Material.ENDER_PEARL,16));
         /** Everything else from the loadout goes into storage in a stable order, then the remainder of the
          *  inventory is packed with totems. */
         List<ItemStack> rest=new ArrayList<>(List.of(
+                enchanted(Material.SHIELD,Map.of(Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.NETHERITE_SWORD,Map.of(Enchantment.SHARPNESS,5,Enchantment.LOOTING,3,Enchantment.SWEEPING_EDGE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.NETHERITE_AXE,Map.of(Enchantment.EFFICIENCY,5,Enchantment.SHARPNESS,5,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
                 enchanted(Material.CROSSBOW,Map.of(Enchantment.QUICK_CHARGE,3,Enchantment.MULTISHOT,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1)),
