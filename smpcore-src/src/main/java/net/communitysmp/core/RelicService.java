@@ -533,13 +533,31 @@ final class RelicService implements Listener {
         int duration=(int)Math.round(config.getDouble("buffs.colossus-core.brace-seconds",3)*20);
         player.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,duration,3,false,true,true));
         player.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS,duration,1,false,true,true));
-        double radius=config.getDouble("buffs.colossus-core.radius",5),push=config.getDouble("buffs.colossus-core.knockback",1.4);
+        double radius=config.getDouble("buffs.colossus-core.radius",8),push=config.getDouble("buffs.colossus-core.knockback",3.4);
+        double bossPush=config.getDouble("buffs.colossus-core.boss-knockback",2.6);
+        int stagger=(int)Math.round(config.getDouble("buffs.colossus-core.stagger-seconds",5)*20);
         Location center=player.getLocation();
         for(Entity entity:player.getNearbyEntities(radius,radius,radius)){
             if(!relicEffectTarget(player,entity))continue;
             Vector away=entity.getLocation().toVector().subtract(center.toVector());if(away.lengthSquared()<0.01)away=new Vector(1,0,0);
-            away.normalize().multiply(push);away.setY(Math.max(away.getY(),0.35));
-            entity.setVelocity(entity.getVelocity().add(away));
+            /** World bosses carry heavy knockback resistance, which is what made this relic look like it did
+             *  nothing to the only targets worth using it on. The velocity is applied directly rather than
+             *  added, and divided back out by their resistance, so a boss is visibly thrown too -- just less
+             *  far than an ordinary mob. */
+            boolean boss=entity instanceof LivingEntity living&&plugin.bosses().isWorldBoss(living);
+            double force=boss?bossPush:push;
+            if(boss&&entity instanceof LivingEntity living){
+                var resist=living.getAttribute(org.bukkit.attribute.Attribute.KNOCKBACK_RESISTANCE);
+                if(resist!=null&&resist.getValue()<1)force/=Math.max(0.15,1-resist.getValue());
+            }
+            away.normalize().multiply(force);away.setY(Math.max(away.getY(),boss?0.55:0.45));
+            entity.setVelocity(boss?away:entity.getVelocity().add(away));
+            /** Stagger, not crowd control: they keep moving and fighting, just slowed and unable to mine
+             *  their way out. Strictly time-limited so nothing is ever permanently disabled. */
+            if(entity instanceof LivingEntity hit){
+                hit.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS,stagger,2,false,true,true));
+                hit.addPotionEffect(new PotionEffect(PotionEffectType.MINING_FATIGUE,stagger,1,false,true,true));
+            }
         }
         player.getWorld().playSound(center,Sound.ENTITY_IRON_GOLEM_ATTACK,1.3f,.75f);
         player.getWorld().playSound(center,Sound.BLOCK_ANVIL_LAND,1f,.6f);

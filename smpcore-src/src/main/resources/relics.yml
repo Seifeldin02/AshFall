@@ -58,20 +58,31 @@ relics:
       - "Scorches anything caught in your path."
 
 buffs:
+  # These are globally UNIQUE artifacts -- one of each exists on the whole server -- and were tuned like
+  # ordinary enchantments. Each now has a single unmistakable identity instead of a small statistical edge.
+  # Friendly-faction, NPC and spawn protections are enforced in code (relicEffectTarget / relicBlockedInSpawn)
+  # and are unaffected by any value here. Nothing applies permanent crowd control.
   crown-of-ash:
-    elite-damage-multiplier: 0.80
+    # Identity: you survive what others cannot. Halves elite and boss damage taken.
+    elite-damage-multiplier: 0.50
   oathblade:
-    elite-damage-multiplier: 1.25
-    lifesteal-percent: 10.0
+    # Identity: sustain. Hits far harder into elites and bosses, and heals a real share of it back.
+    elite-damage-multiplier: 1.85
+    lifesteal-percent: 30.0
   ashen-reprisal:
+    # Identity: a genuine burst nuke, not a tickle.
     cooldown-seconds: 25
-    damage: 6.0
-    range: 4.5
+    damage: 26.0
+    range: 7.0
   colossus-core:
+    # Identity: displacement. Throws everything nearby, INCLUDING world bosses, then leaves anything it hit
+    # staggered -- heavy slowness and mining fatigue -- for a few seconds. Long cooldown pays for it.
     cooldown-seconds: 45
-    brace-seconds: 3.0
-    radius: 5.0
-    knockback: 1.4
+    brace-seconds: 4.0
+    radius: 8.0
+    knockback: 3.4
+    boss-knockback: 2.6
+    stagger-seconds: 5.0
   skyward-anchor:
     # Roughly how many blocks the launch reaches. Velocity is derived from this (v = sqrt(2*g*h)) rather
     # than hardcoded, so changing the height here actually lands where it says.

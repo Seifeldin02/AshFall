@@ -101,6 +101,8 @@ final class BossEventService {
         reload(); loadEvent(); restoreBoss(); startTasks();
     }
     void reload() { bosses = YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(), "bosses.yml")); events = YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(), "events.yml")); }
+    /** True for one of the three Ashfall world bosses, by tier tag. */
+    boolean isWorldBoss(LivingEntity entity){return entity!=null&&isWorldBossTier(entity.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING));}
     boolean isPeacefulExempt(LivingEntity entity){String tier=entity.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);return entity instanceof Boss||entity instanceof Warden||isWorldBossTier(tier)||"miniboss".equals(tier);}
     /** Vanilla's IronGolemAttackHostilesGoal lets the Warded Colossus break off to fight nearby
      *  zombies/hostile mobs entirely on its own initiative — as a world boss that's an exploitable
@@ -149,6 +151,28 @@ final class BossEventService {
          *  its own; all we impose is the range gate above, so this behaves like ordinary mob aggro with a
          *  50-block reach. */
         bossTargetSince.put(living.getUniqueId(),System.currentTimeMillis());
+    }
+    /** Minimum gap between a world boss's ordinary melee swings.
+     *
+     *  Vanilla gives a mob no attack-speed attribute, so retaliation lands the moment its target is in
+     *  reach -- with a mace engagement that reads as an instant counter every single time. Enforcing a
+     *  floor between basic hits restores a window to trade in without slowing the boss's movement or
+     *  touching any special ability, which run on their own cooldowns and are deliberately not gated here.
+     *
+     *  Damage was raised to compensate (see bosses.yml): fewer, heavier hits rather than a softer boss. */
+    private final Map<UUID,Long> bossMeleeAt=new HashMap<>();
+    boolean meleeOnCooldown(LivingEntity boss,org.bukkit.event.entity.EntityDamageEvent.DamageCause cause){
+        if(cause!=org.bukkit.event.entity.EntityDamageEvent.DamageCause.ENTITY_ATTACK)return false;
+        String tier=boss.getPersistentDataContainer().get(tierKey,PersistentDataType.STRING);
+        if(!isWorldBossTier(tier))return false;
+        WorldBossKind kind=kindFromTier(tier);
+        if(kind==null)return false;
+        long gap=bosses.getLong(configPrefix(kind)+".melee-cooldown-ms",1300);
+        if(gap<=0)return false;
+        long now=System.currentTimeMillis(),last=bossMeleeAt.getOrDefault(boss.getUniqueId(),0L);
+        if(now-last<gap)return true;
+        bossMeleeAt.put(boss.getUniqueId(),now);
+        return false;
     }
     /** boss id -> (attacker id -> when it last damaged the boss). Only non-player attackers are tracked;
      *  players have their own contribution accounting, which this deliberately does not touch. */
@@ -283,7 +307,7 @@ final class BossEventService {
             if(!retaliate.equals(mob.getTarget())){mob.setTarget(retaliate);bossTargetSince.put(id,now);}
             return;
         }
-        if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);}
+        if(current!=null){mob.setTarget(null);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);}
     }
     void shutdown() { persistWorldBoss(); persistEvent();persistEventTimers(); if (ticker != null) ticker.cancel(); if (visuals != null) visuals.cancel(); if (motionTask != null) motionTask.cancel(); for(var entry:barViewers.entrySet())for(UUID viewer:entry.getValue()){Player player=plugin.getServer().getPlayer(viewer);BossBar bar=healthBars.get(entry.getKey());if(player!=null&&bar!=null)player.hideBossBar(bar);}healthBars.clear();barViewers.clear(); }
 
@@ -408,7 +432,7 @@ final class BossEventService {
             if(clean){
                 UUID id=living.getUniqueId();
                 living.remove();
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 removed++;
                 CoreUtil.msg(sender,"  removed "+detail);
@@ -1111,8 +1135,54 @@ final class BossEventService {
         double dy=target.getLocation().getY()-boss.getLocation().getY();
         double horizontal=Math.hypot(target.getLocation().getX()-boss.getLocation().getX(),target.getLocation().getZ()-boss.getLocation().getZ());
         int freed=clearAroundAndAbove(boss,kind)+clearApproach(boss,target);
-        if(dy>3&&horizontal<=bosses.getDouble("world-boss-unreachable.pillar-horizontal",14))collapseUnder(boss,target,kind,dy);
+        /** Tower response is gated on the player being ARTIFICIALLY elevated, not merely higher than the
+         *  boss. Raw dy meant that a boss which fell into a cave or ravine suddenly classified every player
+         *  standing on normal ground above it as a pillar cheeser, and started breaking the floor out from
+         *  under them and yanking them down. */
+        boolean tower=dy>3&&horizontal<=bosses.getDouble("world-boss-unreachable.pillar-horizontal",14)&&artificiallyElevated(target);
+        if(tower)collapseUnder(boss,target,kind,dy);
+        else if(dy>bosses.getDouble("world-boss-unreachable.sunken-depth",6)){
+            /** The boss is genuinely below the players rather than being cheesed by them -- it fell in.
+             *  Anti-cheese still comes first: it digs upward and launches itself back toward the surface
+             *  instead of milling about at the bottom where nobody can fight it. */
+            climbOut(boss,target,kind);
+        }
         else if(freed==0&&horizontal>2)mob.getPathfinder().moveTo(target,1.2);
+    }
+    /** Whether the player is standing on something they built up, rather than on the local ground.
+     *
+     *  Judged against the terrain immediately AROUND them: a pillar or a tower has nothing beside it at the
+     *  same level, whereas a player standing on the surface while the boss is down a ravine has ground all
+     *  around them at their own height. Scans downward from the player rather than using getHighestBlockYAt,
+     *  which reports the roof in the Nether and would classify every Cinder Warlord fight as a tower. */
+    private boolean artificiallyElevated(Player target){
+        Location at=target.getLocation();World world=at.getWorld();
+        if(world==null)return false;
+        int feet=at.getBlockY(),samples=0,supported=0;
+        for(int dx=-5;dx<=5;dx+=2)for(int dz=-5;dz<=5;dz+=2){
+            if(dx==0&&dz==0)continue;
+            samples++;
+            for(int y=feet+1;y>feet-4;y--){
+                if(!world.getBlockAt(at.getBlockX()+dx,y,at.getBlockZ()+dz).isPassable()){supported++;break;}
+            }
+        }
+        /** Mostly empty air beside them at their own level == they are up on something. */
+        return samples>0&&supported*2<samples;
+    }
+    /** Boss has fallen well below its target through terrain rather than player action: break upward and
+     *  throw itself toward the surface so the fight resumes where the players actually are. */
+    private void climbOut(LivingEntity boss,Player target,WorldBossKind kind){
+        UUID id=boss.getUniqueId();long now=System.currentTimeMillis();
+        long interval=(long)(bosses.getDouble("world-boss-unreachable.climb-out-seconds",2.0)*1000);
+        if(now-bossLeapCooldown.getOrDefault(id,0L)<interval)return;
+        bossLeapCooldown.put(id,now);
+        clearAroundAndAbove(boss,kind);
+        Vector flat=target.getLocation().toVector().subtract(boss.getLocation().toVector()).setY(0);
+        double lift=Math.min(bosses.getDouble("world-boss-unreachable.climb-out-max-lift",1.35),
+                0.55+(target.getLocation().getY()-boss.getLocation().getY())*0.05);
+        Vector up=flat.lengthSquared()>0.0001?flat.normalize().multiply(0.45):new Vector();
+        boss.setVelocity(up.setY(lift));
+        boss.getWorld().spawnParticle(Particle.CLOUD,boss.getLocation(),18,.5,.2,.5,.02);
     }
     /** True only when the navigator cannot produce a path that actually ENDS at the target. Line of sight is
      *  deliberately NOT treated as reachability -- a player on a tower is in plain view and completely
@@ -1726,7 +1796,7 @@ final class BossEventService {
                 world.setChunkForceLoaded(chunkX,chunkZ,false);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
-                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
+                eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
                 try{db.deleteBossState(id.toString());}catch(Throwable ignored){}
                 if(id.equals(worldBossId)){
                     worldBossId=null;
