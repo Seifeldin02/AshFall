@@ -165,6 +165,10 @@ final class Database implements AutoCloseable {
              *  never read back as authoritative, only shown until the real refresh overwrites it. */
             s.execute("CREATE TABLE IF NOT EXISTS stats_snapshot (player TEXT PRIMARY KEY, panel TEXT NOT NULL, updated_at INTEGER NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS shop_stock (material TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0 CHECK(quantity>=0))");
+            /** Audit record of items that genuinely left the world. Append-only by construction: nothing
+             *  in the codebase deletes from it or reads an item back out of it. */
+            s.execute("CREATE TABLE IF NOT EXISTS discarded_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, material TEXT NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL, recycled INTEGER NOT NULL DEFAULT 0, world TEXT NOT NULL DEFAULT '', x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0, z INTEGER NOT NULL DEFAULT 0)");
+            s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material ON discarded_ledger(material)");
             s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS staff_notes_player ON staff_notes(player_uuid,created_at DESC)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
@@ -673,6 +677,35 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
+    /** One statement for a whole batch of destroyed items rather than one per item. */
+    synchronized void recordDiscarded(java.util.List<Object[]> rows){
+        if(rows.isEmpty())return;
+        StringBuilder sql=new StringBuilder("INSERT INTO discarded_ledger(occurred_at,material,amount,reason,recycled,world,x,y,z) VALUES");
+        List<Object> args=new ArrayList<>();
+        for(int i=0;i<rows.size();i++){sql.append(i==0?"":",").append("(?,?,?,?,?,?,?,?,?)");args.addAll(Arrays.asList(rows.get(i)));}
+        update(sql.toString(),args.toArray());
+    }
+    /** Batched counterpart of shopStockAdd: a single upsert covering every material in the batch. */
+    synchronized void shopStockAddAll(Map<String,Integer> amounts){
+        if(amounts.isEmpty())return;
+        StringBuilder sql=new StringBuilder("INSERT INTO shop_stock(material,quantity) VALUES");
+        List<Object> args=new ArrayList<>();
+        int i=0;
+        for(Map.Entry<String,Integer> entry:amounts.entrySet()){
+            if(entry.getValue()==null||entry.getValue()<=0)continue;
+            sql.append(i++==0?"":",").append("(?,?)");
+            args.add(entry.getKey());args.add(entry.getValue());
+        }
+        if(i==0)return;
+        sql.append(" ON CONFLICT(material) DO UPDATE SET quantity=quantity+excluded.quantity");
+        update(sql.toString(),args.toArray());
+    }
+    /** Per-material totals with the details of the most recent destruction. SQLite takes the bare columns
+     *  from the same row that produced MAX(occurred_at), so "last reason/where" needs no second query. */
+    synchronized List<String[]> discardedTotals(int limit){
+        return list("SELECT material,SUM(amount),SUM(CASE WHEN recycled=1 THEN amount ELSE 0 END),reason,world,x,y,z,MAX(occurred_at) FROM discarded_ledger GROUP BY material ORDER BY SUM(amount) DESC LIMIT ?",
+                rs->new String[]{rs.getString(1),String.valueOf(rs.getLong(2)),String.valueOf(rs.getLong(3)),rs.getString(4),rs.getString(5),String.valueOf(rs.getInt(6)),String.valueOf(rs.getInt(7)),String.valueOf(rs.getInt(8)),String.valueOf(rs.getLong(9))},limit);
+    }
     synchronized void recordEconomy(String player,String category,double amount,String detail){if(!Double.isFinite(amount)||Math.abs(amount)<.0001)return;update("INSERT INTO economy_ledger(occurred_at,player,category,amount,detail) VALUES(?,?,?,?,?)",System.currentTimeMillis(),player,category,amount,detail);}
     synchronized List<EconomyTotal> economyTotals(long since){return list("SELECT category,SUM(amount) amount FROM economy_ledger WHERE occurred_at>=? GROUP BY category ORDER BY category",rs->new EconomyTotal(rs.getString("category"),rs.getDouble("amount")),since);}
     synchronized ProgressMetrics progressMetrics(String player){
