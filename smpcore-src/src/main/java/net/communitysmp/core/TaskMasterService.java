@@ -45,31 +45,90 @@ import java.util.concurrent.ThreadLocalRandom;
  *  restart that happened mid-event. */
 final class TaskMasterService implements Listener {
 
-    /** A single contract. reward is paid on turn-in; tier is only used to describe the difficulty. */
-    private record Task(String id, Material material, int amount, double reward, String tier, String flavour) {}
+    /** A single contract.
+     *
+     *  There is deliberately no reward field. Pay is DERIVED from how much work the job is, never from what
+     *  the item is worth -- a stack of bricks is cheap and tedious and pays for the tedium; a wither skull
+     *  is worth a fortune to a collector and pays for the fortress, not the price tag. Four honest factors,
+     *  each scored 0-3:
+     *
+     *    steps  how much processing stands between raw materials and the thing being asked for
+     *    travel 0 anywhere, 1 a particular biome or structure, 2 the Nether, 3 the End or a monument
+     *    risk   0 safe, 1 hostile mobs, 2 somewhere that kills the careless, 3 somewhere that kills anyone
+     *    grind  how much repetition or luck, from one-and-done to farming a rare drop
+     *
+     *  Because pay is a pure function of those four, two jobs that are equally hard pay the same no matter
+     *  what they are made of, which is the entire point. selfTest pins that. */
+    private record Task(String id, Material material, int amount,
+                        int steps, int travel, int risk, int grind, String flavour) {
+        int effort() { return steps * 2 + travel * 3 + risk * 3 + grind * 3; }
+        /** Rounded to the nearest hundred so the board reads like a person quoting a price. */
+        double reward() { return Math.max(1500, Math.round((effort() * 1250 - 2500) / 100.0) * 100); }
+        String tier() {
+            int e = effort();
+            return e < 9 ? "Easy" : e < 14 ? "Testing" : e < 22 ? "Hard" : "Brutal";
+        }
+        /** The one or two things that actually make this job hard, for the contract card. */
+        List<String> why() {
+            List<String> tags = new ArrayList<>();
+            if (travel >= 3) tags.add("The End or the deep ocean");
+            else if (travel == 2) tags.add("Requires the Nether");
+            else if (travel == 1) tags.add("Requires travel");
+            if (risk >= 3) tags.add("Genuinely dangerous");
+            else if (risk == 2) tags.add("Hostile ground");
+            if (grind >= 3) tags.add("Rare drop");
+            if (steps >= 3) tags.add("Multi-stage craft");
+            return tags.size() > 2 ? tags.subList(0, 2) : tags;
+        }
+    }
 
     private record Holder(UUID trader) implements InventoryHolder {
         @Override public Inventory getInventory() { return null; }
     }
 
-    /** The contract table. Deliberately spread across gathering, farming, mining, mob drops and a couple of
-     *  genuinely awkward asks, so a drawn hand is usually a mix of "already have it" and "go and do it". */
+    /** The contract board.
+     *
+     *  Every job is still a delivery, which is what keeps this event free of kill/mine listeners, background
+     *  counters and progress that would have to survive a restart -- turn-in simply reads your inventory.
+     *  What changed is what gets asked for. These are jobs with a reason behind them rather than "bring me
+     *  64 of a thing", and most of them are a production chain, a trip or a fight wearing a delivery as a
+     *  receipt. A cake is four farms in a trench coat.
+     *
+     *  Columns after the amount are steps / travel / risk / grind -- see Task. Pay falls out of those, so
+     *  the tedious cheap jobs and the terrifying valuable ones are both priced for what they cost you. */
     private static final List<Task> TABLE = List.of(
-        new Task("logs",       Material.OAK_LOG,          64,  2500,  "Easy",   "The camp needs timber."),
-        new Task("wheat",      Material.WHEAT,            64,  2200,  "Easy",   "Bread does not bake itself."),
-        new Task("cobble",     Material.COBBLESTONE,     256,  2000,  "Easy",   "Rubble for the road crews."),
-        new Task("coal",       Material.COAL,             48,  4500,  "Easy",   "The forges are going cold."),
-        new Task("iron",       Material.IRON_INGOT,       32,  9000,  "Medium", "Tools break faster than we make them."),
-        new Task("leather",    Material.LEATHER,          32,  6500,  "Medium", "Bindings and satchels."),
-        new Task("string",     Material.STRING,           48,  6000,  "Medium", "Someone has to make the nets."),
-        new Task("gunpowder",  Material.GUNPOWDER,        16, 11000,  "Medium", "Ask no questions about the buyer."),
-        new Task("gold",       Material.GOLD_INGOT,       24,  8000,  "Medium", "A debt is owed in gold, not promises."),
-        new Task("glass",      Material.GLASS,            64,  7000,  "Medium", "Windows for the new hall."),
-        new Task("obsidian",   Material.OBSIDIAN,         16, 13000,  "Hard",   "Slow work, and dangerous."),
-        new Task("blaze",      Material.BLAZE_ROD,        12, 15000,  "Hard",   "Bring me fire that keeps burning."),
-        new Task("ender",      Material.ENDER_PEARL,      12, 14000,  "Hard",   "The road is long. I would rather skip it."),
-        new Task("emerald",    Material.EMERALD,          16, 16000,  "Hard",   "Coin that every village recognises."),
-        new Task("diamond",    Material.DIAMOND,           8, 20000,  "Hard",   "No explanation. Just bring them.")
+        // ------------------------------------------------------------------------------------ Easy
+        new Task("cookie",    Material.COOKIE,                64, 2,0,0,0, "Sixty-four cookies. They are for me. Do not make it strange."),
+        new Task("ladder",    Material.LADDER,                64, 1,0,0,1, "Sixty-four ladders. The last crew sank a shaft and then forgot how to leave it."),
+        new Task("charcoal",  Material.CHARCOAL,              48, 1,0,0,1, "Forty-eight charcoal. Wood in, fire out, and no, I will not take coal instead."),
+        new Task("bread",     Material.BREAD,                 32, 1,0,0,1, "The road crews eat before they dig. Thirty-two loaves, still warm if you can manage it."),
+        new Task("pie",       Material.PUMPKIN_PIE,           24, 2,0,0,1, "Twenty-four pumpkin pies. The harvest festival will not feed itself."),
+        new Task("hay",       Material.HAY_BLOCK,             16, 1,0,0,2, "Sixteen bales. The horses are unmoved by promises."),
+        // --------------------------------------------------------------------------------- Testing
+        new Task("cake",      Material.CAKE,                   3, 3,0,0,1, "Somebody's daughter turns nine. Three cakes, and do not ask me to explain the milk."),
+        new Task("lantern",   Material.LANTERN,               16, 2,0,1,1, "Sixteen lanterns for the tunnel. I have lost two crews to the dark already."),
+        new Task("target",    Material.TARGET,                16, 2,0,0,2, "Sixteen targets for the range. The recruits keep missing the wall entirely."),
+        new Task("smooth",    Material.SMOOTH_STONE,         128, 2,0,0,2, "A hundred and twenty-eight smooth stone. Twice through the furnace. I will know."),
+        new Task("shelf",     Material.BOOKSHELF,             12, 3,0,0,2, "The scribes want shelves. Twelve of them. They will not say what for."),
+        new Task("spyglass",  Material.SPYGLASS,               2, 3,1,0,1, "Two spyglasses. One for the lookout, one for when the lookout drops the first."),
+        new Task("amethyst",  Material.AMETHYST_SHARD,        24, 0,1,1,2, "Twenty-four amethyst shards. Listen for the chiming, and mind the drop."),
+        new Task("candle",    Material.CANDLE,                32, 2,1,1,1, "Thirty-two candles for a vigil. Do not ask whose."),
+        new Task("brick",     Material.BRICKS,                64, 2,1,0,2, "Sixty-four bricks. Clay, fire and patience. Mostly patience."),
+        new Task("carrot",    Material.GOLDEN_CARROT,         32, 2,0,1,2, "Thirty-two golden carrots. The night watch swears by them and I am not paying for excuses."),
+        // ------------------------------------------------------------------------------------ Hard
+        new Task("ice",       Material.PACKED_ICE,            64, 1,2,0,2, "Sixty-four packed ice, and it had better not arrive as water."),
+        new Task("glowstone", Material.GLOWSTONE,             24, 0,2,2,1, "Glowstone. Twenty-four. Yes, from over there. No, I will not come with you."),
+        new Task("honey",     Material.HONEY_BOTTLE,          16, 2,1,1,2, "Sixteen bottles of honey. Bring a campfire, and bring your nerve."),
+        new Task("blaze",     Material.BLAZE_ROD,             16, 0,2,3,2, "Sixteen rods that keep burning. I have a client who insists."),
+        new Task("echo",      Material.ECHO_SHARD,             6, 0,2,3,2, "Six echo shards. Quietly. I mean that literally."),
+        new Task("totem",     Material.TOTEM_OF_UNDYING,       1, 0,1,3,3, "A totem. Walk into a raid, walk back out, and bring me the thing that let you."),
+        // ---------------------------------------------------------------------------------- Brutal
+        new Task("skull",     Material.WITHER_SKELETON_SKULL,  1, 0,2,3,3, "One skull. Black bone, hollow eyes. I will not tell you what it is for, and you will not want to know."),
+        new Task("anchor",    Material.RESPAWN_ANCHOR,         2, 3,2,2,2, "Two anchors. If you have to ask why I want them charged over there, do not take the job."),
+        new Task("shell",     Material.SHULKER_SHELL,          4, 0,3,3,2, "Four shulker shells. Boxes do not build themselves and neither, apparently, does my patience."),
+        new Task("sealantern",Material.SEA_LANTERN,            8, 1,3,3,2, "Eight sea lanterns. The guardians will object. Object back."),
+        new Task("netherite", Material.NETHERITE_INGOT,        1, 3,2,2,3, "One netherite ingot. I know exactly what I am asking. That is why the purse is what it is."),
+        new Task("conduit",   Material.CONDUIT,                1, 3,3,2,3, "One conduit. A heart and eight shells. Come back damp.")
     );
 
     private final SMPCore plugin;
@@ -244,11 +303,22 @@ final class TaskMasterService implements Listener {
         return true;
     }
 
-    /** A fresh hand of 3-4 contracts, never duplicated within the hand. */
+    /** A fresh hand of 3-4 contracts: one Easy, one Testing, one Hard, and a Brutal three times in five.
+     *
+     *  Drawn a band at a time rather than at random across the whole table, so a hand always holds
+     *  something you could turn in today and something worth setting out for. Shuffling blind can deal
+     *  somebody four jobs in the End, which is not a board, it is a wall. */
     private List<Task> draw() {
-        List<Task> pool = new ArrayList<>(TABLE);
-        Collections.shuffle(pool);
-        return List.copyOf(pool.subList(0, 3 + ThreadLocalRandom.current().nextInt(2)));
+        List<Task> hand = new ArrayList<>();
+        for (String band : List.of("Easy", "Testing", "Hard")) pickFrom(band, hand);
+        if (ThreadLocalRandom.current().nextInt(5) < 3) pickFrom("Brutal", hand);
+        Collections.shuffle(hand);
+        return List.copyOf(hand);
+    }
+
+    private void pickFrom(String band, List<Task> hand) {
+        List<Task> options = TABLE.stream().filter(task -> task.tier().equals(band)).toList();
+        if (!options.isEmpty()) hand.add(options.get(ThreadLocalRandom.current().nextInt(options.size())));
     }
 
     private void open(Player player) {
@@ -266,7 +336,10 @@ final class TaskMasterService implements Listener {
                     claimed ? NamedTextColor.DARK_GRAY : NamedTextColor.GOLD));
             List<Component> lore = new ArrayList<>();
             lore.add(Component.text(task.flavour(), NamedTextColor.GRAY));
+            lore.add(Component.empty());
             lore.add(Component.text("Difficulty: " + task.tier(), NamedTextColor.DARK_GRAY));
+            /** Say WHY it pays what it pays, so the board never reads as arbitrary. */
+            for (String reason : task.why()) lore.add(Component.text("- " + reason, NamedTextColor.DARK_GRAY));
             lore.add(Component.text("Reward: " + CoreUtil.money(task.reward()), NamedTextColor.YELLOW));
             if (claimed) lore.add(Component.text("Already delivered.", NamedTextColor.DARK_GRAY));
             else if (held >= task.amount()) lore.add(Component.text("Click to deliver.", NamedTextColor.GREEN));
@@ -345,10 +418,34 @@ final class TaskMasterService implements Listener {
     }
 
     boolean selfTest() {
-        if (TABLE.size() < 10) return false;
-        List<Task> hand = draw();
-        if (hand.size() < 3 || hand.size() > 4) return false;
-        return hand.stream().map(Task::id).distinct().count() == hand.size()
-                && TABLE.stream().allMatch(t -> t.amount() > 0 && t.reward() > 0);
+        if (TABLE.size() < 20) return false;
+        if (TABLE.stream().map(Task::id).distinct().count() != TABLE.size()) return false;
+        if (!TABLE.stream().allMatch(t -> t.amount() > 0 && t.reward() >= 1500)) return false;
+
+        /** Pay is a function of effort and NOTHING else. Equal effort must pay equally regardless of what
+         *  is being fetched, and more effort must never pay less. If a future edit starts pricing by what
+         *  an item sells for, one of these two fails. */
+        for (Task a : TABLE) for (Task b : TABLE) {
+            if (a.effort() == b.effort() && a.reward() != b.reward()) return false;
+            if (a.effort() > b.effort() && a.reward() < b.reward()) return false;
+        }
+        /** Concretely: shulker shells out-earn a stack of bricks not because shells are worth more, but
+         *  because an End city is worse than a clay pit -- and the cheap tedious job still clears 1500. */
+        Task bricks = TABLE.stream().filter(t -> t.id().equals("brick")).findFirst().orElse(null);
+        Task shells = TABLE.stream().filter(t -> t.id().equals("shell")).findFirst().orElse(null);
+        if (bricks == null || shells == null || shells.reward() <= bricks.reward()) return false;
+
+        /** Every band has to be stocked, or a hand comes up short. */
+        for (String band : List.of("Easy", "Testing", "Hard", "Brutal"))
+            if (TABLE.stream().noneMatch(t -> t.tier().equals(band))) return false;
+
+        /** A hand is always 3-4 distinct contracts and always holds something doable today. */
+        for (int attempt = 0; attempt < 200; attempt++) {
+            List<Task> hand = draw();
+            if (hand.size() < 3 || hand.size() > 4) return false;
+            if (hand.stream().map(Task::id).distinct().count() != hand.size()) return false;
+            if (hand.stream().noneMatch(t -> t.tier().equals("Easy"))) return false;
+        }
+        return true;
     }
 }
