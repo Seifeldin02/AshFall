@@ -440,6 +440,13 @@ progression:
     CONQUEROR: 150000
     VANGUARD: 250000
 
+industrial-hopper:
+  # Items moved per hopper per tick. Vanilla moves one item every 8 ticks; this is the whole point of the
+  # block, so it is deliberately far higher. Ticking is centralised, not one task per hopper.
+  items-per-tick: 9
+  # How often the central sweep runs, in ticks.
+  tick-period: 1
+
 bulletin:
   # How often everyone's stats are recomputed (two bulk queries). Deliberately slow.
   refresh-seconds: 40
