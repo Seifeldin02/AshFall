@@ -59,15 +59,24 @@ final class TaskMasterService implements Listener {
      *
      *  Because pay is a pure function of those four, two jobs that are equally hard pay the same no matter
      *  what they are made of, which is the entire point. selfTest pins that. */
-    private record Task(String id, Material material, int amount,
-                        int steps, int travel, int risk, int grind, String flavour) {
-        int effort() { return steps * 2 + travel * 3 + risk * 3 + grind * 3; }
+    private record Task(String id, String display, Material icon, List<Material> items, int each,
+                        int perItem, int steps, int travel, int risk, int grind, String flavour) {
+        /** A collection contract adds the cost of every extra supply chain it drags in. perItem is what one
+         *  more entry on the list actually costs you: cheap for wool, where the sixteenth is one more dye;
+         *  dear for beds, where it is three more wool plus planks plus a craft. Single-item jobs carry
+         *  perItem 0, so the term vanishes and nothing about the ordinary board changes. */
+        int effort() { return steps * 2 + travel * 3 + risk * 3 + grind * 3 + (items.size() - 1) * perItem; }
         /** Rounded to the nearest hundred so the board reads like a person quoting a price. */
         double reward() { return Math.max(1500, Math.round((effort() * 1250 - 2500) / 100.0) * 100); }
         String tier() {
             int e = effort();
-            return e < 9 ? "Easy" : e < 14 ? "Testing" : e < 22 ? "Hard" : "Brutal";
+            return e < 9 ? "Easy" : e < 14 ? "Testing" : e < 22 ? "Hard" : e < 60 ? "Brutal" : "Legendary";
         }
+        /** What the contract card is titled. Single jobs describe themselves; sets get a written name. */
+        String label() {
+            return display.isEmpty() ? each + "x " + CoreUtil.pretty(items.get(0).name()) : display;
+        }
+        boolean isSet() { return items.size() > 1; }
         /** The one or two things that actually make this job hard, for the contract card. */
         List<String> why() {
             List<String> tags = new ArrayList<>();
@@ -76,11 +85,35 @@ final class TaskMasterService implements Listener {
             else if (travel == 1) tags.add("Requires travel");
             if (risk >= 3) tags.add("Genuinely dangerous");
             else if (risk == 2) tags.add("Hostile ground");
+            if (isSet()) tags.add(0, items.size() + " separate things to source");
             if (grind >= 3) tags.add("Rare drop");
             if (steps >= 3) tags.add("Multi-stage craft");
             return tags.size() > 2 ? tags.subList(0, 2) : tags;
         }
     }
+
+    /** An ordinary one-item job. */
+    private static Task one(String id, Material material, int amount,
+                            int steps, int travel, int risk, int grind, String flavour) {
+        return new Task(id, "", material, List.of(material), amount, 0, steps, travel, risk, grind, flavour);
+    }
+
+    /** A collection: `each` of EVERY item on the list, or it does not count. */
+    private static Task set(String id, String display, Material icon, List<Material> items, int each,
+                            int perItem, int steps, int travel, int risk, int grind, String flavour) {
+        return new Task(id, display, icon, items, each, perItem, steps, travel, risk, grind, flavour);
+    }
+
+    private static final List<Material> WOOL = List.of(
+            Material.WHITE_WOOL, Material.ORANGE_WOOL, Material.MAGENTA_WOOL, Material.LIGHT_BLUE_WOOL,
+            Material.YELLOW_WOOL, Material.LIME_WOOL, Material.PINK_WOOL, Material.GRAY_WOOL,
+            Material.LIGHT_GRAY_WOOL, Material.CYAN_WOOL, Material.PURPLE_WOOL, Material.BLUE_WOOL,
+            Material.BROWN_WOOL, Material.GREEN_WOOL, Material.RED_WOOL, Material.BLACK_WOOL);
+    private static final List<Material> BEDS = List.of(
+            Material.WHITE_BED, Material.ORANGE_BED, Material.MAGENTA_BED, Material.LIGHT_BLUE_BED,
+            Material.YELLOW_BED, Material.LIME_BED, Material.PINK_BED, Material.GRAY_BED,
+            Material.LIGHT_GRAY_BED, Material.CYAN_BED, Material.PURPLE_BED, Material.BLUE_BED,
+            Material.BROWN_BED, Material.GREEN_BED, Material.RED_BED, Material.BLACK_BED);
 
     private record Holder(UUID trader) implements InventoryHolder {
         @Override public Inventory getInventory() { return null; }
@@ -98,37 +131,58 @@ final class TaskMasterService implements Listener {
      *  the tedious cheap jobs and the terrifying valuable ones are both priced for what they cost you. */
     private static final List<Task> TABLE = List.of(
         // ------------------------------------------------------------------------------------ Easy
-        new Task("cookie",    Material.COOKIE,                64, 2,0,0,0, "Sixty-four cookies. They are for me. Do not make it strange."),
-        new Task("ladder",    Material.LADDER,                64, 1,0,0,1, "Sixty-four ladders. The last crew sank a shaft and then forgot how to leave it."),
-        new Task("charcoal",  Material.CHARCOAL,              48, 1,0,0,1, "Forty-eight charcoal. Wood in, fire out, and no, I will not take coal instead."),
-        new Task("bread",     Material.BREAD,                 32, 1,0,0,1, "The road crews eat before they dig. Thirty-two loaves, still warm if you can manage it."),
-        new Task("pie",       Material.PUMPKIN_PIE,           24, 2,0,0,1, "Twenty-four pumpkin pies. The harvest festival will not feed itself."),
-        new Task("hay",       Material.HAY_BLOCK,             16, 1,0,0,2, "Sixteen bales. The horses are unmoved by promises."),
+        one("cookie", Material.COOKIE,                64, 2,0,0,0, "Sixty-four cookies. They are for me. Do not make it strange."),
+        one("ladder", Material.LADDER,                64, 1,0,0,1, "Sixty-four ladders. The last crew sank a shaft and then forgot how to leave it."),
+        one("charcoal", Material.CHARCOAL,              48, 1,0,0,1, "Forty-eight charcoal. Wood in, fire out, and no, I will not take coal instead."),
+        one("bread", Material.BREAD,                 32, 1,0,0,1, "The road crews eat before they dig. Thirty-two loaves, still warm if you can manage it."),
+        one("pie", Material.PUMPKIN_PIE,           24, 2,0,0,1, "Twenty-four pumpkin pies. The harvest festival will not feed itself."),
+        one("hay", Material.HAY_BLOCK,             16, 1,0,0,2, "Sixteen bales. The horses are unmoved by promises."),
         // --------------------------------------------------------------------------------- Testing
-        new Task("cake",      Material.CAKE,                   3, 3,0,0,1, "Somebody's daughter turns nine. Three cakes, and do not ask me to explain the milk."),
-        new Task("lantern",   Material.LANTERN,               16, 2,0,1,1, "Sixteen lanterns for the tunnel. I have lost two crews to the dark already."),
-        new Task("target",    Material.TARGET,                16, 2,0,0,2, "Sixteen targets for the range. The recruits keep missing the wall entirely."),
-        new Task("smooth",    Material.SMOOTH_STONE,         128, 2,0,0,2, "A hundred and twenty-eight smooth stone. Twice through the furnace. I will know."),
-        new Task("shelf",     Material.BOOKSHELF,             12, 3,0,0,2, "The scribes want shelves. Twelve of them. They will not say what for."),
-        new Task("spyglass",  Material.SPYGLASS,               2, 3,1,0,1, "Two spyglasses. One for the lookout, one for when the lookout drops the first."),
-        new Task("amethyst",  Material.AMETHYST_SHARD,        24, 0,1,1,2, "Twenty-four amethyst shards. Listen for the chiming, and mind the drop."),
-        new Task("candle",    Material.CANDLE,                32, 2,1,1,1, "Thirty-two candles for a vigil. Do not ask whose."),
-        new Task("brick",     Material.BRICKS,                64, 2,1,0,2, "Sixty-four bricks. Clay, fire and patience. Mostly patience."),
-        new Task("carrot",    Material.GOLDEN_CARROT,         32, 2,0,1,2, "Thirty-two golden carrots. The night watch swears by them and I am not paying for excuses."),
+        one("cake", Material.CAKE,                   3, 3,0,0,1, "Somebody's daughter turns nine. Three cakes, and do not ask me to explain the milk."),
+        one("lantern", Material.LANTERN,               16, 2,0,1,1, "Sixteen lanterns for the tunnel. I have lost two crews to the dark already."),
+        one("target", Material.TARGET,                16, 2,0,0,2, "Sixteen targets for the range. The recruits keep missing the wall entirely."),
+        one("smooth", Material.SMOOTH_STONE,         128, 2,0,0,2, "A hundred and twenty-eight smooth stone. Twice through the furnace. I will know."),
+        one("shelf", Material.BOOKSHELF,             12, 3,0,0,2, "The scribes want shelves. Twelve of them. They will not say what for."),
+        one("spyglass", Material.SPYGLASS,               2, 3,1,0,1, "Two spyglasses. One for the lookout, one for when the lookout drops the first."),
+        one("amethyst", Material.AMETHYST_SHARD,        24, 0,1,1,2, "Twenty-four amethyst shards. Listen for the chiming, and mind the drop."),
+        one("candle", Material.CANDLE,                32, 2,1,1,1, "Thirty-two candles for a vigil. Do not ask whose."),
+        one("brick", Material.BRICKS,                64, 2,1,0,2, "Sixty-four bricks. Clay, fire and patience. Mostly patience."),
+        one("carrot", Material.GOLDEN_CARROT,         32, 2,0,1,2, "Thirty-two golden carrots. The night watch swears by them and I am not paying for excuses."),
         // ------------------------------------------------------------------------------------ Hard
-        new Task("ice",       Material.PACKED_ICE,            64, 1,2,0,2, "Sixty-four packed ice, and it had better not arrive as water."),
-        new Task("glowstone", Material.GLOWSTONE,             24, 0,2,2,1, "Glowstone. Twenty-four. Yes, from over there. No, I will not come with you."),
-        new Task("honey",     Material.HONEY_BOTTLE,          16, 2,1,1,2, "Sixteen bottles of honey. Bring a campfire, and bring your nerve."),
-        new Task("blaze",     Material.BLAZE_ROD,             16, 0,2,3,2, "Sixteen rods that keep burning. I have a client who insists."),
-        new Task("echo",      Material.ECHO_SHARD,             6, 0,2,3,2, "Six echo shards. Quietly. I mean that literally."),
-        new Task("totem",     Material.TOTEM_OF_UNDYING,       1, 0,1,3,3, "A totem. Walk into a raid, walk back out, and bring me the thing that let you."),
+        one("ice", Material.PACKED_ICE,            64, 1,2,0,2, "Sixty-four packed ice, and it had better not arrive as water."),
+        one("glowstone", Material.GLOWSTONE,             24, 0,2,2,1, "Glowstone. Twenty-four. Yes, from over there. No, I will not come with you."),
+        one("honey", Material.HONEY_BOTTLE,          16, 2,1,1,2, "Sixteen bottles of honey. Bring a campfire, and bring your nerve."),
+        one("blaze", Material.BLAZE_ROD,             16, 0,2,3,2, "Sixteen rods that keep burning. I have a client who insists."),
+        one("echo", Material.ECHO_SHARD,             6, 0,2,3,2, "Six echo shards. Quietly. I mean that literally."),
+        one("totem", Material.TOTEM_OF_UNDYING,       1, 0,1,3,3, "A totem. Walk into a raid, walk back out, and bring me the thing that let you."),
         // ---------------------------------------------------------------------------------- Brutal
-        new Task("skull",     Material.WITHER_SKELETON_SKULL,  1, 0,2,3,3, "One skull. Black bone, hollow eyes. I will not tell you what it is for, and you will not want to know."),
-        new Task("anchor",    Material.RESPAWN_ANCHOR,         2, 3,2,2,2, "Two anchors. If you have to ask why I want them charged over there, do not take the job."),
-        new Task("shell",     Material.SHULKER_SHELL,          4, 0,3,3,2, "Four shulker shells. Boxes do not build themselves and neither, apparently, does my patience."),
-        new Task("sealantern",Material.SEA_LANTERN,            8, 1,3,3,2, "Eight sea lanterns. The guardians will object. Object back."),
-        new Task("netherite", Material.NETHERITE_INGOT,        1, 3,2,2,3, "One netherite ingot. I know exactly what I am asking. That is why the purse is what it is."),
-        new Task("conduit",   Material.CONDUIT,                1, 3,3,2,3, "One conduit. A heart and eight shells. Come back damp.")
+        one("skull", Material.WITHER_SKELETON_SKULL,  1, 0,2,3,3, "One skull. Black bone, hollow eyes. I will not tell you what it is for, and you will not want to know."),
+        one("anchor", Material.RESPAWN_ANCHOR,         2, 3,2,2,2, "Two anchors. If you have to ask why I want them charged over there, do not take the job."),
+        one("shell", Material.SHULKER_SHELL,          4, 0,3,3,2, "Four shulker shells. Boxes do not build themselves and neither, apparently, does my patience."),
+        one("sealantern", Material.SEA_LANTERN,            8, 1,3,3,2, "Eight sea lanterns. The guardians will object. Object back."),
+        one("netherite", Material.NETHERITE_INGOT,        1, 3,2,2,3, "One netherite ingot. I know exactly what I am asking. That is why the purse is what it is."),
+        one("conduit", Material.CONDUIT,                1, 3,3,2,3, "One conduit. A heart and eight shells. Come back damp."),
+        one("heart", Material.HEART_OF_THE_SEA,       2, 0,3,1,3, "Two hearts of the sea. Find the wreck, read the map, dig where it says. Simple, he said."),
+        one("nautilus", Material.NAUTILUS_SHELL,        16, 0,2,2,3, "Sixteen nautilus shells. The drowned have them. The drowned would rather keep them."),
+        one("gapple", Material.ENCHANTED_GOLDEN_APPLE, 2, 0,2,3,3, "Two notched apples. They are not crafted, only found, and only where nobody sensible goes."),
+        one("rose", Material.WITHER_ROSE,            8, 0,2,3,3, "Eight wither roses. You know what has to happen for one of these to grow. Eight times."),
+        one("breath", Material.DRAGON_BREATH,          8, 1,3,3,3, "Eight bottles of dragon's breath. Stand in it, hold out a bottle, try to stay standing."),
+        // -------------------------------------------------------------------------------- Collections
+        set("coral", "Every coral, 2 of each", Material.BRAIN_CORAL_BLOCK,
+            List.of(Material.TUBE_CORAL_BLOCK, Material.BRAIN_CORAL_BLOCK, Material.BUBBLE_CORAL_BLOCK,
+                    Material.FIRE_CORAL_BLOCK, Material.HORN_CORAL_BLOCK), 2, 5, 1,2,1,2,
+            "Two of every coral, still coloured. Bring the touch that keeps them alive or do not bother."),
+        set("froglight", "Every froglight, 4 of each", Material.PEARLESCENT_FROGLIGHT,
+            List.of(Material.OCHRE_FROGLIGHT, Material.VERDANT_FROGLIGHT, Material.PEARLESCENT_FROGLIGHT), 4, 8, 1,2,2,3,
+            "All three froglights. Yes, that means the right frogs eating the wrong cubes in the wrong dimension."),
+        set("discs", "Five music discs", Material.JUKEBOX,
+            List.of(Material.MUSIC_DISC_13, Material.MUSIC_DISC_CAT, Material.MUSIC_DISC_BLOCKS,
+                    Material.MUSIC_DISC_CHIRP, Material.MUSIC_DISC_FAR), 1, 6, 0,1,2,3,
+            "Five discs, these five, no substitutions. Let the skeletons argue with the creepers about it."),
+        set("woolset", "Wool, all 16 colours", Material.WHITE_WOOL, WOOL, 1, 4, 2,2,1,3,
+            "One of every colour of wool. Sixteen dyes, and there is no shortcut for the last three."),
+        set("bedset", "Beds, all 16 colours", Material.RED_BED, BEDS, 1, 9, 3,2,1,3,
+            "One bed in every colour. Forty-eight wool, the planks, and the patience of a saint. Name your price -- I already did.")
     );
 
     private final SMPCore plugin;
@@ -311,7 +365,12 @@ final class TaskMasterService implements Listener {
     private List<Task> draw() {
         List<Task> hand = new ArrayList<>();
         for (String band : List.of("Easy", "Testing", "Hard")) pickFrom(band, hand);
-        if (ThreadLocalRandom.current().nextInt(5) < 3) pickFrom("Brutal", hand);
+        /** The fourth slot: a Legendary collection one time in five, a Brutal three, nothing the last.
+         *  Legendary is deliberately scarce -- an all-sixteen-colours contract should feel like an event in
+         *  its own right, not the thing on every board. */
+        int roll = ThreadLocalRandom.current().nextInt(5);
+        if (roll == 0) pickFrom("Legendary", hand);
+        else if (roll < 4) pickFrom("Brutal", hand);
         Collections.shuffle(hand);
         return List.copyOf(hand);
     }
@@ -328,11 +387,10 @@ final class TaskMasterService implements Listener {
                 Component.text("Task Master • Contracts", NamedTextColor.DARK_PURPLE));
         int slot = 11;
         for (Task task : tasks) {
-            int held = count(player, task.material());
             boolean claimed = done.contains(task.id());
-            ItemStack icon = new ItemStack(task.material());
+            ItemStack icon = new ItemStack(task.icon());
             ItemMeta meta = icon.getItemMeta();
-            meta.displayName(Component.text((claimed ? "✔ " : "") + task.amount() + "x " + CoreUtil.pretty(task.material().name()),
+            meta.displayName(Component.text((claimed ? "✔ " : "") + task.label(),
                     claimed ? NamedTextColor.DARK_GRAY : NamedTextColor.GOLD));
             List<Component> lore = new ArrayList<>();
             lore.add(Component.text(task.flavour(), NamedTextColor.GRAY));
@@ -342,14 +400,45 @@ final class TaskMasterService implements Listener {
             for (String reason : task.why()) lore.add(Component.text("- " + reason, NamedTextColor.DARK_GRAY));
             lore.add(Component.text("Reward: " + CoreUtil.money(task.reward()), NamedTextColor.YELLOW));
             if (claimed) lore.add(Component.text("Already delivered.", NamedTextColor.DARK_GRAY));
-            else if (held >= task.amount()) lore.add(Component.text("Click to deliver.", NamedTextColor.GREEN));
-            else lore.add(Component.text("Carrying " + held + " / " + task.amount(), NamedTextColor.RED));
+            else if (carrying(player, task)) lore.add(Component.text("Click to deliver.", NamedTextColor.GREEN));
+            else if (task.isSet()) {
+                long ready = task.items().stream().filter(m -> count(player, m) >= task.each()).count();
+                lore.add(Component.text("Carrying " + ready + " / " + task.items().size() + " of the set",
+                        NamedTextColor.RED));
+            } else lore.add(Component.text("Carrying " + count(player, task.items().get(0)) + " / " + task.each(),
+                    NamedTextColor.RED));
             meta.lore(lore);
             icon.setItemMeta(meta);
             inv.setItem(slot, icon);
             slot++;
         }
         player.openInventory(inv);
+    }
+
+    /** Every line of the contract has to be satisfied, not just the first. */
+    private boolean carrying(Player player, Task task) {
+        for (Material material : task.items()) if (count(player, material) < task.each()) return false;
+        return true;
+    }
+
+    private Material missing(Player player, Task task) {
+        for (Material material : task.items()) if (count(player, material) < task.each()) return material;
+        return null;
+    }
+
+    /** Takes the WHOLE contract or none of it. Anything already removed when a later line comes up short is
+     *  handed straight back, so a delivery that cannot be completed costs the player nothing. */
+    private boolean takeAll(Player player, Task task) {
+        Map<Material, Integer> taken = new java.util.LinkedHashMap<>();
+        for (Material material : task.items()) {
+            int got = take(player, material, task.each());
+            if (got > 0) taken.merge(material, got, Integer::sum);
+            if (got < task.each()) {
+                taken.forEach((m, n) -> CoreUtil.give(player, new ItemStack(m, n)));
+                return false;
+            }
+        }
+        return true;
     }
 
     private int count(Player player, Material material) {
@@ -373,24 +462,29 @@ final class TaskMasterService implements Listener {
         List<String> done = completed.computeIfAbsent(player.getUniqueId(), id -> new ArrayList<>());
         if (done.contains(task.id())) return;
         if (!active()) { CoreUtil.error(player, "The Task Master has moved on."); player.closeInventory(); return; }
-        if (count(player, task.material()) < task.amount()) {
-            CoreUtil.error(player, "You are not carrying " + task.amount() + " " + CoreUtil.pretty(task.material().name()) + ".");
+        if (!carrying(player, task)) {
+            Material absent = missing(player, task);
+            CoreUtil.error(player, "You are not carrying " + task.each() + " "
+                    + CoreUtil.pretty((absent == null ? task.items().get(0) : absent).name()) + ".");
             plugin.settings().marketSound(player, "failed");
             return;
         }
-        /** Take the goods FIRST, and only pay for what was actually removed, so a race cannot pay twice. */
-        int removed = take(player, task.material(), task.amount());
-        if (removed < task.amount()) {
-            /** Put back whatever was taken rather than paying for a partial delivery. */
-            if (removed > 0) CoreUtil.give(player, new ItemStack(task.material(), removed));
+        /** Take the goods FIRST, all of them, so a race cannot pay twice and a shortfall cannot pay once. */
+        if (!takeAll(player, task)) {
             CoreUtil.error(player, "The delivery came up short.");
             return;
         }
         done.add(task.id());
+        /** Delivered goods go to the server vault instead of evaporating: the handover is recorded in the
+         *  audit with what, how much and where, and ordinary shop commodities return to shop stock exactly
+         *  as a destroyed one would. Nothing is duplicated -- the items are out of the player's inventory
+         *  before this runs, and the vault holds a record, never a withdrawable copy. */
+        for (Material material : task.items())
+            plugin.vault().deliver(new ItemStack(material, task.each()), player.getLocation(), "DELIVERED");
         plugin.creditEarned(CoreUtil.id(player), task.reward(), "TASK_MASTER_" + task.id().toUpperCase(Locale.ROOT));
         plugin.db().recordEconomy(CoreUtil.id(player), "TASK_MASTER", task.reward(), task.id());
-        CoreUtil.msg(player, "Contract complete: " + task.amount() + "x " + CoreUtil.pretty(task.material().name())
-                + " for " + CoreUtil.money(task.reward()) + ".");
+        CoreUtil.msg(player, "Contract complete: " + task.label() + " for " + CoreUtil.money(task.reward())
+                + ". Delivered to the server vault.");
         player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_YES, 1f, 1.1f);
         open(player);
     }
@@ -420,7 +514,9 @@ final class TaskMasterService implements Listener {
     boolean selfTest() {
         if (TABLE.size() < 20) return false;
         if (TABLE.stream().map(Task::id).distinct().count() != TABLE.size()) return false;
-        if (!TABLE.stream().allMatch(t -> t.amount() > 0 && t.reward() >= 1500)) return false;
+        if (!TABLE.stream().allMatch(t -> t.each() > 0 && !t.items().isEmpty() && t.reward() >= 1500)) return false;
+        /** A set must not repeat an item, or one line of it could satisfy two. */
+        if (!TABLE.stream().allMatch(t -> t.items().stream().distinct().count() == t.items().size())) return false;
 
         /** Pay is a function of effort and NOTHING else. Equal effort must pay equally regardless of what
          *  is being fetched, and more effort must never pay less. If a future edit starts pricing by what
@@ -436,8 +532,16 @@ final class TaskMasterService implements Listener {
         if (bricks == null || shells == null || shells.reward() <= bricks.reward()) return false;
 
         /** Every band has to be stocked, or a hand comes up short. */
-        for (String band : List.of("Easy", "Testing", "Hard", "Brutal"))
+        for (String band : List.of("Easy", "Testing", "Hard", "Brutal", "Legendary"))
             if (TABLE.stream().noneMatch(t -> t.tier().equals(band))) return false;
+
+        /** The two colour collections sit at the top of the board and the harder one pays more. Asserted as
+         *  an ordering rather than as exact figures, so retuning the factors cannot silently invert them. */
+        Task wool = TABLE.stream().filter(t -> t.id().equals("woolset")).findFirst().orElse(null);
+        Task beds = TABLE.stream().filter(t -> t.id().equals("bedset")).findFirst().orElse(null);
+        if (wool == null || beds == null) return false;
+        if (wool.reward() < 90000 || beds.reward() <= wool.reward()) return false;
+        if (TABLE.stream().anyMatch(t -> !t.id().equals("bedset") && t.reward() > beds.reward())) return false;
 
         /** A hand is always 3-4 distinct contracts and always holds something doable today. */
         for (int attempt = 0; attempt < 200; attempt++) {

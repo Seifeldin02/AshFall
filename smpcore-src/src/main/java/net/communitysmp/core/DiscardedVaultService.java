@@ -107,6 +107,13 @@ final class DiscardedVaultService implements Listener {
         Bukkit.getScheduler().runTask(plugin, () -> { if (!item.isValid()) record(stack, at, reason); });
     }
 
+    /** Goods handed over deliberately -- a Task Master delivery -- rather than destroyed.
+     *
+     *  Same ledger, same eligibility rules, same absence of duplication: the items left the player's
+     *  inventory before this is called, and what lands here is a record plus, for ordinary shop
+     *  commodities, stock the server can resell. Anything carrying custom data is logged and nothing more. */
+    void deliver(ItemStack stack, Location at, String reason) { record(stack, at, reason); }
+
     private void record(ItemStack stack, Location at, String reason) {
         if (stack == null || stack.getType().isAir() || stack.getAmount() <= 0) return;
         Key key = new Key(stack.getType().name(), reason, recyclable(stack));
