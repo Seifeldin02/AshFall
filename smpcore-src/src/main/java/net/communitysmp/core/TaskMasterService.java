@@ -5,6 +5,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.WanderingTrader;
@@ -73,6 +74,9 @@ final class TaskMasterService implements Listener {
 
     private final SMPCore plugin;
     private UUID traderId;
+    /** Where the courier was placed. Kept so the announcement quotes the spot he is actually standing on,
+     *  and so he can be put back if something removes him while the event is still running. */
+    private Location home;
     private long endsAt;
     /** player -> their drawn contracts, and which they have already turned in. */
     private final Map<UUID, List<Task>> assigned = new HashMap<>();
@@ -87,21 +91,58 @@ final class TaskMasterService implements Listener {
     }
 
     /** Spawns the courier and opens the event. Any leftover courier is cleared first, so a restart that
-     *  happened mid-event cannot leave a second one standing. */
-    void begin(Location center, long endsAtMillis) {
+     *  happened mid-event cannot leave a second one standing.
+     *
+     *  Returns where he actually ended up, which is not necessarily the location handed in -- the caller
+     *  announces THAT, so the coordinates players are given are the coordinates he is standing on. */
+    Location begin(Location center, long endsAtMillis) {
         end();
         endsAt = endsAtMillis;
-        if (center == null || center.getWorld() == null) return;
-        WanderingTrader trader = center.getWorld().spawn(center, WanderingTrader.class,
+        if (center == null || center.getWorld() == null) return center;
+        home = surface(center);
+        spawnCourier();
+        return home;
+    }
+
+    /** Puts the courier on top of the world rather than wherever the event centre happened to land.
+     *
+     *  getHighestBlockYAt is the terrain surface by definition, so this cannot leave him in a cave or
+     *  buried in a hillside -- the old spawn used the raw event centre and could do both. Water and lava
+     *  columns are stepped around by sampling a short ring of nearby spots; the search is a couple of dozen
+     *  fixed samples, not a scan. */
+    private Location surface(Location center) {
+        World world = center.getWorld();
+        int[] offsets = {0, 4, -4, 8, -8, 12, -12, 16, -16, 20, -20, 24, -24};
+        for (int dx : offsets) for (int dz : offsets) {
+            int x = center.getBlockX() + dx, z = center.getBlockZ() + dz;
+            int y = world.getHighestBlockYAt(x, z);
+            Material ground = world.getBlockAt(x, y, z).getType();
+            if (ground == Material.WATER || ground == Material.LAVA || ground == Material.POWDER_SNOW) continue;
+            if (!world.getBlockAt(x, y + 1, z).isPassable() || !world.getBlockAt(x, y + 2, z).isPassable()) continue;
+            return new Location(world, x + .5, y + 1, z + .5);
+        }
+        return new Location(world, center.getBlockX() + .5,
+                world.getHighestBlockYAt(center.getBlockX(), center.getBlockZ()) + 1, center.getBlockZ() + .5);
+    }
+
+    /** The courier is deliberately conspicuous. He was previously invisible with his name hidden, which is
+     *  why nobody could find him even standing on the announced coordinates. He is now visible, named,
+     *  outlined, and has no AI -- so he stays exactly where the announcement says he is instead of
+     *  wandering off the moment somebody sets out to find him. */
+    private void spawnCourier() {
+        if (home == null || home.getWorld() == null) return;
+        WanderingTrader trader = home.getWorld().spawn(home, WanderingTrader.class,
                 org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM, t -> {
-            t.setInvisible(true);
             t.setSilent(true);
             t.setInvulnerable(true);
             t.setPersistent(true);
             t.setRemoveWhenFarAway(false);
             t.setDespawnDelay(Integer.MAX_VALUE);
+            t.setAI(false);
+            t.setCollidable(false);
+            t.setGlowing(true);
             t.customName(Component.text("The Task Master", NamedTextColor.LIGHT_PURPLE));
-            t.setCustomNameVisible(false);
+            t.setCustomNameVisible(true);
             t.getPersistentDataContainer().set(markerKey(), PersistentDataType.BYTE, (byte) 1);
         });
         traderId = trader.getUniqueId();
@@ -110,11 +151,19 @@ final class TaskMasterService implements Listener {
     /** Called on the event tick. Keeps the courier present without any scanning: it only ever looks up the
      *  one entity it spawned, by id. */
     void tick() {
-        if (traderId == null) return;
+        /** Expiry is checked BEFORE the courier is looked up. It used to be the other way round, which meant
+         *  an event whose courier sat in an unloaded chunk could never reach its own end time. */
+        if (System.currentTimeMillis() > endsAt) { end(); return; }
+        if (traderId == null || home == null) return;
+        if (!home.getWorld().isChunkLoaded(home.getBlockX() >> 4, home.getBlockZ() >> 4)) return;
         Entity trader = plugin.getServer().getEntity(traderId);
-        if (trader == null || !trader.isValid()) return;
-        if (System.currentTimeMillis() > endsAt) end();
+        /** Loaded chunk and no courier means something removed him. Put him back rather than leaving the
+         *  event running with nothing to walk up to. */
+        if (trader == null || !trader.isValid()) spawnCourier();
     }
+
+    /** Where the courier is standing, for the event's own status lines. */
+    Location location() { return home; }
 
     void end() {
         if (traderId != null) {
@@ -127,6 +176,7 @@ final class TaskMasterService implements Listener {
                     if (isTaskMaster(entity)) entity.remove();
         }
         traderId = null;
+        home = null;
         assigned.clear();
         completed.clear();
     }
