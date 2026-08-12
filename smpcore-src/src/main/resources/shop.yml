@@ -1,112 +1,145 @@
 items:
-  # SELL is the only authored price. BUY is DERIVED as exactly 5x sell at load time
-  # (shop.buy-multiple), so the two can never drift; editing a buy value by hand does nothing.
-  #
-  # Values are set by how hard something actually is to obtain in a survival world -- villager trades,
-  # mob and crop farms, renewability, structure loot, which dimension it is in, how much time it costs
-  # and how far it can be mass-produced -- not by its crafting recipe or how 'rare' it sounds. The two
-  # failure modes this is balanced against: pricing an AFK-farmable item highly turns it into a money
-  # printer, and pricing an awkward-to-obtain item cheaply means nobody ever sells it and the shop sits
-  # empty. Since the shop can now only resell what players sold it, an underpriced item is not a cheap
-  # deal, it is a permanently out-of-stock one.
-  #
-  # Scarce prestige resources -- diamonds, ancient debris, echo shards -- are deliberately NOT here. The
-  # normal shop is an outlet for things players can farm, gather or specialise in producing; putting a
-  # fixed price on a scarce progression resource would set a floor and a ceiling on it and pull that trade
-  # out of /ah, where it belongs. Valuable is fine when it is renewable: emeralds, gold, ghast tears and
-  # prismarine all stay.
-  #
-  # category drives the shop's default grouping and the filter buttons.
+  # Prices are MODELLED, not hand-picked. Each item is attributed to a production method with a realistic
+  # units/hour, each method has a target $/hour band set by how much build effort and risk it represents,
+  # and sell = target/hour divided by units/hour. Buy is always exactly 5x sell, derived at load.
+  # See reports/shop_balance_report.csv for the full derivation and reports/farm_comparison.csv for how
+  # the representative farms compare. Edit the model, not individual numbers.
 
-  # Effectively infinite. A generator or an AFK farm produces these faster than anyone can spend them, so the
-  # per-unit price has to stay near zero -- the money is in volume, and anything higher is a printing press.
-  DIRT: {buy: 0.25, sell: 0.05, daily-full: 4096, category: MINING}  # shovel work, infinite
-  SNOWBALL: {buy: 0.3, sell: 0.06, daily-full: 4096, category: MINING}  # snow golem farm, fully AFK
-  ROTTEN_FLESH: {buy: 0.5, sell: 0.1, daily-full: 4096, category: MOB_DROPS}  # zombie farm, near-zero demand
-  BAMBOO: {buy: 0.5, sell: 0.1, daily-full: 4096, category: FARMING}  # fastest-growing plant in the game
-  COBBLESTONE: {buy: 0.75, sell: 0.15, daily-full: 4096, category: MINING}  # cobble generator, infinite and AFK
-  WHEAT_SEEDS: {buy: 0.75, sell: 0.15, daily-full: 512, category: FARMING}  # byproduct of harvesting
-  BEETROOT_SEEDS: {buy: 0.75, sell: 0.15, daily-full: 512, category: FARMING}  # byproduct of harvesting
-  MELON_SEEDS: {buy: 0.75, sell: 0.15, daily-full: 512, category: FARMING}  # byproduct
-  PUMPKIN_SEEDS: {buy: 0.75, sell: 0.15, daily-full: 512, category: FARMING}  # byproduct
-  MELON_SLICE: {buy: 1, sell: 0.2, daily-full: 1024, category: FARMING}  # fully automatic, many slices per melon
-  DRIED_KELP: {buy: 1, sell: 0.2, daily-full: 1024, category: FARMING}  # AFK kelp farm plus a smelter
-  STONE: {buy: 1.5, sell: 0.3, daily-full: 4096, category: MINING}  # cobblestone plus fuel
+  # ---- WOOD ----
+  OAK_LOG: {buy: 9.5, sell: 1.9, daily-full: 4096, category: WOOD}  # Semi-automatic tree farm
+  SPRUCE_LOG: {buy: 9.5, sell: 1.9, daily-full: 4096, category: WOOD}  # Semi-automatic tree farm
+  BIRCH_LOG: {buy: 9.5, sell: 1.9, daily-full: 4096, category: WOOD}  # Semi-automatic tree farm
+  JUNGLE_LOG: {buy: 9.5, sell: 1.9, daily-full: 4096, category: WOOD}  # Semi-automatic tree farm
+  ACACIA_LOG: {buy: 9.5, sell: 1.9, daily-full: 4096, category: WOOD}  # Semi-automatic tree farm
+  DARK_OAK_LOG: {buy: 9.5, sell: 1.9, daily-full: 4096, category: WOOD}  # Semi-automatic tree farm
+  MANGROVE_LOG: {buy: 9.5, sell: 1.9, daily-full: 4096, category: WOOD}  # Semi-automatic tree farm
+  CHERRY_LOG: {buy: 11.9, sell: 2.38, daily-full: 2048, category: WOOD}  # Rare biome tree farm
+  PALE_OAK_LOG: {buy: 11.9, sell: 2.38, daily-full: 2048, category: WOOD}  # Rare biome tree farm
+  CRIMSON_STEM: {buy: 11.9, sell: 2.38, daily-full: 2048, category: WOOD}  # Nether fungus farm; bonemeal driven
+  WARPED_STEM: {buy: 11.9, sell: 2.38, daily-full: 2048, category: WOOD}  # Nether fungus farm; bonemeal driven
+  CHARCOAL: {buy: 11.9, sell: 2.38, daily-full: 2048, category: WOOD}  # Infinitely renewable from trees, so priced under coal
 
-  # Saplings and cactus: bulk output of tree and cactus farms, both fully automatable, so priced with the
-  # other easy renewables. Cherry, mangrove and pale oak sit slightly higher for being biome-gated; cactus
-  # lowest of all because a cactus farm is the most hands-off build in the game.
-  OAK_SAPLING: {buy: 2, sell: 0.4, daily-full: 1024, category: FARMING}
-  SPRUCE_SAPLING: {buy: 2, sell: 0.4, daily-full: 1024, category: FARMING}
-  BIRCH_SAPLING: {buy: 2, sell: 0.4, daily-full: 1024, category: FARMING}
-  JUNGLE_SAPLING: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
-  ACACIA_SAPLING: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
-  DARK_OAK_SAPLING: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
-  CHERRY_SAPLING: {buy: 4.5, sell: 0.9, daily-full: 512, category: FARMING}
-  MANGROVE_PROPAGULE: {buy: 3.5, sell: 0.7, daily-full: 512, category: FARMING}
-  PALE_OAK_SAPLING: {buy: 4.5, sell: 0.9, daily-full: 512, category: FARMING}
-  CACTUS: {buy: 1.75, sell: 0.35, daily-full: 2048, category: FARMING}
-  # Ordinary renewable farm output. Automatable with modest effort, so these stay cheap per unit, but they are
-  # the everyday items players will actually bulk-sell, which is what keeps the shop stocked at all.
-  EGG: {buy: 2.25, sell: 0.45, daily-full: 512, category: ANIMALS}  # chicken farm, fully automatic
-  FEATHER: {buy: 2.75, sell: 0.55, daily-full: 512, category: ANIMALS}  # chicken farm byproduct
-  GRAVEL: {buy: 3, sell: 0.6, daily-full: 1024, category: MINING}  # dug by hand, not farmable
-  BEETROOT: {buy: 3, sell: 0.6, daily-full: 512, category: FARMING}  # auto-farmable, weakest food
-  ARROW: {buy: 3, sell: 0.6, daily-full: 512, category: MOB_DROPS}  # fletcher trades and skeleton farms, but high combat demand
-  CARROT: {buy: 3.5, sell: 0.7, daily-full: 512, category: FARMING}  # auto-farmable staple
-  POTATO: {buy: 3.5, sell: 0.7, daily-full: 512, category: FARMING}  # auto-farmable staple
-  SPIDER_EYE: {buy: 3.75, sell: 0.75, daily-full: 1536, category: MOB_DROPS}  # cave spider farm, thin demand
-  WHEAT: {buy: 4, sell: 0.8, daily-full: 512, category: FARMING}  # auto-farmable staple
-  FLINT: {buy: 4, sell: 0.8, daily-full: 512, category: MINING}  # gravel-gated, needed for arrows
-  CLAY_BALL: {buy: 4.5, sell: 0.9, daily-full: 1024, category: MINING}  # hand-dug, no farm exists
-  SUGAR_CANE: {buy: 4.5, sell: 0.9, daily-full: 1024, category: FARMING}  # the classic AFK farm; enormous throughput
-  PUMPKIN: {buy: 5, sell: 1, daily-full: 512, category: FARMING}  # fully automatic
-  BONE: {buy: 5.5, sell: 1.1, daily-full: 1024, category: MOB_DROPS}  # skeleton farm, heavy bonemeal demand
-  COPPER_INGOT: {buy: 5.5, sell: 1.1, daily-full: 1024, category: MINING}  # over-abundant, little to spend it on
-  COOKED_CHICKEN: {buy: 6, sell: 1.2, daily-full: 512, category: ANIMALS}  # chicken farms are fully automatic
-  OAK_LOG: {buy: 6, sell: 1.2, daily-full: 1024, category: WOOD}  # semi-automatic tree farm
-  SPRUCE_LOG: {buy: 6, sell: 1.2, daily-full: 1024, category: WOOD}  # semi-automatic tree farm
-  BIRCH_LOG: {buy: 6, sell: 1.2, daily-full: 1024, category: WOOD}  # semi-automatic tree farm
-  COCOA_BEANS: {buy: 6, sell: 1.2, daily-full: 512, category: FARMING}  # jungle-gated but automatable
-  INK_SAC: {buy: 6.5, sell: 1.3, daily-full: 512, category: ANIMALS}  # squid farm, moderate build
+  # ---- MINING ----
+  DIRT: {buy: 0.6, sell: 0.12, daily-full: 8192, category: MINING}  # Shovel work; effectively unlimited
+  SNOWBALL: {buy: 0.7, sell: 0.14, daily-full: 8192, category: MINING}  # Snow golem farm, infinite
+  NETHERRACK: {buy: 1.1, sell: 0.22, daily-full: 8192, category: MINING}  # Nether bulk; effectively unlimited
+  COBBLESTONE: {buy: 1.4, sell: 0.28, daily-full: 8192, category: MINING}  # Cobblestone generator, infinite
+  ANDESITE: {buy: 1.5, sell: 0.3, daily-full: 8192, category: MINING}  # Cave mining byproduct
+  DIORITE: {buy: 1.5, sell: 0.3, daily-full: 8192, category: MINING}  # Cave mining byproduct
+  GRANITE: {buy: 1.5, sell: 0.3, daily-full: 8192, category: MINING}  # Cave mining byproduct
+  GOLD_NUGGET: {buy: 1.65, sell: 0.33, daily-full: 8192, category: MINING}  # Gold farm byproduct; nine to an ingot
+  DEEPSLATE: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining byproduct
+  TUFF: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining byproduct
+  BASALT: {buy: 1.85, sell: 0.37, daily-full: 8192, category: MINING}  # Basalt generator, fully AFK
+  MUD: {buy: 2.05, sell: 0.41, daily-full: 4096, category: MINING}  # Mangrove swamp
+  STONE: {buy: 2.75, sell: 0.55, daily-full: 8192, category: MINING}  # Cobblestone plus fuel
+  END_STONE: {buy: 3.05, sell: 0.61, daily-full: 8192, category: MINING}  # End bulk
+  DRIPSTONE_BLOCK: {buy: 3.55, sell: 0.71, daily-full: 4096, category: MINING}  # Dripstone caves
+  BLACKSTONE: {buy: 3.85, sell: 0.77, daily-full: 8192, category: MINING}  # Basalt deltas
+  CALCITE: {buy: 4.55, sell: 0.91, daily-full: 4096, category: MINING}  # Geode shell
+  GRAVEL: {buy: 4.75, sell: 0.95, daily-full: 8192, category: MINING}  # Dug by hand; not farmable
+  TERRACOTTA: {buy: 5.55, sell: 1.11, daily-full: 4096, category: MINING}  # Badlands mining or kiln
+  PODZOL: {buy: 5.6, sell: 1.12, daily-full: 2048, category: MINING}  # Taiga only; silk touch
+  MOSS_BLOCK: {buy: 6, sell: 1.2, daily-full: 2048, category: MINING}  # Lush caves or wandering trader
+  ICE: {buy: 6.05, sell: 1.21, daily-full: 4096, category: MINING}  # Silk touch harvesting
+  MAGMA_BLOCK: {buy: 6.05, sell: 1.21, daily-full: 4096, category: MINING}  # Nether harvesting
+  CLAY_BALL: {buy: 7.15, sell: 1.43, daily-full: 4096, category: MINING}  # Hand-dug riverbeds; no farm exists
+  SHROOMLIGHT: {buy: 7.9, sell: 1.58, daily-full: 1536, category: MINING}  # Huge nether fungus; hand harvested
+  RAW_COPPER: {buy: 8, sell: 1.6, daily-full: 4096, category: MINING}  # Mined ore; over-abundant
+  COPPER_INGOT: {buy: 8, sell: 1.6, daily-full: 4096, category: MINING}  # Over-abundant, little to spend it on
+  FLINT: {buy: 9.1, sell: 1.82, daily-full: 4096, category: MINING}  # Gravel gated; needed for arrows
+  SAND: {buy: 10.55, sell: 2.11, daily-full: 8192, category: MINING}  # Not renewable; glass, concrete and TNT all eat it
+  RED_SAND: {buy: 10.55, sell: 2.11, daily-full: 4096, category: MINING}  # Badlands only
+  SOUL_SAND: {buy: 10.55, sell: 2.11, daily-full: 4096, category: MINING}  # Nether only; withers and bubble elevators
+  SOUL_SOIL: {buy: 10.55, sell: 2.11, daily-full: 4096, category: MINING}  # Soul sand valley
+  REDSTONE: {buy: 13, sell: 2.6, daily-full: 3072, category: MINING}  # Abundant in caves; permanent demand
+  RAW_GOLD: {buy: 15.15, sell: 3.03, daily-full: 2048, category: MINING}  # Mined ore; smelts one-for-one into ingots
+  PACKED_ICE: {buy: 15.15, sell: 3.03, daily-full: 2048, category: MINING}  # Nine ice, or glacier mining
+  GLASS: {buy: 15.4, sell: 3.08, daily-full: 4096, category: MINING}  # Sand plus fuel, so above sand
+  COAL: {buy: 15.85, sell: 3.17, daily-full: 3072, category: MINING}  # Mined only; no farm produces it
+  LAPIS_LAZULI: {buy: 15.85, sell: 3.17, daily-full: 3072, category: MINING}  # Enchanting keeps demand permanent
+  QUARTZ: {buy: 15.85, sell: 3.17, daily-full: 3072, category: MINING}  # Nether trip, abundant once there
+  GLOWSTONE_DUST: {buy: 16, sell: 3.2, daily-full: 3072, category: MINING}  # Nether ceiling harvesting or a witch farm
+  GOLD_INGOT: {buy: 17.85, sell: 3.57, daily-full: 3072, category: MINING}  # Nether gold farm; huge throughput, serious build
+  AMETHYST_SHARD: {buy: 17.85, sell: 3.57, daily-full: 2048, category: MINING}  # Geodes regrow slowly and cannot be sped up
+  RAW_IRON: {buy: 23.8, sell: 4.76, daily-full: 3072, category: MINING}  # Mined ore; smelts one-for-one into ingots
+  IRON_INGOT: {buy: 55, sell: 11, daily-full: 8192, category: MINING}  # Iron golem farm; premium infrastructure
+  OBSIDIAN: {buy: 70, sell: 14, daily-full: 1024, category: MINING}  # Diamond pickaxe and nine seconds a block
+  EMERALD: {buy: 80, sell: 16, daily-full: 1536, category: MINING}  # Villager trading hall or raid farm; the trading economy
+  DIAMOND: {buy: 200, sell: 40, daily-full: 512, category: MINING}  # Still mined by hand; the benchmark of a survival economy
 
-  # Needs infrastructure, a trip somewhere dangerous, or is not renewable at all. Worth building or travelling
-  # for, and worth selling.
-  SAND: {buy: 7.5, sell: 1.5, daily-full: 1024, category: MINING}  # not renewable; glass, concrete and TNT all consume it
-  SOUL_SAND: {buy: 8, sell: 1.6, daily-full: 512, category: MINING}  # nether-only; withers and bubble elevators
-  CHARCOAL: {buy: 9, sell: 1.8, daily-full: 768, category: WOOD}  # infinitely renewable from trees, so priced UNDER coal
-  STRING: {buy: 9, sell: 1.8, daily-full: 768, category: MOB_DROPS}  # spider farm or cobweb collection
-  HONEYCOMB: {buy: 10, sell: 2, daily-full: 384, category: ANIMALS}  # bee farm; a real build
-  REDSTONE: {buy: 10, sell: 2, daily-full: 1024, category: MINING}  # abundant in caves, steady demand
-  COOKED_BEEF: {buy: 11, sell: 2.2, daily-full: 512, category: ANIMALS}  # cow farm; best ordinary saturation
-  GLASS: {buy: 11.25, sell: 2.25, daily-full: 1024, category: MINING}  # sand plus fuel, so above sand
-  LEATHER: {buy: 12.5, sell: 2.5, daily-full: 512, category: ANIMALS}  # cow farms and villager trades both supply it easily
-  BREAD: {buy: 12.5, sell: 2.5, daily-full: 256, category: FARMING}  # three wheat plus the crafting step
-  COAL: {buy: 12.5, sell: 2.5, daily-full: 768, category: MINING}  # mined only; no farm produces it
-  LAPIS_LAZULI: {buy: 12.5, sell: 2.5, daily-full: 768, category: MINING}  # enchanting keeps demand permanent
-  QUARTZ: {buy: 12.5, sell: 2.5, daily-full: 768, category: MINING}  # nether trip, abundant once there
-  GLOWSTONE_DUST: {buy: 13, sell: 2.6, daily-full: 512, category: MINING}  # nether ceiling harvesting or witch farms
-  AMETHYST_SHARD: {buy: 14, sell: 2.8, daily-full: 384, category: MINING}  # geodes regrow slowly and cannot be sped up
-  NETHER_WART: {buy: 15, sell: 3, daily-full: 300, category: FARMING}  # fortress or bastion gated; the whole brewing tree needs it
-  PRISMARINE_SHARD: {buy: 15, sell: 3, daily-full: 512, category: MOB_DROPS}  # guardian farm is a major ocean-monument build
-  GOLD_INGOT: {buy: 16, sell: 3.2, daily-full: 768, category: MINING}  # gold farms have huge throughput but a serious nether build
-  APPLE: {buy: 17.5, sell: 3.5, daily-full: 256, category: FARMING}  # leaf decay only; there is no efficient apple farm
-  PRISMARINE_CRYSTALS: {buy: 19, sell: 3.8, daily-full: 512, category: MOB_DROPS}  # rarer half of the guardian drop table
-  MAGMA_CREAM: {buy: 20, sell: 4, daily-full: 768, category: MOB_DROPS}  # nether-gated magma cube farm
+  # ---- FARMING ----
+  WHEAT_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct of every wheat harvest
+  BEETROOT_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct
+  MELON_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct
+  PUMPKIN_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct
+  BAMBOO: {buy: 1.7, sell: 0.34, daily-full: 8192, category: FARMING}  # Bamboo farm; fastest-growing plant, fully AFK
+  MELON_SLICE: {buy: 1.9, sell: 0.38, daily-full: 8192, category: FARMING}  # Melon farm; many slices per melon
+  DRIED_KELP: {buy: 2.75, sell: 0.55, daily-full: 8192, category: FARMING}  # AFK kelp farm plus a smelter array
+  VINE: {buy: 3, sell: 0.6, daily-full: 4096, category: FARMING}  # Jungle harvesting; no real farm
+  SUGAR: {buy: 3.05, sell: 0.61, daily-full: 8192, category: FARMING}  # Crafted down from cane; strictly a downgrade
+  SWEET_BERRIES: {buy: 3.7, sell: 0.74, daily-full: 4096, category: FARMING}  # Berry bush rows; hand or machine harvested
+  BEETROOT: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Automatic beetroot farm; weakest crop use
+  OAK_SAPLING: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Tree farm byproduct
+  SPRUCE_SAPLING: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Tree farm byproduct
+  BIRCH_SAPLING: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Tree farm byproduct
+  BROWN_MUSHROOM: {buy: 3.9, sell: 0.78, daily-full: 4096, category: FARMING}  # Mushroom farm, dark room
+  RED_MUSHROOM: {buy: 3.9, sell: 0.78, daily-full: 4096, category: FARMING}  # Mushroom farm, dark room
+  JUNGLE_SAPLING: {buy: 4.4, sell: 0.88, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
+  ACACIA_SAPLING: {buy: 4.4, sell: 0.88, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
+  DARK_OAK_SAPLING: {buy: 4.4, sell: 0.88, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
+  CACTUS: {buy: 4.6, sell: 0.92, daily-full: 8192, category: FARMING}  # Cactus farm; the most hands-off build in the game
+  WHEAT: {buy: 5.1, sell: 1.02, daily-full: 4096, category: FARMING}  # Automatic wheat farm
+  CARROT: {buy: 5.4, sell: 1.08, daily-full: 4096, category: FARMING}  # Automatic carrot farm
+  POTATO: {buy: 5.4, sell: 1.08, daily-full: 4096, category: FARMING}  # Automatic potato farm
+  LILY_PAD: {buy: 5.6, sell: 1.12, daily-full: 2048, category: FARMING}  # Swamp gathering by boat
+  GLOW_BERRIES: {buy: 6, sell: 1.2, daily-full: 2048, category: FARMING}  # Cave vines; slow and biome gated
+  MANGROVE_PROPAGULE: {buy: 6.25, sell: 1.25, daily-full: 2048, category: FARMING}  # Swamp gated
+  PUMPKIN: {buy: 7.25, sell: 1.45, daily-full: 2048, category: FARMING}  # Pumpkin farm; one block per plant
+  SUGAR_CANE: {buy: 7.85, sell: 1.57, daily-full: 4096, category: FARMING}  # Classic AFK cane farm
+  SEA_PICKLE: {buy: 8.2, sell: 1.64, daily-full: 1536, category: FARMING}  # Reef gathering, breedable but slow
+  CHERRY_SAPLING: {buy: 8.35, sell: 1.67, daily-full: 2048, category: FARMING}  # Rare biome
+  PALE_OAK_SAPLING: {buy: 8.35, sell: 1.67, daily-full: 2048, category: FARMING}  # Rare biome
+  COCOA_BEANS: {buy: 9.45, sell: 1.89, daily-full: 2048, category: FARMING}  # Jungle cocoa farm
+  CHORUS_FRUIT: {buy: 10.75, sell: 2.15, daily-full: 2048, category: FARMING}  # End chorus farm; requires End access
+  BREAD: {buy: 19.45, sell: 3.89, daily-full: 1024, category: FARMING}  # Three wheat plus the crafting step
+  NETHER_WART: {buy: 21.2, sell: 4.24, daily-full: 1536, category: FARMING}  # Fortress/bastion gated; the whole brewing tree needs it
+  APPLE: {buy: 25, sell: 5, daily-full: 1024, category: FARMING}  # Leaf decay only; no efficient apple farm exists
 
-  # Expensive to produce and in constant demand. These are the items worth a dedicated farm or an expedition,
-  # and the ones the shop should pay well for so its shelves are not permanently empty.
-  SLIME_BALL: {buy: 27.5, sell: 5.5, daily-full: 512, category: MOB_DROPS}  # slime chunk or swamp farm; sticky pistons and leads
-  GUNPOWDER: {buy: 32.5, sell: 6.5, daily-full: 512, category: MOB_DROPS}  # creeper farms are genuinely hard; rockets and TNT
-  EMERALD: {buy: 35, sell: 7, daily-full: 512, category: MINING}  # the villager trading economy in one item
-  IRON_INGOT: {buy: 40, sell: 8, daily-full: 20000, category: MINING}  # golem farms are premium infrastructure, but they mass-produce
-  TURTLE_SCUTE: {buy: 40, sell: 8, daily-full: 128, category: ANIMALS}  # one scute per growth cycle; painfully slow
-  ENDER_PEARL: {buy: 50, sell: 10, daily-full: 256, category: MOB_DROPS}  # End enderman farm; travel and eyes of ender
-  PHANTOM_MEMBRANE: {buy: 60, sell: 12, daily-full: 384, category: MOB_DROPS}  # cannot be farmed conventionally; elytra repair
-  BLAZE_ROD: {buy: 60, sell: 12, daily-full: 256, category: MOB_DROPS}  # fortress spawner and real risk; brewing and eyes
-  NAUTILUS_SHELL: {buy: 60, sell: 12, daily-full: 64, category: MOB_DROPS}  # drowned drops and fishing; no reliable farm
-  OBSIDIAN: {buy: 70, sell: 14, daily-full: 256, category: MINING}  # diamond pickaxe and nine seconds a block, or a portal teardown
-  GHAST_TEAR: {buy: 110, sell: 22, daily-full: 64, category: MOB_DROPS}  # ghasts are awkward to farm and drop one at a time
+  # ---- ANIMALS ----
+  EGG: {buy: 1.4, sell: 0.28, daily-full: 4096, category: ANIMALS}  # Chicken farm, fully automatic
+  FEATHER: {buy: 1.6, sell: 0.32, daily-full: 4096, category: ANIMALS}  # Chicken farm byproduct
+  COOKED_CHICKEN: {buy: 3.15, sell: 0.63, daily-full: 2048, category: ANIMALS}  # Chicken farm, fully automatic
+  RABBIT_HIDE: {buy: 6, sell: 1.2, daily-full: 2048, category: ANIMALS}  # Rabbit breeder
+  COOKED_BEEF: {buy: 7.5, sell: 1.5, daily-full: 2048, category: ANIMALS}  # Cow farm; best ordinary saturation
+  LEATHER: {buy: 8, sell: 1.6, daily-full: 2048, category: ANIMALS}  # Cow breeder; also villager trades
+  COOKED_COD: {buy: 8.05, sell: 1.61, daily-full: 2048, category: ANIMALS}  # Fished or from a drowned/guardian farm
+  HONEY_BOTTLE: {buy: 10.65, sell: 2.13, daily-full: 1024, category: ANIMALS}  # Bee farm with bottle automation
+  HONEYCOMB: {buy: 10.65, sell: 2.13, daily-full: 1536, category: ANIMALS}  # Bee farm; a real build
+  INK_SAC: {buy: 10.9, sell: 2.18, daily-full: 4096, category: ANIMALS}  # Squid farm; a real build
+  COOKED_SALMON: {buy: 11, sell: 2.2, daily-full: 2048, category: ANIMALS}  # Fished
+  COOKED_MUTTON: {buy: 12.95, sell: 2.59, daily-full: 2048, category: ANIMALS}  # Sheep breeder
+  COOKED_PORKCHOP: {buy: 15, sell: 3, daily-full: 2048, category: ANIMALS}  # Pig breeder
+  GLOW_INK_SAC: {buy: 20, sell: 4, daily-full: 2048, category: ANIMALS}  # Glow squid farm, deep cave
+  RABBIT_FOOT: {buy: 45.45, sell: 9.09, daily-full: 512, category: ANIMALS}  # Uncommon rabbit drop; brewing demand
+  TURTLE_SCUTE: {buy: 70, sell: 14, daily-full: 256, category: ANIMALS}  # One scute per growth cycle; painfully slow
+
+  # ---- MOB_DROPS ----
+  SPIDER_EYE: {buy: 2.2, sell: 0.44, daily-full: 2048, category: MOB_DROPS}  # Spider spawner; thin demand
+  ARROW: {buy: 2.65, sell: 0.53, daily-full: 4096, category: MOB_DROPS}  # Skeleton spawner or fletcher trades
+  ROTTEN_FLESH: {buy: 7.85, sell: 1.57, daily-full: 8192, category: MOB_DROPS}  # Zombie spawner; poorest drop table, near-zero demand
+  BONE: {buy: 8.05, sell: 1.61, daily-full: 4096, category: MOB_DROPS}  # Skeleton spawner; heavy bonemeal demand
+  STRING: {buy: 11.75, sell: 2.35, daily-full: 4096, category: MOB_DROPS}  # Spider/cave spider spawner
+  PRISMARINE_CRYSTALS: {buy: 16.35, sell: 3.27, daily-full: 1536, category: MOB_DROPS}  # Rarer half of the guardian drop table
+  MAGMA_CREAM: {buy: 27.45, sell: 5.49, daily-full: 1536, category: MOB_DROPS}  # Magma cube spawner, nether gated
+  PRISMARINE_SHARD: {buy: 28, sell: 5.6, daily-full: 2048, category: MOB_DROPS}  # Guardian farm; a major ocean monument build
+  SLIME_BALL: {buy: 45.3, sell: 9.06, daily-full: 2048, category: MOB_DROPS}  # Slime chunk or swamp farm; sticky pistons and leads
+  BLAZE_ROD: {buy: 60, sell: 12, daily-full: 1536, category: MOB_DROPS}  # Blaze spawner; best ordinary spawner drop
+  ENDER_PEARL: {buy: 70, sell: 14, daily-full: 1024, category: MOB_DROPS}  # End enderman farm; travel and eyes of ender
+  PHANTOM_MEMBRANE: {buy: 90, sell: 18, daily-full: 512, category: MOB_DROPS}  # Cannot be farmed conventionally; elytra repair
+  NAUTILUS_SHELL: {buy: 90, sell: 18, daily-full: 384, category: MOB_DROPS}  # Drowned drops and fishing; no reliable farm
+  GUNPOWDER: {buy: 130, sell: 26, daily-full: 1024, category: MOB_DROPS}  # Creeper farm; no spawner exists, large dedicated build
+  GHAST_TEAR: {buy: 145, sell: 29, daily-full: 256, category: MOB_DROPS}  # Ghasts are awkward to farm and drop one at a time
 
 luxuries:
   NAME_TAG:

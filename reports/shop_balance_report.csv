@@ -1,0 +1,140 @@
+Material,Category,Old sell,New sell,Derived buy (5x),Daily-full,Primary acquisition,Modeled output/hour,Modeled $/hour,Justification
+CHERRY_LOG,WOOD,2.38,2.38,11.9,2048,"Semi-automatic tree farm, needs replanting or a machine",6300,14994,Rare biome tree farm
+PALE_OAK_LOG,WOOD,2.38,2.38,11.9,2048,"Semi-automatic tree farm, needs replanting or a machine",6300,14994,Rare biome tree farm
+CRIMSON_STEM,WOOD,2.38,2.38,11.9,2048,"Semi-automatic tree farm, needs replanting or a machine",6300,14994,Nether fungus farm; bonemeal driven
+WARPED_STEM,WOOD,2.38,2.38,11.9,2048,"Semi-automatic tree farm, needs replanting or a machine",6300,14994,Nether fungus farm; bonemeal driven
+CHARCOAL,WOOD,2.38,2.38,11.9,2048,"Semi-automatic tree farm, needs replanting or a machine",6300,14994,"Infinitely renewable from trees, so priced under coal"
+OAK_LOG,WOOD,1.9,1.9,9.5,4096,"Semi-automatic tree farm, needs replanting or a machine",7900,15010,Semi-automatic tree farm
+SPRUCE_LOG,WOOD,1.9,1.9,9.5,4096,"Semi-automatic tree farm, needs replanting or a machine",7900,15010,Semi-automatic tree farm
+BIRCH_LOG,WOOD,1.9,1.9,9.5,4096,"Semi-automatic tree farm, needs replanting or a machine",7900,15010,Semi-automatic tree farm
+JUNGLE_LOG,WOOD,1.9,1.9,9.5,4096,"Semi-automatic tree farm, needs replanting or a machine",7900,15010,Semi-automatic tree farm
+ACACIA_LOG,WOOD,1.9,1.9,9.5,4096,"Semi-automatic tree farm, needs replanting or a machine",7900,15010,Semi-automatic tree farm
+DARK_OAK_LOG,WOOD,1.9,1.9,9.5,4096,"Semi-automatic tree farm, needs replanting or a machine",7900,15010,Semi-automatic tree farm
+MANGROVE_LOG,WOOD,1.9,1.9,9.5,4096,"Semi-automatic tree farm, needs replanting or a machine",7900,15010,Semi-automatic tree farm
+DIAMOND,MINING,40,40.0,200.0,512,"Branch/cave mining, non-renewable, tool wear",500,20000,Still mined by hand; the benchmark of a survival economy
+EMERALD,MINING,16,16.0,80.0,1536,Raid farm or villager trading hall infrastructure,3200,51200,Villager trading hall or raid farm; the trading economy
+OBSIDIAN,MINING,14,14.0,70.0,1024,"Branch/cave mining, non-renewable, tool wear",1450,20300,Diamond pickaxe and nine seconds a block
+IRON_INGOT,MINING,11,11.0,55.0,8192,"Large purpose-built vanilla farm, major investment",4400,48400,Iron golem farm; premium infrastructure
+RAW_IRON,MINING,9.52,4.76,23.8,3072,"Branch/cave mining, non-renewable, tool wear",2100,9996,Mined ore; smelts one-for-one into ingots
+GOLD_INGOT,MINING,6.49,3.57,17.85,3072,"Large purpose-built vanilla farm, major investment",7400,26418,"Nether gold farm; huge throughput, serious build"
+AMETHYST_SHARD,MINING,3.57,3.57,17.85,2048,"Branch/cave mining, non-renewable, tool wear",5600,19992,Geodes regrow slowly and cannot be sped up
+GLOWSTONE_DUST,MINING,3.2,3.2,16.0,3072,"Large purpose-built vanilla farm, major investment",15000,48000,Nether ceiling harvesting or a witch farm
+COAL,MINING,3.17,3.17,15.85,3072,"Branch/cave mining, non-renewable, tool wear",6300,19971,Mined only; no farm produces it
+LAPIS_LAZULI,MINING,3.17,3.17,15.85,3072,"Branch/cave mining, non-renewable, tool wear",6300,19971,Enchanting keeps demand permanent
+QUARTZ,MINING,3.17,3.17,15.85,3072,"Branch/cave mining, non-renewable, tool wear",6300,19971,"Nether trip, abundant once there"
+GLASS,MINING,3.08,3.08,15.4,4096,"Branch/cave mining, non-renewable, tool wear",6500,20020,"Sand plus fuel, so above sand"
+RAW_GOLD,MINING,6.06,3.03,15.15,2048,"Branch/cave mining, non-renewable, tool wear",3300,9999,Mined ore; smelts one-for-one into ingots
+PACKED_ICE,MINING,3.03,3.03,15.15,2048,"Branch/cave mining, non-renewable, tool wear",6600,19998,"Nine ice, or glacier mining"
+REDSTONE,MINING,2.6,2.6,13.0,3072,"Branch/cave mining, non-renewable, tool wear",7700,20020,Abundant in caves; permanent demand
+SAND,MINING,2.11,2.11,10.55,8192,"Branch/cave mining, non-renewable, tool wear",9500,20045,"Not renewable; glass, concrete and TNT all eat it"
+RED_SAND,MINING,2.11,2.11,10.55,4096,"Branch/cave mining, non-renewable, tool wear",9500,20045,Badlands only
+SOUL_SAND,MINING,2.11,2.11,10.55,4096,"Branch/cave mining, non-renewable, tool wear",9500,20045,Nether only; withers and bubble elevators
+SOUL_SOIL,MINING,2.11,2.11,10.55,4096,"Branch/cave mining, non-renewable, tool wear",9500,20045,Soul sand valley
+FLINT,MINING,1.82,1.82,9.1,4096,"Branch/cave mining, non-renewable, tool wear",11000,20020,Gravel gated; needed for arrows
+RAW_COPPER,MINING,1.6,1.6,8.0,4096,"Branch/cave mining, non-renewable, tool wear",12500,20000,Mined ore; over-abundant
+COPPER_INGOT,MINING,1.6,1.6,8.0,4096,"Branch/cave mining, non-renewable, tool wear",12500,20000,"Over-abundant, little to spend it on"
+SHROOMLIGHT,MINING,1.58,1.58,7.9,1536,"Hand-gathered, no farm exists, time-gated by travel",5700,9006,Huge nether fungus; hand harvested
+CLAY_BALL,MINING,1.43,1.43,7.15,4096,"Branch/cave mining, non-renewable, tool wear",14000,20020,Hand-dug riverbeds; no farm exists
+ICE,MINING,1.21,1.21,6.05,4096,"Branch/cave mining, non-renewable, tool wear",16500,19965,Silk touch harvesting
+MAGMA_BLOCK,MINING,1.21,1.21,6.05,4096,"Branch/cave mining, non-renewable, tool wear",16500,19965,Nether harvesting
+MOSS_BLOCK,MINING,1.2,1.2,6.0,2048,"Hand-gathered, no farm exists, time-gated by travel",7500,9000,Lush caves or wandering trader
+PODZOL,MINING,1.12,1.12,5.6,2048,"Hand-gathered, no farm exists, time-gated by travel",8000,8960,Taiga only; silk touch
+TERRACOTTA,MINING,1.11,1.11,5.55,4096,"Branch/cave mining, non-renewable, tool wear",18000,19980,Badlands mining or kiln
+GRAVEL,MINING,0.95,0.95,4.75,8192,"Branch/cave mining, non-renewable, tool wear",21000,19950,Dug by hand; not farmable
+CALCITE,MINING,0.91,0.91,4.55,4096,"Branch/cave mining, non-renewable, tool wear",22000,20020,Geode shell
+BLACKSTONE,MINING,0.77,0.77,3.85,8192,"Branch/cave mining, non-renewable, tool wear",26000,20020,Basalt deltas
+DRIPSTONE_BLOCK,MINING,0.71,0.71,3.55,4096,"Branch/cave mining, non-renewable, tool wear",28000,19880,Dripstone caves
+END_STONE,MINING,0.61,0.61,3.05,8192,"Branch/cave mining, non-renewable, tool wear",33000,20130,End bulk
+STONE,MINING,0.55,0.55,2.75,8192,"Fully AFK, one-block-tick farm, near-zero build cost",20000,11000,Cobblestone plus fuel
+MUD,MINING,0.41,0.41,2.05,4096,"Hand-gathered, no farm exists, time-gated by travel",22000,9020,Mangrove swamp
+BASALT,MINING,0.37,0.37,1.85,8192,"Fully AFK, one-block-tick farm, near-zero build cost",30000,11100,"Basalt generator, fully AFK"
+DEEPSLATE,MINING,0.35,0.35,1.75,8192,"Branch/cave mining, non-renewable, tool wear",57000,19950,Deep cave mining byproduct
+TUFF,MINING,0.35,0.35,1.75,8192,"Branch/cave mining, non-renewable, tool wear",57000,19950,Deep cave mining byproduct
+GOLD_NUGGET,MINING,0.73,0.33,1.65,8192,"Large purpose-built vanilla farm, major investment",66000,21780,Gold farm byproduct; nine to an ingot
+ANDESITE,MINING,0.3,0.3,1.5,8192,"Branch/cave mining, non-renewable, tool wear",66000,19800,Cave mining byproduct
+DIORITE,MINING,0.3,0.3,1.5,8192,"Branch/cave mining, non-renewable, tool wear",66000,19800,Cave mining byproduct
+GRANITE,MINING,0.3,0.3,1.5,8192,"Branch/cave mining, non-renewable, tool wear",66000,19800,Cave mining byproduct
+COBBLESTONE,MINING,0.28,0.28,1.4,8192,"Fully AFK, one-block-tick farm, near-zero build cost",40000,11200,"Cobblestone generator, infinite"
+NETHERRACK,MINING,0.22,0.22,1.1,8192,"Branch/cave mining, non-renewable, tool wear",90000,19800,Nether bulk; effectively unlimited
+SNOWBALL,MINING,0.14,0.14,0.7,8192,"Fully AFK, one-block-tick farm, near-zero build cost",80000,11200,"Snow golem farm, infinite"
+DIRT,MINING,0.12,0.12,0.6,8192,"Fully AFK, one-block-tick farm, near-zero build cost",90000,10800,Shovel work; effectively unlimited
+APPLE,FARMING,5,5.0,25.0,1024,"Semi-automatic tree farm, needs replanting or a machine",3000,15000,Leaf decay only; no efficient apple farm exists
+NETHER_WART,FARMING,4.24,4.24,21.2,1536,"Automatic crop farm, observer/piston, moderate build",3300,13992,Fortress/bastion gated; the whole brewing tree needs it
+BREAD,FARMING,3.89,3.89,19.45,1024,"Automatic crop farm, observer/piston, moderate build",3600,14004,Three wheat plus the crafting step
+CHORUS_FRUIT,FARMING,2.15,2.15,10.75,2048,"Automatic crop farm, observer/piston, moderate build",6500,13975,End chorus farm; requires End access
+COCOA_BEANS,FARMING,1.89,1.89,9.45,2048,"Automatic crop farm, observer/piston, moderate build",7400,13986,Jungle cocoa farm
+CHERRY_SAPLING,FARMING,1.67,1.67,8.35,2048,"Semi-automatic tree farm, needs replanting or a machine",9000,15030,Rare biome
+PALE_OAK_SAPLING,FARMING,1.67,1.67,8.35,2048,"Semi-automatic tree farm, needs replanting or a machine",9000,15030,Rare biome
+SEA_PICKLE,FARMING,1.64,1.64,8.2,1536,"Hand-gathered, no farm exists, time-gated by travel",5500,9020,"Reef gathering, breedable but slow"
+SUGAR_CANE,FARMING,1.57,1.57,7.85,4096,"Fully AFK, one-block-tick farm, near-zero build cost",7000,10990,Classic AFK cane farm
+PUMPKIN,FARMING,1.71,1.45,7.25,2048,"Automatic crop farm, observer/piston, moderate build",8200,11890,Pumpkin farm; one block per plant
+MANGROVE_PROPAGULE,FARMING,1.25,1.25,6.25,2048,"Semi-automatic tree farm, needs replanting or a machine",12000,15000,Swamp gated
+GLOW_BERRIES,FARMING,1.2,1.2,6.0,2048,"Hand-gathered, no farm exists, time-gated by travel",7500,9000,Cave vines; slow and biome gated
+LILY_PAD,FARMING,1.12,1.12,5.6,2048,"Hand-gathered, no farm exists, time-gated by travel",8000,8960,Swamp gathering by boat
+CARROT,FARMING,1.08,1.08,5.4,4096,"Automatic crop farm, observer/piston, moderate build",13000,14040,Automatic carrot farm
+POTATO,FARMING,1.08,1.08,5.4,4096,"Automatic crop farm, observer/piston, moderate build",13000,14040,Automatic potato farm
+WHEAT,FARMING,1.27,1.02,5.1,4096,"Automatic crop farm, observer/piston, moderate build",11000,11220,Automatic wheat farm
+CACTUS,FARMING,0.92,0.92,4.6,8192,"Fully AFK, one-block-tick farm, near-zero build cost",12000,11040,Cactus farm; the most hands-off build in the game
+JUNGLE_SAPLING,FARMING,0.88,0.88,4.4,4096,"Semi-automatic tree farm, needs replanting or a machine",17000,14960,Tree farm byproduct; biome gated
+ACACIA_SAPLING,FARMING,0.88,0.88,4.4,4096,"Semi-automatic tree farm, needs replanting or a machine",17000,14960,Tree farm byproduct; biome gated
+DARK_OAK_SAPLING,FARMING,0.88,0.88,4.4,4096,"Semi-automatic tree farm, needs replanting or a machine",17000,14960,Tree farm byproduct; biome gated
+BROWN_MUSHROOM,FARMING,0.78,0.78,3.9,4096,"Automatic crop farm, observer/piston, moderate build",18000,14040,"Mushroom farm, dark room"
+RED_MUSHROOM,FARMING,0.78,0.78,3.9,4096,"Automatic crop farm, observer/piston, moderate build",18000,14040,"Mushroom farm, dark room"
+BEETROOT,FARMING,0.93,0.75,3.75,4096,"Automatic crop farm, observer/piston, moderate build",15000,11250,Automatic beetroot farm; weakest crop use
+OAK_SAPLING,FARMING,0.75,0.75,3.75,4096,"Semi-automatic tree farm, needs replanting or a machine",20000,15000,Tree farm byproduct
+SPRUCE_SAPLING,FARMING,0.75,0.75,3.75,4096,"Semi-automatic tree farm, needs replanting or a machine",20000,15000,Tree farm byproduct
+BIRCH_SAPLING,FARMING,0.75,0.75,3.75,4096,"Semi-automatic tree farm, needs replanting or a machine",20000,15000,Tree farm byproduct
+SWEET_BERRIES,FARMING,0.74,0.74,3.7,4096,"Automatic crop farm, observer/piston, moderate build",19000,14060,Berry bush rows; hand or machine harvested
+SUGAR,FARMING,0.61,0.61,3.05,8192,"Fully AFK, one-block-tick farm, near-zero build cost",18000,10980,Crafted down from cane; strictly a downgrade
+VINE,FARMING,0.6,0.6,3.0,4096,"Hand-gathered, no farm exists, time-gated by travel",15000,9000,Jungle harvesting; no real farm
+DRIED_KELP,FARMING,0.55,0.55,2.75,8192,"Fully AFK, one-block-tick farm, near-zero build cost",20000,11000,AFK kelp farm plus a smelter array
+MELON_SLICE,FARMING,0.45,0.38,1.9,8192,"Automatic crop farm, observer/piston, moderate build",31000,11780,Melon farm; many slices per melon
+BAMBOO,FARMING,0.34,0.34,1.7,8192,"Fully AFK, one-block-tick farm, near-zero build cost",32000,10880,"Bamboo farm; fastest-growing plant, fully AFK"
+WHEAT_SEEDS,FARMING,0.16,0.05,0.25,8192,"Automatic crop farm, observer/piston, moderate build",90000,4500,Byproduct of every wheat harvest
+BEETROOT_SEEDS,FARMING,0.16,0.05,0.25,8192,"Automatic crop farm, observer/piston, moderate build",90000,4500,Byproduct
+MELON_SEEDS,FARMING,0.15,0.05,0.25,8192,"Automatic crop farm, observer/piston, moderate build",95000,4750,Byproduct
+PUMPKIN_SEEDS,FARMING,0.15,0.05,0.25,8192,"Automatic crop farm, observer/piston, moderate build",95000,4750,Byproduct
+TURTLE_SCUTE,ANIMALS,14,14.0,70.0,256,"Hand-gathered, no farm exists, time-gated by travel",640,8960,One scute per growth cycle; painfully slow
+RABBIT_FOOT,ANIMALS,9.09,9.09,45.45,512,"No farm; hunted or found, low and irregular throughput",3300,29997,Uncommon rabbit drop; brewing demand
+GLOW_INK_SAC,ANIMALS,4,4.0,20.0,2048,"Large purpose-built vanilla farm, major investment",12000,48000,"Glow squid farm, deep cave"
+COOKED_PORKCHOP,ANIMALS,3,3.0,15.0,2048,"Breeder + cooker, cheap but needs feeding",5000,15000,Pig breeder
+COOKED_MUTTON,ANIMALS,2.59,2.59,12.95,2048,"Breeder + cooker, cheap but needs feeding",5800,15022,Sheep breeder
+COOKED_SALMON,ANIMALS,2.2,2.2,11.0,2048,"Hand-gathered, no farm exists, time-gated by travel",4100,9020,Fished
+INK_SAC,ANIMALS,2.18,2.18,10.9,4096,"Large purpose-built vanilla farm, major investment",22000,47960,Squid farm; a real build
+HONEY_BOTTLE,ANIMALS,5.33,2.13,10.65,1024,"Large purpose-built vanilla farm, major investment",9000,19170,Bee farm with bottle automation
+HONEYCOMB,ANIMALS,3.56,2.13,10.65,1536,"Large purpose-built vanilla farm, major investment",13500,28755,Bee farm; a real build
+COOKED_COD,ANIMALS,1.61,1.61,8.05,2048,"Hand-gathered, no farm exists, time-gated by travel",5600,9016,Fished or from a drowned/guardian farm
+LEATHER,ANIMALS,3.19,1.6,8.0,2048,"Breeder + cooker, cheap but needs feeding",4700,7520,Cow breeder; also villager trades
+COOKED_BEEF,ANIMALS,3,1.5,7.5,2048,"Breeder + cooker, cheap but needs feeding",5000,7500,Cow farm; best ordinary saturation
+RABBIT_HIDE,ANIMALS,1.2,1.2,6.0,2048,"Breeder + cooker, cheap but needs feeding",12500,15000,Rabbit breeder
+COOKED_CHICKEN,ANIMALS,1.9,0.63,3.15,2048,"Breeder + cooker, cheap but needs feeding",7900,4977,"Chicken farm, fully automatic"
+FEATHER,ANIMALS,0.97,0.32,1.6,4096,"Breeder + cooker, cheap but needs feeding",15500,4960,Chicken farm byproduct
+EGG,ANIMALS,0.81,0.28,1.4,4096,"Breeder + cooker, cheap but needs feeding",18500,5180,"Chicken farm, fully automatic"
+GHAST_TEAR,MOB_DROPS,29,29.0,145.0,256,"No farm; hunted or found, low and irregular throughput",1050,30450,Ghasts are awkward to farm and drop one at a time
+GUNPOWDER,MOB_DROPS,26,26.0,130.0,1024,"Large purpose-built vanilla farm, major investment",1850,48100,"Creeper farm; no spawner exists, large dedicated build"
+PHANTOM_MEMBRANE,MOB_DROPS,18,18.0,90.0,512,"No farm; hunted or found, low and irregular throughput",1650,29700,Cannot be farmed conventionally; elytra repair
+NAUTILUS_SHELL,MOB_DROPS,18,18.0,90.0,384,"No farm; hunted or found, low and irregular throughput",1650,29700,Drowned drops and fishing; no reliable farm
+ENDER_PEARL,MOB_DROPS,14,14.0,70.0,1024,"Large purpose-built vanilla farm, major investment",3400,47600,End enderman farm; travel and eyes of ender
+BLAZE_ROD,MOB_DROPS,12,12.0,60.0,1536,"Recovered spawner, best ordinary drop table (Blaze)",2800,33600,Blaze spawner; best ordinary spawner drop
+SLIME_BALL,MOB_DROPS,9.06,9.06,45.3,2048,"Large purpose-built vanilla farm, major investment",5300,48018,Slime chunk or swamp farm; sticky pistons and leads
+PRISMARINE_SHARD,MOB_DROPS,8,5.6,28.0,2048,"Large purpose-built vanilla farm, major investment",6000,33600,Guardian farm; a major ocean monument build
+MAGMA_CREAM,MOB_DROPS,5.49,5.49,27.45,1536,"Recovered spawner, ordinary drop table",5100,27999,"Magma cube spawner, nether gated"
+PRISMARINE_CRYSTALS,MOB_DROPS,11,3.27,16.35,1536,"Large purpose-built vanilla farm, major investment",4400,14388,Rarer half of the guardian drop table
+STRING,MOB_DROPS,3.01,2.35,11.75,4096,"Recovered spawner, ordinary drop table",9300,21855,Spider/cave spider spawner
+BONE,MOB_DROPS,2.59,1.61,8.05,4096,"Recovered spawner, ordinary drop table",10800,17388,Skeleton spawner; heavy bonemeal demand
+ROTTEN_FLESH,MOB_DROPS,1.57,1.57,7.85,8192,"Recovered spawner, poorest drop table",14000,21980,"Zombie spawner; poorest drop table, near-zero demand"
+ARROW,MOB_DROPS,1.4,0.53,2.65,4096,"Recovered spawner, ordinary drop table",20000,10600,Skeleton spawner or fletcher trades
+SPIDER_EYE,MOB_DROPS,2,0.44,2.2,2048,"Recovered spawner, ordinary drop table",14000,6160,Spider spawner; thin demand
+
+ARBITRAGE CHECK
+Output,Qty,Inputs,Output sell value,Cost to buy inputs,Inputs sold instead,Verdict
+BREAD,1,3xWHEAT,3.89,15.299999999999999,3.06,SAFE
+SUGAR,1,1xSUGAR_CANE,0.61,7.8500000000000005,1.57,SAFE
+CHARCOAL,1,1xOAK_LOG,2.38,9.5,1.9,SAFE
+GLASS,1,1xSAND,3.08,10.549999999999999,2.11,SAFE
+STONE,1,1xCOBBLESTONE,0.55,1.4000000000000001,0.28,SAFE
+IRON_INGOT,1,1xRAW_IRON,11.0,23.799999999999997,4.76,SAFE
+GOLD_INGOT,1,1xRAW_GOLD,3.57,15.149999999999999,3.03,SAFE
+COPPER_INGOT,1,1xRAW_COPPER,1.6,8.0,1.6,SAFE
+GOLD_INGOT,1,9xGOLD_NUGGET,3.57,14.850000000000001,2.97,SAFE
+PACKED_ICE,1,9xICE,3.03,54.449999999999996,10.89,SAFE

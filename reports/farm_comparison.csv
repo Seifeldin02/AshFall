@@ -1,0 +1,17 @@
+Farm / production method,Kills or cycles per hour,Sellable drops per kill,Drop $/kill,Drop $/hour,Mob money $/hour (anti-farm + progression),TOTAL $/hour,x vs best ordinary spawner,Notes
+Zombie spawner (recovered),7000.0,2.0x ROTTEN_FLESH,3.14,21980,5250,27230,0.68,Poorest ordinary spawner
+Skeleton spawner (recovered),5400,2.0x BONE + 2.0x ARROW,4.28,23112,4050,27162,0.67,Two sellable drops
+Spider spawner (recovered),4650,2.0x STRING + 0.5x SPIDER_EYE,4.92,22878,3488,26366,0.66,String carries it
+Cave spider spawner,4650,2.0x STRING + 0.5x SPIDER_EYE,4.92,22878,4650,27528,0.68,As spider; faster spawns
+Magma cube spawner,5100,1.0x MAGMA_CREAM,5.49,27999,7012,35012,0.87,Nether gated
+Blaze spawner (recovered),2330,1.2x BLAZE_ROD,14.4,33552,6699,40251,1.0,Best ordinary spawner
+Creeper farm (vanilla build),1320,1.4x GUNPOWDER,36.4,48048,0,48048,1.19,No spawner exists; large build
+Guardian farm (monument),3750,1.6x PRISMARINE_SHARD + 0.6x PRISMARINE_CRYSTALS,10.92,40957,0,40957,1.02,Major build
+Iron farm (vanilla golem),1100,4.0x IRON_INGOT,44.0,48400,0,48400,1.2,Ordinary vanilla iron farm
+Gold farm (nether portal),12300,0.6x GOLD_INGOT + 5.0x GOLD_NUGGET,3.79,46642,0,46642,1.16,High throughput
+Slime farm (slime chunk),2650,2.0x SLIME_BALL,18.12,48018,0,48018,1.19,Chunk-gated build
+Villager/raid infrastructure,3200,1.0x EMERALD,16.0,51200,0,51200,1.27,Trading hall or raid farm
+Iron Golem Spawner ($50m),2330,4.0x IRON_INGOT,44.0,102520,17475,119995,2.98,"Purchased premium infrastructure; runs on the placed-spawner cadence, not a vanilla golem farm rate"
+
+Best ordinary spawner $/hour,40251
+Iron Golem Spawner multiple,2.98,"target >=2x, ideally 3-5x"

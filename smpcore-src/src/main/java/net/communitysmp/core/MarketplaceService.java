@@ -39,17 +39,21 @@ final class MarketplaceService implements Listener {
     /** IN_STOCK filters the shop down to what it can actually sell right now, which only means anything
      *  since the shop became finite. It is a filter as well as an order: browsing a wall of out-of-stock
      *  entries is the main annoyance of a player-supplied shop. */
-    /** CATEGORY is the shop's default: a survival shop is browsed by "what am I looking for", not by price,
-     *  and 65 items in one flat list is unusable. IN_STOCK filters to what the shop can actually sell. */
-    private enum Sort { CATEGORY, DEFAULT, CHEAPEST, EXPENSIVE, NAME, IN_STOCK }
+    /** STOCK is the shop's default. It ORDERS rather than filters: everything the shop lists stays visible,
+     *  but whatever it can actually sell you right now floats to the top, each half grouped by the normal
+     *  category order underneath. The old IN_STOCK hid out-of-stock rows entirely, which made the catalogue
+     *  look broken and hid the very entries a player might want to go and supply. "Default / Newest" is gone
+     *  -- for a fixed catalogue it never meant anything. */
+    private enum Sort { STOCK, CATEGORY, CHEAPEST, EXPENSIVE, NAME }
     private enum InputType { ITEM, SELLER, LIST_PRICE }
     private record ItemRef(Material material,Long auction,String shard) {}
     private static final class View {
-        Sort sort=Sort.CATEGORY;String category="ALL",query="",seller="";int page;boolean mine,merchant;
+        Sort sort=Sort.STOCK;String category="ALL",query="",seller="";int page;boolean mine,merchant;
     }
     private static final class Session {
-        Section section=Section.SHOP;final EnumMap<Section,View> views=new EnumMap<>(Section.class);
+        Section section=Section.SHOP;boolean loaded;final EnumMap<Section,View> views=new EnumMap<>(Section.class);
         View view(){return views.computeIfAbsent(section,key->new View());}
+        View view(Section other){return views.computeIfAbsent(other,key->new View());}
     }
     private static final class Holder implements InventoryHolder {
         final UUID player;final Section section;final Map<Integer,ItemRef> items=new HashMap<>();
@@ -66,9 +70,9 @@ final class MarketplaceService implements Listener {
 
     MarketplaceService(SMPCore plugin,ShopService shop,AuctionService auctions,ShardService shards){this.plugin=plugin;this.shop=shop;this.auctions=auctions;this.shards=shards;}
 
-    void open(Player player,Section section){Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=section;resetSearch(session.view());session.view().merchant=false;render(player,session);}
-    void openPremium(Player player){Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=Section.SHOP;resetSearch(session.view());session.view().merchant=true;render(player,session);}
-    void openAuctionMerchant(Player player){Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=Section.AUCTION;resetSearch(session.view());session.view().merchant=true;render(player,session);}
+    void open(Player player,Section section){Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=section;resetSearch(session.view());session.view().merchant=false;render(player,session);}
+    void openPremium(Player player){Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=Section.SHOP;resetSearch(session.view());session.view().merchant=true;render(player,session);}
+    void openAuctionMerchant(Player player){Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=Section.AUCTION;resetSearch(session.view());session.view().merchant=true;render(player,session);}
     void openSellBasket(Player player,boolean premium){shop.openSellBasket(player,premium);}
     boolean awaitingInput(Player player){Input input=inputs.get(player.getUniqueId());if(input!=null&&input.expires()<System.currentTimeMillis()){inputs.remove(player.getUniqueId());return false;}return input!=null;}
 
@@ -95,18 +99,20 @@ final class MarketplaceService implements Listener {
         rows.removeIf(row->!matches(view,row.getKey(),row.getValue().display()));
         /** Stock is read once per render, not once per row, so a full page costs a single query. */
         Map<String,Integer> stock=luxury?Map.of():shop.allStock();
-        if(!luxury&&view.sort==Sort.IN_STOCK)rows.removeIf(row->stock.getOrDefault(row.getKey().name(),0)<=0);
         Comparator<Map.Entry<Material,ShopService.Price>> comparator=switch(view.sort){
             case CHEAPEST->Comparator.comparingDouble(row->row.getValue().buy());
             case EXPENSIVE->Comparator.<Map.Entry<Material,ShopService.Price>>comparingDouble(row->row.getValue().buy()).reversed();
             case NAME->Comparator.comparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
-            case IN_STOCK->Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->-stock.getOrDefault(row.getKey().name(),0))
+            /** In stock first, then the ordinary category order within each half, so the list still reads
+             *  the same way -- it is the category view with the stocked entries lifted to the front. */
+            case STOCK->luxury?Comparator.comparingDouble(row->row.getValue().buy())
+                    :Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->stock.getOrDefault(row.getKey().name(),0)>0?0:1)
+                    .thenComparingInt(row->ShopService.categoryRank(row.getValue().category()))
                     .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
             /** Luxuries keep their price ordering -- a single short list where price IS the hierarchy. */
             case CATEGORY->luxury?Comparator.comparingDouble(row->row.getValue().buy())
                     :Comparator.<Map.Entry<Material,ShopService.Price>>comparingInt(row->ShopService.categoryRank(row.getValue().category()))
                     .thenComparing(row->row.getValue().display(),String.CASE_INSENSITIVE_ORDER);
-            case DEFAULT->luxury?Comparator.comparingDouble(row->row.getValue().buy()):null;
         };
         if(comparator!=null)rows.sort(comparator);
         int total=rows.size(),start=Math.max(0,view.page*PAGE_SIZE);double buyMultiplier=view.merchant?plugin.getConfig().getDouble("merchants.shop.buy-multiplier",.925):1,sellMultiplier=view.merchant?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1;
@@ -155,7 +161,7 @@ final class MarketplaceService implements Listener {
         if(event.getInventory().getHolder(false) instanceof SearchHolder holder){searchClick(event,holder);return;}
         if(event.getInventory().getHolder(false) instanceof FilterHolder holder){filterClick(event,holder);return;}
         if(!(event.getInventory().getHolder(false) instanceof Holder holder))return;event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player)||!holder.player.equals(player.getUniqueId()))return;
-        Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=holder.section;View view=session.view();int slot=event.getRawSlot();ItemRef item=holder.items.get(slot);
+        Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=holder.section;View view=session.view();int slot=event.getRawSlot();ItemRef item=holder.items.get(slot);
         if(item!=null){handleItem(player,session,item,event.isShiftClick(),event.isRightClick());return;}
         switch(slot){
             case 43->{if(session.section==Section.SHOP)shop.openSellBasket(player,view.merchant);else if(session.section==Section.AUCTION)prompt(player,InputType.LIST_PRICE);}
@@ -164,7 +170,7 @@ final class MarketplaceService implements Listener {
             case 45->{view.page=Math.max(0,view.page-1);render(player,session);}
             case 47->openFilters(player,session);
             case 49->switchSection(player,session,nextSection(session.section),false);
-            case 51->{view.sort=Sort.values()[(view.sort.ordinal()+1)%Sort.values().length];view.page=0;render(player,session);}
+            case 51->{view.sort=Sort.values()[(view.sort.ordinal()+1)%Sort.values().length];view.page=0;savePreference(player,session.section,"sort",view.sort.name());render(player,session);}
             case 53->{view.page++;render(player,session);}
             default->{}
         }
@@ -208,19 +214,19 @@ final class MarketplaceService implements Listener {
         inv.setItem(40,button(Material.ARROW,"Back",List.of()));player.openInventory(inv);
     }
     private void filterClick(InventoryClickEvent event,FilterHolder holder){
-        event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player)||!holder.player.equals(player.getUniqueId()))return;Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=holder.section;View view=session.view();int slot=event.getRawSlot();
+        event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player)||!holder.player.equals(player.getUniqueId()))return;Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=holder.section;View view=session.view();int slot=event.getRawSlot();
         List<String> categories=filterCategories(session);
-        if(slot==10){view.category="ALL";view.page=0;render(player,session);}
-        else if(slot>=11&&slot<11+categories.size()){view.category=categories.get(slot-11);view.page=0;render(player,session);}
+        if(slot==10){view.category="ALL";view.page=0;savePreference(player,session.section,"category","ALL");render(player,session);}
+        else if(slot>=11&&slot<11+categories.size()){view.category=categories.get(slot-11);view.page=0;savePreference(player,session.section,"category",view.category);render(player,session);}
         else if(slot==28)prompt(player,InputType.ITEM);
         else if(slot==29&&session.section==Section.AUCTION)prompt(player,InputType.SELLER);
         else if(slot==31&&session.section==Section.AUCTION){view.mine=!view.mine;view.page=0;render(player,session);}
-        else if(slot==36){view.query="";view.seller="";view.category="ALL";view.mine=false;view.page=0;render(player,session);}
+        else if(slot==36){view.query="";view.seller="";view.category="ALL";view.mine=false;view.page=0;savePreference(player,session.section,"category","ALL");render(player,session);}
         else if(slot==40)render(player,session);
     }
 
     private void prompt(Player player,InputType type){
-        Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());
+        Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);
         if(type!=InputType.LIST_PRICE&&nativeDialogsSupported(player)&&nativeSearch(player,type,session.section))return;
         inputs.put(player.getUniqueId(),new Input(type,session.section,System.currentTimeMillis()+30000));
         if(plugin.isBedrock(player)&&bedrockInput(player,type))return;
@@ -265,7 +271,7 @@ final class MarketplaceService implements Listener {
         // Explicit Marketplace opens clear search; internal GUI transitions retain it.
     }
     private void applyInput(Player player,String text){
-        Input input=inputs.remove(player.getUniqueId());if(input==null)return;Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=input.section();View view=session.view();String value=text==null?"":text.trim();
+        Input input=inputs.remove(player.getUniqueId());if(input==null)return;Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=input.section();View view=session.view();String value=text==null?"":text.trim();
         if(value.equalsIgnoreCase("cancel")){render(player,session);return;}
         if(input.type()==InputType.LIST_PRICE){double price=CoreUtil.parseMoney(value);if(price<=0)CoreUtil.error(player,"That is not a valid price.");else auctions.list(player,price);}
         else if(input.type()==InputType.ITEM)view.query=value.equalsIgnoreCase("clear")?"":value.toLowerCase(Locale.ROOT);
@@ -273,7 +279,7 @@ final class MarketplaceService implements Listener {
         view.page=0;render(player,session);
     }
     private void applySearch(Player player,InputType type,Section section,String text){
-        Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());session.section=section;View view=session.view();String value=text==null?"":text.trim().toLowerCase(Locale.ROOT);
+        Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=section;View view=session.view();String value=text==null?"":text.trim().toLowerCase(Locale.ROOT);
         if(type==InputType.SELLER)view.seller=value;else view.query=value;view.page=0;render(player,session);
     }
 
@@ -305,12 +311,30 @@ final class MarketplaceService implements Listener {
         }
         return CoreUtil.pretty(item.getType().name());
     }
-    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==6&&new View().sort==Sort.CATEGORY&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
+    /** Sort and category are remembered per player PER SECTION and persisted, so they survive relogs,
+     *  teleports and restarts. They are browsing preferences, not session state -- having them silently
+     *  reset every time the menu closed was the actual annoyance. Each section keeps its own, because how
+     *  you want the shop ordered has nothing to do with how you want the auction house ordered. */
+    private String prefKey(Section section,String field){return "market_"+field+"_"+section.name().toLowerCase(Locale.ROOT);}
+    private void loadPreferences(Player player,Session session){
+        for(Section section:Section.values()){
+            View view=session.view(section);
+            String sort=plugin.db().preference(CoreUtil.id(player),prefKey(section,"sort"));
+            if(sort!=null)try{view.sort=Sort.valueOf(sort);}catch(IllegalArgumentException ignored){}
+            String category=plugin.db().preference(CoreUtil.id(player),prefKey(section,"category"));
+            if(category!=null&&!category.isBlank())view.category=category;
+        }
+        session.loaded=true;
+    }
+    private void savePreference(Player player,Section section,String field,String value){
+        plugin.db().preference(CoreUtil.id(player),prefKey(section,field),value);
+    }
+    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==5&&new View().sort==Sort.STOCK&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
     private void resetSearch(View view){view.query="";view.seller="";view.page=0;}
     private Section nextSection(Section section){return switch(section){case SHOP->Section.LUXURY;case LUXURY->Section.SHARDS;case SHARDS->Section.AUCTION;case AUCTION->Section.SHOP;};}
     private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";};}
     private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;};}
-    private String sortName(Sort sort){return switch(sort){case CATEGORY->"Category";case DEFAULT->"Default / Newest";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
+    private String sortName(Sort sort){return switch(sort){case STOCK->"In Stock First";case CATEGORY->"Category";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";};}
     private List<String> filterLore(View view){List<String> lore=new ArrayList<>();lore.add("Category: "+CoreUtil.pretty(view.category));if(!view.query.isBlank())lore.add("Item: "+view.query);if(!view.seller.isBlank())lore.add("Seller: "+view.seller);return lore;}
     private ItemStack nav(Material material,String name,boolean selected){return button(selected?Material.LIME_STAINED_GLASS_PANE:material,name,List.of(selected?"Current section":"Open section"));}
     private ItemStack button(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
