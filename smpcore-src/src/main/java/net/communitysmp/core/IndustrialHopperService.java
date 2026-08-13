@@ -198,6 +198,15 @@ final class IndustrialHopperService implements Listener {
 
     boolean isIndustrial(Block block) { return bay(block) != null; }
 
+    /** The authoritative contents, or null when this block is not one of ours.
+     *
+     *  Net-worth valuation needs this because the native five slots it would otherwise read are always
+     *  empty by design -- valuing them would price every Industrial Hopper on the server at nothing. */
+    ItemStack[] storedContents(Block block) {
+        Bay bay = bay(block);
+        return bay == null ? null : bay.inv.getContents();
+    }
+
     /** Viewers are always closed when a Bay stops being owned: an open screen is a live handle on the
      *  inventory, and leaving one open would let a player put items into a store nothing will ever save. */
     private void forget(Bay bay) { closeViewers(bay); bays.remove(key(bay.at)); }

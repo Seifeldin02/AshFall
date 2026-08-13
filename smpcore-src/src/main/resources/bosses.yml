@@ -242,6 +242,9 @@ world-boss-unreachable:
   # A lunge needs a navigation reason, not just a timer. Beyond this horizontal distance a boss is allowed
   # to treat closing as a traversal problem and leap; inside it, it walks and swings like anything else.
   catchup-distance: 18
+  # Last-resort pit recovery: after this long unable to reach anybody, the boss is placed on solid
+  # ground at its target rather than left at the bottom of a hole. All three bosses.
+  teleport-seconds: 20
   climb-out-seconds: 2.0
   climb-out-max-lift: 1.35
   # The disc of blocks removed from under a high camper each pulse (radius 2 = 5x5), and how deep.

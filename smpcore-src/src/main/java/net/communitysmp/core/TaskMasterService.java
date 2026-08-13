@@ -185,15 +185,61 @@ final class TaskMasterService implements Listener {
             "One bed in every colour. Forty-eight wool, the planks, and the patience of a saint. Name your price -- I already did.")
     );
 
+    /** What the courier says when a contract lands. The generic line was the same sentence 36 times,
+     *  which made every delivery feel like the same delivery. */
+    private static final Map<String, String> DELIVERED = Map.ofEntries(
+        Map.entry("cookie",     "He eats one immediately and does not look sorry."),
+        Map.entry("ladder",     "The crew in the shaft will be delighted. Eventually."),
+        Map.entry("charcoal",   "He sniffs it, nods once, and writes something down."),
+        Map.entry("bread",      "Still warm. He notices, and says nothing, which is his way of saying thank you."),
+        Map.entry("pie",        "The festival is saved. He does not say by whom."),
+        Map.entry("hay",        "Somewhere, a horse stops complaining."),
+        Map.entry("cake",       "He checks all three for fingerprints in the icing."),
+        Map.entry("lantern",    "The tunnel gets its light. The dark gets nothing."),
+        Map.entry("target",     "The recruits may now miss something purpose-built."),
+        Map.entry("smooth",     "He runs a thumb across one. Twice-fired. He can tell."),
+        Map.entry("shelf",      "The scribes take them without explaining. They never do."),
+        Map.entry("spyglass",   "He pockets the second one before the lookout can see it."),
+        Map.entry("amethyst",   "They chime faintly in the crate. He listens for a moment."),
+        Map.entry("candle",     "He counts them twice, and does not say whose vigil it is."),
+        Map.entry("brick",      "Clay, fire, and patience. He appreciates all three."),
+        Map.entry("carrot",     "The night watch will sleep better. Or rather, less."),
+        Map.entry("ice",        "Not a drop. He is visibly impressed and hides it badly."),
+        Map.entry("glowstone",  "He does not ask how it went. Your eyebrows answer for you."),
+        Map.entry("honey",      "No stings that he can see. He checks again."),
+        Map.entry("blaze",      "The client will be pleased. He still will not say who."),
+        Map.entry("echo",       "He handles them quietly, as though they might hear him."),
+        Map.entry("totem",      "You walked out of a raid holding this. He knows what that means."),
+        Map.entry("heart",      "Two wrecks, two maps, two holes in a beach. Worth it."),
+        Map.entry("nautilus",   "Prised from the drowned, one at a time. He does not envy you."),
+        Map.entry("gapple",     "He wraps both immediately, as if they might be noticed."),
+        Map.entry("rose",       "He takes the crate at arm's length and thanks you very briefly."),
+        Map.entry("breath",     "Bottled mid-roar. He turns one to the light and whistles."),
+        Map.entry("skull",      "He does not look at it. He signs, and slides the purse across."),
+        Map.entry("anchor",     "Charged, both of them. He asks nothing further, as promised."),
+        Map.entry("shell",      "Four shells and no explanation of the trip. Sensible."),
+        Map.entry("sealantern", "You objected back, then. He raises a glass to the guardians."),
+        Map.entry("netherite",  "He weighs it in one hand and pays without haggling."),
+        Map.entry("conduit",    "Still damp. He grins for the first time all week."),
+        Map.entry("coral",      "Every colour, alive. He keeps it in water while he counts."),
+        Map.entry("froglight",  "Three lights, three frogs, one very confused ecosystem."),
+        Map.entry("discs",      "He reads the labels, all five, and finally stops arguing."),
+        Map.entry("woolset",    "Sixteen colours laid out in order. He steps back to look at them."),
+        Map.entry("bedset",     "Sixteen beds. He said name your price, and he has paid it."));
+
+    /** One player's current contracts and what they have already turned in.
+     *
+     *  A batch is fixed once dealt: it survives relogs and restarts, and it does not change one contract at
+     *  a time. The next batch is only dealt when every contract in this one is done. */
+    private record Batch(List<Task> tasks, List<String> done) {}
+
     private final SMPCore plugin;
     private UUID traderId;
     /** Where the courier was placed. Kept so the announcement quotes the spot he is actually standing on,
      *  and so he can be put back if something removes him while the event is still running. */
     private Location home;
     private long endsAt;
-    /** player -> their drawn contracts, and which they have already turned in. */
-    private final Map<UUID, List<Task>> assigned = new HashMap<>();
-    private final Map<UUID, List<String>> completed = new HashMap<>();
+    private final Map<UUID, Batch> batches = new HashMap<>();
 
     TaskMasterService(SMPCore plugin) { this.plugin = plugin; }
 
@@ -343,8 +389,7 @@ final class TaskMasterService implements Listener {
         stopSwirl();
         traderId = null;
         home = null;
-        assigned.clear();
-        completed.clear();
+        batches.clear();
     }
 
     boolean active() { return traderId != null; }
@@ -352,9 +397,50 @@ final class TaskMasterService implements Listener {
     /** Right-clicking the courier. Returns true when handled, so the caller can cancel the vanilla trade. */
     boolean interact(Player player) {
         if (!active()) return false;
-        assigned.computeIfAbsent(player.getUniqueId(), id -> draw());
+        batchFor(player);
         open(player);
         return true;
+    }
+
+    private String stateKey(Player player) { return "taskmaster:" + CoreUtil.id(player); }
+
+    /** The player's batch: from memory, else from the database, else freshly dealt.
+     *
+     *  Stored against the event's end time, so a batch belongs to the event it was dealt in and a new event
+     *  starts everybody clean without needing to hunt down old rows. */
+    private Batch batchFor(Player player) {
+        Batch batch = batches.get(player.getUniqueId());
+        if (batch != null) return batch;
+        batch = load(player);
+        if (batch == null) batch = new Batch(new ArrayList<>(draw()), new ArrayList<>());
+        batches.put(player.getUniqueId(), batch);
+        save(player, batch);
+        return batch;
+    }
+
+    private void save(Player player, Batch batch) {
+        StringBuilder ids = new StringBuilder();
+        for (Task task : batch.tasks()) ids.append(ids.length() == 0 ? "" : ",").append(task.id());
+        plugin.db().state(stateKey(player), endsAt + ";" + ids + ";" + String.join(",", batch.done()));
+    }
+
+    private Batch load(Player player) {
+        String raw = plugin.db().state(stateKey(player));
+        if (raw == null) return null;
+        String[] parts = raw.split(";", -1);
+        if (parts.length < 3) return null;
+        try {
+            if (Long.parseLong(parts[0]) != endsAt) return null;
+        } catch (NumberFormatException ignored) { return null; }
+        List<Task> tasks = new ArrayList<>();
+        for (String id : parts[1].split(",")) {
+            String wanted = id.trim();
+            for (Task task : TABLE) if (task.id().equals(wanted)) { tasks.add(task); break; }
+        }
+        if (tasks.isEmpty()) return null;
+        List<String> done = new ArrayList<>();
+        for (String id : parts[2].split(",")) if (!id.isBlank()) done.add(id.trim());
+        return new Batch(tasks, done);
     }
 
     /** A fresh hand of 3-4 contracts: one Easy, one Testing, one Hard, and a Brutal three times in five.
@@ -381,8 +467,9 @@ final class TaskMasterService implements Listener {
     }
 
     private void open(Player player) {
-        List<Task> tasks = assigned.getOrDefault(player.getUniqueId(), List.of());
-        List<String> done = completed.computeIfAbsent(player.getUniqueId(), id -> new ArrayList<>());
+        Batch batch = batchFor(player);
+        List<Task> tasks = batch.tasks();
+        List<String> done = batch.done();
         Inventory inv = plugin.getServer().createInventory(new Holder(traderId), 27,
                 Component.text("Task Master • Contracts", NamedTextColor.DARK_PURPLE));
         int slot = 11;
@@ -455,11 +542,12 @@ final class TaskMasterService implements Listener {
         if (!(event.getInventory().getHolder(false) instanceof Holder)) return;
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player)) return;
-        List<Task> tasks = assigned.getOrDefault(player.getUniqueId(), List.of());
+        Batch batch = batchFor(player);
+        List<Task> tasks = batch.tasks();
         int index = event.getRawSlot() - 11;
         if (index < 0 || index >= tasks.size()) return;
         Task task = tasks.get(index);
-        List<String> done = completed.computeIfAbsent(player.getUniqueId(), id -> new ArrayList<>());
+        List<String> done = batch.done();
         if (done.contains(task.id())) return;
         if (!active()) { CoreUtil.error(player, "The Task Master has moved on."); player.closeInventory(); return; }
         if (!carrying(player, task)) {
@@ -483,8 +571,18 @@ final class TaskMasterService implements Listener {
             plugin.vault().deliver(new ItemStack(material, task.each()), player.getLocation(), "DELIVERED");
         plugin.creditEarned(CoreUtil.id(player), task.reward(), "TASK_MASTER_" + task.id().toUpperCase(Locale.ROOT));
         plugin.db().recordEconomy(CoreUtil.id(player), "TASK_MASTER", task.reward(), task.id());
-        CoreUtil.msg(player, "Contract complete: " + task.label() + " for " + CoreUtil.money(task.reward())
-                + ". Delivered to the server vault.");
+        CoreUtil.msg(player, DELIVERED.getOrDefault(task.id(), "He takes the lot without comment.")
+                + " " + CoreUtil.money(task.reward()) + ".");
+        save(player, batch);
+        /** The next batch is dealt only when the whole set is done -- never one contract at a time -- and
+         *  then it keeps going for as long as the event runs. */
+        if (done.size() >= tasks.size()) {
+            Batch next = new Batch(new ArrayList<>(draw()), new ArrayList<>());
+            batches.put(player.getUniqueId(), next);
+            save(player, next);
+            CoreUtil.msg(player, "That is the whole board cleared. He is already writing the next one.");
+            player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1f, 1f);
+        }
         player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_YES, 1f, 1.1f);
         open(player);
     }
@@ -504,16 +602,16 @@ final class TaskMasterService implements Listener {
 
     @EventHandler
     public void quit(PlayerQuitEvent event) {
-        /** Contracts are per-event and not persisted: a player who leaves mid-event simply draws a fresh
-         *  hand if they return while it is still running. Nothing owed is lost, because payment happens at
-         *  the moment of delivery rather than at the end. */
-        assigned.remove(event.getPlayer().getUniqueId());
-        completed.remove(event.getPlayer().getUniqueId());
+        /** Dropped from memory only. The batch itself lives in the database, so a player who logs out
+         *  mid-contract comes back to exactly the same board rather than a freshly shuffled one. */
+        batches.remove(event.getPlayer().getUniqueId());
     }
 
     boolean selfTest() {
         if (TABLE.size() < 20) return false;
         if (TABLE.stream().map(Task::id).distinct().count() != TABLE.size()) return false;
+        /** Every contract needs its own completion line, or the generic fallback creeps back in. */
+        if (!TABLE.stream().allMatch(t -> DELIVERED.containsKey(t.id()))) return false;
         if (!TABLE.stream().allMatch(t -> t.each() > 0 && !t.items().isEmpty() && t.reward() >= 1500)) return false;
         /** A set must not repeat an item, or one line of it could satisfy two. */
         if (!TABLE.stream().allMatch(t -> t.items().stream().distinct().count() == t.items().size())) return false;

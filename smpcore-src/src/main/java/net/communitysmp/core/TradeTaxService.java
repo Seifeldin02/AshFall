@@ -89,7 +89,10 @@ final class TradeTaxService implements Listener {
     private Charge chargeFor(Object tradePlayer){
         double money=currency(tradePlayer,plugin.getConfig().getString("trade-tax.money-currency","money"));
         double xp=currency(tradePlayer,plugin.getConfig().getString("trade-tax.xp-currency","exp"));
-        double taxPercent=plugin.getConfig().getDouble("trade-tax.percent",plugin.getConfig().getDouble("auctions.sale-tax-percent",5));
+        /** 1% of the money one side hands over, and nothing else on the money leg -- this REPLACES the old
+         *  rate rather than sitting alongside it. The default no longer falls back to the auction sale tax:
+         *  that made removing the key silently reinstate a 5% charge. */
+        double taxPercent=plugin.getConfig().getDouble("trade-tax.percent",1.0);
         double perXp=plugin.getConfig().getDouble("trade-tax.money-per-100-xp",10)/100.0;
         return new Charge(money,xp,Math.max(0,money*taxPercent/100.0),Math.max(0,xp*perXp));
     }
@@ -114,7 +117,7 @@ final class TradeTaxService implements Listener {
         /** Spell out what was charged and on what. A bare total left players unsure whether the fee applied
          *  to the money, the XP, or the items, and unsure what they actually ended up with. */
         StringBuilder detail=new StringBuilder();
-        double percent=plugin.getConfig().getDouble("trade-tax.percent",plugin.getConfig().getDouble("auctions.sale-tax-percent",5));
+        double percent=plugin.getConfig().getDouble("trade-tax.percent",1.0);
         if(charge.moneyTax()>0)detail.append(CoreUtil.money(charge.moneyTax())).append(" (").append(trim(percent)).append("% of ").append(CoreUtil.money(charge.money())).append(")");
         if(charge.xpFee()>0){if(detail.length()>0)detail.append(" + ");detail.append(CoreUtil.money(charge.xpFee())).append(" (").append((long)charge.xp()).append(" XP)");}
         CoreUtil.msg(player,"Trade tax: "+CoreUtil.money(amount)+" — "+detail+".");

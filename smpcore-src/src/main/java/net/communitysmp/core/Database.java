@@ -167,6 +167,9 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS shop_stock (material TEXT PRIMARY KEY, quantity INTEGER NOT NULL DEFAULT 0 CHECK(quantity>=0))");
             /** Audit record of items that genuinely left the world. Append-only by construction: nothing
              *  in the codebase deletes from it or reads an item back out of it. */
+            /** Represented spawner mobs killed per player, per mob type, per reward day. Counts represented
+             *  mobs rather than kill events, so a stack of 100 counts as 100. */
+            s.execute("CREATE TABLE IF NOT EXISTS spawner_kill_counts (player TEXT NOT NULL, mob_type TEXT NOT NULL, day TEXT NOT NULL, killed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(player,mob_type,day))");
             s.execute("CREATE TABLE IF NOT EXISTS discarded_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, material TEXT NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL, recycled INTEGER NOT NULL DEFAULT 0, world TEXT NOT NULL DEFAULT '', x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0, z INTEGER NOT NULL DEFAULT 0)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material ON discarded_ledger(material)");
             s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
@@ -677,6 +680,16 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
+    synchronized int spawnerKills(String player,String type,String day){return integer("SELECT killed FROM spawner_kill_counts WHERE player=? AND mob_type=? AND day=?",player,type,day);}
+    /** Adds to today's count and returns the total BEFORE the addition, which is what the payout split needs. */
+    synchronized int addSpawnerKills(String player,String type,String day,int amount){
+        int before=spawnerKills(player,type,day);
+        update("INSERT INTO spawner_kill_counts(player,mob_type,day,killed) VALUES(?,?,?,?) ON CONFLICT(player,mob_type,day) DO UPDATE SET killed=killed+excluded.killed",player,type,day,amount);
+        return before;
+    }
+    /** Housekeeping: reward days older than a fortnight are of no further use. */
+    synchronized void pruneSpawnerKills(String keepFrom){update("DELETE FROM spawner_kill_counts WHERE day<?",keepFrom);}
+
     /** One statement for a whole batch of destroyed items rather than one per item. */
     synchronized void recordDiscarded(java.util.List<Object[]> rows){
         if(rows.isEmpty())return;

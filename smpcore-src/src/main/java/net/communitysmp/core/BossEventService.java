@@ -654,8 +654,10 @@ final class BossEventService {
         switch(kind){
             case ASHEN_KNIGHT -> { boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_WITHER_SPAWN, 1.2f, phase == 1 ? 1.3f : .8f); boss.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, boss.getLocation().add(0, 1, 0), 90, 3, 1, 3, .08); for (Entity entity : boss.getNearbyEntities(7, 4, 7)) if (entity instanceof Player p) p.setFireTicks(80); for (int i = 0; i < phase + 1; i++) boss.getWorld().spawn(boss.getLocation(), WitherSkeleton.class, CreatureSpawnEvent.SpawnReason.CUSTOM, s -> { s.customName(Component.text("Ashen Squire", NamedTextColor.GRAY)); s.getPersistentDataContainer().set(spawnerKey, PersistentDataType.BYTE, (byte) 1); }); }
             case IRON_GOLEM -> { boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_IRON_GOLEM_ATTACK, 1.3f, phase == 1 ? 1.1f : .7f); boss.getWorld().spawnParticle(Particle.CRIT, boss.getLocation().add(0, 1, 0), 100, 3.5, 1.2, 3.5, .1); boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE, 100, phase, false, false)); for (Entity entity : boss.getNearbyEntities(8, 5, 8)) if (entity instanceof Player p) { Vector away = p.getLocation().toVector().subtract(boss.getLocation().toVector()); if (away.lengthSquared() > 0) p.setVelocity(away.normalize().multiply(1.1 + phase * .3).setY(.6 + phase * .2)); } }
-            case PIGLIN_BRUTE -> { boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_PIGLIN_BRUTE_ANGRY, 1.3f, phase == 1 ? 1.2f : .8f); boss.getWorld().spawnParticle(Particle.FLAME, boss.getLocation().add(0, 1, 0), 100, 3, 1.3, 3, .1); boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH, 140, phase, false, false)); for (Entity entity : boss.getNearbyEntities(6, 4, 6)) if (entity instanceof Player p) p.setFireTicks(Math.max(p.getFireTicks(), 60)); for (int i = 0; i < Math.min(phase,2); i++) boss.getWorld().spawn(boss.getLocation(), Piglin.class, CreatureSpawnEvent.SpawnReason.CUSTOM, s -> { s.customName(Component.text("Cinder Raider", NamedTextColor.GOLD)); s.getPersistentDataContainer().set(spawnerKey, PersistentDataType.BYTE, (byte) 1); s.setImmuneToZombification(true); });
-                if(phase>=3&&enraged.add(boss.getUniqueId())){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,Integer.MAX_VALUE,1,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.SPEED,Integer.MAX_VALUE,1,false,false));boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_WITHER_AMBIENT,1.4f,.6f);broadcastNotice(Component.text("☠ The Cinder Warlord enters a berserk fury!",NamedTextColor.RED));} }
+            case PIGLIN_BRUTE -> { boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_PIGLIN_BRUTE_ANGRY, 1.3f, phase == 1 ? 1.2f : .8f); boss.getWorld().spawnParticle(Particle.FLAME, boss.getLocation().add(0, 1, 0), 100, 3, 1.3, 3, .1); /** No STRENGTH here any more. This used to be amplifier = phase, i.e. Strength IV by phase 3, a
+                 *  flat +12 to every hit sitting entirely outside the calibrated damage attribute and outside
+                 *  the enrage cap. Enrage owns damage progression; the phase mechanic owns spectacle. */ for (Entity entity : boss.getNearbyEntities(6, 4, 6)) if (entity instanceof Player p) p.setFireTicks(Math.max(p.getFireTicks(), 60)); for (int i = 0; i < Math.min(phase,2); i++) boss.getWorld().spawn(boss.getLocation(), Piglin.class, CreatureSpawnEvent.SpawnReason.CUSTOM, s -> { s.customName(Component.text("Cinder Raider", NamedTextColor.GOLD)); s.getPersistentDataContainer().set(spawnerKey, PersistentDataType.BYTE, (byte) 1); s.setImmuneToZombification(true); });
+                if(phase>=3&&enraged.add(boss.getUniqueId())){boss.addPotionEffect(new PotionEffect(PotionEffectType.SPEED,Integer.MAX_VALUE,1,false,false));boss.getWorld().playSound(boss.getLocation(),Sound.ENTITY_WITHER_AMBIENT,1.4f,.6f);broadcastNotice(Component.text("☠ The Cinder Warlord enters a berserk fury!",NamedTextColor.RED));} }
         }
     }
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
@@ -675,13 +677,32 @@ final class BossEventService {
             spawnerShare=plugin.getConfig().getDouble("mob-money.spawner-share",.5);
             if(spawnerShare<=0)return;
         }
-        String dimension="dimension-mob-rewards."+mob.getWorld().getEnvironment().name()+"."+mob.getType().name();List<Double> range = bosses.getDoubleList(dimension);if(range.size()<2)range = bosses.getDoubleList("mob-rewards." + mob.getType().name()); if (range.size() < 2) range = bosses.getDoubleList("default-mob-reward"); if (range.size() < 2) range = List.of(.05, .35); double factor = farmFactor(killer, mob.getType()); if (factor <= 0) return;
-        double amount = random(range.get(0), range.get(1)) * factor * (spawner&&factor<1?spawnerShare*.5:spawnerShare);
+        /** Spawner income deliberately does NOT use the anti-farm curve. It used to, and the result was a
+         *  cliff nobody could see coming: the halved spawner share was gated on "factor < 1", so the 17th
+         *  kill inside a ten-minute window cut pay by half again, on top of the curve itself. Two
+         *  penalties fired at the same instant from one kill. The rule is now a flat share with a single
+         *  daily step, counted in represented mobs, so a farm's value is legible before it is built. */
+        String dimension="dimension-mob-rewards."+mob.getWorld().getEnvironment().name()+"."+mob.getType().name();List<Double> range = bosses.getDoubleList(dimension);if(range.size()<2)range = bosses.getDoubleList("mob-rewards." + mob.getType().name()); if (range.size() < 2) range = bosses.getDoubleList("default-mob-reward"); if (range.size() < 2) range = List.of(.05, .35); double roll = random(range.get(0), range.get(1));
         /** A stacked representative pays for everything it represents, in one settlement -- the money is
          *  multiplied here rather than by re-entering this method per virtual mob, so vanilla's own reward
          *  path still runs exactly once and nothing is double-counted. */
         int virtual=Math.max(1,plugin.spawners().virtualStack(mob));
-        if(virtual>1)amount*=virtual;
+        double amount;
+        if(spawner){
+            /** Half rate, and a quarter past the daily allowance. The allowance is measured in REPRESENTED
+             *  mobs, so a stack of 100 spends 100 of it rather than 1 -- otherwise a stacked farm would
+             *  reach the step a hundred times slower than an unstacked one for identical income. A stack
+             *  that straddles the boundary is split, so the step never lands mid-kill as a cliff. */
+            double reducedShare=plugin.getConfig().getDouble("mob-money.spawner-reduced-share",.25);
+            int threshold=plugin.getConfig().getInt("mob-money.spawner-daily-threshold",10000);
+            int before=db.addSpawnerKills(CoreUtil.id(killer),mob.getType().name(),CoreUtil.riyadhDay(),virtual);
+            int atFull=Math.max(0,Math.min(virtual,threshold-before));
+            amount=roll*(atFull*spawnerShare+(virtual-atFull)*reducedShare);
+        }else{
+            double factor=farmFactor(killer,mob.getType());
+            if(factor<=0)return;
+            amount=roll*factor*virtual;
+        }
         if(combatIncome(mob)){
             /** Kill accounting reflects the whole stack too, so progression and the anti-farm curve both
              *  see the real number of mobs killed rather than one per representative. */
@@ -706,6 +727,7 @@ final class BossEventService {
     private void rewardVanillaBoss(EntityDeathEvent event,LivingEntity boss,Player killer){
         UUID id=boss.getUniqueId();Map<String,Double> raw=damage.remove(id);Map<String,Long> hits=lastContribution.remove(id);sharedBossIds.remove(id);Map<String,Double> participants=meaningfulParticipants(boss,raw,hits);
         if(participants.isEmpty()&&killer!=null)participants=Map.of(CoreUtil.id(killer),Math.max(1,boss.getAttribute(Attribute.MAX_HEALTH).getValue()));
+        sendDamageRecap(boss,participants);
         boolean weeklyKill=boss instanceof EnderDragon&&plugin.weeklyDragon().isWeekly(boss);
         /** Vanilla only ever grants the real first-kill reward (dragon egg + 12000 XP instead of the
          *  reduced 500) once per world, on the true first-ever kill — and this world's dragon was already
@@ -1135,6 +1157,24 @@ final class BossEventService {
         if(stuckFor<(long)(bosses.getDouble("world-boss-unreachable.seconds",3)*1000))return;
         if(now-bossLeapCooldown.getOrDefault(id,0L)<(long)(bosses.getDouble("world-boss-unreachable.action-cooldown-seconds",2)*1000))return;
         bossLeapCooldown.put(id,now);
+        /** Last resort for the pit problem, and it applies to all three bosses.
+         *
+         *  A boss that has been unable to reach anybody for this long is not going to path its way out. It
+         *  is almost always a hole -- a ravine, a cave, or a pit a player dug -- where clearing blocks above
+         *  it just drops it back in and the leap has nothing to leap onto. Rather than inventing another
+         *  movement trick, put it on solid ground at the player it is chasing. Gated well behind the
+         *  ordinary recovery, so ordinary terrain scuffles never reach it. */
+        long teleportAfter=(long)(bosses.getDouble("world-boss-unreachable.teleport-seconds",20)*1000);
+        if(stuckFor>=teleportAfter){
+            Location rescue=CoreUtil.findSafeAny(target.getWorld(),target.getLocation().getBlockX(),target.getLocation().getBlockZ());
+            if(rescue!=null){
+                bossUnreachableSince.remove(id);
+                boss.getWorld().spawnParticle(Particle.PORTAL,boss.getLocation().add(0,1,0),40,.6,1,.6,.1);
+                boss.teleport(rescue);
+                boss.getWorld().spawnParticle(Particle.PORTAL,rescue.clone().add(0,1,0),40,.6,1,.6,.1);
+                return;
+            }
+        }
         WorldBossKind kind=kindFromTier(tier);
         double dy=target.getLocation().getY()-boss.getLocation().getY();
         double horizontal=Math.hypot(target.getLocation().getX()-boss.getLocation().getX(),target.getLocation().getZ()-boss.getLocation().getZ());
@@ -1516,7 +1556,10 @@ final class BossEventService {
         switch(kind){
             case IRON_GOLEM -> {if(boss.isInWater()){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,30,2,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.BUBBLE,boss.getLocation().add(0,1,0),12,.5,.5,.5,.02);}}
             case ASHEN_KNIGHT -> {if(boss.isInWater()){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,30,2,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.SPEED,30,1,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.BUBBLE,boss.getLocation().add(0,1,0),12,.5,.5,.5,.02);}}
-            case PIGLIN_BRUTE -> {if(boss.isInLava()){boss.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH,30,2,false,false));boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.LAVA,boss.getLocation().add(0,1,0),8,.5,.5,.5,0);}}
+            case PIGLIN_BRUTE -> {if(boss.isInLava()){/** Strength III here was the reason lava fights turned
+                absurd: refreshed every pass for as long as the boss stood in lava, +9 raw on top of
+                everything else, and invisible in bosses.yml. Lava now grants only the defensive half. */
+                boss.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE,30,1,false,false));boss.getWorld().spawnParticle(Particle.LAVA,boss.getLocation().add(0,1,0),8,.5,.5,.5,0);}}
         }
     }
     /** Anti-stall safety net, not a core mechanic: a group that's well past the intended 8-12 minute fight
@@ -1600,6 +1643,34 @@ final class BossEventService {
         boolean colossusStandard=Math.abs(colossus-6300)<=300;
         return enrageSane&&hierarchy&&colossusStandard;
     }
+    /** One recap, once, to everyone who actually contributed.
+     *
+     *  Built from the encounter's own contribution figures -- the very same map the reward split is
+     *  computed from -- so what players are shown and what they are paid for cannot disagree. Sent only to
+     *  the participants, because a server-wide broadcast of somebody else's fight is noise. */
+    private void sendDamageRecap(LivingEntity boss,Map<String,Double> participants){
+        if(participants.isEmpty())return;
+        double total=0;
+        for(double value:participants.values())total+=value;
+        if(total<=0)return;
+        List<Map.Entry<String,Double>> ranked=new ArrayList<>(participants.entrySet());
+        ranked.sort(Map.Entry.<String,Double>comparingByValue().reversed());
+        List<Component> lines=new ArrayList<>();
+        lines.add(Component.text("\u2620 "+CoreUtil.pretty(boss.getType().name())+" defeated \u2014 damage dealt",NamedTextColor.GOLD));
+        int place=1;
+        for(Map.Entry<String,Double> entry:ranked){
+            Database.PlayerRow row=db.player(entry.getKey());
+            String name=row==null||row.name()==null?entry.getKey():row.name();
+            long dealt=Math.round(entry.getValue());
+            long percent=Math.round(entry.getValue()*100/total);
+            lines.add(Component.text("  "+(place++)+". "+name+" \u2014 "+CoreUtil.compact(dealt)+" ("+percent+"%)",NamedTextColor.GRAY));
+        }
+        for(String id:participants.keySet()){
+            Player viewer=plugin.getServer().getPlayer(id);
+            if(viewer!=null)for(Component line:lines)viewer.sendMessage(line);
+        }
+    }
+
     /** World-boss identity helpers. Legacy "worldboss" (no suffix, pre-Batch-2 saves) is treated as Ashen Knight. */
     private boolean isWorldBossTier(String tier){return tier!=null&&(tier.equals("worldboss")||tier.startsWith("worldboss_"));}
     private String tierFor(WorldBossKind kind){return switch(kind){case ASHEN_KNIGHT->"worldboss_ashen";case IRON_GOLEM->"worldboss_iron";case PIGLIN_BRUTE->"worldboss_piglin";};}

@@ -111,5 +111,15 @@ final class CoreUtil {
         return null;
     }
     private static boolean safeNetherFloor(Block block){Material material=block.getType();return material.isSolid()&&!Set.of(Material.LAVA,Material.MAGMA_BLOCK,Material.CACTUS,Material.FIRE,Material.SOUL_FIRE,Material.POWDER_SNOW,Material.BEDROCK).contains(material);}
+    /** The current reward day, which rolls over at 12:00 Asia/Riyadh rather than at midnight UTC.
+     *
+     *  Before noon there the day label is still yesterday's date, so an evening session that runs past
+     *  midnight counts as ONE day rather than silently handing a farmer a fresh daily allowance halfway
+     *  through it. */
+    static String riyadhDay(){
+        java.time.ZonedDateTime now=java.time.ZonedDateTime.now(java.time.ZoneId.of("Asia/Riyadh"));
+        if(now.getHour()<12)now=now.minusDays(1);
+        return now.toLocalDate().toString();
+    }
     static Location findSafeAny(World world,int x,int z){return world.getEnvironment()==World.Environment.NETHER?findSafeNether(world,x,z):findSafe(world,x,z);}
 }

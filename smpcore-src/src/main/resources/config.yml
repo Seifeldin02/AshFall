@@ -191,7 +191,7 @@ trade-tax:
   # installed (or its API changes) this silently does nothing and trades are unaffected.
   enabled: true
   # Defaults to the auction sale tax if unset.
-  percent: 5.0
+  percent: 1.0
   # Charged on XP moved through a trade: $10 per 100 XP.
   money-per-100-xp: 10
   # AxTrade currency hook names to read. Adjust if your AxTrade uses different keys.
@@ -226,9 +226,14 @@ bank:
     input-timeout-seconds: 30
 
 mob-money:
-  # Share of the equivalent natural mob's money paid for a mob from a PLAYER-PLACED spawner. Halved again
-  # automatically once the killer is past the anti-farm threshold below (so 0.5 -> 0.25).
+  # Share of the equivalent natural mob's money paid for a mob from a PLAYER-PLACED spawner. Flat: the
+  # anti-farm curve below applies to NATURAL mobs only, so a farm's value is predictable before it is built.
   spawner-share: 0.5
+  # Past the daily allowance, the share halves again. The allowance counts REPRESENTED mobs, so a stack of
+  # 100 spends 100 of it. It resets at 12:00 Asia/Riyadh, and a stack straddling the boundary is split
+  # rather than being paid entirely at one rate.
+  spawner-reduced-share: 0.25
+  spawner-daily-threshold: 10000
   # Neutral mobs that still count as combat income: they get the progression money multiplier and the
   # anti-farm kill accounting, exactly like hostile mobs. Iron Golems are here because they fight back and
   # are farmed deliberately, but are classed Golem rather than Enemy, so they were silently paying base
@@ -284,6 +289,9 @@ net-worth:
   recalculate-minutes: 2
   reconcile-chunks-per-tick: 4
   relic-value: 500000
+  # Flat contribution of each legitimately placed Industrial Hopper inside a claim. Its contents are
+  # valued separately through the ordinary container path, so nothing is counted twice.
+  industrial-hopper-value: 5000
   market:
     window-days: 30
     minimum-sales: 5
@@ -444,8 +452,15 @@ industrial-hopper:
   # Items moved per hopper per tick. Vanilla moves one item every 8 ticks; this is the whole point of the
   # block, so it is deliberately far higher. Ticking is centralised, not one task per hopper.
   items-per-tick: 9
-  # How often the central sweep runs, in ticks.
-  tick-period: 1
+  # How often the central sweep runs, in ticks. Deliberately matched to vanilla's own hopper cooldown.
+  #
+  # Vanilla throttles hoppers to one transfer every 8 ticks because per-tick container scanning is the
+  # single most reliable way to kill a server's tick rate, and hoppers are the block players build most.
+  # Sweeping every tick made this block 72x vanilla throughput but also 8x vanilla's per-hopper CPU cost,
+  # on a block that is craftable and will be mass-produced. Nine items every 8 ticks is still 9x vanilla
+  # throughput at 1/8th the cost of the previous cadence -- the same work vanilla does, done nine times
+  # harder, rather than eight times more often.
+  tick-period: 8
 
 bulletin:
   # How often everyone's stats are recomputed (two bulk queries). Deliberately slow.
