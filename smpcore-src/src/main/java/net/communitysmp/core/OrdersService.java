@@ -64,7 +64,9 @@ final class OrdersService implements Listener {
     private static final String VANILLA = "vanilla:", SPAWNER = "smpcore:spawner/", BOOK = "vanilla:ENCHANTED_BOOK/";
 
     /** Which screen an inventory belongs to, so one click handler can serve them all. */
-    private enum Screen { PUBLIC, MINE, PICK, CONFIRM, STASH, DETAIL }
+    private enum Screen { PUBLIC, MINE, PICK, CONFIRM, STASH, DELIVER }
+    /** Insertable area of the delivery screen: the top three rows, and nothing else. */
+    private static final int DELIVER_SLOTS = 27;
 
     private final class Holder implements InventoryHolder {
         private final Screen screen;
@@ -72,6 +74,10 @@ final class OrdersService implements Listener {
         private final String search;
         private final long orderId;
         private Inventory inv;
+        /** Consequential actions arm on the first click and commit on the second, so nothing money-moving
+         *  or item-moving can happen by accident. Cleared whenever the screen is repainted. */
+        private long armedAt;
+        private int armedSlot = -1;
         private Holder(Screen screen, int page, String search, long orderId) {
             this.screen = screen; this.page = page; this.search = search; this.orderId = orderId;
         }
@@ -197,10 +203,12 @@ final class OrdersService implements Listener {
         List<Database.OrderRow> rows = db.ordersActive(search);
         Inventory inv = open(player, Screen.PUBLIC, page, search, 0, "Orders • Buying", 54);
         paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, true)));
-        inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Click to search" : "Showing: " + search)));
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Showing everything" : "Showing: " + search, "Click to search")));
         inv.setItem(46, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order")));
-        inv.setItem(47, CoreUtil.named(Material.CHEST, "Your orders", List.of("Manage and cancel")));
-        inv.setItem(48, CoreUtil.named(Material.ENDER_CHEST, "Collect stash", List.of(db.stashCount(CoreUtil.id(player)) + " item stack(s) waiting")));
+        inv.setItem(47, CoreUtil.named(Material.CHEST, "Your orders", List.of("Active orders and history")));
+        inv.setItem(48, CoreUtil.named(Material.ENDER_CHEST, "Collect stash", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting")));
+        inv.setItem(49, CoreUtil.named(Material.PAPER, "Page " + page, List.of(rows.size() + " open order(s)")));
         navigation(inv, page, rows.size());
         player.openInventory(inv);
     }
@@ -209,7 +217,10 @@ final class OrdersService implements Listener {
         List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player));
         Inventory inv = open(player, Screen.MINE, page, null, 0, "Orders • Yours", 54);
         paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false)));
-        inv.setItem(49, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
+        inv.setItem(49, CoreUtil.named(Material.PAPER, "Page " + page,
+                List.of(rows.size() + " order(s)", "Active ones cancel and refund", "Finished ones can be removed")));
         navigation(inv, page, rows.size());
         player.openInventory(inv);
     }
@@ -278,6 +289,113 @@ final class OrdersService implements Listener {
         return icon;
     }
 
+    /** The delivery screen. The player PUTS items in; nothing is ever pulled out of their inventory for
+     *  them. Closing without confirming returns everything, and confirming is a second, deliberate click. */
+    void openDeliver(Player player, long orderId) {
+        Database.OrderRow row = db.order(orderId);
+        if (row == null || !row.status().equals("ACTIVE")) { CoreUtil.error(player, "That order is no longer active."); return; }
+        if (row.buyer().equals(CoreUtil.id(player))) { CoreUtil.error(player, "You cannot fill your own order."); return; }
+        Holder holder = new Holder(Screen.DELIVER, 1, null, orderId);
+        holder.inv = plugin.getServer().createInventory(holder, 54,
+                Component.text("Deliver \u2022 " + display(row.itemKey()), NamedTextColor.DARK_AQUA));
+        paintDeliver(holder, row, player);
+        player.openInventory(holder.inv);
+    }
+
+    /** Repaints everything below the insertable rows. Never touches slots 0-26, which belong to the player. */
+    private void paintDeliver(Holder holder, Database.OrderRow row, Player player) {
+        Inventory inv = holder.inv;
+        int inserted = insertedCount(inv, row.itemKey());
+        int needed = row.amount() - row.filled();
+        int deliverable = Math.min(inserted, needed);
+        double gross = Math.round(deliverable * row.unit() * 100) / 100.0;
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double net = Math.round(gross * (1 - tax) * 100) / 100.0;
+        for (int slot = 27; slot < 54; slot++) inv.setItem(slot, filler());
+        inv.setItem(31, CoreUtil.named(Material.PAPER, "Order #" + row.id(),
+                List.of("Buyer: " + row.buyerName(),
+                        "Wants: " + display(row.itemKey()),
+                        "Still needed: " + needed,
+                        "Pays: " + CoreUtil.money(row.unit()) + " each")));
+        inv.setItem(33, CoreUtil.named(inserted > 0 ? Material.CHEST : Material.BARRIER, "You have inserted " + inserted,
+                List.of(deliverable + " of them will be delivered",
+                        inserted > needed ? "The extra " + (inserted - needed) + " will be returned" : "Within what the order needs",
+                        "Payout: " + CoreUtil.money(net) + (tax > 0 ? " after " + CoreUtil.money(gross - net) + " tax" : ""))));
+        boolean armed = holder.armedSlot == 49 && System.currentTimeMillis() - holder.armedAt < 6000;
+        inv.setItem(49, deliverable <= 0
+                ? CoreUtil.named(Material.GRAY_CONCRETE, "Put items in the top three rows", List.of("Only matching items count"))
+                : CoreUtil.named(armed ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE,
+                    armed ? "Click again to confirm" : "Deliver " + deliverable,
+                    List.of(armed ? "Delivering " + deliverable + " for " + CoreUtil.money(net) : "You will be asked to confirm")));
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Returns everything you inserted")));
+    }
+
+    private ItemStack filler() { return CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE, " ", List.of()); }
+
+    private int insertedCount(Inventory inv, String key) {
+        int total = 0;
+        for (int slot = 0; slot < DELIVER_SLOTS; slot++) {
+            ItemStack item = inv.getItem(slot);
+            if (matches(key, item)) total += item.getAmount();
+        }
+        return total;
+    }
+
+    /** Hands back everything sitting in the insertable rows. Called on close, on back, and after a partial
+     *  delivery for whatever was surplus -- so an item put in here can only ever come back out. */
+    private void returnInserted(Player player, Inventory inv) {
+        for (int slot = 0; slot < DELIVER_SLOTS; slot++) {
+            ItemStack item = inv.getItem(slot);
+            if (item == null || item.getType().isAir()) continue;
+            inv.setItem(slot, null);
+            CoreUtil.give(player, item);
+        }
+    }
+
+    @EventHandler public void closed(org.bukkit.event.inventory.InventoryCloseEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof Holder holder)) return;
+        if (holder.screen != Screen.DELIVER || !(event.getPlayer() instanceof Player player)) return;
+        returnInserted(player, event.getInventory());
+    }
+
+    /** Commits exactly what was inserted, through the same reservation the rest of the system uses. */
+    private void commitDelivery(Player seller, Holder holder) {
+        Database.OrderRow row = db.order(holder.orderId);
+        if (row == null || !row.status().equals("ACTIVE")) { CoreUtil.error(seller, "That order is no longer active."); returnInserted(seller, holder.inv); seller.closeInventory(); return; }
+        int needed = row.amount() - row.filled();
+        int qty = Math.min(insertedCount(holder.inv, row.itemKey()), needed);
+        if (qty <= 0) { CoreUtil.error(seller, "Nothing matching is inserted."); return; }
+        double cost = Math.round(qty * row.unit() * 100) / 100.0;
+        if (!db.orderReserve(holder.orderId, qty, cost)) {
+            CoreUtil.error(seller, "Somebody just filled that order; nothing was taken.");
+            returnInserted(seller, holder.inv); seller.closeInventory(); return;
+        }
+        /** Take from the SCREEN, not the player's inventory, and only after the reservation succeeded. */
+        int remaining = qty;
+        for (int slot = 0; slot < DELIVER_SLOTS && remaining > 0; slot++) {
+            ItemStack item = holder.inv.getItem(slot);
+            if (!matches(row.itemKey(), item)) continue;
+            int take = Math.min(remaining, item.getAmount());
+            item.setAmount(item.getAmount() - take);
+            holder.inv.setItem(slot, item.getAmount() <= 0 ? null : item);
+            remaining -= take;
+        }
+        if (remaining > 0) { db.orderUnreserve(holder.orderId, qty, cost); CoreUtil.error(seller, "Delivery came up short; nothing was charged."); return; }
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double fee = Math.round(cost * tax * 100) / 100.0, net = cost - fee;
+        db.changeBalance(CoreUtil.id(seller), net);
+        if (fee > 0) plugin.bank().creditFee(fee, CoreUtil.id(seller), "ORDER_TAX");
+        db.recordEconomy(CoreUtil.id(seller), "ORDER_SALE", net, row.itemKey());
+        db.stashAdd(row.buyer(), row.itemKey(), qty, canonical(row.itemKey()));
+        db.orderCompleteIfFull(holder.orderId);
+        CoreUtil.msg(seller, "Delivered " + qty + "x " + display(row.itemKey()) + " for " + CoreUtil.money(net) + ".");
+        Player buyer = plugin.getServer().getPlayer(row.buyer());
+        if (buyer != null) CoreUtil.msg(buyer, seller.getName() + " delivered " + qty + "x " + display(row.itemKey()) + " \u2014 /orders to collect.");
+        Database.OrderRow after = db.order(holder.orderId);
+        if (after == null || !after.status().equals("ACTIVE")) { returnInserted(seller, holder.inv); seller.closeInventory(); }
+        else { holder.armedSlot = -1; paintDeliver(holder, after, seller); }
+    }
+
     void openStash(Player player) {
         List<ItemStack> stash = db.stashOf(CoreUtil.id(player));
         Inventory inv = open(player, Screen.STASH, 1, null, 0, "Orders • Stash", 54);
@@ -290,8 +408,29 @@ final class OrdersService implements Listener {
     @EventHandler
     public void click(InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Holder holder)) return;
-        event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player)) return;
+        if (holder.screen == Screen.DELIVER) {
+            int raw = event.getRawSlot();
+            /** The top three rows and the player's own inventory stay fully interactive -- that is the whole
+             *  point of the screen. Everything else is furniture and is refused. */
+            if (raw >= DELIVER_SLOTS && raw < 54) {
+                event.setCancelled(true);
+                if (raw == 45) { player.closeInventory(); return; }
+                if (raw == 49) {
+                    Database.OrderRow row = db.order(holder.orderId);
+                    if (row == null) { player.closeInventory(); return; }
+                    if (holder.armedSlot == 49 && System.currentTimeMillis() - holder.armedAt < 6000) commitDelivery(player, holder);
+                    else { holder.armedSlot = 49; holder.armedAt = System.currentTimeMillis(); paintDeliver(holder, row, player); }
+                }
+                return;
+            }
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Database.OrderRow row = db.order(holder.orderId);
+                if (row != null) { holder.armedSlot = -1; paintDeliver(holder, row, player); }
+            });
+            return;
+        }
+        event.setCancelled(true);
         int slot = event.getRawSlot();
         if (slot < 0 || slot >= event.getInventory().getSize()) return;
 
@@ -320,8 +459,23 @@ final class OrdersService implements Listener {
         Long id = clicked.hasItemMeta() ? clicked.getItemMeta().getPersistentDataContainer()
                 .get(new NamespacedKey(plugin, "order_id"), org.bukkit.persistence.PersistentDataType.LONG) : null;
         if (id == null) return;
-        if (holder.screen == Screen.PUBLIC) deliver(player, id);
-        else if (holder.screen == Screen.MINE) cancel(player, id);
+        if (holder.screen == Screen.PUBLIC) { openDeliver(player, id); return; }
+        if (holder.screen != Screen.MINE) return;
+        Database.OrderRow row = db.order(id);
+        if (row == null) return;
+        if (!row.status().equals("ACTIVE")) {
+            /** Finished orders offer removal from the list instead of cancellation. History only -- the row,
+             *  its escrow trail and the ledger entries all stay exactly where they are. */
+            if (holder.armedSlot == slot && System.currentTimeMillis() - holder.armedAt < 6000) {
+                db.orderHide(id); CoreUtil.msg(player, "Order #" + id + " removed from your list.");
+                holder.armedSlot = -1; openMine(player, holder.page);
+            } else { holder.armedSlot = slot; holder.armedAt = System.currentTimeMillis();
+                CoreUtil.msg(player, "Click again to remove order #" + id + " from your list."); }
+            return;
+        }
+        if (holder.armedSlot == slot && System.currentTimeMillis() - holder.armedAt < 6000) { holder.armedSlot = -1; cancel(player, id); }
+        else { holder.armedSlot = slot; holder.armedAt = System.currentTimeMillis();
+            CoreUtil.msg(player, "Click again to cancel order #" + id + " and refund " + CoreUtil.money(row.escrow()) + "."); }
     }
 
     @EventHandler public void drag(InventoryDragEvent event) {

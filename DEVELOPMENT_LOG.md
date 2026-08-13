@@ -114,6 +114,38 @@ active is not news and is no longer mentioned.
 - `/ashfall hopper rig|count|create`, `/ashfall vault`, `/ashfall ordersdebugcreate` — console diagnostics
   that made the conservation testing possible.
 
+
+### Orders UX pass (2026-08-14)
+
+- **Delivery is now manual.** Clicking an order opens a screen where the seller *places* items into the top
+  three rows; nothing is ever pulled out of their inventory for them. It shows what is still needed, how
+  many matching items are inserted, what will actually be delivered, and the payout after tax.
+- **Confirmation on every consequential action.** Delivering, cancelling an order and removing one from
+  history all arm on the first click and commit on the second, with the button visibly changing state.
+  Order creation already had a confirm screen.
+- **Closing returns everything.** Inserted items come back on close, on Back, and any surplus beyond what the
+  order needed comes back after a partial delivery. Items taken for a delivery come out of the SCREEN, after
+  the reservation succeeded -- never speculatively from the player.
+- **History hiding.** Finished orders can be removed from the owner's list. UI only: the row, its escrow
+  trail and the ledger entries are untouched, and hiding is refused on ACTIVE orders.
+- **Layout.** Consistent nine-slot bottom bar across screens, glass filler so furniture is obviously not
+  interactive, page indicators with counts, back buttons everywhere.
+
+### AuthMe staging persistence -- the actual fix
+
+The mechanism already existed: , which lets an admin account use
+AuthMe's own same-IP session restore, but only when the connection is from this physical machine. It
+defaults to false and is deliberately absent from the shipped config resource, so production stays locked
+down no matter which jar is built. **The earlier attempt changed the session timeout instead, which granted
+admins nothing** -- reverted. Now set in staging's live config only, and **verified in the log:**
+.
+
+### Conservation audit against real usage
+
+Order #5 (MacoCT, 100 Blaze Spawners at 1,000, 35 filled by Asserto):
+100,000 escrowed = 35,000 released + 65,000 still held, and the seller received 34,125 = 35,000 x 0.975.
+Every ORDER_ESCROW / ORDER_REFUND / ORDER_SALE ledger total ties out across all three players.
+
 ---
 
 ## Standing lessons

@@ -174,7 +174,7 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS smp_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, buyer TEXT NOT NULL, buyer_name TEXT NOT NULL, item_key TEXT NOT NULL, amount INTEGER NOT NULL, filled INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, escrow REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON smp_orders(status)");
             /** Added after the table shipped, so guarded rather than assumed. */
-            for(String column:new String[]{"notified INTEGER NOT NULL DEFAULT 0","notified_end INTEGER NOT NULL DEFAULT 0"})
+            for(String column:new String[]{"notified INTEGER NOT NULL DEFAULT 0","notified_end INTEGER NOT NULL DEFAULT 0","hidden INTEGER NOT NULL DEFAULT 0"})
                 try{s.execute("ALTER TABLE smp_orders ADD COLUMN "+column);}catch(SQLException ignored){}
             /** Goods delivered to an offline or full buyer. Held until collected; never auto-granted. */
             s.execute("CREATE TABLE IF NOT EXISTS smp_order_stash (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, item BLOB NOT NULL, created_at INTEGER NOT NULL)");
@@ -690,12 +690,15 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
-    record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status,int notified,int notifiedEnd){}
-    private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status,notified,notified_end";
+    record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status,int notified,int notifiedEnd,int hidden){}
+    private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status,notified,notified_end,hidden";
     private static OrderRow orderRow(ResultSet rs)throws SQLException{
-        return new OrderRow(rs.getLong(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getInt(5),rs.getInt(6),rs.getDouble(7),rs.getDouble(8),rs.getLong(9),rs.getLong(10),rs.getString(11),rs.getInt(12),rs.getInt(13));
+        return new OrderRow(rs.getLong(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getInt(5),rs.getInt(6),rs.getDouble(7),rs.getDouble(8),rs.getLong(9),rs.getLong(10),rs.getString(11),rs.getInt(12),rs.getInt(13),rs.getInt(14));
     }
     /** Records what has already been reported to the buyer, so a notice is delivered exactly once. */
+    /** History visibility only. The row, its escrow trail and the economy ledger all stay exactly as they
+     *  were -- this hides a finished order from the owner's list, it does not delete an audit record. */
+    synchronized void orderHide(long id){update("UPDATE smp_orders SET hidden=1 WHERE id=? AND status<>'ACTIVE'",id);}
     synchronized void orderMarkNotified(long id,int filled){update("UPDATE smp_orders SET notified=?, notified_end=CASE WHEN status='ACTIVE' THEN 0 ELSE 1 END WHERE id=?",filled,id);}
     synchronized OrderRow order(long id){return one("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE id=?",Database::orderRow,id);}
     synchronized List<OrderRow> ordersActive(String search){
@@ -704,7 +707,7 @@ final class Database implements AutoCloseable {
         String needle=search.toLowerCase(java.util.Locale.ROOT);
         return rows.stream().filter(row->row.itemKey().toLowerCase(java.util.Locale.ROOT).contains(needle)).toList();
     }
-    synchronized List<OrderRow> ordersOf(String buyer){return list("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE buyer=? ORDER BY status='ACTIVE' DESC, created_at DESC",Database::orderRow,buyer);}
+    synchronized List<OrderRow> ordersOf(String buyer){return list("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE buyer=? AND hidden=0 ORDER BY status='ACTIVE' DESC, created_at DESC",Database::orderRow,buyer);}
     synchronized List<OrderRow> ordersExpired(long now){return list("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE status='ACTIVE' AND expires_at<=?",Database::orderRow,now);}
     synchronized long orderCreate(String buyer,String name,String key,int amount,double unit,double escrow,long expires){
         update("INSERT INTO smp_orders(buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status) VALUES(?,?,?,?,0,?,?,?,?,'ACTIVE')",buyer,name,key,amount,unit,escrow,System.currentTimeMillis(),expires);
