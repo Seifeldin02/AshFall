@@ -826,6 +826,9 @@ final class BossEventService {
             return;
         }
         if (worldBoss) { boolean persisted = worldBossId != null && worldBossId.equals(mob.getUniqueId()); if (persisted && !db.claimBossReward(worldBossId.toString())) return; }
+        /** The recap belongs here, on the shared world-boss path -- it previously only ran for vanilla
+         *  dragon/wither deaths, so the Ashen/Colossus/Cinder fights players actually do never showed one. */
+        if (worldBoss) sendDamageRecap(mob, participants);
         String path = worldBoss ? configPrefix(bossKind) : "tiers." + tier; double amount = random(bosses.getDouble(path + ".reward-min"), bosses.getDouble(path + ".reward-max"));if(worldBoss)amount*=1+bosses.getDouble(path+".reward-extra-player-factor",.35)*Math.sqrt(Math.max(0,participants.size()-1));else if(tier.equals("miniboss"))amount*=participantRewardMultiplier(participants.size());else if(mob.getWorld().getEnvironment()==World.Environment.NETHER)amount*=bosses.getDouble("dimension-content.nether.reward-multiplier",1.2);else if(mob.getWorld().getEnvironment()==World.Environment.THE_END)amount*=bosses.getDouble("dimension-content.end.reward-multiplier",1.4);splitReward(participants,amount,worldBoss?"world boss":"elite");
         Player credited=killer;if(credited==null){String top=participants.entrySet().stream().max(Map.Entry.comparingByValue()).orElseThrow().getKey();credited=find(top);}
         for(String participant:participants.keySet()){Player player=find(participant);if(player==null)continue;if(tier.equals("epic")||tier.equals("legendary"))plugin.progress().eliteParticipation(player,tier);plugin.shards().rewardElite(player,tier);if(worldBoss||tier.equals("miniboss")){db.incrementStat(participant,"boss_kills");plugin.progress().bossKill(player,worldBoss?displayName(bossKind):CoreUtil.pretty(mob.getType().name())+" Miniboss",worldBoss,!worldBoss);giveParticipationLoot(player,worldBoss?tier:"miniboss");}}
@@ -1157,24 +1160,11 @@ final class BossEventService {
         if(stuckFor<(long)(bosses.getDouble("world-boss-unreachable.seconds",3)*1000))return;
         if(now-bossLeapCooldown.getOrDefault(id,0L)<(long)(bosses.getDouble("world-boss-unreachable.action-cooldown-seconds",2)*1000))return;
         bossLeapCooldown.put(id,now);
-        /** Last resort for the pit problem, and it applies to all three bosses.
-         *
-         *  A boss that has been unable to reach anybody for this long is not going to path its way out. It
-         *  is almost always a hole -- a ravine, a cave, or a pit a player dug -- where clearing blocks above
-         *  it just drops it back in and the leap has nothing to leap onto. Rather than inventing another
-         *  movement trick, put it on solid ground at the player it is chasing. Gated well behind the
-         *  ordinary recovery, so ordinary terrain scuffles never reach it. */
-        long teleportAfter=(long)(bosses.getDouble("world-boss-unreachable.teleport-seconds",20)*1000);
-        if(stuckFor>=teleportAfter){
-            Location rescue=CoreUtil.findSafeAny(target.getWorld(),target.getLocation().getBlockX(),target.getLocation().getBlockZ());
-            if(rescue!=null){
-                bossUnreachableSince.remove(id);
-                boss.getWorld().spawnParticle(Particle.PORTAL,boss.getLocation().add(0,1,0),40,.6,1,.6,.1);
-                boss.teleport(rescue);
-                boss.getWorld().spawnParticle(Particle.PORTAL,rescue.clone().add(0,1,0),40,.6,1,.6,.1);
-                return;
-            }
-        }
+        /** No teleport-to-target rescue. It was removed deliberately: a boss that warps to whoever it is
+         *  chasing -- potentially to their base -- is worse than a boss stuck in a hole, and it made the
+         *  fight feel unfair. A boss falling into a pit is now intentional design; the intended fix is for
+         *  players to fight it on open ground or in an arena they build. The leap and block-clearing below
+         *  still handle ordinary terrain snags. */
         WorldBossKind kind=kindFromTier(tier);
         double dy=target.getLocation().getY()-boss.getLocation().getY();
         double horizontal=Math.hypot(target.getLocation().getX()-boss.getLocation().getX(),target.getLocation().getZ()-boss.getLocation().getZ());

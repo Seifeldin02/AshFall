@@ -178,6 +178,54 @@ cancel`.
 **Not yet done:** the live two-player match. Everything above is code-verified and the arena is built and
 probed, but an actual duel needs two humans in it.
 
+
+## Session: 2026-08-14 (part 2) — staging only
+
+### AuthMe: the real MacoCT cause
+Asserto keeps their staging session but MacoCT did not, because same-machine-autologin only helps a
+connection FROM the server box -- Asserto's stored IP is one of this machine's own LAN IPs, MacoCT's is
+remote. New staging-only flag `trusted-admin.staging-session-persistence` lets an admin keep AuthMe's own
+same-IP 30-minute session regardless of machine. Absent from the shipped resource and never copied by a
+deploy, so production admins still authenticate every time. The earlier attempt only changed a timeout and
+did nothing; reverted.
+
+### Task Master: value floor
+Rewards were pure effort and ignored item worth (2 notch apples worth ~$2m for $27.5k). Reward is now
+max(effort, valueFloor); valueFloor = the items' real economy value (luxury buy, else shop sell, else a
+scarcity table) x1.15, held BELOW purchase cost so it can never create buy-then-deliver arbitrage. Effort
+still wins for cheap grind contracts. gapple (now 1 apple) $27.5k -> $850k, heart -> $170k, shell -> $136k,
+conduit -> $483k; blaze/cookie/nautilus unchanged. Noted but NOT changed: cheap purchasable bulk items
+(e.g. blaze rods buyable at ~$60, effort reward $23.8k/16) are a PRE-EXISTING effort-vs-buy arbitrage,
+left alone to respect the owner's effort-based design.
+
+### Central Bank villager income
+$100 minted into the bank per emerald a completed player->villager trade actually consumes (base +
+specialPrice on the first ingredient, i.e. after reputation discount and demand). PlayerTradeEvent fires
+once per trade, so shift-clicking counts exactly. Player gets nothing.
+
+### Duels rebuilt for concurrency
+Full rewrite: multiple simultaneous matches, each in its own arena slot 2,048 blocks apart, isolated
+escrow/wagers/state per Duel. Friendly-fire/PvP override between the two opponents only; spectators and
+outsiders can never deal or take damage. All commands blocked while duelling except /duel forfeit. Kit
+blocks can be placed/broken; the arena map never can; placed blocks tracked and cleared each round.
+Per-round arena reset, full state restore incl. reconnect. Challenge accept is a chat prompt like a trade
+request (clickable, cooldown), NOT a sudden GUI; stakes set in the GUI with -/+ buttons; /duel has full tab
+completion. Still needs the live two-player match test.
+
+### Boss (low priority)
+- Pit-recovery teleport REMOVED entirely. A boss warping to whoever it chases (potentially to their base)
+  was worse than one stuck in a pit; a boss in a pit is now intentional design -- fight it on open ground or
+  in an arena you build.
+- Damage recap now fires on the WORLD-BOSS path (Ashen/Colossus/Cinder). It previously only ran for vanilla
+  dragon/wither deaths, so the fights players actually do never showed a recap -- that was the "not
+  implemented correctly" report. Shows name + raw damage + percent to participants, once.
+
+### Orders GUI polish
+Richer, viewer-aware cards: remaining quantity in the title, unit price and value-left, status colour
+(active green / completed aqua / closed red) with relative expiry, and a live "you are carrying N -- can
+fill N" line on the public board. Manual delivery basket, confirmations and history hiding from the prior
+pass retained.
+
 ---
 
 ## Standing lessons

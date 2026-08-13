@@ -202,7 +202,7 @@ final class OrdersService implements Listener {
     void openPublic(Player player, int page, String search) {
         List<Database.OrderRow> rows = db.ordersActive(search);
         Inventory inv = open(player, Screen.PUBLIC, page, search, 0, "Orders • Buying", 54);
-        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, true)));
+        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, true, player)));
         for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
         inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Showing everything" : "Showing: " + search, "Click to search")));
         inv.setItem(46, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order")));
@@ -216,7 +216,7 @@ final class OrdersService implements Listener {
     void openMine(Player player, int page) {
         List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player));
         Inventory inv = open(player, Screen.MINE, page, null, 0, "Orders • Yours", 54);
-        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false)));
+        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false, player)));
         for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
         inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
         inv.setItem(49, CoreUtil.named(Material.PAPER, "Page " + page,
@@ -267,26 +267,51 @@ final class OrdersService implements Listener {
         if (page * 45 < total) inv.setItem(51, CoreUtil.named(Material.SPECTRAL_ARROW, "Next page", List.of()));
     }
 
-    private ItemStack orderIcon(Database.OrderRow row, boolean forSeller) {
+    private ItemStack orderIcon(Database.OrderRow row, boolean forSeller, Player viewer) {
         ItemStack icon = canonical(row.itemKey());
         if (icon == null) icon = new ItemStack(Material.BARRIER);
         icon = icon.clone();
         ItemMeta meta = icon.getItemMeta();
-        meta.displayName(Component.text(display(row.itemKey()), NamedTextColor.GOLD));
+        boolean active = row.status().equals("ACTIVE");
+        int remaining = row.amount() - row.filled();
+        meta.displayName(Component.text(remaining + "x " + display(row.itemKey()), active ? NamedTextColor.GOLD : NamedTextColor.GRAY));
         List<Component> lore = new ArrayList<>();
         lore.add(Component.text("Buyer: " + row.buyerName(), NamedTextColor.GRAY));
-        lore.add(Component.text("Wants: " + (row.amount() - row.filled()) + " more of " + row.amount(), NamedTextColor.GRAY));
-        lore.add(Component.text("Pays: " + CoreUtil.money(row.unit()) + " each", NamedTextColor.YELLOW));
-        lore.add(Component.text("Escrow held: " + CoreUtil.money(row.escrow()), NamedTextColor.DARK_GRAY));
-        lore.add(Component.text("Status: " + row.status(), NamedTextColor.DARK_GRAY));
+        lore.add(Component.text("Filled " + row.filled() + " / " + row.amount(), NamedTextColor.GRAY));
+        lore.add(Component.text("Unit price: " + CoreUtil.money(row.unit()), NamedTextColor.YELLOW));
+        lore.add(Component.text("Value left: " + CoreUtil.money(remaining * row.unit()), NamedTextColor.YELLOW));
+        NamedTextColor statusColour = active ? NamedTextColor.GREEN
+                : row.status().equals("COMPLETED") ? NamedTextColor.AQUA : NamedTextColor.RED;
+        lore.add(Component.text("Status: " + row.status()
+                + (active ? "  (expires " + ago(row.expiresAt()) + ")" : ""), statusColour));
         lore.add(Component.empty());
-        lore.add(Component.text(forSeller ? "Click to deliver what you are carrying" : "Click to cancel and refund",
-                forSeller ? NamedTextColor.GREEN : NamedTextColor.RED));
+        if (forSeller && active) {
+            int carried = viewer == null ? 0 : count(viewer, row.itemKey());
+            int fill = Math.min(carried, remaining);
+            lore.add(Component.text(carried > 0 ? "You are carrying " + carried + " — can fill " + fill : "You are carrying none",
+                    carried > 0 ? NamedTextColor.GREEN : NamedTextColor.DARK_GRAY));
+            lore.add(Component.text("Click to open the delivery basket", NamedTextColor.GREEN));
+        } else if (!forSeller && active) {
+            lore.add(Component.text("Escrow held: " + CoreUtil.money(row.escrow()), NamedTextColor.DARK_GRAY));
+            lore.add(Component.text("Click to cancel and refund", NamedTextColor.RED));
+        } else if (!forSeller) {
+            lore.add(Component.text("Click to remove from your history", NamedTextColor.DARK_GRAY));
+        }
         meta.lore(lore);
         meta.getPersistentDataContainer().set(new NamespacedKey(plugin, "order_id"),
                 org.bukkit.persistence.PersistentDataType.LONG, row.id());
         icon.setItemMeta(meta);
         return icon;
+    }
+
+    /** Relative time, for order expiry. Future = "in 3d", past = "expired". */
+    private String ago(long at) {
+        long delta = at - System.currentTimeMillis();
+        if (delta <= 0) return "any moment";
+        long hours = delta / 3600000L;
+        if (hours >= 48) return "in " + (hours / 24) + "d";
+        if (hours >= 1) return "in " + hours + "h";
+        return "in " + Math.max(1, delta / 60000L) + "m";
     }
 
     /** The delivery screen. The player PUTS items in; nothing is ever pulled out of their inventory for
