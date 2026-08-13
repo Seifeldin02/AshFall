@@ -121,8 +121,11 @@ final class DiscardedVaultService implements Listener {
      *  spawner is not an ordinary commodity, and turning destroyed ones into sellable stock would quietly
      *  mint them. One call per destroyed physical spawner, so a stack that loses one keeps the rest. */
     void deliverSpawner(org.bukkit.entity.EntityType type, int amount, Location at, String reason) {
-        if (type == null || amount <= 0) return;
-        Pending row = pending.computeIfAbsent(new Key("SPAWNER_" + type.name(), reason, false), ignored -> new Pending());
+        if (amount <= 0) return;
+        /** A spawner with unreadable spawn data still LEFT THE WORLD, and the audit exists to record that.
+         *  Dropping the entry because the type could not be read would quietly lose exactly the events an
+         *  audit is for, so it is filed as UNKNOWN instead. */
+        Pending row = pending.computeIfAbsent(new Key("SPAWNER_" + (type == null ? "UNKNOWN" : type.name()), reason, false), ignored -> new Pending());
         row.amount += amount;
         row.at = System.currentTimeMillis();
         if (at != null && at.getWorld() != null) {
