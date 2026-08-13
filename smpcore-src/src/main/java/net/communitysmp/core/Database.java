@@ -171,6 +171,11 @@ final class Database implements AutoCloseable {
              *  mobs rather than kill events, so a stack of 100 counts as 100. */
             /** Native buy orders. escrow is the money still held FOR THIS ROW; every movement of it is a
              *  conditional UPDATE so it can never be spent or refunded twice. */
+            /** Arena escrow and captured player state. Both live here rather than in memory so a restart
+             *  mid-duel neither loses a stake nor strands somebody in a kit. */
+            s.execute("CREATE TABLE IF NOT EXISTS arena_escrow (player TEXT PRIMARY KEY, amount REAL NOT NULL DEFAULT 0)");
+            s.execute("CREATE TABLE IF NOT EXISTS arena_wagers (id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, backed TEXT NOT NULL, amount REAL NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS arena_state (player TEXT PRIMARY KEY, items BLOB NOT NULL, world TEXT NOT NULL, x REAL, y REAL, z REAL, yaw REAL, pitch REAL, level INTEGER, exp REAL, health REAL, food INTEGER, gamemode TEXT)");
             s.execute("CREATE TABLE IF NOT EXISTS smp_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, buyer TEXT NOT NULL, buyer_name TEXT NOT NULL, item_key TEXT NOT NULL, amount INTEGER NOT NULL, filled INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, escrow REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON smp_orders(status)");
             /** Added after the table shipped, so guarded rather than assumed. */
@@ -690,6 +695,22 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
+    record ArenaState(byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode){}
+    synchronized void arenaStateSave(String player,byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode){
+        update("INSERT OR REPLACE INTO arena_state(player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode);
+    }
+    synchronized ArenaState arenaState(String player){
+        return one("SELECT items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode FROM arena_state WHERE player=?",
+                rs->new ArenaState(rs.getBytes(1),rs.getString(2),rs.getDouble(3),rs.getDouble(4),rs.getDouble(5),rs.getFloat(6),rs.getFloat(7),rs.getInt(8),rs.getFloat(9),rs.getDouble(10),rs.getInt(11),rs.getString(12)),player);
+    }
+    synchronized void arenaStateClear(String player){update("DELETE FROM arena_state WHERE player=?",player);}
+    synchronized List<String> arenaStateOwners(){return list("SELECT player FROM arena_state",rs->rs.getString(1));}
+    synchronized void arenaEscrowSet(String player,double amount){update("INSERT OR REPLACE INTO arena_escrow(player,amount) VALUES(?,?)",player,amount);}
+    synchronized double arenaEscrowOf(String player){Double v=one("SELECT amount FROM arena_escrow WHERE player=?",rs->rs.getDouble(1),player);return v==null?0:v;}
+    synchronized void arenaEscrowClear(String player){update("DELETE FROM arena_escrow WHERE player=?",player);}
+    synchronized void arenaWagerAdd(String player,String backed,double amount){update("INSERT INTO arena_wagers(player,backed,amount) VALUES(?,?,?)",player,backed,amount);}
+    synchronized void arenaWagersClear(){update("DELETE FROM arena_wagers",new Object[0]);}
+
     record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status,int notified,int notifiedEnd,int hidden){}
     private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status,notified,notified_end,hidden";
     private static OrderRow orderRow(ResultSet rs)throws SQLException{

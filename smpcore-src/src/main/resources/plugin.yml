@@ -8,6 +8,9 @@ depend: [Vault, WorldEdit]
 softdepend: [packetevents, AuthMe, floodgate, Geyser-Spigot, TAB, SkinsRestorer, GrimAC, Nicked, ReplayCore, PunisherX, Prism]
 loadbefore: [DonutOrders]
 commands:
+  duel:
+    description: Challenge somebody to a wagered 1v1
+    usage: /duel <player>
   orders:
     description: Browse and fill buy orders
     usage: /orders

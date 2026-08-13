@@ -453,6 +453,12 @@ progression:
     CONQUEROR: 150000
     VANGUARD: 250000
 
+arena:
+  # A void world built by us rather than a downloaded map, so there is no third-party world to vet.
+  world: ashfall_arena
+  # How long a disconnected duellist has to come back before forfeiting the round.
+  reconnect-grace-seconds: 45
+
 orders:
   # Native buy orders. Escrow is taken from the buyer at creation and released per delivered unit; every
   # movement of it is a conditional UPDATE, so it cannot be paid or refunded twice.
