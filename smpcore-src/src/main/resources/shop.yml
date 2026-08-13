@@ -131,7 +131,7 @@ items:
   BONE: {buy: 8.05, sell: 1.61, daily-full: 4096, category: MOB_DROPS}  # Skeleton spawner; heavy bonemeal demand
   STRING: {buy: 16, sell: 3.2, daily-full: 4096, category: MOB_DROPS}  # Spider/cave spider spawner
   PRISMARINE_CRYSTALS: {buy: 16.35, sell: 3.27, daily-full: 1536, category: MOB_DROPS}  # Rarer half of the guardian drop table
-  MAGMA_CREAM: {buy: 60, sell: 12, daily-full: 1536, category: MOB_DROPS}  # Magma cube spawner, nether gated
+  MAGMA_CREAM: {buy: 72.5, sell: 14.5, daily-full: 1536, category: MOB_DROPS}  # Magma cube spawner, nether gated
   PRISMARINE_SHARD: {buy: 28, sell: 5.6, daily-full: 2048, category: MOB_DROPS}  # Guardian farm; a major ocean monument build
   SLIME_BALL: {buy: 45.3, sell: 9.06, daily-full: 2048, category: MOB_DROPS}  # Slime chunk or swamp farm; sticky pistons and leads
   BLAZE_ROD: {buy: 60, sell: 12, daily-full: 1536, category: MOB_DROPS}  # Blaze spawner; best ordinary spawner drop
