@@ -19,7 +19,10 @@ sync:
   - path: plugins/SMPCore/config.yml
     note: |
       Main plugin config. Owner-fixed values that have silently failed to reach production before:
-        progression.rank-rewards.VANGUARD  250000   (the code fallback in ProgressService must match)
+        EXPECTED staging-only difference: trusted-admin.same-machine-autologin is set on staging and must
+  NEVER appear in production or in the shipped resource -- it is what lets an admin reuse AuthMe's
+  same-IP session from this machine. A config.yml DIFF consisting solely of that key is correct.
+  progression.rank-rewards.VANGUARD  250000   (the code fallback in ProgressService must match)
         shop.buy-multiple                  5        (commodity buy = 5x sell, derived at load)
   - path: plugins/SMPCore/bosses.yml
   - path: plugins/SMPCore/shop.yml
