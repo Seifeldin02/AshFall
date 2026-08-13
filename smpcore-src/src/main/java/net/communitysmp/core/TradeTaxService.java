@@ -24,7 +24,7 @@ import java.lang.reflect.Method;
 final class TradeTaxService implements Listener {
     private final SMPCore plugin;
     private boolean active;
-    private Method getTrade,getPlayer1,getPlayer2,getPlayerOf,getCurrency;
+    private Method getTrade,getPlayer1,getPlayer2,getPlayerOf,getCurrencies,hookName;
 
     TradeTaxService(SMPCore plugin){
         this.plugin=plugin;
@@ -38,7 +38,16 @@ final class TradeTaxService implements Listener {
             getPlayer1=tradeClass.getMethod("getPlayer1");
             getPlayer2=tradeClass.getMethod("getPlayer2");
             getPlayerOf=tradePlayerClass.getMethod("getPlayer");
-            getCurrency=tradePlayerClass.getMethod("getCurrency",String.class);
+            /** Read the whole currency map and identify each entry by its hook's own name, rather than
+             *  asking for a currency by a name we guessed.
+             *
+             *  The previous version called getCurrency("money"), and AxTrade resolves that through
+             *  HookManager.getCurrencyHook(name) which returns null for an unknown name -- and the hooks are
+             *  actually called "Vault" and "Experience". A null hook makes getCurrency return 0.0, so every
+             *  money trade was taxed on zero and the fee silently never applied. Enumerating the map means
+             *  the currency name can be anything the server has configured and this still works. */
+            getCurrencies=tradePlayerClass.getMethod("getCurrencies");
+            hookName=Class.forName("com.artillexstudios.axtrade.hooks.currency.CurrencyHook").getMethod("getName");
             @SuppressWarnings("unchecked")
             Class<? extends Event> typed=(Class<? extends Event>)eventClass;
             EventExecutor executor=(listener,event)->handle(event);
@@ -87,8 +96,17 @@ final class TradeTaxService implements Listener {
     }
     /** Money tax plus the XP charge, for one side of the trade. */
     private Charge chargeFor(Object tradePlayer){
-        double money=currency(tradePlayer,plugin.getConfig().getString("trade-tax.money-currency","money"));
-        double xp=currency(tradePlayer,plugin.getConfig().getString("trade-tax.xp-currency","exp"));
+        double money=0,xp=0;
+        java.util.List<String> xpHooks=plugin.getConfig().getStringList("trade-tax.experience-hooks");
+        if(xpHooks.isEmpty())xpHooks=java.util.List.of("Experience");
+        for(java.util.Map.Entry<?,?> entry:currencies(tradePlayer).entrySet()){
+            double amount=entry.getValue() instanceof Number number?number.doubleValue():0;
+            if(amount<=0)continue;
+            String name=hookNameOf(entry.getKey());
+            /** Anything that is not an XP hook is money of some kind, so a server that swaps Vault for
+             *  another economy keeps being taxed instead of quietly stopping. */
+            if(xpHooks.stream().anyMatch(hook->hook.equalsIgnoreCase(name)))xp+=amount;else money+=amount;
+        }
         /** 1% of the money one side hands over, and nothing else on the money leg -- this REPLACES the old
          *  rate rather than sitting alongside it. The default no longer falls back to the auction sale tax:
          *  that made removing the key silently reinstate a 5% charge. */
@@ -102,10 +120,12 @@ final class TradeTaxService implements Listener {
         @Override protected boolean removeEldestEntry(java.util.Map.Entry<Integer,Boolean> eldest){return size()>256;}
     });
     private boolean taxedOnce(Object trade){return taxed.add(System.identityHashCode(trade));}
-    private double currency(Object tradePlayer,String key){
-        if(key==null||key.isBlank())return 0;
-        try{Object value=getCurrency.invoke(tradePlayer,key);return value instanceof Number number?Math.max(0,number.doubleValue()):0;}
-        catch(Throwable ignored){return 0;}
+    private java.util.Map<?,?> currencies(Object tradePlayer){
+        try{Object value=getCurrencies.invoke(tradePlayer);return value instanceof java.util.Map<?,?> map?map:java.util.Map.of();}
+        catch(Throwable ignored){return java.util.Map.of();}
+    }
+    private String hookNameOf(Object hook){
+        try{return String.valueOf(hookName.invoke(hook));}catch(Throwable ignored){return "";}
     }
     private boolean canPay(Player player,double amount){return amount<=0||db().player(CoreUtil.id(player)).balance()>=amount;}
     private void collect(Player player,Charge charge){

@@ -194,9 +194,12 @@ trade-tax:
   percent: 1.0
   # Charged on XP moved through a trade: $10 per 100 XP.
   money-per-100-xp: 10
-  # AxTrade currency hook names to read. Adjust if your AxTrade uses different keys.
-  money-currency: money
-  xp-currency: exp
+  # Which of AxTrade's currency hooks count as experience rather than money. Everything else moving
+  # through a trade is treated as money and taxed at the percent above. Named this way round deliberately:
+  # a server that changes economy plugin keeps being taxed, instead of silently stopping because a hook
+  # name we hardcoded no longer exists. AxTrade's own hooks are called "Vault" and "Experience".
+  experience-hooks:
+  - Experience
 
 auctions:
   listing-fee-percent: 3.0

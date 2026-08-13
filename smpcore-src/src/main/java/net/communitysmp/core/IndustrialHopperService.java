@@ -52,7 +52,11 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-/** Industrial Hopper: a hopper with 27 slots that moves nine items a tick in each direction.
+/** Industrial Hopper: a hopper with 27 slots that moves nine items per cycle in each direction.
+ *
+ *  The cycle is industrial-hopper.tick-period, matched to vanilla's own 8-tick hopper cooldown by default:
+ *  nine times the throughput of a vanilla hopper for the same per-block cost, rather than seventy-two times
+ *  the throughput at eight times the cost on a block players mass-produce.
  *
  *  ONE AUTHORITATIVE INVENTORY. That is the whole design, and it is worth stating plainly because the
  *  previous implementation got it wrong and could duplicate items without limit. Each industrial hopper
@@ -126,7 +130,11 @@ final class IndustrialHopperService implements Listener {
         Bukkit.getScheduler().runTask(plugin, () -> {
             for (World world : Bukkit.getWorlds()) for (Chunk chunk : world.getLoadedChunks()) adopt(chunk);
         });
-        sweepTask = Bukkit.getScheduler().runTaskTimer(plugin, this::sweep, 1L, 1L);
+        /** The sweep period is CONFIGURED, not hardcoded. It was hardcoded to 1 while the config claimed
+         *  otherwise, so setting industrial-hopper.tick-period changed nothing at all and the block was
+         *  never actually throttled. */
+        long period = Math.max(1, plugin.getConfig().getLong("industrial-hopper.tick-period", 8));
+        sweepTask = Bukkit.getScheduler().runTaskTimer(plugin, this::sweep, period, period);
         flushTask = Bukkit.getScheduler().runTaskTimer(plugin, this::flushDirty, 20L, 20L);
     }
 
@@ -144,7 +152,7 @@ final class IndustrialHopperService implements Listener {
         meta.displayName(Component.text("Industrial Hopper", NamedTextColor.AQUA));
         meta.lore(List.of(
                 Component.text("27 slots of storage.", NamedTextColor.GRAY),
-                Component.text("Moves up to 9 items per tick.", NamedTextColor.GRAY)));
+                Component.text("Moves 9 items per hopper cycle.", NamedTextColor.GRAY)));
         meta.getPersistentDataContainer().set(itemKey, PersistentDataType.BYTE, (byte) 1);
         item.setItemMeta(meta);
         return item;

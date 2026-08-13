@@ -114,6 +114,37 @@ final class DiscardedVaultService implements Listener {
      *  commodities, stock the server can resell. Anything carrying custom data is logged and nothing more. */
     void deliver(ItemStack stack, Location at, String reason) { record(stack, at, reason); }
 
+    /** A spawner that was genuinely destroyed rather than recovered.
+     *
+     *  Recorded with its mob type preserved -- SPAWNER_BLAZE, not a bare "spawner" -- because which type
+     *  was lost is the whole point of the record. Never recycled into shop stock under any circumstances: a
+     *  spawner is not an ordinary commodity, and turning destroyed ones into sellable stock would quietly
+     *  mint them. One call per destroyed physical spawner, so a stack that loses one keeps the rest. */
+    void deliverSpawner(org.bukkit.entity.EntityType type, int amount, Location at, String reason) {
+        if (type == null || amount <= 0) return;
+        Pending row = pending.computeIfAbsent(new Key("SPAWNER_" + type.name(), reason, false), ignored -> new Pending());
+        row.amount += amount;
+        row.at = System.currentTimeMillis();
+        if (at != null && at.getWorld() != null) {
+            row.world = at.getWorld().getName();
+            row.x = at.getBlockX(); row.y = at.getBlockY(); row.z = at.getBlockZ();
+        }
+        if (pending.size() >= 400) flush();
+    }
+
+    /** Explosions are a real destruction path for spawners. MONITOR and ignoreCancelled, so the block is
+     *  genuinely going, and once per block in the list, so one spawner is one entry. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void entityExplode(org.bukkit.event.entity.EntityExplodeEvent event) { explodedSpawners(event.blockList()); }
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void blockExplode(org.bukkit.event.block.BlockExplodeEvent event) { explodedSpawners(event.blockList()); }
+
+    private void explodedSpawners(List<org.bukkit.block.Block> blocks) {
+        for (org.bukkit.block.Block block : blocks)
+            if (block.getType() == Material.SPAWNER && block.getState() instanceof org.bukkit.block.CreatureSpawner spawner)
+                deliverSpawner(spawner.getSpawnedType(), 1, block.getLocation(), "EXPLOSION");
+    }
+
     private void record(ItemStack stack, Location at, String reason) {
         if (stack == null || stack.getType().isAir() || stack.getAmount() <= 0) return;
         Key key = new Key(stack.getType().name(), reason, recyclable(stack));
@@ -181,6 +212,8 @@ final class DiscardedVaultService implements Listener {
         for (String[] row : slice) {
             if (slot >= 45) break;
             Material material = Material.matchMaterial(row[0]);
+            /** SPAWNER_BLAZE and friends are ledger labels, not materials -- show them as a spawner. */
+            if (material == null && row[0].startsWith("SPAWNER_")) material = Material.SPAWNER;
             List<String> lore = new ArrayList<>();
             lore.add("Destroyed: " + CoreUtil.compact(Long.parseLong(row[1])));
             lore.add("Recycled into shop stock: " + CoreUtil.compact(Long.parseLong(row[2])));
