@@ -488,6 +488,9 @@ final class ArenaService implements Listener {
     }
 
     private void finish(Duel duel, String winner, String loser) {
+        /** Idempotent: a death and a disconnect-forfeit can both resolve the same match in one tick, and the
+         *  escrow is only paid out once. */
+        if (duel.phase != Phase.LIVE) return;
         duel.phase = Phase.ENDING;
         double pot = db.arenaEscrowOf(duel.a) + db.arenaEscrowOf(duel.b);
         db.arenaEscrowClear(duel.a); db.arenaEscrowClear(duel.b);
