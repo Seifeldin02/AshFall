@@ -425,6 +425,8 @@ final class OrdersService implements Listener {
         List<ItemStack> stash = db.stashOf(CoreUtil.id(player));
         Inventory inv = open(player, Screen.STASH, 1, null, 0, "Orders • Stash", 54);
         for (int i = 0; i < Math.min(45, stash.size()); i++) inv.setItem(i, stash.get(i));
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
         inv.setItem(49, CoreUtil.named(Material.HOPPER, "Collect everything", List.of(stash.size() + " stack(s)")));
         player.openInventory(inv);
     }
@@ -440,7 +442,7 @@ final class OrdersService implements Listener {
              *  point of the screen. Everything else is furniture and is refused. */
             if (raw >= DELIVER_SLOTS && raw < 54) {
                 event.setCancelled(true);
-                if (raw == 45) { player.closeInventory(); return; }
+                if (raw == 45) { player.closeInventory(); Bukkit.getScheduler().runTask(plugin, () -> openPublic(player)); return; }
                 if (raw == 49) {
                     Database.OrderRow row = db.order(holder.orderId);
                     if (row == null) { player.closeInventory(); return; }
@@ -467,7 +469,8 @@ final class OrdersService implements Listener {
         if (slot == 47 && holder.screen == Screen.PUBLIC) { openMine(player, 1); return; }
         if (slot == 48 && holder.screen == Screen.PUBLIC) { openStash(player); return; }
         if (slot == 49 && holder.screen == Screen.STASH) { collect(player); return; }
-        if (slot == 49 && (holder.screen == Screen.MINE || holder.screen == Screen.PICK)) { openPublic(player); return; }
+        if (slot == 45 && (holder.screen == Screen.MINE || holder.screen == Screen.STASH)) { openPublic(player); return; }
+        if (slot == 49 && holder.screen == Screen.PICK) { openPublic(player); return; }
         if (slot == 50) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
         if (slot == 51) { reopen(player, holder, holder.page + 1); return; }
         if (slot >= 45) return;

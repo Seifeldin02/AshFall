@@ -176,6 +176,9 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS arena_escrow (player TEXT PRIMARY KEY, amount REAL NOT NULL DEFAULT 0)");
             s.execute("CREATE TABLE IF NOT EXISTS arena_wagers (id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, backed TEXT NOT NULL, amount REAL NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS arena_state (player TEXT PRIMARY KEY, items BLOB NOT NULL, world TEXT NOT NULL, x REAL, y REAL, z REAL, yaw REAL, pitch REAL, level INTEGER, exp REAL, health REAL, food INTEGER, gamemode TEXT)");
+            /** Added after arena_state shipped: saturation, potion effects, flight and the rest, packed into
+             *  one text column so a duellist is restored to EXACTLY their pre-duel state, not just inventory. */
+            try{s.execute("ALTER TABLE arena_state ADD COLUMN extra TEXT");}catch(SQLException ignored){}
             s.execute("CREATE TABLE IF NOT EXISTS smp_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, buyer TEXT NOT NULL, buyer_name TEXT NOT NULL, item_key TEXT NOT NULL, amount INTEGER NOT NULL, filled INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, escrow REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON smp_orders(status)");
             /** Added after the table shipped, so guarded rather than assumed. */
@@ -695,13 +698,13 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
-    record ArenaState(byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode){}
-    synchronized void arenaStateSave(String player,byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode){
-        update("INSERT OR REPLACE INTO arena_state(player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode);
+    record ArenaState(byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode,String extra){}
+    synchronized void arenaStateSave(String player,byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode,String extra){
+        update("INSERT OR REPLACE INTO arena_state(player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra);
     }
     synchronized ArenaState arenaState(String player){
-        return one("SELECT items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode FROM arena_state WHERE player=?",
-                rs->new ArenaState(rs.getBytes(1),rs.getString(2),rs.getDouble(3),rs.getDouble(4),rs.getDouble(5),rs.getFloat(6),rs.getFloat(7),rs.getInt(8),rs.getFloat(9),rs.getDouble(10),rs.getInt(11),rs.getString(12)),player);
+        return one("SELECT items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra FROM arena_state WHERE player=?",
+                rs->new ArenaState(rs.getBytes(1),rs.getString(2),rs.getDouble(3),rs.getDouble(4),rs.getDouble(5),rs.getFloat(6),rs.getFloat(7),rs.getInt(8),rs.getFloat(9),rs.getDouble(10),rs.getInt(11),rs.getString(12),rs.getString(13)),player);
     }
     synchronized void arenaStateClear(String player){update("DELETE FROM arena_state WHERE player=?",player);}
     synchronized List<String> arenaStateOwners(){return list("SELECT player FROM arena_state",rs->rs.getString(1));}

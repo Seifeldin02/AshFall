@@ -18,18 +18,21 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
@@ -113,6 +116,9 @@ final class ArenaService implements Listener {
         final Map<String, Long> disconnectedAt = new LinkedHashMap<>();
         /** Blocks placed by duellists this round, cleared on round end so the map stays pristine. */
         final Set<Long> placed = new HashSet<>();
+        /** True while a round's loss is being processed, so two near-simultaneous lethal hits or a
+         *  disconnect racing a death cannot resolve the same round twice. Reset at each round start. */
+        boolean resolving = false;
         Duel(int id, int slot, String a, String b) { this.id = id; this.slot = slot; this.a = a; this.b = b; }
         boolean has(String id) { return id.equals(a) || id.equals(b); }
         String other(String id) { return id.equals(a) ? b : a; }
@@ -127,6 +133,8 @@ final class ArenaService implements Listener {
     /** Last time each player sent a challenge, for the anti-spam cooldown, exactly like a trade request. */
     private final Map<String, Long> lastChallenge = new ConcurrentHashMap<>();
     private World arena;
+    /** Slots whose structure has already been built, so it is only laid once, not every round. */
+    private final Set<Integer> built = new HashSet<>();
     private BukkitTask ticker;
 
     ArenaService(SMPCore plugin) {
@@ -166,65 +174,102 @@ final class ArenaService implements Listener {
 
     /** Builds the arena structure for a slot the first time it is used. Idempotent — re-run before a match
      *  to guarantee a clean floor even if a previous match left something behind. */
+    private static final int HALF = 30;
+
+    /** Builds a slot's structure once. A 61x61 quartz-and-stone floor with a low bordered wall and corner
+     *  pillars, a raised glass spectator ring outside it, sea-lantern lighting, and completely OPEN SKY --
+     *  no ceiling -- so the Spear's elytra and the Mace's wind-charge launches have room. Deliberately
+     *  procedural: a downloaded world could not be fetched and content-vetted safely in this environment,
+     *  and the slot system needs an identical layout it can stamp and reset per match. */
     private void buildSlot(int slot) {
-        if (arena == null) return;
-        int cx = slotBaseX(slot), half = 20;
-        for (int x = -half; x <= half; x++) for (int z = -half; z <= half; z++) {
-            arena.getBlockAt(cx + x, FLOOR_Y, z).setType(Material.SMOOTH_STONE, false);
-            for (int y = 1; y <= 6; y++) {
-                Material want = (Math.abs(x) == half || Math.abs(z) == half) && y <= 4 ? Material.SMOOTH_STONE_SLAB : Material.AIR;
-                arena.getBlockAt(cx + x, FLOOR_Y + y, z).setType(want, false);
+        if (arena == null || !built.add(slot)) return;
+        int cx = slotBaseX(slot);
+        for (int x = -HALF - 4; x <= HALF + 4; x++) for (int z = -HALF - 4; z <= HALF + 4; z++) {
+            boolean inFloor = Math.abs(x) <= HALF && Math.abs(z) <= HALF;
+            boolean onWall = Math.abs(x) == HALF || Math.abs(z) == HALF;
+            boolean gallery = (Math.abs(x) > HALF + 1 && Math.abs(x) <= HALF + 4) || (Math.abs(z) > HALF + 1 && Math.abs(z) <= HALF + 4);
+            if (inFloor) {
+                /** Subtle checker so the floor reads as a real arena, not a slab of stone. */
+                boolean light = ((x + z) & 1) == 0;
+                arena.getBlockAt(cx + x, FLOOR_Y, z).setType(light ? Material.SMOOTH_QUARTZ : Material.POLISHED_ANDESITE, false);
+            }
+            if (onWall) {
+                for (int y = 1; y <= 3; y++) arena.getBlockAt(cx + x, FLOOR_Y + y, z).setType(Material.SMOOTH_STONE, false);
+                arena.getBlockAt(cx + x, FLOOR_Y + 4, z).setType(Material.SMOOTH_STONE_SLAB, false);
+            }
+            if (gallery) {
+                /** Spectator ring: a glass floor two blocks up with a low barrier, ringing the arena. */
+                arena.getBlockAt(cx + x, FLOOR_Y + 2, z).setType(Material.GLASS, false);
+                arena.getBlockAt(cx + x, FLOOR_Y + 3, z).setType(Material.GLASS, false);
             }
         }
-        /** Spectator gallery: a glass ring above the fighting floor, outside it. */
-        for (int x = -half - 2; x <= half + 2; x++) for (int z = -half - 2; z <= half + 2; z++)
-            if (Math.abs(x) > half || Math.abs(z) > half) arena.getBlockAt(cx + x, FLOOR_Y + 8, z).setType(Material.GLASS, false);
+        /** Corner pillars with a lantern on top -- landmarks and light. */
+        for (int sx = -1; sx <= 1; sx += 2) for (int sz = -1; sz <= 1; sz += 2) {
+            int x = sx * HALF, z = sz * HALF;
+            for (int y = 1; y <= 6; y++) arena.getBlockAt(cx + x, FLOOR_Y + y, z).setType(Material.QUARTZ_PILLAR, false);
+            arena.getBlockAt(cx + x, FLOOR_Y + 7, z).setType(Material.SEA_LANTERN, false);
+        }
+        /** A few sea lanterns set flush into the floor edge so the arena is well lit at night. */
+        for (int i = -HALF + 6; i <= HALF - 6; i += 12) {
+            arena.getBlockAt(cx + i, FLOOR_Y, HALF - 1).setType(Material.SEA_LANTERN, false);
+            arena.getBlockAt(cx + i, FLOOR_Y, -HALF + 1).setType(Material.SEA_LANTERN, false);
+            arena.getBlockAt(cx + HALF - 1, FLOOR_Y, i).setType(Material.SEA_LANTERN, false);
+            arena.getBlockAt(cx + -HALF + 1, FLOOR_Y, i).setType(Material.SEA_LANTERN, false);
+        }
+        plugin.getLogger().info("[Arena] built slot " + slot + " at x=" + cx);
     }
 
     private Location corner(Duel duel, int index) {
         int cx = slotBaseX(duel.slot);
-        return new Location(arena, cx + (index == 0 ? -15.5 : 15.5), FLOOR_Y + 1, 0.5, index == 0 ? 90f : -90f, 0f);
+        return new Location(arena, cx + (index == 0 ? -HALF + 4.5 : HALF - 4.5), FLOOR_Y + 1, 0.5, index == 0 ? 90f : -90f, 0f);
     }
 
-    private Location gallery(Duel duel) { return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 9, 0.5); }
+    /** A spectator perch on the raised glass ring, looking in. */
+    private Location gallery(Duel duel) { return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 4, HALF + 3.5, 180f, 0f); }
 
     private boolean inArena(Player player) { return arena != null && player.getWorld().equals(arena); }
 
     // ------------------------------------------------------------------ kits
+    /** The full standardized kit as one list (armour, then weapon, then offhand if any, then consumables).
+     *  Used for the self-test's parity check and for reporting exactly what each side receives. */
     List<ItemStack> kitContents(Kit kit) {
-        List<ItemStack> items = new ArrayList<>();
-        items.add(armour(Material.DIAMOND_HELMET));
-        items.add(armour(Material.DIAMOND_CHESTPLATE));
-        items.add(armour(Material.DIAMOND_LEGGINGS));
-        items.add(armour(Material.DIAMOND_BOOTS));
-        switch (kit) {
-            case MACE -> {
-                items.add(enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.UNBREAKING, 3)));
-                items.add(new ItemStack(Material.WIND_CHARGE, 16));
-                items.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 8));
-            }
-            case SWORD -> {
-                items.add(enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.UNBREAKING, 3)));
-                items.add(enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)));
-                items.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 8));
-            }
-            case AXE -> {
-                items.add(enchanted(Material.DIAMOND_AXE, Map.of(Enchantment.SHARPNESS, 5, Enchantment.EFFICIENCY, 5, Enchantment.UNBREAKING, 3)));
-                items.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 8));
-                items.add(new ItemStack(Material.COBWEB, 8));
-            }
-            case SPEAR -> {
-                items.add(enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 4, Enchantment.UNBREAKING, 3)));
-                items.add(enchanted(Material.ELYTRA, Map.of(Enchantment.UNBREAKING, 3)));
-                items.add(new ItemStack(Material.FIREWORK_ROCKET, 64));
-                items.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 6));
-            }
-        }
-        return items;
+        List<ItemStack> all = new ArrayList<>(kitArmour(kit));
+        all.add(kitWeapon(kit));
+        ItemStack offhand = kitOffhand(kit);
+        if (offhand != null) all.add(offhand);
+        all.addAll(kitConsumables(kit));
+        return all;
+    }
+
+    /** Exactly four pieces, helmet-chest-legs-boots. The Spear wears an elytra as its chest, so it does NOT
+     *  also carry a diamond chestplate -- the previous code added one and then silently overwrote it. */
+    private List<ItemStack> kitArmour(Kit kit) {
+        List<ItemStack> armour = new ArrayList<>();
+        armour.add(armour(Material.DIAMOND_HELMET));
+        armour.add(kit == Kit.SPEAR ? enchanted(Material.ELYTRA, Map.of(Enchantment.UNBREAKING, 3)) : armour(Material.DIAMOND_CHESTPLATE));
+        armour.add(armour(Material.DIAMOND_LEGGINGS));
+        armour.add(armour(Material.DIAMOND_BOOTS));
+        return armour;
+    }
+
+    private ItemStack kitWeapon(Kit kit) {
+        return switch (kit) {
+            case MACE -> enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.UNBREAKING, 3));
+            case SWORD -> enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.UNBREAKING, 3));
+            case AXE -> enchanted(Material.DIAMOND_AXE, Map.of(Enchantment.SHARPNESS, 5, Enchantment.EFFICIENCY, 5, Enchantment.UNBREAKING, 3));
+            case SPEAR -> enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 4, Enchantment.UNBREAKING, 3));
+        };
+    }
+
+    private ItemStack kitOffhand(Kit kit) { return kit == Kit.SWORD ? enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)) : null; }
+
+    private List<ItemStack> kitConsumables(Kit kit) {
+        return switch (kit) {
+            case MACE -> List.of(new ItemStack(Material.WIND_CHARGE, 16), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 8));
+            case SWORD -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 8));
+            case AXE -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 8), new ItemStack(Material.COBWEB, 8));
+            case SPEAR -> List.of(new ItemStack(Material.FIREWORK_ROCKET, 64), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1), new ItemStack(Material.GOLDEN_APPLE, 6));
+        };
     }
 
     private ItemStack armour(Material material) { return enchanted(material, Map.of(Enchantment.PROTECTION, 4, Enchantment.UNBREAKING, 3)); }
@@ -238,25 +283,31 @@ final class ArenaService implements Listener {
     }
 
     private void equip(Player player, Kit kit) {
-        player.getInventory().clear();
-        player.getInventory().setArmorContents(null);
+        var inv = player.getInventory();
+        inv.clear();
+        inv.setArmorContents(null);
+        inv.setItemInOffHand(null);
         player.setItemOnCursor(null);
-        for (ItemStack item : kitContents(kit)) {
-            switch (item.getType()) {
-                case DIAMOND_HELMET -> player.getInventory().setHelmet(item);
-                case DIAMOND_CHESTPLATE, ELYTRA -> player.getInventory().setChestplate(item);
-                case DIAMOND_LEGGINGS -> player.getInventory().setLeggings(item);
-                case DIAMOND_BOOTS -> player.getInventory().setBoots(item);
-                case SHIELD -> player.getInventory().setItemInOffHand(item);
-                default -> player.getInventory().addItem(item);
-            }
-        }
+        List<ItemStack> armour = kitArmour(kit);
+        inv.setHelmet(armour.get(0));
+        inv.setChestplate(armour.get(1));
+        inv.setLeggings(armour.get(2));
+        inv.setBoots(armour.get(3));
+        inv.setItem(0, kitWeapon(kit));
+        ItemStack offhand = kitOffhand(kit);
+        if (offhand != null) inv.setItemInOffHand(offhand);
+        for (ItemStack consumable : kitConsumables(kit)) inv.addItem(consumable);
+        player.setGameMode(GameMode.SURVIVAL);
+        player.setAllowFlight(false);
+        player.setFlying(false);
         player.setHealth(player.getAttribute(Attribute.MAX_HEALTH).getValue());
         player.setFoodLevel(20);
         player.setSaturation(20);
+        player.setExhaustion(0);
         player.setFireTicks(0);
+        player.setFallDistance(0);
+        player.setRemainingAir(player.getMaximumAir());
         for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
-        player.setGameMode(GameMode.SURVIVAL);
         player.updateInventory();
     }
 
@@ -272,7 +323,8 @@ final class ArenaService implements Listener {
         all[all.length - 1] = offhand;
         Location at = player.getLocation();
         db.arenaStateSave(id, ItemStack.serializeItemsAsBytes(all), at.getWorld().getName(), at.getX(), at.getY(), at.getZ(),
-                at.getYaw(), at.getPitch(), player.getLevel(), player.getExp(), player.getHealth(), player.getFoodLevel(), player.getGameMode().name());
+                at.getYaw(), at.getPitch(), player.getLevel(), player.getExp(), player.getHealth(), player.getFoodLevel(),
+                player.getGameMode().name(), encodeExtra(player));
     }
 
     private void restore(Player player) {
@@ -296,14 +348,62 @@ final class ArenaService implements Listener {
         player.setLevel(state.level());
         player.setExp(state.exp());
         player.setFoodLevel(state.food());
-        for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
         player.setHealth(Math.min(state.health(), player.getAttribute(Attribute.MAX_HEALTH).getValue()));
-        player.setFireTicks(0);
         try { player.setGameMode(GameMode.valueOf(state.gamemode())); } catch (IllegalArgumentException ignored) { player.setGameMode(GameMode.SURVIVAL); }
+        /** Saturation, potion effects, flight, fall distance, fire and air -- everything the duel touched
+         *  that is not already a column -- so the player is returned to EXACTLY their pre-duel state. */
+        for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
+        applyExtra(player, state.extra());
         /** Clear any PvP combat tag the fight left behind so it does not follow them out. */
         if (plugin.teleports() != null) plugin.teleports().clearCombat(player);
         db.arenaStateClear(id);
         player.updateInventory();
+    }
+
+    /** Packs everything not already a column -- saturation, flight, fall/fire/air, and the full potion
+     *  effect list -- into one string. */
+    private String encodeExtra(Player p) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("sat=").append(p.getSaturation());
+        sb.append(";exh=").append(p.getExhaustion());
+        sb.append(";allowfly=").append(p.getAllowFlight() ? 1 : 0);
+        sb.append(";flying=").append(p.isFlying() ? 1 : 0);
+        sb.append(";fall=").append(p.getFallDistance());
+        sb.append(";fire=").append(p.getFireTicks());
+        sb.append(";air=").append(p.getRemainingAir());
+        sb.append(";fx=");
+        boolean first = true;
+        for (PotionEffect e : p.getActivePotionEffects()) {
+            if (!first) sb.append("|"); first = false;
+            sb.append(e.getType().getKey().getKey()).append(",").append(e.getAmplifier()).append(",")
+              .append(e.getDuration()).append(",").append(e.isAmbient() ? 1 : 0).append(",").append(e.hasParticles() ? 1 : 0);
+        }
+        return sb.toString();
+    }
+
+    private void applyExtra(Player p, String extra) {
+        if (extra == null || extra.isBlank()) { p.setFireTicks(0); p.setFallDistance(0); return; }
+        for (String part : extra.split(";")) {
+            int eq = part.indexOf('=');
+            if (eq < 0) continue;
+            String k = part.substring(0, eq), v = part.substring(eq + 1);
+            try {
+                switch (k) {
+                    case "sat" -> p.setSaturation(Float.parseFloat(v));
+                    case "exh" -> p.setExhaustion(Float.parseFloat(v));
+                    case "allowfly" -> p.setAllowFlight(v.equals("1"));
+                    case "flying" -> { if (v.equals("1") && p.getAllowFlight()) p.setFlying(true); }
+                    case "fall" -> p.setFallDistance(Float.parseFloat(v));
+                    case "fire" -> p.setFireTicks(Integer.parseInt(v));
+                    case "air" -> p.setRemainingAir(Integer.parseInt(v));
+                    case "fx" -> { if (!v.isEmpty()) for (String fx : v.split("\\|")) {
+                        String[] f = fx.split(",");
+                        PotionEffectType type = org.bukkit.Registry.EFFECT.get(org.bukkit.NamespacedKey.minecraft(f[0]));
+                        if (type != null) p.addPotionEffect(new PotionEffect(type, Integer.parseInt(f[2]), Integer.parseInt(f[1]), f[3].equals("1"), f[4].equals("1")));
+                    } }
+                }
+            } catch (Exception ignored) { }
+        }
     }
 
     private void recoverAfterRestart() {
@@ -455,6 +555,7 @@ final class ArenaService implements Listener {
         Player one = a(duel), two = b(duel);
         if (one == null || two == null) { abortAndRefund(duel, "a duellist went offline"); return; }
         resetArena(duel);
+        duel.resolving = false;
         capture(one); capture(two);
         one.teleport(corner(duel, 0)); two.teleport(corner(duel, 1));
         equip(one, duel.kit); equip(two, duel.kit);
@@ -462,20 +563,53 @@ final class ArenaService implements Listener {
         actionbar(one, "Round " + round + " — fight!"); actionbar(two, "Round " + round + " — fight!");
     }
 
+    /** The round is resolved by INTERCEPTING the killing blow, not by a real death. A duellist whose hit
+     *  would drop them to zero has the damage cancelled, their health topped up, and the round awarded --
+     *  so PlayerDeathEvent never fires for a duellist, which means no grave, no drops, no respawn yank, no
+     *  economy or faction side effect can ever occur. Void, fire and fall damage all arrive here too. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void lethal(EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof Player hurt)) return;
+        Duel duel = duelOf(hurt);
+        if (duel == null || duel.phase != Phase.LIVE || !inArena(hurt)) return;
+        if (duel.resolving) { event.setCancelled(true); return; }
+        if (hurt.getHealth() - event.getFinalDamage() > 0.0001) return;
+        event.setCancelled(true);
+        duel.resolving = true;
+        hurt.setHealth(hurt.getAttribute(Attribute.MAX_HEALTH).getValue());
+        hurt.setFireTicks(0);
+        String loser = CoreUtil.id(hurt), winner = duel.other(loser);
+        both(duel, name(loser) + " is down.");
+        Bukkit.getScheduler().runTask(plugin, () -> roundOver(duel, winner, loser));
+    }
+
+    /** Safety net only: a duellist should never actually die (see lethal() above), but if something bypasses
+     *  damage entirely -- /kill, a plugin -- strip every death side effect and resolve the round. */
     @EventHandler(priority = EventPriority.LOWEST)
     public void death(PlayerDeathEvent event) {
         Player dead = event.getEntity();
         Duel duel = duelOf(dead);
-        if (duel == null || duel.phase != Phase.LIVE || !inArena(dead)) return;
-        /** No grave, no drop, no XP loss, no death message, no penalty. Keep-inventory is on in this world
-         *  anyway, but the drop list is cleared so nothing can leak even if that changes. */
+        if (duel == null || !inArena(dead)) return;
         event.getDrops().clear();
         event.setKeepInventory(true);
         event.setKeepLevel(true);
         event.setDroppedExp(0);
         event.deathMessage(null);
+        if (duel.phase != Phase.LIVE || duel.resolving) return;
+        duel.resolving = true;
         String loser = CoreUtil.id(dead), winner = duel.other(loser);
         Bukkit.getScheduler().runTask(plugin, () -> roundOver(duel, winner, loser));
+    }
+
+    /** If a duellist ever does die, respawn them at their captured spot and restore fully, rather than
+     *  letting vanilla fling them to the overworld spawn. */
+    @EventHandler
+    public void respawn(PlayerRespawnEvent event) {
+        Database.ArenaState state = db.arenaState(CoreUtil.id(event.getPlayer()));
+        if (state == null) return;
+        World world = Bukkit.getWorld(state.world());
+        if (world != null) event.setRespawnLocation(new Location(world, state.x(), state.y(), state.z(), state.yaw(), state.pitch()));
+        Bukkit.getScheduler().runTask(plugin, () -> { if (event.getPlayer().isOnline()) restore(event.getPlayer()); });
     }
 
     private void roundOver(Duel duel, String winner, String loser) {
@@ -608,10 +742,9 @@ final class ArenaService implements Listener {
     /** Clears every block the duellists placed and rebuilds the slot's floor, so no match leaves a mark. */
     private void resetArena(Duel duel) {
         if (arena == null) return;
-        for (long k : duel.placed) {
-            org.bukkit.block.Block block = arena.getBlockAtKey(k);
-            block.setType(Material.AIR, false);
-        }
+        /** Structure is built once and left standing; a reset only removes what the duellists placed, so the
+         *  map is never modified by a match. Cheap -- a handful of blocks, not the whole arena. */
+        for (long k : duel.placed) arena.getBlockAtKey(k).setType(Material.AIR, false);
         duel.placed.clear();
         buildSlot(duel.slot);
     }
@@ -746,10 +879,14 @@ final class ArenaService implements Listener {
         menu.inv.setItem(32, icon(Material.LIME_STAINED_GLASS_PANE, "+ 1,000", List.of("Raise your stake")));
         menu.inv.setItem(33, icon(Material.GREEN_STAINED_GLASS_PANE, "+ 10,000", List.of("Raise your stake")));
         menu.inv.setItem(34, icon(Material.EMERALD_BLOCK, "+ 100,000", List.of("Raise your stake")));
-        boolean ready = duel.confirmed.contains(CoreUtil.id(player));
-        menu.inv.setItem(40, icon(ready ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE, ready ? "Waiting for opponent…" : "Confirm", List.of(
-                "You: " + duel.aName + " " + CoreUtil.money(duel.stakes.getOrDefault(duel.a, 0d)),
-                "Them: " + duel.bName + " " + CoreUtil.money(duel.stakes.getOrDefault(duel.b, 0d)))));
+        String meId = CoreUtil.id(player), themId = duel.other(meId);
+        String meName = meId.equals(duel.a) ? duel.aName : duel.bName, themName = meId.equals(duel.a) ? duel.bName : duel.aName;
+        boolean ready = duel.confirmed.contains(meId);
+        /** Rendered from THIS player's perspective: "You" is always the viewer, whichever side they are. */
+        menu.inv.setItem(40, icon(ready ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE, ready ? "Confirmed — waiting for opponent…" : "Confirm", List.of(
+                "You: " + meName + "  " + CoreUtil.money(duel.stakes.getOrDefault(meId, 0d)) + (ready ? "  (ready)" : ""),
+                "Them: " + themName + "  " + CoreUtil.money(duel.stakes.getOrDefault(themId, 0d)) + (duel.confirmed.contains(themId) ? "  (ready)" : ""),
+                "Kit " + duel.kit.label() + " · Best of " + duel.bestOf)));
         player.openInventory(menu.inv);
     }
 

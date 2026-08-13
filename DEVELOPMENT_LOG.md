@@ -226,6 +226,51 @@ Richer, viewer-aware cards: remaining quantity in the title, unit price and valu
 fill N" line on the public board. Manual delivery basket, confirmations and history hiding from the prior
 pass retained.
 
+
+## Session: 2026-08-14 (part 3) — duel/orders bug fixes, staging only
+
+### Duel state restoration (was incomplete)
+capture/restore now cover EVERYTHING the duel touches: inventory, armour, offhand, world/location/rotation,
+level, exp, health, food, gamemode -- PLUS the previously-missing saturation, exhaustion, potion effects
+(serialized), allow-flight, flying, fall distance, fire ticks and remaining air (packed into a new
+arena_state.extra column, guarded ALTER). Both winner and loser are restored, on BO1/BO3 completion,
+forfeit, disconnect, cancellation and shutdown recovery.
+
+### No-death round resolution
+Rounds are now resolved by INTERCEPTING the killing blow (EntityDamageEvent at HIGHEST): the lethal hit is
+cancelled, health topped up, round awarded -- so PlayerDeathEvent never fires for a duellist. No grave, no
+drops, no respawn yank to the overworld, no economy/faction death side effects, ever. A per-round
+"resolving" guard stops a double-resolve from two simultaneous lethal hits or a death racing a disconnect.
+The old death handler is kept only as a safety net (e.g. /kill), and a respawn handler redirects any
+duellist who somehow dies back to their captured spot.
+
+### Kits audited and fixed
+Refactored into explicit kitArmour/kitWeapon/kitOffhand/kitConsumables. Fixed the Spear giving BOTH a
+diamond chestplate and an elytra (the chestplate was silently overwritten); the Spear now wears only the
+elytra. equip() places each piece deterministically, clears offhand, and resets flight/fall/fire/air so no
+survival state or item can leak in, and restore() wipes the kit afterward. Final contents reported to the
+owner.
+
+### Duel setup GUI now viewer-relative
+The confirm panel rendered a fixed "You: <player a> / Them: <player b>" for both sides, so Asserto saw
+herself as "Them". It is now rendered from each viewer's own perspective (You = the viewer), and both open
+GUIs refresh when either player changes kit, series, stake or ready state.
+
+### Arena map
+Rebuilt the procedural arena: a 61x61 quartz/andesite floor with a bordered wall, quartz corner pillars,
+sea-lantern lighting, a raised glass spectator ring, and OPEN SKY (no ceiling) so Mace launches and
+Spear/elytra flight have room. Built once per slot and only the duellists' placed blocks are cleared each
+round, so the map is never modified. External download was NOT used: a third-party world could not be
+fetched and its contents safely vetted in this environment, and the multi-slot system needs one identical
+stampable layout -- so a polished procedural arena is the safe choice. Can paste a specific vetted
+schematic per slot if the owner supplies/approves one.
+
+### Orders navigation fixed
+The Back button on "Your orders" did nothing -- it had moved to slot 45 but the handler still only checked
+slot 49. Back on Mine and Stash now works (slot 45 -> public), Pick's Back stays at 49 (45 is its Search),
+the delivery basket's Back returns to the public board after handing items back, and the stash screen got a
+Back button so it is no longer a dead end.
+
 ---
 
 ## Standing lessons
