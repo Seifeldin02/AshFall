@@ -184,14 +184,16 @@ pay:
   # Tax on /pay, taken OUT OF the transfer rather than added on top: /pay 100 debits the sender exactly 100,
   # the recipient receives 99, and 1 goes to the Central Bank. Same principle as every other fee here --
   # money leaving circulation is deposited, never deleted.
-  tax-percent: 1.0
+  # Off. Taxing player-to-player transfers was not worth the friction it created.
+  tax-percent: 0.0
 
 trade-tax:
   # Applies Ashfall's transaction tax to completed AxTrade direct trades. Requires AxTrade; if it is not
   # installed (or its API changes) this silently does nothing and trades are unaffected.
   enabled: true
   # Defaults to the auction sale tax if unset.
-  percent: 1.0
+  # Off, same reasoning as pay.tax-percent.
+  percent: 0.0
   # Charged on XP moved through a trade: $10 per 100 XP.
   money-per-100-xp: 10
   # Which of AxTrade's currency hooks count as experience rather than money. Everything else moving

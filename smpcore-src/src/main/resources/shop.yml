@@ -69,42 +69,42 @@ items:
   DIAMOND: {buy: 200, sell: 40, daily-full: 512, category: MINING}  # Still mined by hand; the benchmark of a survival economy
 
   # ---- FARMING ----
-  WHEAT_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct of every wheat harvest
-  BEETROOT_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct
-  MELON_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct
-  PUMPKIN_SEEDS: {buy: 0.25, sell: 0.05, daily-full: 8192, category: FARMING}  # Byproduct
-  BAMBOO: {buy: 1.7, sell: 0.34, daily-full: 8192, category: FARMING}  # Bamboo farm; fastest-growing plant, fully AFK
-  MELON_SLICE: {buy: 1.9, sell: 0.38, daily-full: 8192, category: FARMING}  # Melon farm; many slices per melon
-  DRIED_KELP: {buy: 2.75, sell: 0.55, daily-full: 8192, category: FARMING}  # AFK kelp farm plus a smelter array
-  VINE: {buy: 3, sell: 0.6, daily-full: 4096, category: FARMING}  # Jungle harvesting; no real farm
-  SUGAR: {buy: 3.05, sell: 0.61, daily-full: 8192, category: FARMING}  # Crafted down from cane; strictly a downgrade
-  SWEET_BERRIES: {buy: 3.7, sell: 0.74, daily-full: 4096, category: FARMING}  # Berry bush rows; hand or machine harvested
-  BEETROOT: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Automatic beetroot farm; weakest crop use
-  OAK_SAPLING: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Tree farm byproduct
-  SPRUCE_SAPLING: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Tree farm byproduct
-  BIRCH_SAPLING: {buy: 3.75, sell: 0.75, daily-full: 4096, category: FARMING}  # Tree farm byproduct
-  BROWN_MUSHROOM: {buy: 3.9, sell: 0.78, daily-full: 4096, category: FARMING}  # Mushroom farm, dark room
-  RED_MUSHROOM: {buy: 3.9, sell: 0.78, daily-full: 4096, category: FARMING}  # Mushroom farm, dark room
-  JUNGLE_SAPLING: {buy: 4.4, sell: 0.88, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
-  ACACIA_SAPLING: {buy: 4.4, sell: 0.88, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
-  DARK_OAK_SAPLING: {buy: 4.4, sell: 0.88, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
-  CACTUS: {buy: 4.6, sell: 0.92, daily-full: 8192, category: FARMING}  # Cactus farm; the most hands-off build in the game
-  WHEAT: {buy: 5.1, sell: 1.02, daily-full: 4096, category: FARMING}  # Automatic wheat farm
-  CARROT: {buy: 5.4, sell: 1.08, daily-full: 4096, category: FARMING}  # Automatic carrot farm
-  POTATO: {buy: 5.4, sell: 1.08, daily-full: 4096, category: FARMING}  # Automatic potato farm
-  LILY_PAD: {buy: 5.6, sell: 1.12, daily-full: 2048, category: FARMING}  # Swamp gathering by boat
-  GLOW_BERRIES: {buy: 6, sell: 1.2, daily-full: 2048, category: FARMING}  # Cave vines; slow and biome gated
-  MANGROVE_PROPAGULE: {buy: 6.25, sell: 1.25, daily-full: 2048, category: FARMING}  # Swamp gated
-  PUMPKIN: {buy: 7.25, sell: 1.45, daily-full: 2048, category: FARMING}  # Pumpkin farm; one block per plant
-  SUGAR_CANE: {buy: 7.85, sell: 1.57, daily-full: 4096, category: FARMING}  # Classic AFK cane farm
-  SEA_PICKLE: {buy: 8.2, sell: 1.64, daily-full: 1536, category: FARMING}  # Reef gathering, breedable but slow
-  CHERRY_SAPLING: {buy: 8.35, sell: 1.67, daily-full: 2048, category: FARMING}  # Rare biome
-  PALE_OAK_SAPLING: {buy: 8.35, sell: 1.67, daily-full: 2048, category: FARMING}  # Rare biome
-  COCOA_BEANS: {buy: 9.45, sell: 1.89, daily-full: 2048, category: FARMING}  # Jungle cocoa farm
-  CHORUS_FRUIT: {buy: 10.75, sell: 2.15, daily-full: 2048, category: FARMING}  # End chorus farm; requires End access
-  BREAD: {buy: 19.45, sell: 3.89, daily-full: 1024, category: FARMING}  # Three wheat plus the crafting step
-  NETHER_WART: {buy: 21.2, sell: 4.24, daily-full: 1536, category: FARMING}  # Fortress/bastion gated; the whole brewing tree needs it
-  APPLE: {buy: 25, sell: 5, daily-full: 1024, category: FARMING}  # Leaf decay only; no efficient apple farm exists
+  WHEAT_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct of every wheat harvest
+  BEETROOT_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
+  MELON_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
+  PUMPKIN_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
+  BAMBOO: {buy: 4.4, sell: 0.88, daily-full: 8192, category: FARMING}  # Bamboo farm; fastest-growing plant, fully AFK
+  MELON_SLICE: {buy: 4.95, sell: 0.99, daily-full: 8192, category: FARMING}  # Melon farm; many slices per melon
+  DRIED_KELP: {buy: 7.15, sell: 1.43, daily-full: 8192, category: FARMING}  # AFK kelp farm plus a smelter array
+  VINE: {buy: 7.8, sell: 1.56, daily-full: 4096, category: FARMING}  # Jungle harvesting; no real farm
+  SUGAR: {buy: 7.95, sell: 1.59, daily-full: 8192, category: FARMING}  # Crafted down from cane; strictly a downgrade
+  SWEET_BERRIES: {buy: 9.6, sell: 1.92, daily-full: 4096, category: FARMING}  # Berry bush rows; hand or machine harvested
+  BEETROOT: {buy: 9.75, sell: 1.95, daily-full: 4096, category: FARMING}  # Automatic beetroot farm; weakest crop use
+  OAK_SAPLING: {buy: 9.75, sell: 1.95, daily-full: 4096, category: FARMING}  # Tree farm byproduct
+  SPRUCE_SAPLING: {buy: 9.75, sell: 1.95, daily-full: 4096, category: FARMING}  # Tree farm byproduct
+  BIRCH_SAPLING: {buy: 9.75, sell: 1.95, daily-full: 4096, category: FARMING}  # Tree farm byproduct
+  BROWN_MUSHROOM: {buy: 10.15, sell: 2.03, daily-full: 4096, category: FARMING}  # Mushroom farm, dark room
+  RED_MUSHROOM: {buy: 10.15, sell: 2.03, daily-full: 4096, category: FARMING}  # Mushroom farm, dark room
+  JUNGLE_SAPLING: {buy: 11.45, sell: 2.29, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
+  ACACIA_SAPLING: {buy: 11.45, sell: 2.29, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
+  DARK_OAK_SAPLING: {buy: 11.45, sell: 2.29, daily-full: 4096, category: FARMING}  # Tree farm byproduct; biome gated
+  CACTUS: {buy: 11.95, sell: 2.39, daily-full: 8192, category: FARMING}  # Cactus farm; the most hands-off build in the game
+  WHEAT: {buy: 13.25, sell: 2.65, daily-full: 4096, category: FARMING}  # Automatic wheat farm
+  CARROT: {buy: 14.05, sell: 2.81, daily-full: 4096, category: FARMING}  # Automatic carrot farm
+  POTATO: {buy: 14.05, sell: 2.81, daily-full: 4096, category: FARMING}  # Automatic potato farm
+  LILY_PAD: {buy: 14.55, sell: 2.91, daily-full: 2048, category: FARMING}  # Swamp gathering by boat
+  GLOW_BERRIES: {buy: 15.6, sell: 3.12, daily-full: 2048, category: FARMING}  # Cave vines; slow and biome gated
+  MANGROVE_PROPAGULE: {buy: 16.25, sell: 3.25, daily-full: 2048, category: FARMING}  # Swamp gated
+  PUMPKIN: {buy: 18.85, sell: 3.77, daily-full: 2048, category: FARMING}  # Pumpkin farm; one block per plant
+  SUGAR_CANE: {buy: 20.4, sell: 4.08, daily-full: 4096, category: FARMING}  # Classic AFK cane farm
+  SEA_PICKLE: {buy: 21.3, sell: 4.26, daily-full: 1536, category: FARMING}  # Reef gathering, breedable but slow
+  CHERRY_SAPLING: {buy: 21.7, sell: 4.34, daily-full: 2048, category: FARMING}  # Rare biome
+  PALE_OAK_SAPLING: {buy: 21.7, sell: 4.34, daily-full: 2048, category: FARMING}  # Rare biome
+  COCOA_BEANS: {buy: 24.55, sell: 4.91, daily-full: 2048, category: FARMING}  # Jungle cocoa farm
+  CHORUS_FRUIT: {buy: 27.95, sell: 5.59, daily-full: 2048, category: FARMING}  # End chorus farm; requires End access
+  BREAD: {buy: 37, sell: 7.4, daily-full: 1024, category: FARMING}  # Three wheat plus the crafting step
+  NETHER_WART: {buy: 55.1, sell: 11.02, daily-full: 1536, category: FARMING}  # Fortress/bastion gated; the whole brewing tree needs it
+  APPLE: {buy: 65, sell: 13, daily-full: 1024, category: FARMING}  # Leaf decay only; no efficient apple farm exists
 
   # ---- ANIMALS ----
   EGG: {buy: 1.4, sell: 0.28, daily-full: 4096, category: ANIMALS}  # Chicken farm, fully automatic
