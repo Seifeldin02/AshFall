@@ -1,0 +1,127 @@
+# Ashfall Concord — Development Log
+
+Newest first. Updating this is part of finishing a change, not an afterthought — same as updating
+`deploy/manifest.yml` when a non-Git-tracked config or jar starts mattering to a deploy.
+
+---
+
+## Session: 2026-08-12 → 2026-08-13
+
+Branch `staging`. Production was updated once mid-session (commit `6cbb3e8`); everything after that is
+staging-only and awaiting approval.
+
+### Orders — DonutOrders removed, native system built
+
+**Why.** DonutOrders keyed orders by `Material`. Every spawner is `Material.SPAWNER`, so a Blaze Spawner
+order could be filled with a Cave Spider one and there was no way to express the difference. Its storage was
+actually fine (a serialised `ItemStack` per order) — the limitation was its creation flow and the
+`getAllowedMaterials()` API. Working around it was costing more than replacing it.
+
+**Canonical identity.** Orders now carry a key naming exactly what satisfies them:
+`vanilla:DIAMOND`, `vanilla:ENCHANTED_BOOK/SHARPNESS/5`, `smpcore:spawner/BLAZE`. Matching is by identity,
+never display name. Spawner types are read from SpawnerService's own value registry, so a type added there
+later becomes orderable with no code change. **1,678 orderable items, 15 spawner types.**
+
+**Escrow.** Money leaves the buyer once at creation and lives in the order row. Every later movement is a
+conditional UPDATE that checks and mutates in one statement — the same reservation pattern the finite shop
+stock uses. Fulfilment reserves before touching the seller's inventory; a short removal reverses the
+reservation and returns exactly what was taken. Closing is compare-and-swap on the escrow figure the caller
+read, so a second cancel or expiry sweep cannot match it and cannot refund twice.
+
+**Migration.** DonutOrders had 14 orders, **zero active**, and an empty stash — nothing was in flight. Its
+14 orders and 21 transactions were archived to `legacy_donut_orders` / `legacy_donut_transactions`.
+
+**Money it owed.** Its transaction log contains only CREATE / CANCEL / FULFILL — *there is no refund action
+in the schema at all*, and every EXPIRED order still held the money taken at creation. Seven orders were
+stranded: **$400,305** (Asserto 400,300 · MacoCT 4 · TPKIID 1). Refunded on staging with ledger entries.
+**Production is owed the same amount and has not been touched** — the production migration must repeat this
+with an idempotency check so nobody is paid twice.
+
+### Industrial Hopper
+
+Rewritten around **one authoritative inventory** after the first version could duplicate items without
+limit. Root cause was ownership: opening the screen built a *copy*, and closing it wrote that copy back over
+whatever the transfer loop had done. Now one live `Inventory` per hopper, opened directly; native five slots
+kept permanently empty; all transfers remove-before-add.
+
+Verified: **34/34 conservation checks + 5/5 removal runs**, zero created, zero lost.
+
+Two follow-ups worth remembering: the sweep period was **hardcoded to 1 tick** while the config claimed
+otherwise, so the first throttle attempt did nothing; and `Inventory.getItem()` returns a **live mirror**, so
+overwriting a slot invalidates a reference still held — that turned a refund into air. Final cadence is
+**9 items per 8 ticks**, matching vanilla's hopper cooldown.
+
+### Economy
+
+- **Spawner mob money simplified.** Player-placed spawner mobs pay a flat 50%, dropping to 25% past a daily
+  allowance of **10,000 represented mobs** of that type (resets 12:00 Asia/Riyadh). The anti-farm
+  window/soft/hard curve no longer touches spawner income; natural mobs keep it. This removed a cliff where
+  the halved spawner share was gated on `factor < 1`, so the 17th kill in ten minutes cut pay by half again.
+- **Actual-spawner audit.** Earlier comparisons modelled Creeper/Guardian/Enderman spawners *that players
+  cannot obtain*. Corrected to the three that exist: Blaze **$25,560/hr** (100%), Cave Spider **$14,846/hr**
+  (58%), Magma Cube **$14,400/hr** (56%). Iron Golem is a separate luxury tier at **$84,960/hr**.
+- **Prices raised** (arbitrage-checked, nothing lowered): string 2.35 → 3.20, magma cream 5.49 → 14.50
+  (still under its 15.06 craft cost), farming category **×2.6** across 36 items — sugar cane 1.57 → **4.08**.
+  Bread was pulled back to 7.40 because ×2.6 put it above 3× wheat and made a crafting table print money;
+  that loop existed before this pass at a smaller margin and is now underwater.
+- **Transfer taxes removed.** `pay.tax-percent` and `trade-tax.percent` both 0. The AxTrade hook stays wired.
+- **Trade tax bug found on the way out.** It had been taxing **zero** since it shipped: it asked AxTrade for
+  a currency named `money`, and `HookManager.getCurrencyHook` returns null for an unknown name, so
+  `getCurrency` returned 0.0. The hooks are called `Vault` and `Experience`. Now identified by hook, not name.
+- **Iron Golem Spawner at $50m: justified on output, unreachable in practice.** ~$1.2m/day for a mature
+  farmer → ~41 day payback, against a Dragon Egg at the same price yielding nothing. But the richest player
+  holds $6.8M, so it is currently an aspiration rather than a purchase.
+
+### Bosses
+
+- **Cinder Warlord root cause.** Three STRENGTH buffs sat outside the calibrated damage attribute *and*
+  outside the enrage cap: the phase mechanic used `amplifier = phase` (Strength IV by phase 3, +12), the
+  phase-3 berserk added permanent Strength II, and **standing in lava granted Strength III, refreshed
+  continuously** — that last one is why lava fights specifically turned absurd. All three removed; enrage now
+  owns damage progression outright and lava keeps only its defensive Resistance.
+- **Pit recovery, all three bosses.** After 20s unable to reach anybody, the boss is placed on solid ground
+  at its target. Clearing blocks above a boss in a hole just drops it back in.
+- **Damage recap** to participants on a shared boss kill, from the same contribution map the reward split
+  uses.
+- Damage reverted to the previously approved values, then +10% on Ashen (18.7) and Colossus (20.35) by
+  request. Cinder unchanged at 18.
+
+### Task Master
+
+Contract board rewritten: 36 contracts with a reason behind them, **paid by effort not item value** (steps /
+travel / risk / grind, plus a per-extra-item term for collections). Wool all 16 colours 100,000; beds all 16
+colours 196,250. Batches persist across relogs and restarts and do not change one contract at a time; the
+next batch is dealt only when the whole set is done. Courier is invisible with the trader swirl, tethered to
+50 blocks — `addPotionEffect` silently fails on that entity, so the effect is drawn directly.
+
+### Discarded-item vault
+
+Event-driven audit of what genuinely leaves the world; eligible plain commodities return to shop stock.
+Destroyed spawners now enter it with their type preserved (`SPAWNER_BLAZE`), never recycled into stock, one
+entry per destroyed physical spawner. Verified with TNT.
+
+### Login notifications
+
+`GameplayListener` and `OrdersService` were **both** calling `loginSummary`, so every notice arrived twice.
+One caller now. Only things that happened while away are reported — deliveries received, orders expired or
+completed — each exactly once, tracked by the filled count already reported. An order merely still being
+active is not news and is no longer mentioned.
+
+### Staging conveniences
+
+- AuthMe staging session timeout: admins get the same persisted 30-minute session as normal players, so a
+  staging restart does not force `/login`. Production untouched.
+- `/ashfall hopper rig|count|create`, `/ashfall vault`, `/ashfall ordersdebugcreate` — console diagnostics
+  that made the conservation testing possible.
+
+---
+
+## Standing lessons
+
+1. **Restart staging by stopping it first.** Relaunching without stopping leaves the old JVM holding the
+   port; the "restart" silently does nothing and every later test runs against the previous jar. This cost a
+   whole round of results once.
+2. **Console measurement lies in four specific ways**: `/data get` truncates long NBT over RCON; reading
+   three containers with three commands is not an atomic snapshot; spilled items fall off one-block platforms
+   out of range; and entity flags like `Invisible` are synced state, not saved NBT.
+3. **Trust the plugin's own log over reconstructed console arithmetic.**

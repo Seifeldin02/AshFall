@@ -14,7 +14,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
-import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
@@ -544,16 +543,30 @@ final class OrdersService implements Listener {
         player.closeInventory();
     }
 
-    @EventHandler public void join(PlayerJoinEvent event) {
-        Bukkit.getScheduler().runTaskLater(plugin, () -> loginSummary(event.getPlayer()), 40L);
-    }
-
+    /** No join handler here on purpose. GameplayListener already calls loginSummary once per join, and
+     *  having a second one meant every notice arrived twice.
+     *
+     *  Only things that HAPPENED while they were away are reported: deliveries that landed, and orders that
+     *  expired or completed. An order merely still being active is not news and is not mentioned. Each event
+     *  is reported once, tracked by the filled count already reported rather than by the order existing, so
+     *  logging in again says nothing new. */
     void loginSummary(Player player) {
         String id = CoreUtil.id(player);
+        List<String> news = new ArrayList<>();
+        for (Database.OrderRow row : db.ordersOf(id)) {
+            boolean delivered = row.filled() > row.notified();
+            boolean ended = !row.status().equals("ACTIVE") && row.notifiedEnd() == 0;
+            if (delivered) news.add((row.filled() - row.notified()) + "x " + display(row.itemKey())
+                    + " delivered to order #" + row.id());
+            if (ended) news.add("Order #" + row.id() + " " + row.status().toLowerCase(Locale.ROOT)
+                    + (row.status().equals("EXPIRED") ? " and the escrow was refunded" : ""));
+            if (delivered || ended) db.orderMarkNotified(row.id(), row.filled());
+        }
+        if (news.isEmpty()) return;
+        CoreUtil.msg(player, "While you were away:");
+        for (String line : news) CoreUtil.msg(player, "  " + line);
         int stash = db.stashCount(id);
-        long active = db.ordersOf(id).stream().filter(row -> row.status().equals("ACTIVE")).count();
-        if (stash > 0) CoreUtil.msg(player, "You have " + stash + " stack(s) waiting in your order stash — /orders.");
-        if (active > 0) CoreUtil.msg(player, "You have " + active + " active buy order(s) — /orders.");
+        if (stash > 0) CoreUtil.msg(player, "  Collect " + stash + " stack(s) with /orders.");
     }
 
     // ------------------------------------------------------------------ admin / test hooks

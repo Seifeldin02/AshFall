@@ -173,6 +173,9 @@ final class Database implements AutoCloseable {
              *  conditional UPDATE so it can never be spent or refunded twice. */
             s.execute("CREATE TABLE IF NOT EXISTS smp_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, buyer TEXT NOT NULL, buyer_name TEXT NOT NULL, item_key TEXT NOT NULL, amount INTEGER NOT NULL, filled INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, escrow REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON smp_orders(status)");
+            /** Added after the table shipped, so guarded rather than assumed. */
+            for(String column:new String[]{"notified INTEGER NOT NULL DEFAULT 0","notified_end INTEGER NOT NULL DEFAULT 0"})
+                try{s.execute("ALTER TABLE smp_orders ADD COLUMN "+column);}catch(SQLException ignored){}
             /** Goods delivered to an offline or full buyer. Held until collected; never auto-granted. */
             s.execute("CREATE TABLE IF NOT EXISTS smp_order_stash (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, item BLOB NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_stash_owner ON smp_order_stash(owner)");
@@ -687,11 +690,13 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
-    record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status){}
-    private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status";
+    record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status,int notified,int notifiedEnd){}
+    private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status,notified,notified_end";
     private static OrderRow orderRow(ResultSet rs)throws SQLException{
-        return new OrderRow(rs.getLong(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getInt(5),rs.getInt(6),rs.getDouble(7),rs.getDouble(8),rs.getLong(9),rs.getLong(10),rs.getString(11));
+        return new OrderRow(rs.getLong(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getInt(5),rs.getInt(6),rs.getDouble(7),rs.getDouble(8),rs.getLong(9),rs.getLong(10),rs.getString(11),rs.getInt(12),rs.getInt(13));
     }
+    /** Records what has already been reported to the buyer, so a notice is delivered exactly once. */
+    synchronized void orderMarkNotified(long id,int filled){update("UPDATE smp_orders SET notified=?, notified_end=CASE WHEN status='ACTIVE' THEN 0 ELSE 1 END WHERE id=?",filled,id);}
     synchronized OrderRow order(long id){return one("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE id=?",Database::orderRow,id);}
     synchronized List<OrderRow> ordersActive(String search){
         List<OrderRow> rows=list("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE status='ACTIVE' ORDER BY created_at DESC",Database::orderRow);
