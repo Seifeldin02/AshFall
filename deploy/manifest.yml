@@ -101,7 +101,6 @@ plugins:
   - PunisherX-1.7.2-SNAPSHOT.jar
   - prism-paper-v4.4.jar
   - AxTrade-1.26.1.jar               # trade tax integration
-  - DonutOrders-1.3.0.jar            # SMPCore declares loadbefore for this
 
 # Files that must NEVER be synced or overwritten by a deploy, at any time.
 never_touch:

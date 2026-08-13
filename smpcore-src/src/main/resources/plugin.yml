@@ -8,6 +8,12 @@ depend: [Vault, WorldEdit]
 softdepend: [packetevents, AuthMe, floodgate, Geyser-Spigot, TAB, SkinsRestorer, GrimAC, Nicked, ReplayCore, PunisherX, Prism]
 loadbefore: [DonutOrders]
 commands:
+  orders:
+    description: Browse and fill buy orders
+    usage: /orders
+  order:
+    description: Place a buy order
+    usage: /order
   kit:
     description: Staff test loadout
     usage: /kit test

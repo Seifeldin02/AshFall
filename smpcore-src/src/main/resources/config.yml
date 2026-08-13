@@ -451,6 +451,16 @@ progression:
     CONQUEROR: 150000
     VANGUARD: 250000
 
+orders:
+  # Native buy orders. Escrow is taken from the buyer at creation and released per delivered unit; every
+  # movement of it is a conditional UPDATE, so it cannot be paid or refunded twice.
+  max-per-player: 10
+  max-amount: 3456
+  expiry-days: 7
+  # Taken from the seller's payout, into the Central Bank.
+  tax-percent: 2.5
+  expiry-check-seconds: 60
+
 industrial-hopper:
   # Items moved per hopper per tick. Vanilla moves one item every 8 ticks; this is the whole point of the
   # block, so it is deliberately far higher. Ticking is centralised, not one task per hopper.

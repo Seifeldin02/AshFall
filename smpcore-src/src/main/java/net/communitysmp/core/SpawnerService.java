@@ -308,6 +308,28 @@ final class SpawnerService {
     /** Public factory so shop/shard purchases hand over a genuine SMPCore spawner (tagged, placeable,
      *  stackable) rather than a raw spawn egg or an untagged vanilla spawner block. */
     ItemStack purchasedSpawner(EntityType type){return createItem(type,1,java.util.UUID.randomUUID().toString());}
+    /** Every spawner type this server actually registers, from the configured value table. Orders read
+     *  this, so a type added to the config later becomes orderable without a code change. */
+    java.util.List<EntityType> orderableTypes(){
+        java.util.List<EntityType> types=new java.util.ArrayList<>();
+        org.bukkit.configuration.ConfigurationSection section=plugin.getConfig().getConfigurationSection("net-worth.spawners");
+        if(section!=null)for(String key:section.getKeys(false)){
+            if(key.equalsIgnoreCase("default"))continue;
+            try{types.add(EntityType.valueOf(key.toUpperCase(java.util.Locale.ROOT)));}catch(IllegalArgumentException ignored){}
+        }
+        types.sort(java.util.Comparator.comparing(EntityType::name));
+        return types;
+    }
+    /** A canonical, freshly identified spawner item of this type, for order icons and stash delivery. It
+     *  carries the same persistent data a recovered spawner does, so a delivered one places normally. */
+    ItemStack orderItem(EntityType type){return createItem(type,0,UUID.randomUUID().toString());}
+    /** The spawner type an item really is, read from persistent data rather than its display name. */
+    EntityType typeOf(ItemStack item){
+        if(item==null||item.getType()!=Material.SPAWNER||!item.hasItemMeta())return null;
+        String raw=item.getItemMeta().getPersistentDataContainer().get(typeKey,PersistentDataType.STRING);
+        if(raw==null)return null;
+        try{return EntityType.valueOf(raw);}catch(IllegalArgumentException ignored){return null;}
+    }
     private ItemStack createItem(EntityType type,int recoveries){return createItem(type,recoveries,UUID.randomUUID().toString());}
     private ItemStack createItem(EntityType type,int recoveries,String identity){ItemStack item=new ItemStack(Material.SPAWNER);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(CoreUtil.pretty(type.name())+" Spawner ×1",NamedTextColor.GOLD));meta.lore(List.of(Component.text("Recovery: "+recoveries,NamedTextColor.GRAY)));meta.addItemFlags(ItemFlag.HIDE_ADDITIONAL_TOOLTIP);meta.setMaxStackSize(1);meta.getPersistentDataContainer().set(typeKey,PersistentDataType.STRING,type.name());meta.getPersistentDataContainer().set(historiesKey,PersistentDataType.INTEGER,recoveries);meta.getPersistentDataContainer().set(stackKey,PersistentDataType.INTEGER,1);meta.getPersistentDataContainer().set(identityKey,PersistentDataType.STRING,identity);item.setItemMeta(meta);return item;}
     void migrateInventory(Player player){ItemStack[] contents=player.getInventory().getContents();boolean changed=false;for(int i=0;i<contents.length;i++){ItemStack migrated=migrateItem(contents[i]);if(migrated!=contents[i]){contents[i]=migrated;changed=true;}}if(changed){player.getInventory().setContents(contents);CoreUtil.msg(player,"Recovered spawner items were updated to the safe SMPCore format.");}}

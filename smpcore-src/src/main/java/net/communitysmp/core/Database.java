@@ -169,6 +169,13 @@ final class Database implements AutoCloseable {
              *  in the codebase deletes from it or reads an item back out of it. */
             /** Represented spawner mobs killed per player, per mob type, per reward day. Counts represented
              *  mobs rather than kill events, so a stack of 100 counts as 100. */
+            /** Native buy orders. escrow is the money still held FOR THIS ROW; every movement of it is a
+             *  conditional UPDATE so it can never be spent or refunded twice. */
+            s.execute("CREATE TABLE IF NOT EXISTS smp_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, buyer TEXT NOT NULL, buyer_name TEXT NOT NULL, item_key TEXT NOT NULL, amount INTEGER NOT NULL, filled INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, escrow REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
+            s.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON smp_orders(status)");
+            /** Goods delivered to an offline or full buyer. Held until collected; never auto-granted. */
+            s.execute("CREATE TABLE IF NOT EXISTS smp_order_stash (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, item BLOB NOT NULL, created_at INTEGER NOT NULL)");
+            s.execute("CREATE INDEX IF NOT EXISTS idx_stash_owner ON smp_order_stash(owner)");
             s.execute("CREATE TABLE IF NOT EXISTS spawner_kill_counts (player TEXT NOT NULL, mob_type TEXT NOT NULL, day TEXT NOT NULL, killed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(player,mob_type,day))");
             s.execute("CREATE TABLE IF NOT EXISTS discarded_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, material TEXT NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL, recycled INTEGER NOT NULL DEFAULT 0, world TEXT NOT NULL DEFAULT '', x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0, z INTEGER NOT NULL DEFAULT 0)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material ON discarded_ledger(material)");
@@ -680,6 +687,60 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
+    record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status){}
+    private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status";
+    private static OrderRow orderRow(ResultSet rs)throws SQLException{
+        return new OrderRow(rs.getLong(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getInt(5),rs.getInt(6),rs.getDouble(7),rs.getDouble(8),rs.getLong(9),rs.getLong(10),rs.getString(11));
+    }
+    synchronized OrderRow order(long id){return one("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE id=?",Database::orderRow,id);}
+    synchronized List<OrderRow> ordersActive(String search){
+        List<OrderRow> rows=list("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE status='ACTIVE' ORDER BY created_at DESC",Database::orderRow);
+        if(search==null||search.isBlank())return rows;
+        String needle=search.toLowerCase(java.util.Locale.ROOT);
+        return rows.stream().filter(row->row.itemKey().toLowerCase(java.util.Locale.ROOT).contains(needle)).toList();
+    }
+    synchronized List<OrderRow> ordersOf(String buyer){return list("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE buyer=? ORDER BY status='ACTIVE' DESC, created_at DESC",Database::orderRow,buyer);}
+    synchronized List<OrderRow> ordersExpired(long now){return list("SELECT "+ORDER_COLUMNS+" FROM smp_orders WHERE status='ACTIVE' AND expires_at<=?",Database::orderRow,now);}
+    synchronized long orderCreate(String buyer,String name,String key,int amount,double unit,double escrow,long expires){
+        update("INSERT INTO smp_orders(buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status) VALUES(?,?,?,?,0,?,?,?,?,'ACTIVE')",buyer,name,key,amount,unit,escrow,System.currentTimeMillis(),expires);
+        Integer id=one("SELECT last_insert_rowid()",rs->rs.getInt(1));
+        return id==null?0:id;
+    }
+    /** Check and take in ONE statement. Zero rows changed means somebody else got there first. */
+    synchronized boolean orderReserve(long id,int qty,double cost){
+        return update("UPDATE smp_orders SET filled=filled+?, escrow=escrow-? WHERE id=? AND status='ACTIVE' AND filled+?<=amount AND escrow>=?",qty,cost,id,qty,cost)>0;
+    }
+    /** Exact reverse, for a delivery that could not be completed after reserving. */
+    synchronized void orderUnreserve(long id,int qty,double cost){
+        update("UPDATE smp_orders SET filled=filled-?, escrow=escrow+? WHERE id=?",qty,cost,id);
+    }
+    /** Compare-and-swap on the escrow figure the caller read, so a refund can only ever happen once. */
+    synchronized boolean orderClose(long id,String status,double expectedEscrow){
+        return update("UPDATE smp_orders SET status=?, escrow=0 WHERE id=? AND status='ACTIVE' AND abs(escrow-?)<0.005",status,id,expectedEscrow)>0;
+    }
+    synchronized void orderCompleteIfFull(long id){update("UPDATE smp_orders SET status='COMPLETED' WHERE id=? AND filled>=amount",id);}
+    synchronized void stashAdd(String owner,String key,int amount,ItemStack unit){
+        if(unit==null||amount<=0)return;
+        int max=Math.max(1,unit.getMaxStackSize()),remaining=amount;
+        while(remaining>0){
+            ItemStack stack=unit.clone();stack.setAmount(Math.min(max,remaining));remaining-=stack.getAmount();
+            update("INSERT INTO smp_order_stash(owner,item,created_at) VALUES(?,?,?)",owner,ItemStack.serializeItemsAsBytes(new ItemStack[]{stack}),System.currentTimeMillis());
+        }
+    }
+    synchronized int stashCount(String owner){return integer("SELECT COUNT(*) FROM smp_order_stash WHERE owner=?",owner);}
+    synchronized List<ItemStack> stashOf(String owner){
+        List<ItemStack> out=new ArrayList<>();
+        for(byte[] raw:list("SELECT item FROM smp_order_stash WHERE owner=? ORDER BY id",rs->rs.getBytes(1),owner))
+            try{for(ItemStack item:ItemStack.deserializeItemsFromBytes(raw))if(item!=null&&!item.getType().isAir())out.add(item);}catch(Throwable ignored){}
+        return out;
+    }
+    /** Read and delete together, so a stash cannot be collected twice. */
+    synchronized List<ItemStack> stashTake(String owner){
+        List<ItemStack> out=stashOf(owner);
+        update("DELETE FROM smp_order_stash WHERE owner=?",owner);
+        return out;
+    }
+
     synchronized int spawnerKills(String player,String type,String day){return integer("SELECT killed FROM spawner_kill_counts WHERE player=? AND mob_type=? AND day=?",player,type,day);}
     /** Adds to today's count and returns the total BEFORE the addition, which is what the payout split needs. */
     synchronized int addSpawnerKills(String player,String type,String day,int amount){
