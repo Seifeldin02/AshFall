@@ -596,19 +596,19 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
 
     /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
     private boolean duel(Player p,String[] args){
-        if(args.length==0){CoreUtil.msg(p,"/duel <player> | accept | decline | kit <mace|sword|axe|spear> | series <1|3> | stake <amount> | confirm | bet <player> <amount> | watch | status | cancel");return true;}
+        if(args.length==0){arena.openHub(p);return true;}
         String sub=args[0].toLowerCase(Locale.ROOT);
         return switch(sub){
             case"accept"->arena.accept(p);
             case"decline"->arena.decline(p);
             case"confirm"->arena.confirm(p);
-            case"watch"->arena.watch(p);
-            case"cancel"->arena.cancel(p);
-            case"status"->{CoreUtil.msg(p,arena.status());yield true;}
+            case"forfeit","cancel"->arena.forfeit(p);
+            case"status"->{CoreUtil.msg(p,arena.status(p));yield true;}
             case"kit"->{if(args.length<2){CoreUtil.error(p,"Kits: mace, sword, axe, spear.");yield true;}yield arena.setKit(p,args[1]);}
             case"series"->{if(args.length<2){CoreUtil.error(p,"Best of 1 or 3.");yield true;}try{yield arena.setSeries(p,Integer.parseInt(args[1]));}catch(NumberFormatException e){CoreUtil.error(p,"Best of 1 or 3.");yield true;}}
             case"stake"->{if(args.length<2){CoreUtil.error(p,"Usage: /duel stake <amount>");yield true;}yield arena.setStake(p,CoreUtil.parseMoney(args[1]));}
-            case"bet"->{if(args.length<3){CoreUtil.error(p,"Usage: /duel bet <player> <amount>");yield true;}yield arena.bet(p,args[1],CoreUtil.parseMoney(args[2]));}
+            case"watch"->{if(args.length<2){CoreUtil.error(p,"Usage: /duel watch <match id>");yield true;}try{yield arena.watch(p,Integer.parseInt(args[1]));}catch(NumberFormatException e){CoreUtil.error(p,"Match id must be a number.");yield true;}}
+            case"bet"->{if(args.length<4){CoreUtil.error(p,"Usage: /duel bet <match id> <player> <amount>");yield true;}try{yield arena.bet(p,Integer.parseInt(args[1]),args[2],CoreUtil.parseMoney(args[3]));}catch(NumberFormatException e){CoreUtil.error(p,"Match id must be a number.");yield true;}}
             default->arena.challenge(p,args[0]);
         };
     }
@@ -629,6 +629,17 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(args.length==1&&name.equals("msg")){List<String> options=new ArrayList<>(publicOnlineNames(sender,""));options.addAll(List.of("block","unblock"));return filter(args[0],options);}
         if(args.length==2&&name.equals("msg")&&(args[0].equalsIgnoreCase("block")||args[0].equalsIgnoreCase("unblock")))return publicOnlineNames(sender,args[1]);
         if(args.length==1&&name.equals("rtp"))return filter(args[0],List.of("queue"));
+        if(name.equals("duel")&&sender instanceof Player duelPlayer){
+            List<String> subs=List.of("accept","decline","kit","series","stake","confirm","bet","watch","status","forfeit");
+            if(args.length==1){List<String> options=new ArrayList<>(arena.onlineChallengeable(duelPlayer));options.addAll(subs);return filter(args[0],options);}
+            String s0=args[0].toLowerCase(Locale.ROOT);
+            if(args.length==2&&s0.equals("kit"))return filter(args[1],List.of("mace","sword","axe","spear"));
+            if(args.length==2&&s0.equals("series"))return filter(args[1],List.of("1","3"));
+            if(args.length==2&&s0.equals("stake"))return filter(args[1],List.of("0","1000","10000","100000"));
+            if(args.length==2&&(s0.equals("watch")||s0.equals("bet")))return filter(args[1],arena.liveMatchIds());
+            if(args.length==3&&s0.equals("bet")){try{return filter(args[2],arena.duellistNames(Integer.parseInt(args[1])));}catch(NumberFormatException e){return List.of();}}
+            return List.of();
+        }
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("invite"))return publicOnlineNames(sender,args[1]);
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("locate")&&sender instanceof Player p)return filter(args[1],getServer().getOnlinePlayers().stream().filter(target->!target.equals(p)&&factions.friendly(p,target)).map(nicknames::displayName).toList());
         if(name.equals("f")&&args.length==2&&Set.of("ally","truce","storage","info").contains(args[0].toLowerCase(Locale.ROOT))){

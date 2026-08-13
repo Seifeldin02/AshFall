@@ -164,7 +164,7 @@ final class TaskMasterService implements Listener {
         one("conduit", Material.CONDUIT,                1, 3,3,2,3, "One conduit. A heart and eight shells. Come back damp."),
         one("heart", Material.HEART_OF_THE_SEA,       2, 0,3,1,3, "Two hearts of the sea. Find the wreck, read the map, dig where it says. Simple, he said."),
         one("nautilus", Material.NAUTILUS_SHELL,        16, 0,2,2,3, "Sixteen nautilus shells. The drowned have them. The drowned would rather keep them."),
-        one("gapple", Material.ENCHANTED_GOLDEN_APPLE, 2, 0,2,3,3, "Two notched apples. They are not crafted, only found, and only where nobody sensible goes."),
+        one("gapple", Material.ENCHANTED_GOLDEN_APPLE, 1, 0,2,3,3, "One notched apple. Not crafted, only found, and only where nobody sensible goes."),
         one("rose", Material.WITHER_ROSE,            8, 0,2,3,3, "Eight wither roses. You know what has to happen for one of these to grow. Eight times."),
         one("breath", Material.DRAGON_BREATH,          8, 1,3,3,3, "Eight bottles of dragon's breath. Stand in it, hold out a bottle, try to stay standing."),
         // -------------------------------------------------------------------------------- Collections
@@ -443,6 +443,60 @@ final class TaskMasterService implements Listener {
         return new Batch(tasks, done);
     }
 
+    /** Real replacement value of ONE of an item, from the live economy: the luxury buy price where it is a
+     *  luxury (what it actually costs to acquire), else its shop sell price, else a scarcity estimate for the
+     *  handful of found-only rares the shop does not trade. */
+    private double unitValue(Material material){
+        if(plugin.shop()!=null){
+            double lux=plugin.shop().luxuryBuyValue(material); if(lux>0)return lux;
+            double sell=plugin.shop().sellValue(material); if(sell>0)return sell;
+        }
+        return SCARCITY.getOrDefault(material,50.0);
+    }
+    /** Cheapest way to BUY one, if any (0 = not purchasable). Anchors the anti-arbitrage cap. */
+    private double purchasePrice(Material material){return plugin.shop()==null?0:plugin.shop().buyPrice(material);}
+
+    /** Acquisition/replacement values for found-only rares the shop neither sells nor buys. Grounded in what
+     *  the thing actually costs to obtain: a conduit is a heart of the sea plus eight shells, so it is worth
+     *  the sum of those, not a token amount. */
+    private static final Map<Material,Double> SCARCITY=Map.ofEntries(
+        Map.entry(Material.ECHO_SHARD,4000.0),
+        Map.entry(Material.WITHER_SKELETON_SKULL,12000.0),
+        Map.entry(Material.NETHERITE_INGOT,30000.0),
+        Map.entry(Material.CONDUIT,420000.0),
+        Map.entry(Material.SEA_LANTERN,1200.0),
+        Map.entry(Material.RESPAWN_ANCHOR,6000.0),
+        Map.entry(Material.DRAGON_BREATH,2500.0),
+        Map.entry(Material.WITHER_ROSE,4000.0),
+        Map.entry(Material.GLOWSTONE,900.0));
+
+    /** What the contract actually pays.
+     *
+     *  The bare effort figure is a FLOOR, not the answer: it is never allowed to rob a player of items worth
+     *  far more than it (the notch-apple-for-$27k problem), and it is never allowed to pay so much that
+     *  buying the item and handing it straight back turns a profit. Effort still wins outright for the cheap,
+     *  grind-heavy contracts that make up most of the board, because their items are worth little. Between
+     *  those two guards sits the item's real economy value. */
+    double reward(Task task){
+        return Math.round(Math.max(task.reward(), valueFloor(task))/100.0)*100;
+    }
+    /** The value-based floor: the demanded items' real worth marked up 15%, but held BELOW their purchase
+     *  cost so the floor itself can never turn buy-then-deliver into a profit. It is zero-effect for cheap
+     *  items, where the effort reward is far higher and wins outright -- the effort model the owner chose is
+     *  untouched there. It only bites when the items are genuinely valuable, which is the exact case that was
+     *  robbing players (two notch apples worth $2m for a $27k effort reward). */
+    private double valueFloor(Task task){
+        double fair=0, buyCost=0; boolean purchasable=false;
+        for(Material material:task.items()){
+            fair+=unitValue(material)*task.each();
+            double buy=purchasePrice(material);
+            if(buy>0){buyCost+=buy*task.each();purchasable=true;}
+        }
+        double floor=fair*1.15;
+        if(purchasable)floor=Math.min(floor,buyCost*0.85);
+        return floor;
+    }
+
     /** A fresh hand of 3-4 contracts: one Easy, one Testing, one Hard, and a Brutal three times in five.
      *
      *  Drawn a band at a time rather than at random across the whole table, so a hand always holds
@@ -485,7 +539,7 @@ final class TaskMasterService implements Listener {
             lore.add(Component.text("Difficulty: " + task.tier(), NamedTextColor.DARK_GRAY));
             /** Say WHY it pays what it pays, so the board never reads as arbitrary. */
             for (String reason : task.why()) lore.add(Component.text("- " + reason, NamedTextColor.DARK_GRAY));
-            lore.add(Component.text("Reward: " + CoreUtil.money(task.reward()), NamedTextColor.YELLOW));
+            lore.add(Component.text("Reward: " + CoreUtil.money(reward(task)), NamedTextColor.YELLOW));
             if (claimed) lore.add(Component.text("Already delivered.", NamedTextColor.DARK_GRAY));
             else if (carrying(player, task)) lore.add(Component.text("Click to deliver.", NamedTextColor.GREEN));
             else if (task.isSet()) {
@@ -569,10 +623,11 @@ final class TaskMasterService implements Listener {
          *  before this runs, and the vault holds a record, never a withdrawable copy. */
         for (Material material : task.items())
             plugin.vault().deliver(new ItemStack(material, task.each()), player.getLocation(), "DELIVERED");
-        plugin.creditEarned(CoreUtil.id(player), task.reward(), "TASK_MASTER_" + task.id().toUpperCase(Locale.ROOT));
-        plugin.db().recordEconomy(CoreUtil.id(player), "TASK_MASTER", task.reward(), task.id());
+        double paid = reward(task);
+        plugin.creditEarned(CoreUtil.id(player), paid, "TASK_MASTER_" + task.id().toUpperCase(Locale.ROOT));
+        plugin.db().recordEconomy(CoreUtil.id(player), "TASK_MASTER", paid, task.id());
         CoreUtil.msg(player, DELIVERED.getOrDefault(task.id(), "He takes the lot without comment.")
-                + " " + CoreUtil.money(task.reward()) + ".");
+                + " " + CoreUtil.money(paid) + ".");
         save(player, batch);
         /** The next batch is dealt only when the whole set is done -- never one contract at a time -- and
          *  then it keeps going for as long as the event runs. */
@@ -639,7 +694,20 @@ final class TaskMasterService implements Listener {
         Task beds = TABLE.stream().filter(t -> t.id().equals("bedset")).findFirst().orElse(null);
         if (wool == null || beds == null) return false;
         if (wool.reward() < 90000 || beds.reward() <= wool.reward()) return false;
-        if (TABLE.stream().anyMatch(t -> !t.id().equals("bedset") && t.reward() > beds.reward())) return false;
+        /** Value sanity: paid never drops below the effort reward; the VALUE FLOOR never reaches an item's
+         *  own purchase cost (so the floor cannot create a buy-then-deliver profit); and a genuinely
+         *  valuable ask is never paid a small fraction of its worth. The effort reward for cheap purchasable
+         *  bulk items is the owner's chosen design and is left alone. */
+        for (Task t : TABLE) {
+            double paid = reward(t), floor = valueFloor(t);
+            if (paid < t.reward()) return false;
+            double fair = 0, buyCost = 0; boolean purchasable = false;
+            for (Material m : t.items()) { fair += unitValue(m) * t.each(); double b = purchasePrice(m); if (b > 0) { buyCost += b * t.each(); purchasable = true; } }
+            if (purchasable && floor >= buyCost) return false;
+            if (fair >= 50000 && paid < fair * 0.5) return false;
+        }
+        Task gapple = TABLE.stream().filter(t -> t.id().equals("gapple")).findFirst().orElse(null);
+        if (gapple == null || reward(gapple) < 500000) return false;
 
         /** A hand is always 3-4 distinct contracts and always holds something doable today. */
         for (int attempt = 0; attempt < 200; attempt++) {

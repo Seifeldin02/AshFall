@@ -70,11 +70,22 @@ final class TrustedAdminService implements Listener {
     public void requirePassword(RestoreSessionEvent event){
         Player player=event.getPlayer();
         if(!realAccount(player))return;
-        if(plugin.getConfig().getBoolean("trusted-admin.same-machine-autologin",false)&&isThisMachine(player)){
+        /** STAGING ONLY. staging-session-persistence lets an admin account keep AuthMe's OWN same-IP session
+         *  -- the exact 30-minute persistence every non-admin already gets unconditionally -- regardless of
+         *  which machine they connect from. This is what an admin like MacoCT, who connects remotely rather
+         *  than from the server box, actually needs: same-machine-autologin below only ever helped somebody
+         *  physically on this machine (an admin on the server's own LAN IP), so a remote admin was still
+         *  forced to /login after every restart. Kept a separate, broader flag rather than widening
+         *  same-machine-autologin, so the narrow same-machine behaviour stays available on its own.
+         *  Deliberately absent from the shipped config resource and never copied by a deploy script, so
+         *  production admins still authenticate with a real password every time. */
+        boolean stagingPersistence=plugin.getConfig().getBoolean("trusted-admin.staging-session-persistence",false);
+        boolean sameMachine=plugin.getConfig().getBoolean("trusted-admin.same-machine-autologin",false)&&isThisMachine(player);
+        if(stagingPersistence||sameMachine){
             authenticated.add(player.getUniqueId());
             player.setOp(true);
             grantGamemode(player);
-            plugin.getLogger().info("Administrator auto-logged in via same-machine session: "+player.getName()+".");
+            plugin.getLogger().info("Administrator session restored ("+(sameMachine?"same-machine":"staging-persistence")+"): "+player.getName()+".");
             player.updateCommands();
             return;
         }

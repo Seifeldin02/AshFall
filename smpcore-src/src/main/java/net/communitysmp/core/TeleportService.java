@@ -271,6 +271,7 @@ final class TeleportService {
     private long remainingCooldown(Map<UUID,Long> source,long seconds,UUID player){long remaining=seconds*1000L-(System.currentTimeMillis()-source.getOrDefault(player,0L));return remaining<=0?0:Math.max(1,(remaining+999)/1000);}
     private void link(UUID first,UUID second,long until){pvpLinks.computeIfAbsent(first,id->new ConcurrentHashMap<>()).put(second,until);pvpLinks.computeIfAbsent(second,id->new ConcurrentHashMap<>()).put(first,until);}
     private long combatRemaining(UUID player,long now){Map<UUID,Long> opponents=pvpLinks.get(player);if(opponents==null)return 0;opponents.entrySet().removeIf(entry->entry.getValue()<=now);if(opponents.isEmpty()){pvpLinks.remove(player);return 0;}long latest=opponents.values().stream().mapToLong(Long::longValue).max().orElse(now);return Math.max(1,(latest-now+999)/1000);}
+    void clearCombat(Player player){clearCombat(player.getUniqueId());}
     private void clearCombat(UUID player){pvpLinks.remove(player);for(var entry:pvpLinks.entrySet())entry.getValue().remove(player);pvpLinks.entrySet().removeIf(entry->entry.getValue().isEmpty());}
     boolean combatSelfTest(){long now=System.currentTimeMillis();UUID a=UUID.randomUUID(),b=UUID.randomUUID(),c=UUID.randomUUID();link(a,b,now+60000);link(a,c,now+60000);clearCombat(b);boolean partial=combatRemaining(a,now)>0&&combatRemaining(b,now)==0;clearCombat(c);boolean cleared=combatRemaining(a,now)==0;clearCombat(a);return partial&&cleared;}
 

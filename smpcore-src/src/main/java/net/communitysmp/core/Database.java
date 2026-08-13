@@ -710,6 +710,19 @@ final class Database implements AutoCloseable {
     synchronized void arenaEscrowClear(String player){update("DELETE FROM arena_escrow WHERE player=?",player);}
     synchronized void arenaWagerAdd(String player,String backed,double amount){update("INSERT INTO arena_wagers(player,backed,amount) VALUES(?,?,?)",player,backed,amount);}
     synchronized void arenaWagersClear(){update("DELETE FROM arena_wagers",new Object[0]);}
+    synchronized void arenaWagersClearFor(String a,String b){update("DELETE FROM arena_wagers WHERE backed=? OR backed=?",a,b);}
+    /** On boot, any escrow or wagers still present belong to a match a restart interrupted -- refund and
+     *  clear them. A clean shutdown has already refunded live matches, so this finds nothing then. */
+    synchronized void arenaEscrowRefundAll(java.util.function.BiConsumer<String,Double> refund){
+        for(String[] row:list("SELECT player,amount FROM arena_escrow",rs->new String[]{rs.getString(1),String.valueOf(rs.getDouble(2))}))
+            if(Double.parseDouble(row[1])>0)refund.accept(row[0],Double.parseDouble(row[1]));
+        update("DELETE FROM arena_escrow",new Object[0]);
+    }
+    synchronized void arenaWagersRefundAll(java.util.function.BiConsumer<String,Double> refund){
+        for(String[] row:list("SELECT player,amount FROM arena_wagers",rs->new String[]{rs.getString(1),String.valueOf(rs.getDouble(2))}))
+            if(Double.parseDouble(row[1])>0)refund.accept(row[0],Double.parseDouble(row[1]));
+        update("DELETE FROM arena_wagers",new Object[0]);
+    }
 
     record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status,int notified,int notifiedEnd,int hidden){}
     private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status,notified,notified_end,hidden";

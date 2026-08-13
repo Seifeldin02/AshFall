@@ -211,6 +211,9 @@ auctions:
   minimum-price: 10
 
 bank:
+  # Central Bank income: this much is minted into the bank for every emerald a completed player->villager
+  # trade actually consumes (after reputation discount and demand). Player gets nothing.
+  villager-trade-income-per-emerald: 100
   overdue-high-value-threshold: 25000
   shop:
     nonsellable-margin-percent: 10
@@ -458,6 +461,10 @@ arena:
   world: ashfall_arena
   # How long a disconnected duellist has to come back before forfeiting the round.
   reconnect-grace-seconds: 45
+  # How many duels can run at once, each in its own isolated arena slot.
+  max-concurrent-duels: 6
+  # Cooldown between challenges, like a trade request, so invites cannot be spammed.
+  challenge-cooldown-seconds: 15
 
 orders:
   # Native buy orders. Escrow is taken from the buyer at creation and released per delivered unit; every

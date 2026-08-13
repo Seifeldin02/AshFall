@@ -57,6 +57,10 @@ final class ShopService {
 
     /** What the shop currently owns, and can therefore sell. Luxuries are minted by the server rather than
      *  bought from players, so they are not stock-limited. */
+    /** Live economy references used by other systems (Task Master reward valuation). */
+    double luxuryBuyValue(Material material){Price p=prices.get(material);return p!=null&&p.luxury()?p.buy():0;}
+    double sellValue(Material material){Price p=prices.get(material);return p!=null&&!p.luxury()&&p.sell()>=0?p.sell():0;}
+    double buyPrice(Material material){Price p=prices.get(material);return p==null?0:p.buy();}
     boolean stockLimited(Material material){Price price=prices.get(material);return price!=null&&!price.luxury();}
     int stock(Material material){return stockLimited(material)?db.shopStock(material.name()):Integer.MAX_VALUE;}
     boolean inStock(Material material,int amount){return !stockLimited(material)||db.shopStock(material.name())>=amount;}
