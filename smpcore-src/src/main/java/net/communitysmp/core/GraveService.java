@@ -101,6 +101,9 @@ final class GraveService implements Listener {
     }
 
     boolean create(Player owner,List<ItemStack> drops,Location location){
+        /** Arena duels never leave a grave -- deaths there are intercepted, but guard here too so nothing
+         *  can ever drop a grave (or a grave compass) inside the duel world. */
+        if(plugin.arena()!=null&&plugin.arena().isArenaWorld(owner.getWorld()))return false;
         List<ItemStack> items=drops.stream().filter(Objects::nonNull).filter(item->!item.getType().isAir()&&item.getAmount()>0&&!isCompass(item)).map(ItemStack::clone).toList();
         drops.removeIf(this::isCompass);if(items.isEmpty())return false;
         location=findSafeGraveLocation(location);

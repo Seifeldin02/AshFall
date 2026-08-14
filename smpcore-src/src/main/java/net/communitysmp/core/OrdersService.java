@@ -280,24 +280,25 @@ final class OrdersService implements Listener {
         List<Database.OrderRow> rows = db.ordersActive(search);
         Inventory inv = open(player, Screen.PUBLIC, page, search, 0, "Orders • Buying", 54);
         paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, true, player)));
-        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        for (int slot = 45; slot < 54; slot++) inv.setItem(slot, filler());
         inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Showing everything" : "Showing: " + search, "Click to search")));
-        inv.setItem(46, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order")));
-        inv.setItem(47, CoreUtil.named(Material.CHEST, "Your orders", List.of("Active orders and history")));
-        inv.setItem(48, CoreUtil.named(Material.ENDER_CHEST, "Collect stash", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting")));
-        inv.setItem(49, CoreUtil.named(Material.PAPER, "Page " + page, List.of(rows.size() + " open order(s)")));
-        navigation(inv, page, rows.size());
+        inv.setItem(47, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order")));
+        inv.setItem(49, CoreUtil.named(Material.CHEST, "Your orders", List.of("Active orders and history")));
+        inv.setItem(51, CoreUtil.named(Material.ENDER_CHEST, "Claim deliveries", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting")));
+        inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(rows.size() + " open order(s)")));
+        pageNav(inv, page, rows.size());
         player.openInventory(inv);
     }
 
     void openMine(Player player, int page) {
-        List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player)).stream().filter(r -> r.status().equals("ACTIVE")).toList();
+        List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player));
         Inventory inv = open(player, Screen.MINE, page, null, 0, "Orders • Yours", 54);
         paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false, player)));
         for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
-        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Marketplace")));
-        inv.setItem(49, CoreUtil.named(Material.PAPER, "Your active orders", List.of(rows.size() + " active", "Click one to cancel and refund")));
-        navigation(inv, page, rows.size());
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Orders")));
+        inv.setItem(53, CoreUtil.named(Material.PAPER, "Your orders", List.of(rows.size() + " order(s)", "Active: cancel & refund", "Finished: click to hide")));
+        pageNav(inv, page, rows.size());
         player.openInventory(inv);
     }
 
@@ -336,9 +337,16 @@ final class OrdersService implements Listener {
         player.openInventory(holder.inv);
     }
 
-    void openPick(Player player, int page, String search) {
-        List<String> keys = filtered(search);
-        Inventory inv = open(player, Screen.PICK, page, search, 0, "Orders • Choose an item", 54);
+    void openPick(Player player, int page, String search) { openPick(player, page, search, null); }
+
+    /** The create picker: EVERY orderable item by default. Category is an optional FILTER (cycled with the
+     *  filter button), not a separate screen -- clearing it (All) shows the whole catalogue again. */
+    void openPick(Player player, int page, String search, String catName) {
+        List<String> keys = catName == null ? filtered(search) : inCategory(Cat.valueOf(catName), search);
+        Holder holder = new Holder(Screen.PICK, page, search, 0);
+        holder.category = catName;
+        holder.inv = plugin.getServer().createInventory(holder, 54,
+                Component.text("Order \u2022 Choose an item", NamedTextColor.DARK_AQUA));
         int from = (page - 1) * 45;
         for (int i = 0; i < 45 && from + i < keys.size(); i++) {
             String key = keys.get(from + i);
@@ -346,16 +354,30 @@ final class OrdersService implements Listener {
             if (icon == null) continue;
             ItemMeta meta = icon.getItemMeta();
             meta.displayName(Component.text(display(key), NamedTextColor.GOLD));
-            meta.lore(List.of(Component.text(key, NamedTextColor.DARK_GRAY),
-                    Component.text("Click to order this", NamedTextColor.GRAY)));
+            meta.lore(List.of(Component.text("Click to order this", NamedTextColor.GRAY)));
             icon.setItemMeta(meta);
-            inv.setItem(i, icon);
+            holder.inv.setItem(i, icon);
         }
-        inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Click to search" : "Showing: " + search)));
-        inv.setItem(49, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
-        inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(keys.size() + " items")));
-        navigation(inv, page, keys.size());
-        player.openInventory(inv);
+        for (int slot = 45; slot < 54; slot++) holder.inv.setItem(slot, filler());
+        holder.inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Click to search" : "Showing: " + search)));
+        holder.inv.setItem(47, CoreUtil.named(Material.HOPPER, "Filter: " + (catName == null ? "All items" : Cat.valueOf(catName).label), List.of("Click to cycle category filter")));
+        holder.inv.setItem(49, CoreUtil.named(Material.ARROW, "Back", List.of("Orders")));
+        holder.inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(keys.size() + " item(s)")));
+        pageNav(holder.inv, page, keys.size());
+        player.openInventory(holder.inv);
+    }
+
+    private String nextCategory(String current) {
+        Cat[] cats = Cat.values();
+        if (current == null) return cats[0].name();
+        for (int i = 0; i < cats.length; i++) if (cats[i].name().equals(current)) return i + 1 < cats.length ? cats[i + 1].name() : null;
+        return null;
+    }
+
+    /** Pagination arrows at 46 (prev) / 52 (next), keeping them clear of the spaced action buttons. */
+    private void pageNav(Inventory inv, int page, int total) {
+        if (page > 1) inv.setItem(46, CoreUtil.named(Material.SPECTRAL_ARROW, "Previous page", List.of()));
+        if (page * 45 < total) inv.setItem(52, CoreUtil.named(Material.SPECTRAL_ARROW, "Next page", List.of()));
     }
 
     private List<String> filtered(String search) {
@@ -573,45 +595,48 @@ final class OrdersService implements Listener {
         if (slot < 0 || slot >= event.getInventory().getSize()) return;
         ItemStack clicked = event.getCurrentItem();
 
-        /** Marketplace hub. */
-        if (holder.screen == Screen.HUB) {
-            switch (slot) {
-                case 10 -> openPublic(player);
-                case 11 -> openCategories(player);
-                case 13 -> openMine(player, 1);
-                case 15 -> openStash(player);
-                case 16 -> openHistory(player, 1);
-                default -> { }
+        switch (holder.screen) {
+            case PUBLIC -> {
+                switch (slot) {
+                    case 45 -> { askSearch(player, holder); return; }
+                    case 47 -> { openPick(player, 1, null); return; }
+                    case 49 -> { openMine(player, 1); return; }
+                    case 51 -> { openStash(player); return; }
+                    case 46 -> { openPublic(player, Math.max(1, holder.page - 1), holder.search); return; }
+                    case 52 -> { openPublic(player, holder.page + 1, holder.search); return; }
+                    default -> { }
+                }
             }
-            return;
+            case PICK -> {
+                switch (slot) {
+                    case 45 -> { askSearch(player, holder); return; }
+                    case 47 -> { openPick(player, 1, holder.search, nextCategory(holder.category)); return; }
+                    case 49 -> { openPublic(player); return; }
+                    case 46 -> { openPick(player, Math.max(1, holder.page - 1), holder.search, holder.category); return; }
+                    case 52 -> { openPick(player, holder.page + 1, holder.search, holder.category); return; }
+                    default -> { }
+                }
+                if (slot < 45) {
+                    if (clicked == null || clicked.getType().isAir()) return;
+                    List<String> keys = holder.category == null ? filtered(holder.search) : inCategory(Cat.valueOf(holder.category), holder.search);
+                    int index = (holder.page - 1) * 45 + slot;
+                    if (index < keys.size()) beginDraft(player, keys.get(index));
+                }
+                return;
+            }
+            case STASH -> {
+                if (slot == 45) { openPublic(player); return; }
+                if (slot == 49) { collect(player); return; }
+            }
+            case MINE, HISTORY -> {
+                if (slot == 45) { openPublic(player); return; }
+                if (slot == 46) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
+                if (slot == 52) { reopen(player, holder, holder.page + 1); return; }
+            }
+            default -> { }
         }
-        /** Category picker: a category icon opens its items; 40 is Back to the hub. */
-        if (holder.screen == Screen.CATEGORY) {
-            if (slot == 40) { openHub(player); return; }
-            String name = plainName(clicked);
-            if (name != null) for (Cat cat : Cat.values()) if (cat.label.equals(name)) { openCategoryItems(player, cat, 1, null); return; }
-            return;
-        }
-
-        if (slot == 45 && (holder.screen == Screen.PUBLIC || holder.screen == Screen.PICK)) { askSearch(player, holder); return; }
-        if (slot == 46 && holder.screen == Screen.PUBLIC) { openCategories(player); return; }
-        if (slot == 47 && holder.screen == Screen.PUBLIC) { openMine(player, 1); return; }
-        if (slot == 48 && holder.screen == Screen.PUBLIC) { openStash(player); return; }
-        if (slot == 49 && holder.screen == Screen.STASH) { collect(player); return; }
-        if (slot == 45 && (holder.screen == Screen.MINE || holder.screen == Screen.STASH || holder.screen == Screen.HISTORY)) { openHub(player); return; }
-        if (slot == 49 && holder.screen == Screen.PICK) { openCategories(player); return; }
-        if (slot == 50) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
-        if (slot == 51) { reopen(player, holder, holder.page + 1); return; }
         if (slot >= 45) return;
-
         if (clicked == null || clicked.getType().isAir()) return;
-        if (holder.screen == Screen.PICK) {
-            List<String> keys = holder.category == null ? filtered(holder.search) : inCategory(Cat.valueOf(holder.category), holder.search);
-            int index = (holder.page - 1) * 45 + slot;
-            if (index >= keys.size()) return;
-            beginDraft(player, keys.get(index));
-            return;
-        }
         Long id = clicked.hasItemMeta() ? clicked.getItemMeta().getPersistentDataContainer()
                 .get(new NamespacedKey(plugin, "order_id"), org.bukkit.persistence.PersistentDataType.LONG) : null;
         if (id == null) return;
@@ -643,7 +668,7 @@ final class OrdersService implements Listener {
             case PUBLIC -> openPublic(player, page, holder.search);
             case MINE -> openMine(player, page);
             case HISTORY -> openHistory(player, page);
-            case PICK -> { if (holder.category != null) openCategoryItems(player, Cat.valueOf(holder.category), page, holder.search); else openPick(player, page, holder.search); }
+            case PICK -> openPick(player, page, holder.search, holder.category);
             default -> { }
         }
     }

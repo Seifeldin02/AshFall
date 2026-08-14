@@ -327,6 +327,43 @@ IS on the server, so pasting a supplied .schem per slot is straightforward -- th
 file itself. Did NOT ship another self-made arena this round per the owner's explicit instruction. Unblock:
 owner supplies a .schem (or a direct URL) and it is pasted into each slot with per-round reset.
 
+
+## Session: 2026-08-14 (part 6) — orders revert, netherite kits, duel fixes
+
+### Orders reverted to the simple two-screen flow
+/orders opens the browse/fulfil page directly; /order opens the item picker showing ALL items directly. The
+marketplace hub is gone from the flow. Category is now an optional FILTER on the picker (cycle button,
+default All), not a mandatory category screen. The only real gripe -- the bottom action buttons bunched to
+the left -- is fixed: they are spaced across 45/47/49/51/53 with pagination at 46/52. Delivery basket,
+claim/stash, history-hide and Back-to-parent all retained.
+
+### Netherite duel kits (owner-specified layouts)
+All four kits rebuilt to netherite tier with explicit hotbar layouts and splash potions:
+- Elytra Spear: Netherite Spear (Lunge + Sharp V + Unb III), rockets, ender pearls, gapples, a spare
+  netherite chestplate to hotswap, splash Healing II, water bucket; elytra chest, Totem offhand; backups.
+  (Reinstated the elytra kit as requested, now with the REAL Netherite Spear.)
+- Mace: Mace (Density V, Wind Burst III, Sharp V, Unb III), 64 wind charges, gapples, pearls, 4x splash
+  Healing II, water bucket; netherite armour, shield offhand; backups.
+- Sword+Shield: Netherite Sword (Sharp V, Fire Aspect II), Bow (Power V), Crossbow, gapples, splash
+  Healing/Swiftness/Fire-Res, water bucket; shield offhand; arrows + backup shields.
+- Axe: Netherite Axe + backup Netherite Sword, crossbow, cooked beef, splash Healing/Swiftness, water
+  bucket; shield offhand; backup shields.
+Both duellists get identical copies (self-test parity holds).
+
+### Duel fixes
+- Friendly-fire spurious message: two guildmates duelling triggered the faction PvP guard, which printed
+  "Friendly PvP is disabled" while the arena override let the hit land. Duel opponents now bypass the
+  faction/spawn PvP checks entirely -- no message, damage as intended.
+- PvP-lock actionbar suppressed for duel opponents (no "PvP teleport lock" above the hotbar mid-duel).
+- Graves hard-disabled in the arena world (guard in GraveService.create), so no grave or grave compass can
+  ever appear in a duel.
+- Setup GUI shows the chosen kit prominently (banner at the top + SELECTED tag on the picked kit).
+
+### Still to do (the round-flow redesign)
+Ready-gate rounds (both frozen on a block until each clicks "I am ready", auto-forfeit on disconnect,
+betting window during the gate, reset+heal+ready between BO3 rounds) and per-round spectator betting are the
+remaining large piece.
+
 ---
 
 ## Standing lessons

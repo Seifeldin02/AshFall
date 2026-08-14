@@ -236,58 +236,96 @@ final class ArenaService implements Listener {
     private Location gallery(Duel duel) { return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 4, HALF + 3.5, 180f, 0f); }
 
     private boolean inArena(Player player) { return arena != null && player.getWorld().equals(arena); }
+    boolean isArenaWorld(org.bukkit.World world) { return arena != null && arena.equals(world); }
+    /** True when a and b are the two duellists of the SAME live match -- used to let their hits through the
+     *  faction/spawn PvP guards without the spurious "friendly PvP disabled" message, and to suppress the
+     *  PvP-lock actionbar for them. */
+    boolean areDuelOpponents(Player a, Player b) {
+        Duel d = byPlayer.get(CoreUtil.id(a));
+        return d != null && d.phase == Phase.LIVE && d.has(CoreUtil.id(a)) && d.has(CoreUtil.id(b));
+    }
 
     // ------------------------------------------------------------------ kits
     /** The full standardized kit as one list (armour, then weapon, then offhand if any, then consumables).
      *  Used for the self-test's parity check and for reporting exactly what each side receives. */
+    /** The full kit (armour, offhand, hotbar, then inventory extras) -- for the parity self-test and for
+     *  reporting exactly what each side receives. Both duellists always get identical copies. */
     List<ItemStack> kitContents(Kit kit) {
         List<ItemStack> all = new ArrayList<>(kitArmour(kit));
-        all.add(kitWeapon(kit));
         ItemStack offhand = kitOffhand(kit);
         if (offhand != null) all.add(offhand);
-        all.addAll(kitConsumables(kit));
+        all.addAll(kitHotbar(kit));
+        all.addAll(kitExtra(kit));
         return all;
     }
 
-    /** Exactly four pieces, helmet-chest-legs-boots. The Spear wears an elytra as its chest, so it does NOT
-     *  also carry a diamond chestplate -- the previous code added one and then silently overwrote it. */
+    /** Helmet, chest, legs, boots. Netherite tier. The Spear wears an ELYTRA as its chest (it also carries a
+     *  spare netherite chestplate in the hotbar to swap into if grounded). */
     private List<ItemStack> kitArmour(Kit kit) {
-        List<ItemStack> armour = new ArrayList<>();
-        armour.add(armour(Material.DIAMOND_HELMET));
-        armour.add(armour(Material.DIAMOND_CHESTPLATE));
-        armour.add(armour(Material.DIAMOND_LEGGINGS));
-        armour.add(armour(Material.DIAMOND_BOOTS));
-        return armour;
+        List<ItemStack> a = new ArrayList<>();
+        a.add(armour(Material.NETHERITE_HELMET));
+        a.add(kit == Kit.SPEAR ? enchanted(Material.ELYTRA, Map.of(Enchantment.UNBREAKING, 3)) : armour(Material.NETHERITE_CHESTPLATE));
+        a.add(armour(Material.NETHERITE_LEGGINGS));
+        a.add(armour(Material.NETHERITE_BOOTS));
+        return a;
     }
 
-    private ItemStack kitWeapon(Kit kit) {
+    private ItemStack kitOffhand(Kit kit) {
         return switch (kit) {
-            /** Mace with Density (slam damage) AND Wind Burst (self-launch on hit) -- the modern mace combo
-             *  that makes the wind-charge-up-then-slam loop work. */
-            case MACE -> enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.WIND_BURST, 3, Enchantment.UNBREAKING, 3));
-            case SWORD -> enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.FIRE_ASPECT, 2, Enchantment.UNBREAKING, 3));
-            case AXE -> enchanted(Material.DIAMOND_AXE, Map.of(Enchantment.SHARPNESS, 5, Enchantment.EFFICIENCY, 5, Enchantment.UNBREAKING, 3));
-            /** The real vanilla spear -- jab/charge melee with the spear-exclusive Lunge as its gap-closer.
-             *  Lunge is used at the version's max level. No elytra: Lunge does not work while elytra-flying,
-             *  so an elytra+rockets loadout would break the kit's own mechanic. Sharpness for its damage. */
-            case SPEAR -> enchanted(Material.DIAMOND_SPEAR, Map.of(Enchantment.SHARPNESS, 5, Enchantment.LUNGE, Math.max(1, Enchantment.LUNGE.getMaxLevel()), Enchantment.UNBREAKING, 3));
+            case MACE, SWORD, AXE -> enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3));
+            case SPEAR -> new ItemStack(Material.TOTEM_OF_UNDYING);
         };
     }
 
-    private ItemStack kitOffhand(Kit kit) { return kit == Kit.SWORD ? enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)) : null; }
-
-    private List<ItemStack> kitConsumables(Kit kit) {
+    /** Hotbar, slots 0-8, laid out as the researched modern kits. */
+    private List<ItemStack> kitHotbar(Kit kit) {
         return switch (kit) {
-            /** Mace is a build-and-slam kit: enough wind charges to keep launching, and two stacks of blocks
-             *  to tower up for the killing slam. */
-            case MACE -> List.of(new ItemStack(Material.WIND_CHARGE, 64), new ItemStack(Material.COBBLESTONE, 64),
-                    new ItemStack(Material.COBBLESTONE, 64), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
-            case SWORD -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
-            case AXE -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.COBWEB, 8));
-            /** Spear closes distance with Lunge rather than rockets, so it carries the same heal loadout as
-             *  the sword and fights on the ground with its reach advantage. */
-            case SPEAR -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
+            case MACE -> List.of(
+                enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.WIND_BURST, 3, Enchantment.SHARPNESS, 5, Enchantment.UNBREAKING, 3)),
+                new ItemStack(Material.WIND_CHARGE, 64), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.ENDER_PEARL, 16),
+                splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
+                splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
+                new ItemStack(Material.WATER_BUCKET));
+            case SWORD -> List.of(
+                enchanted(Material.NETHERITE_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.FIRE_ASPECT, 2, Enchantment.UNBREAKING, 3)),
+                enchanted(Material.BOW, Map.of(Enchantment.POWER, 5)), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.CROSSBOW),
+                splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
+                splash(org.bukkit.potion.PotionType.STRONG_SWIFTNESS, 1), splash(org.bukkit.potion.PotionType.FIRE_RESISTANCE, 1),
+                new ItemStack(Material.WATER_BUCKET));
+            case AXE -> List.of(
+                enchanted(Material.NETHERITE_AXE, Map.of(Enchantment.SHARPNESS, 5, Enchantment.UNBREAKING, 3)),
+                enchanted(Material.NETHERITE_SWORD, Map.of(Enchantment.SHARPNESS, 5)), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.COOKED_BEEF, 16),
+                new ItemStack(Material.CROSSBOW), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
+                splash(org.bukkit.potion.PotionType.STRONG_SWIFTNESS, 1), new ItemStack(Material.WATER_BUCKET));
+            /** Elytra Spear: Netherite Spear (Lunge for the speed bursts) with rockets to stay airborne,
+             *  pearls to dodge dives, gapples for the hunger drain, a spare chestplate to hotswap if grounded,
+             *  splash heals and a water bucket. */
+            case SPEAR -> List.of(
+                enchanted(Material.NETHERITE_SPEAR, Map.of(Enchantment.LUNGE, Math.max(1, Enchantment.LUNGE.getMaxLevel()), Enchantment.SHARPNESS, 5, Enchantment.UNBREAKING, 3)),
+                new ItemStack(Material.FIREWORK_ROCKET, 64), new ItemStack(Material.ENDER_PEARL, 16), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2),
+                armour(Material.NETHERITE_CHESTPLATE), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
+                new ItemStack(Material.WATER_BUCKET), new ItemStack(Material.GOLDEN_APPLE, 16));
         };
+    }
+
+    /** Inventory rows (slots 9+): backups. */
+    private List<ItemStack> kitExtra(Kit kit) {
+        return switch (kit) {
+            case MACE -> List.of(new ItemStack(Material.WIND_CHARGE, 64), new ItemStack(Material.GOLDEN_APPLE, 16), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 8));
+            case SWORD -> List.of(new ItemStack(Material.ARROW, 64), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4),
+                enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)), enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)));
+            case AXE -> List.of(enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)), enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)),
+                enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4), new ItemStack(Material.ARROW, 32));
+            case SPEAR -> List.of(new ItemStack(Material.FIREWORK_ROCKET, 64), new ItemStack(Material.TOTEM_OF_UNDYING, 2), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4));
+        };
+    }
+
+    private ItemStack splash(org.bukkit.potion.PotionType type, int count) {
+        ItemStack item = new ItemStack(Material.SPLASH_POTION, count);
+        org.bukkit.inventory.meta.PotionMeta meta = (org.bukkit.inventory.meta.PotionMeta) item.getItemMeta();
+        meta.setBasePotionType(type);
+        item.setItemMeta(meta);
+        return item;
     }
 
     private ItemStack armour(Material material) { return enchanted(material, Map.of(Enchantment.PROTECTION, 4, Enchantment.UNBREAKING, 3)); }
@@ -311,10 +349,11 @@ final class ArenaService implements Listener {
         inv.setChestplate(armour.get(1));
         inv.setLeggings(armour.get(2));
         inv.setBoots(armour.get(3));
-        inv.setItem(0, kitWeapon(kit));
         ItemStack offhand = kitOffhand(kit);
         if (offhand != null) inv.setItemInOffHand(offhand);
-        for (ItemStack consumable : kitConsumables(kit)) inv.addItem(consumable);
+        List<ItemStack> hotbar = kitHotbar(kit);
+        for (int i = 0; i < hotbar.size() && i < 9; i++) inv.setItem(i, hotbar.get(i));
+        for (ItemStack extra : kitExtra(kit)) inv.addItem(extra);
         player.setGameMode(GameMode.SURVIVAL);
         player.setAllowFlight(false);
         player.setFlying(false);
@@ -940,11 +979,13 @@ final class ArenaService implements Listener {
         if (duel == null) return;
         Menu menu = new Menu("setup", duel.id);
         menu.inv = plugin.getServer().createInventory(menu, 45, Component.text("Duel setup", NamedTextColor.DARK_AQUA));
+        /** A clear banner up top showing the currently selected kit, so it is obvious at a glance. */
+        menu.inv.setItem(4, icon(duel.kit.icon(), "Kit: " + duel.kit.label(), List.of(duel.kit.blurb(), "Best of " + duel.bestOf)));
         int[] kitSlots = {10, 12, 14, 16};
         Kit[] kits = Kit.values();
         for (int i = 0; i < kits.length; i++) {
             boolean sel = duel.kit == kits[i];
-            menu.inv.setItem(kitSlots[i], icon(kits[i].icon(), (sel ? "✔ " : "") + kits[i].label(), List.of(kits[i].blurb(), sel ? "Selected" : "Click to pick")));
+            menu.inv.setItem(kitSlots[i], icon(kits[i].icon(), (sel ? "\u2714 SELECTED \u2014 " : "") + kits[i].label(), List.of(kits[i].blurb(), sel ? "This kit is selected" : "Click to pick this kit")));
         }
         menu.inv.setItem(20, icon(duel.bestOf == 1 ? Material.LIME_DYE : Material.GRAY_DYE, "Best of 1", List.of(duel.bestOf == 1 ? "Selected" : "Click")));
         menu.inv.setItem(24, icon(duel.bestOf == 3 ? Material.LIME_DYE : Material.GRAY_DYE, "Best of 3", List.of(duel.bestOf == 3 ? "Selected" : "Click")));
