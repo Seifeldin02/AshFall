@@ -92,7 +92,7 @@ final class ArenaService implements Listener {
         MACE("Mace", Material.MACE, "Wind charges for height, mace to land it."),
         SWORD("Sword + Shield", Material.DIAMOND_SWORD, "Sharpness V and a shield to time."),
         AXE("Axe", Material.DIAMOND_AXE, "Shield-breaker. Slow, brutal, and cobwebs to trap."),
-        SPEAR("Spear", Material.ELYTRA, "Elytra and rockets. Hit and run.");
+        SPEAR("Spear", Material.DIAMOND_SPEAR, "Reach and Lunge. Charge in, jab, and keep your distance.");
         private final String label, blurb;
         private final Material icon;
         Kit(String label, Material icon, String blurb) { this.label = label; this.icon = icon; this.blurb = blurb; }
@@ -254,7 +254,7 @@ final class ArenaService implements Listener {
     private List<ItemStack> kitArmour(Kit kit) {
         List<ItemStack> armour = new ArrayList<>();
         armour.add(armour(Material.DIAMOND_HELMET));
-        armour.add(kit == Kit.SPEAR ? enchanted(Material.ELYTRA, Map.of(Enchantment.UNBREAKING, 3)) : armour(Material.DIAMOND_CHESTPLATE));
+        armour.add(armour(Material.DIAMOND_CHESTPLATE));
         armour.add(armour(Material.DIAMOND_LEGGINGS));
         armour.add(armour(Material.DIAMOND_BOOTS));
         return armour;
@@ -267,9 +267,10 @@ final class ArenaService implements Listener {
             case MACE -> enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.WIND_BURST, 3, Enchantment.UNBREAKING, 3));
             case SWORD -> enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.FIRE_ASPECT, 2, Enchantment.UNBREAKING, 3));
             case AXE -> enchanted(Material.DIAMOND_AXE, Map.of(Enchantment.SHARPNESS, 5, Enchantment.EFFICIENCY, 5, Enchantment.UNBREAKING, 3));
-            /** The spear IS a trident: Loyalty returns it when thrown, Impaling is its damage, and it doubles
-             *  as the melee poke. A diamond sword here was simply wrong. */
-            case SPEAR -> enchanted(Material.TRIDENT, Map.of(Enchantment.LOYALTY, 3, Enchantment.IMPALING, 5, Enchantment.UNBREAKING, 3));
+            /** The real vanilla spear -- jab/charge melee with the spear-exclusive Lunge as its gap-closer.
+             *  Lunge is used at the version's max level. No elytra: Lunge does not work while elytra-flying,
+             *  so an elytra+rockets loadout would break the kit's own mechanic. Sharpness for its damage. */
+            case SPEAR -> enchanted(Material.DIAMOND_SPEAR, Map.of(Enchantment.SHARPNESS, 5, Enchantment.LUNGE, Math.max(1, Enchantment.LUNGE.getMaxLevel()), Enchantment.UNBREAKING, 3));
         };
     }
 
@@ -283,8 +284,9 @@ final class ArenaService implements Listener {
                     new ItemStack(Material.COBBLESTONE, 64), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
             case SWORD -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
             case AXE -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.COBWEB, 8));
-            /** Spear lives on rockets: a full stack to stay airborne, plus a light heal loadout. */
-            case SPEAR -> List.of(new ItemStack(Material.FIREWORK_ROCKET, 64), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1), new ItemStack(Material.GOLDEN_APPLE, 8));
+            /** Spear closes distance with Lunge rather than rockets, so it carries the same heal loadout as
+             *  the sword and fights on the ground with its reach advantage. */
+            case SPEAR -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
         };
     }
 

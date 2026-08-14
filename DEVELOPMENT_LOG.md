@@ -309,6 +309,24 @@ glass spectator ring, open sky for Mace/elytra) stands as the current arena. An 
 not integrated: a specific arena schematic/structure could not be safely sourced and content-vetted in this
 environment. The slot system is ready to stamp a supplied .nbt/.schem per slot on request.
 
+
+## Session: 2026-08-14 (part 5) — real Spear kit; map honesty
+
+### Spear kit: the real vanilla Spear
+Our Paper 26.2 build genuinely has spear items (WOODEN_SPEAR..NETHERITE_SPEAR) and the spear-exclusive
+Enchantment.LUNGE. The Spear kit now uses DIAMOND_SPEAR (Sharpness V, Lunge at max level, Unbreaking III),
+NOT a Trident. The elytra + rockets were removed because Lunge does not work while elytra-flying, which would
+break the kit's own mechanic -- it is now a ground reach/lunge bruiser with a diamond chestplate and the
+same heal loadout as the sword. Lunge level is clamped to >=1 for safety.
+
+### Arena / map -- honest status
+A real downloaded designed map was NOT installed. In this environment I could not source a specific,
+verified, license-clear arena schematic that fits the per-slot clone model: Modrinth 'maps' are full world
+zips (not slot schematics and not content-verifiable), and I have no guaranteed arena-schematic URL. WorldEdit
+IS on the server, so pasting a supplied .schem per slot is straightforward -- the missing input is the arena
+file itself. Did NOT ship another self-made arena this round per the owner's explicit instruction. Unblock:
+owner supplies a .schem (or a direct URL) and it is pasted into each slot with per-round reset.
+
 ---
 
 ## Standing lessons
