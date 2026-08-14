@@ -812,7 +812,7 @@ final class BossEventService {
         if(eligible.isEmpty())raw.entrySet().stream().max(Map.Entry.comparingByValue()).ifPresent(entry->{Player player=find(entry.getKey());if(player!=null&&player.getWorld().equals(boss.getWorld())&&player.getLocation().distanceSquared(boss.getLocation())<=radiusSq)eligible.put(entry.getKey(),entry.getValue());});return eligible;
     }
     private void giveParticipationLoot(Player player,String encounter){List<String> configured=bosses.getStringList("boss-participation.loot."+encounter);for(String value:configured){String[] parts=value.split(":",2);Material material=Material.matchMaterial(parts[0]);if(material==null)continue;int amount=1;if(parts.length>1)try{amount=Math.max(1,Math.min(64,Integer.parseInt(parts[1])));}catch(NumberFormatException ignored){}CoreUtil.give(player,new ItemStack(material,amount));}}
-    private double friendlyPenalty(LivingEntity mob){if((mob instanceof Wolf||mob instanceof Cat||mob instanceof Parrot)&&(!(mob instanceof Tameable tame)||!tame.isTamed()))return 0;return bosses.getDouble("mob-penalties."+mob.getType().name(),0);}
+    private double friendlyPenalty(LivingEntity mob){return bosses.getDouble("mob-penalties."+mob.getType().name(),0);}
     private double farmFactor(Player p, EntityType type) { String key = CoreUtil.id(p) + ":" + type.name(); Deque<Long> queue = farmKills.computeIfAbsent(key, x -> new ArrayDeque<>()); long cutoff = System.currentTimeMillis() - plugin.getConfig().getLong("mob-money.anti-farm-window-minutes", 10) * 60000L; while (!queue.isEmpty() && queue.peekFirst() < cutoff) queue.removeFirst(); queue.addLast(System.currentTimeMillis()); double n=queue.size()*plugin.getConfig().getDouble("mob-money.farm-weights."+type.name(),1);int full=plugin.getConfig().getInt("mob-money.full-reward-kills",20),soft=plugin.getConfig().getInt("mob-money.soft-reward-kills",50),hard=plugin.getConfig().getInt("mob-money.hard-reward-kills",100);double softFloor=plugin.getConfig().getDouble("mob-money.soft-multiplier",.35),floor=plugin.getConfig().getDouble("mob-money.minimum-multiplier",.05);if(n<=full)return 1;if(n<=soft)return 1-(1-softFloor)*(n-full)/Math.max(1,soft-full);if(n<=hard)return softFloor-(softFloor-floor)*(n-soft)/Math.max(1,hard-soft);return floor; }
     private void rewardElite(EntityDeathEvent e, Player killer, String tier) {
         LivingEntity mob = e.getEntity(); boolean worldBoss = isWorldBossTier(tier); WorldBossKind bossKind = worldBoss ? kindFromTier(tier) : null;
@@ -990,9 +990,21 @@ final class BossEventService {
             if(loc==null||protectedEventLocation(loc))continue;
             if(standoff>0&&(plugin.spawnClaims().near(loc,(int)standoff)||factions.nearClaim(loc,(int)standoff)))continue;
             if(!openBossTerrain(loc))continue;
+            if(!flatBossBiome(loc))continue;
             return loc;
         }
         return null;
+    }
+    /** A randomly PLACED world boss may only land in a genuinely flat biome, so it never spawns wedged into a
+     *  mountainside/jungle where players cannot reach it. Only the random-placement path calls this -- an admin or
+     *  player who summons at an explicit location bypasses randomSafeBossSpawn entirely. Nether/End keep their own
+     *  terrain gate (openBossTerrain) since "flat overworld biome" is meaningless there. */
+    private static final java.util.Set<String> FLAT_BOSS_BIOMES = java.util.Set.of(
+        "plains","sunflower_plains","savanna","savanna_plateau","windswept_savanna","desert","snowy_plains","ice_spikes",
+        "meadow","beach","snowy_beach","stony_shore","swamp","mangrove_swamp","mushroom_fields");
+    private boolean flatBossBiome(Location loc){
+        if(loc.getWorld()==null||loc.getWorld().getEnvironment()!=org.bukkit.World.Environment.NORMAL)return true;
+        return FLAT_BOSS_BIOMES.contains(loc.getBlock().getBiome().getKey().getKey());
     }
     /** Solid ground underfoot plus continuous clear air above -- rejects caves and cramped pockets. */
     private boolean openBossTerrain(Location loc){

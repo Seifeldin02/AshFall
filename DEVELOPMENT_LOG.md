@@ -5,6 +5,44 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-08-14
+
+Branch `staging`. Staging-only; production NOT deployed.
+
+### Regression sweep (owner-reported)
+
+- **Boss chosen-summon price 2,000,000 → 1,500,000** (`merchants.boss-chosen-price`, config.yml + staging
+  on-disk config). Was silently bumped; reverted.
+- **`/shop` fully exempt from the universal command cooldown.** Added `/shop` to `commandExempt` in
+  `GameplayListener` so the duplicate-command guard AND the minimum-interval/violation rate limit both skip
+  every `/shop …` (notably `/shop sell`, `/shop sellall`, `/shop sellall chest`). This is the ONLY command
+  exempted for spam-rate reasons; all others keep the cooldown.
+- **Killing cats/dogs/parrots now always costs money.** `friendlyPenalty()` previously returned 0 for an
+  UNTAMED wolf/cat/parrot, so those fell through to the positive `mob-rewards` payout. Removed the tamed
+  gate: any wolf/cat/parrot now incurs its `mob-penalties.<TYPE>` charge (negative money) regardless of
+  tamed state. Tamed pets were already fined; wild ones were the leak.
+- **Randomly-placed world bosses restricted to flat biomes.** `randomSafeBossSpawn()` (reached ONLY when no
+  explicit location is supplied — i.e. natural/random placement; admin & player summons pass a location and
+  bypass it) now also requires `flatBossBiome(loc)`: overworld spawns must be plains/savanna/desert/
+  snowy_plains/meadow/beach/swamp/mushroom_fields etc. Nether/End keep their existing terrain gate only.
+
+### Verified already-correct (audited, no change needed)
+
+- **Effective HP ordering** Colossus (6300) > Ashen (~4980) > Cinder (~3580) — asserted by the existing
+  world-boss rebalance self-test.
+- **Boss reward split is HP%-share** — `splitReward` divides the pool by each participant's damage over the
+  summed participant damage (≈ boss HP), not by absolute damage.
+- **Damage-recap on the world-boss path** — `sendDamageRecap` already runs for the 3 custom world bosses in
+  `rewardElite`. It "works for vanilla but not custom" on PRODUCTION only because this fix (staging) has not
+  been promoted. No staging code bug.
+
+### Deploy
+
+Built green, swapped `plugins/SMPCore.jar` on staging (0 players online, no announce needed), relaunched via
+the conhost schtasks hatch — console is a real `cmd` window, SMPCore enabled with no errors.
+
+---
+
 ## Session: 2026-08-12 → 2026-08-13
 
 Branch `staging`. Production was updated once mid-session (commit `6cbb3e8`); everything after that is

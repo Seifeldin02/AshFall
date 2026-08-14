@@ -270,7 +270,7 @@ merchants:
   boss-sigil-count: 8
   boss-sigil-price: 250000
   boss-legendary-sigil-count: 2
-  boss-chosen-price: 2000000
+  boss-chosen-price: 1500000
   event-cooldowns-minutes:
     micro: 30
     major: 180
