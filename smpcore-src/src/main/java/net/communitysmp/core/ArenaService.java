@@ -29,6 +29,8 @@ import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.inventory.Inventory;
@@ -123,6 +125,12 @@ final class ArenaService implements Listener {
         /** True while a round's loss is being processed, so two near-simultaneous lethal hits or a
          *  disconnect racing a death cannot resolve the same round twice. Reset at each round start. */
         boolean resolving = false;
+        /** True while a round sits in its ready-gate: both duellists are at their corners, frozen and fully
+         *  re-equipped, and neither can be hurt until each has clicked Ready. The fight begins only when both
+         *  are ready. Spectators may place their bets during the gate. */
+        boolean gating = false;
+        /** Ids that have clicked Ready for the current round; cleared when each round's gate opens. */
+        final Set<String> roundReady = new HashSet<>();
         Duel(int id, int slot, String a, String b) { this.id = id; this.slot = slot; this.a = a; this.b = b; }
         boolean has(String id) { return id.equals(a) || id.equals(b); }
         String other(String id) { return id.equals(a) ? b : a; }
@@ -612,16 +620,95 @@ final class ArenaService implements Listener {
         beginRound(duel);
     }
 
+    /** Opens the round: clean the arena, teleport both duellists to their corners, fully re-equip and heal
+     *  them (equip() already tops health/food and clears effects), then FREEZE them behind a ready-gate. The
+     *  round does not begin until each has clicked Ready. Between rounds this runs again, so every round starts
+     *  from an identical clean, healed, ready-gated state. */
     private void beginRound(Duel duel) {
         Player one = a(duel), two = b(duel);
         if (one == null || two == null) { abortAndRefund(duel, "a duellist went offline"); return; }
         resetArena(duel);
         duel.resolving = false;
+        duel.gating = true;
+        duel.roundReady.clear();
         capture(one); capture(two);
         one.teleport(corner(duel, 0)); two.teleport(corner(duel, 1));
         equip(one, duel.kit); equip(two, duel.kit);
         int round = duel.rounds.get(duel.a) + duel.rounds.get(duel.b) + 1;
+        both(duel, "Round " + round + " — ready up when you are set. Spectators may bet now.");
+        openReady(one, duel); openReady(two, duel);
+        refreshSpectate(duel);
+    }
+
+    /** The ready-gate GUI: a Ready button plus a live view of both sides' ready state. */
+    private void openReady(Player player, Duel duel) {
+        if (player == null) return;
+        Menu menu = new Menu("ready", duel.id);
+        menu.inv = plugin.getServer().createInventory(menu, 27, Component.text("Ready up", NamedTextColor.DARK_AQUA));
+        for (int i = 0; i < 27; i++) menu.inv.setItem(i, filler());
+        String meId = CoreUtil.id(player), themId = duel.other(meId);
+        boolean meReady = duel.roundReady.contains(meId), themReady = duel.roundReady.contains(themId);
+        int round = duel.rounds.get(duel.a) + duel.rounds.get(duel.b) + 1;
+        String themName = meId.equals(duel.a) ? duel.bName : duel.aName;
+        menu.inv.setItem(4, icon(duel.kit.icon(), "Round " + round + " of best-of-" + duel.bestOf, List.of(
+                "Score " + duel.rounds.getOrDefault(duel.a, 0) + " - " + duel.rounds.getOrDefault(duel.b, 0),
+                "Kit " + duel.kit.label())));
+        menu.inv.setItem(13, icon(meReady ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE,
+                meReady ? "Ready — waiting for " + themName + "…" : "Click when you are ready", List.of(
+                "You: " + (meReady ? "READY" : "not ready"),
+                themName + ": " + (themReady ? "READY" : "not ready"),
+                "The round starts the instant you are both ready.")));
+        player.openInventory(menu.inv);
+    }
+
+    private void refreshReady(Duel duel) { if (duel.gating) { openReady(a(duel), duel); openReady(b(duel), duel); } }
+
+    /** Both sides are ready: drop the gate and start the fight. */
+    private void startFight(Duel duel) {
+        if (!duel.gating) return;
+        Player one = a(duel), two = b(duel);
+        if (one == null || two == null) { abortAndRefund(duel, "a duellist went offline"); return; }
+        duel.gating = false;
+        one.closeInventory(); two.closeInventory();
+        int round = duel.rounds.get(duel.a) + duel.rounds.get(duel.b) + 1;
         actionbar(one, "Round " + round + " — fight!"); actionbar(two, "Round " + round + " — fight!");
+        refreshSpectate(duel);
+    }
+
+    /** While gated, a duellist is held on their block (they may still look around) and cannot be hurt. */
+    @EventHandler(ignoreCancelled = true) public void freeze(PlayerMoveEvent event) {
+        Duel duel = duelOf(event.getPlayer());
+        if (duel == null || !duel.gating) return;
+        Location from = event.getFrom(), to = event.getTo();
+        if (to == null) return;
+        if (from.getBlockX() != to.getBlockX() || from.getBlockZ() != to.getBlockZ() || to.getY() > from.getY() + 0.02) {
+            Location held = from.clone(); held.setYaw(to.getYaw()); held.setPitch(to.getPitch());
+            event.setTo(held);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST) public void gateShield(EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof Player hurt)) return;
+        Duel duel = duelOf(hurt);
+        if (duel != null && duel.gating && inArena(hurt)) event.setCancelled(true);
+    }
+
+    /** A gated duellist cannot escape the ready-gate by closing it -- it reopens until they ready up (or the
+     *  fight starts / match ends). The one-tick delay and the "already showing ready" check keep this from
+     *  fighting the refresh openInventory calls. */
+    @EventHandler public void closeGate(InventoryCloseEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !menu.kind.equals("ready")) return;
+        if (!(event.getPlayer() instanceof Player player)) return;
+        String id = CoreUtil.id(player);
+        Duel duel = find(menu.duelId);
+        if (duel == null || !duel.gating || !duel.has(id) || duel.roundReady.contains(id)) return;
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!player.isOnline()) return;
+            Duel cur = byPlayer.get(id);
+            if (cur != null && cur.gating && !cur.roundReady.contains(id)
+                    && !(player.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m && m.kind.equals("ready")))
+                openReady(player, cur);
+        }, 2L);
     }
 
     /** The round is resolved by INTERCEPTING the killing blow, not by a real death. A duellist whose hit
@@ -632,7 +719,7 @@ final class ArenaService implements Listener {
     public void lethal(EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Player hurt)) return;
         Duel duel = duelOf(hurt);
-        if (duel == null || duel.phase != Phase.LIVE || !inArena(hurt)) return;
+        if (duel == null || duel.phase != Phase.LIVE || duel.gating || !inArena(hurt)) return;
         if (duel.resolving) { event.setCancelled(true); return; }
         if (hurt.getHealth() - event.getFinalDamage() > 0.0001) return;
         event.setCancelled(true);
@@ -820,7 +907,7 @@ final class ArenaService implements Listener {
         Player source = event.getDamager() instanceof Player p ? p
                 : event.getDamager() instanceof org.bukkit.entity.Projectile pr && pr.getShooter() instanceof Player sh ? sh : null;
         Duel duel = duelOf(hurt);
-        if (source != null && duel != null && duel.phase == Phase.LIVE && duel.has(CoreUtil.id(source)) && duel.has(CoreUtil.id(hurt))
+        if (source != null && duel != null && duel.phase == Phase.LIVE && !duel.gating && duel.has(CoreUtil.id(source)) && duel.has(CoreUtil.id(hurt))
                 && !source.equals(hurt)) {
             /** A real duel hit: override any faction/friendly-fire/PvP-lock cancellation. */
             event.setCancelled(false);
@@ -1087,6 +1174,15 @@ final class ArenaService implements Listener {
                     case 42 -> { if (spectators.containsKey(id)) leaveSpectator(player); else player.closeInventory(); }
                     case 44 -> { if (duel.phase == Phase.LIVE) enterSpectator(player, duel); openSpectate(player, menu.duelId); }
                     default -> { }
+                }
+            }
+            case "ready" -> {
+                Duel duel = find(menu.duelId);
+                if (duel == null || !duel.gating) { player.closeInventory(); return; }
+                if (slot == 13 && duel.has(CoreUtil.id(player))) {
+                    duel.roundReady.add(CoreUtil.id(player));
+                    if (duel.roundReady.contains(duel.a) && duel.roundReady.contains(duel.b)) startFight(duel);
+                    else { refreshReady(duel); actionbar(player, "Ready — waiting for your opponent."); }
                 }
             }
             default -> { }
