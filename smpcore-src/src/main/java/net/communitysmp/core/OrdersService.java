@@ -64,7 +64,7 @@ final class OrdersService implements Listener {
     private static final String VANILLA = "vanilla:", SPAWNER = "smpcore:spawner/", BOOK = "vanilla:ENCHANTED_BOOK/";
 
     /** Which screen an inventory belongs to, so one click handler can serve them all. */
-    private enum Screen { PUBLIC, MINE, PICK, CONFIRM, STASH, DELIVER }
+    private enum Screen { HUB, PUBLIC, MINE, HISTORY, CATEGORY, PICK, CONFIRM, STASH, DELIVER }
     /** Insertable area of the delivery screen: the top three rows, and nothing else. */
     private static final int DELIVER_SLOTS = 27;
 
@@ -78,6 +78,7 @@ final class OrdersService implements Listener {
          *  or item-moving can happen by accident. Cleared whenever the screen is repainted. */
         private long armedAt;
         private int armedSlot = -1;
+        private String category;
         private Holder(Screen screen, int page, String search, long orderId) {
             this.screen = screen; this.page = page; this.search = search; this.orderId = orderId;
         }
@@ -180,6 +181,82 @@ final class OrdersService implements Listener {
         return want != null && stack.isSimilar(want);
     }
 
+    /** Marketplace categories, so the create picker is organised instead of dumping the whole registry. */
+    enum Cat {
+        SPAWNERS("Spawners", Material.SPAWNER), BOOKS("Enchanted Books", Material.ENCHANTED_BOOK),
+        ORES("Ores & Minerals", Material.DIAMOND), COMBAT("Combat & Tools", Material.DIAMOND_SWORD),
+        FOOD("Food & Farming", Material.BREAD), REDSTONE("Redstone & Mechanisms", Material.REDSTONE),
+        BLOCKS("Blocks", Material.BRICKS), MISC("Everything Else", Material.CHEST);
+        final String label; final Material icon;
+        Cat(String label, Material icon) { this.label = label; this.icon = icon; }
+    }
+
+    Cat categoryOf(String key) {
+        if (key.startsWith(SPAWNER)) return Cat.SPAWNERS;
+        if (key.startsWith(BOOK)) return Cat.BOOKS;
+        Material m = Material.matchMaterial(key.substring(VANILLA.length()));
+        if (m == null) return Cat.MISC;
+        String n = m.name();
+        if (n.contains("ORE") || n.contains("INGOT") || n.contains("NUGGET") || n.startsWith("RAW_")
+                || n.equals("DIAMOND") || n.equals("EMERALD") || n.equals("COAL") || n.equals("REDSTONE")
+                || n.equals("LAPIS_LAZULI") || n.equals("QUARTZ") || n.contains("AMETHYST") || n.contains("ANCIENT_DEBRIS")
+                || n.contains("NETHERITE_SCRAP")) return Cat.ORES;
+        if (n.endsWith("SWORD") || n.endsWith("_AXE") || n.endsWith("PICKAXE") || n.endsWith("SHOVEL") || n.endsWith("_HOE")
+                || n.endsWith("HELMET") || n.endsWith("CHESTPLATE") || n.endsWith("LEGGINGS") || n.endsWith("BOOTS")
+                || n.contains("BOW") || n.equals("ARROW") || n.contains("SHIELD") || n.contains("TRIDENT")
+                || n.equals("MACE") || n.contains("TOTEM") || n.contains("SHELL")) return Cat.COMBAT;
+        if (m.isEdible() || n.contains("SEED") || n.contains("WHEAT") || n.contains("CARROT") || n.contains("POTATO")
+                || n.contains("BEETROOT") || n.contains("MELON") || n.contains("PUMPKIN") || n.contains("SUGAR")
+                || n.contains("CANE") || n.contains("KELP") || n.contains("COCOA") || n.contains("BERR")
+                || n.contains("APPLE") || n.contains("BREAD") || n.contains("EGG") || n.contains("SAPLING")
+                || n.contains("MUSHROOM")) return Cat.FOOD;
+        if (n.contains("REDSTONE") || n.contains("PISTON") || n.contains("REPEATER") || n.contains("COMPARATOR")
+                || n.contains("OBSERVER") || n.contains("HOPPER") || n.contains("DISPENSER") || n.contains("DROPPER")
+                || n.contains("LEVER") || n.contains("BUTTON") || n.contains("PRESSURE_PLATE") || n.contains("RAIL")
+                || n.equals("TARGET") || n.contains("TNT") || n.contains("DAYLIGHT")) return Cat.REDSTONE;
+        if (m.isBlock()) return Cat.BLOCKS;
+        return Cat.MISC;
+    }
+
+    private List<String> inCategory(Cat cat, String search) {
+        List<String> out = new ArrayList<>();
+        String needle = search == null ? null : search.toLowerCase(Locale.ROOT);
+        for (String key : catalogue) {
+            if (categoryOf(key) != cat) continue;
+            if (needle != null && !display(key).toLowerCase(Locale.ROOT).contains(needle)) continue;
+            out.add(key);
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------ marketplace hub + sections
+    void openHub(Player player) {
+        Holder holder = new Holder(Screen.HUB, 1, null, 0);
+        holder.inv = plugin.getServer().createInventory(holder, 27, Component.text("Orders • Marketplace", NamedTextColor.DARK_AQUA));
+        for (int i = 0; i < 27; i++) holder.inv.setItem(i, filler());
+        int active = (int) db.ordersOf(CoreUtil.id(player)).stream().filter(r -> r.status().equals("ACTIVE")).count();
+        holder.inv.setItem(10, CoreUtil.named(Material.COMPASS, "Browse & fulfil orders", List.of("See every open buy order", "Deliver items and get paid")));
+        holder.inv.setItem(11, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order", "Browse by category")));
+        holder.inv.setItem(13, CoreUtil.named(Material.CHEST, "My active orders", List.of(active + " active", "Cancel and refund")));
+        holder.inv.setItem(15, CoreUtil.named(Material.ENDER_CHEST, "Claim deliveries", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting", "Collect what sellers delivered")));
+        holder.inv.setItem(16, CoreUtil.named(Material.BOOK, "Order history", List.of("Completed, cancelled, expired", "Hide entries you are done with")));
+        player.openInventory(holder.inv);
+    }
+
+    void openCategories(Player player) {
+        Holder holder = new Holder(Screen.CATEGORY, 1, null, 0);
+        holder.inv = plugin.getServer().createInventory(holder, 45, Component.text("Create • Pick a category", NamedTextColor.DARK_AQUA));
+        for (int i = 36; i < 45; i++) holder.inv.setItem(i, filler());
+        int[] slots = {10, 11, 12, 13, 14, 15, 16, 19};
+        Cat[] cats = Cat.values();
+        for (int i = 0; i < cats.length && i < slots.length; i++) {
+            int count = inCategory(cats[i], null).size();
+            holder.inv.setItem(slots[i], CoreUtil.named(cats[i].icon, cats[i].label, List.of(count + " item(s)", "Click to browse")));
+        }
+        holder.inv.setItem(40, CoreUtil.named(Material.ARROW, "Back", List.of("Marketplace")));
+        player.openInventory(holder.inv);
+    }
+
     String display(String key) {
         if (key == null) return "?";
         if (key.startsWith(SPAWNER)) return CoreUtil.pretty(key.substring(SPAWNER.length())) + " Spawner";
@@ -214,15 +291,49 @@ final class OrdersService implements Listener {
     }
 
     void openMine(Player player, int page) {
-        List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player));
+        List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player)).stream().filter(r -> r.status().equals("ACTIVE")).toList();
         Inventory inv = open(player, Screen.MINE, page, null, 0, "Orders • Yours", 54);
         paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false, player)));
         for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
-        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
-        inv.setItem(49, CoreUtil.named(Material.PAPER, "Page " + page,
-                List.of(rows.size() + " order(s)", "Active ones cancel and refund", "Finished ones can be removed")));
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Marketplace")));
+        inv.setItem(49, CoreUtil.named(Material.PAPER, "Your active orders", List.of(rows.size() + " active", "Click one to cancel and refund")));
         navigation(inv, page, rows.size());
         player.openInventory(inv);
+    }
+
+    void openHistory(Player player, int page) {
+        List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player)).stream().filter(r -> !r.status().equals("ACTIVE")).toList();
+        Inventory inv = open(player, Screen.HISTORY, page, null, 0, "Orders • History", 54);
+        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false, player)));
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Marketplace")));
+        inv.setItem(49, CoreUtil.named(Material.PAPER, "Order history", List.of(rows.size() + " past order(s)", "Click one to hide it")));
+        navigation(inv, page, rows.size());
+        player.openInventory(inv);
+    }
+
+    void openCategoryItems(Player player, Cat cat, int page, String search) {
+        List<String> keys = inCategory(cat, search);
+        Holder holder = new Holder(Screen.PICK, page, search, 0);
+        holder.category = cat.name();
+        holder.inv = plugin.getServer().createInventory(holder, 54, Component.text(cat.label + (search == null ? "" : " • " + search), NamedTextColor.DARK_AQUA));
+        int from = (page - 1) * 45;
+        for (int i = 0; i < 45 && from + i < keys.size(); i++) {
+            String key = keys.get(from + i);
+            ItemStack ico = canonical(key);
+            if (ico == null) continue;
+            ItemMeta meta = ico.getItemMeta();
+            meta.displayName(Component.text(display(key), NamedTextColor.GOLD));
+            meta.lore(List.of(Component.text("Click to order this", NamedTextColor.GRAY)));
+            ico.setItemMeta(meta);
+            holder.inv.setItem(i, ico);
+        }
+        for (int slot = 45; slot < 54; slot++) holder.inv.setItem(slot, filler());
+        holder.inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Search this category" : "Showing: " + search)));
+        holder.inv.setItem(49, CoreUtil.named(Material.ARROW, "Back", List.of("Categories")));
+        holder.inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(keys.size() + " item(s)")));
+        navigation(holder.inv, page, keys.size());
+        player.openInventory(holder.inv);
     }
 
     void openPick(Player player, int page, String search) {
@@ -460,25 +571,42 @@ final class OrdersService implements Listener {
         event.setCancelled(true);
         int slot = event.getRawSlot();
         if (slot < 0 || slot >= event.getInventory().getSize()) return;
+        ItemStack clicked = event.getCurrentItem();
 
-        if (slot == 45 && (holder.screen == Screen.PUBLIC || holder.screen == Screen.PICK)) {
-            askSearch(player, holder.screen);
+        /** Marketplace hub. */
+        if (holder.screen == Screen.HUB) {
+            switch (slot) {
+                case 10 -> openPublic(player);
+                case 11 -> openCategories(player);
+                case 13 -> openMine(player, 1);
+                case 15 -> openStash(player);
+                case 16 -> openHistory(player, 1);
+                default -> { }
+            }
             return;
         }
-        if (slot == 46 && holder.screen == Screen.PUBLIC) { openPick(player, 1, null); return; }
+        /** Category picker: a category icon opens its items; 40 is Back to the hub. */
+        if (holder.screen == Screen.CATEGORY) {
+            if (slot == 40) { openHub(player); return; }
+            String name = plainName(clicked);
+            if (name != null) for (Cat cat : Cat.values()) if (cat.label.equals(name)) { openCategoryItems(player, cat, 1, null); return; }
+            return;
+        }
+
+        if (slot == 45 && (holder.screen == Screen.PUBLIC || holder.screen == Screen.PICK)) { askSearch(player, holder); return; }
+        if (slot == 46 && holder.screen == Screen.PUBLIC) { openCategories(player); return; }
         if (slot == 47 && holder.screen == Screen.PUBLIC) { openMine(player, 1); return; }
         if (slot == 48 && holder.screen == Screen.PUBLIC) { openStash(player); return; }
         if (slot == 49 && holder.screen == Screen.STASH) { collect(player); return; }
-        if (slot == 45 && (holder.screen == Screen.MINE || holder.screen == Screen.STASH)) { openPublic(player); return; }
-        if (slot == 49 && holder.screen == Screen.PICK) { openPublic(player); return; }
+        if (slot == 45 && (holder.screen == Screen.MINE || holder.screen == Screen.STASH || holder.screen == Screen.HISTORY)) { openHub(player); return; }
+        if (slot == 49 && holder.screen == Screen.PICK) { openCategories(player); return; }
         if (slot == 50) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
         if (slot == 51) { reopen(player, holder, holder.page + 1); return; }
         if (slot >= 45) return;
 
-        ItemStack clicked = event.getCurrentItem();
         if (clicked == null || clicked.getType().isAir()) return;
         if (holder.screen == Screen.PICK) {
-            List<String> keys = filtered(holder.search);
+            List<String> keys = holder.category == null ? filtered(holder.search) : inCategory(Cat.valueOf(holder.category), holder.search);
             int index = (holder.page - 1) * 45 + slot;
             if (index >= keys.size()) return;
             beginDraft(player, keys.get(index));
@@ -488,7 +616,7 @@ final class OrdersService implements Listener {
                 .get(new NamespacedKey(plugin, "order_id"), org.bukkit.persistence.PersistentDataType.LONG) : null;
         if (id == null) return;
         if (holder.screen == Screen.PUBLIC) { openDeliver(player, id); return; }
-        if (holder.screen != Screen.MINE) return;
+        if (holder.screen != Screen.MINE && holder.screen != Screen.HISTORY) return;
         Database.OrderRow row = db.order(id);
         if (row == null) return;
         if (!row.status().equals("ACTIVE")) {
@@ -514,18 +642,28 @@ final class OrdersService implements Listener {
         switch (holder.screen) {
             case PUBLIC -> openPublic(player, page, holder.search);
             case MINE -> openMine(player, page);
-            case PICK -> openPick(player, page, holder.search);
+            case HISTORY -> openHistory(player, page);
+            case PICK -> { if (holder.category != null) openCategoryItems(player, Cat.valueOf(holder.category), page, holder.search); else openPick(player, page, holder.search); }
             default -> { }
         }
     }
 
+    private String plainName(ItemStack item) {
+        if (item == null || !item.hasItemMeta() || !item.getItemMeta().hasDisplayName()) return null;
+        return net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(item.getItemMeta().displayName());
+    }
+
     // ------------------------------------------------------------------ chat prompts
-    private void askSearch(Player player, Screen screen) {
+    private void askSearch(Player player, Holder holder) {
         player.closeInventory();
-        CoreUtil.msg(player, "Type what you are looking for in chat, or 'cancel'.");
+        CoreUtil.msg(player, "Type what you are looking for in chat, or 'all' to clear.");
+        Screen screen = holder.screen;
+        String category = holder.category;
         prompts.put(player.getUniqueId(), text -> {
             String search = text.equalsIgnoreCase("all") ? null : text;
-            if (screen == Screen.PICK) openPick(player, 1, search); else openPublic(player, 1, search);
+            if (screen == Screen.PICK && category != null) openCategoryItems(player, Cat.valueOf(category), 1, search);
+            else if (screen == Screen.PICK) openPick(player, 1, search);
+            else openPublic(player, 1, search);
         });
     }
 

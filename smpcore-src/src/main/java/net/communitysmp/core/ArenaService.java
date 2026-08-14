@@ -19,7 +19,11 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
@@ -128,6 +132,10 @@ final class ArenaService implements Listener {
     private final Database db;
     /** player id -> the duel they are in (as duellist). One duel per player at a time. */
     private final Map<String, Duel> byPlayer = new ConcurrentHashMap<>();
+    /** player id -> duel id they are spectating in the dedicated duel-spectator state. */
+    private final Map<String, Integer> spectators = new ConcurrentHashMap<>();
+    /** player id -> {side: 0=A 1=B -1=none, amount} staged in the betting GUI before it is confirmed. */
+    private final Map<String, double[]> stagedBet = new ConcurrentHashMap<>();
     private final List<Duel> duels = new ArrayList<>();
     private int nextId = 1;
     /** Last time each player sent a challenge, for the anti-spam cooldown, exactly like a trade request. */
@@ -254,10 +262,14 @@ final class ArenaService implements Listener {
 
     private ItemStack kitWeapon(Kit kit) {
         return switch (kit) {
-            case MACE -> enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.UNBREAKING, 3));
-            case SWORD -> enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.UNBREAKING, 3));
+            /** Mace with Density (slam damage) AND Wind Burst (self-launch on hit) -- the modern mace combo
+             *  that makes the wind-charge-up-then-slam loop work. */
+            case MACE -> enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.WIND_BURST, 3, Enchantment.UNBREAKING, 3));
+            case SWORD -> enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.FIRE_ASPECT, 2, Enchantment.UNBREAKING, 3));
             case AXE -> enchanted(Material.DIAMOND_AXE, Map.of(Enchantment.SHARPNESS, 5, Enchantment.EFFICIENCY, 5, Enchantment.UNBREAKING, 3));
-            case SPEAR -> enchanted(Material.DIAMOND_SWORD, Map.of(Enchantment.SHARPNESS, 4, Enchantment.UNBREAKING, 3));
+            /** The spear IS a trident: Loyalty returns it when thrown, Impaling is its damage, and it doubles
+             *  as the melee poke. A diamond sword here was simply wrong. */
+            case SPEAR -> enchanted(Material.TRIDENT, Map.of(Enchantment.LOYALTY, 3, Enchantment.IMPALING, 5, Enchantment.UNBREAKING, 3));
         };
     }
 
@@ -265,10 +277,14 @@ final class ArenaService implements Listener {
 
     private List<ItemStack> kitConsumables(Kit kit) {
         return switch (kit) {
-            case MACE -> List.of(new ItemStack(Material.WIND_CHARGE, 16), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 8));
-            case SWORD -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 8));
-            case AXE -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 8), new ItemStack(Material.COBWEB, 8));
-            case SPEAR -> List.of(new ItemStack(Material.FIREWORK_ROCKET, 64), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1), new ItemStack(Material.GOLDEN_APPLE, 6));
+            /** Mace is a build-and-slam kit: enough wind charges to keep launching, and two stacks of blocks
+             *  to tower up for the killing slam. */
+            case MACE -> List.of(new ItemStack(Material.WIND_CHARGE, 64), new ItemStack(Material.COBBLESTONE, 64),
+                    new ItemStack(Material.COBBLESTONE, 64), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
+            case SWORD -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16));
+            case AXE -> List.of(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 2), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.COBWEB, 8));
+            /** Spear lives on rockets: a full stack to stay airborne, plus a light heal loadout. */
+            case SPEAR -> List.of(new ItemStack(Material.FIREWORK_ROCKET, 64), new ItemStack(Material.ENCHANTED_GOLDEN_APPLE, 1), new ItemStack(Material.GOLDEN_APPLE, 8));
         };
     }
 
@@ -350,6 +366,10 @@ final class ArenaService implements Listener {
         player.setFoodLevel(state.food());
         player.setHealth(Math.min(state.health(), player.getAttribute(Attribute.MAX_HEALTH).getValue()));
         try { player.setGameMode(GameMode.valueOf(state.gamemode())); } catch (IllegalArgumentException ignored) { player.setGameMode(GameMode.SURVIVAL); }
+        /** Clear the spectator-only flags so nobody ever leaves invisible, non-colliding or invulnerable. */
+        player.setInvisible(false);
+        player.setCollidable(true);
+        player.setInvulnerable(false);
         /** Saturation, potion effects, flight, fall distance, fire and air -- everything the duel touched
          *  that is not already a column -- so the player is returned to EXACTLY their pre-duel state. */
         for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
@@ -616,6 +636,7 @@ final class ArenaService implements Listener {
         if (duel.phase != Phase.LIVE) return;
         duel.rounds.merge(winner, 1, Integer::sum);
         int needed = duel.bestOf / 2 + 1;
+        refreshSpectate(duel);
         both(duel, "Round to " + name(winner) + " (" + duel.rounds.get(duel.a) + " - " + duel.rounds.get(duel.b) + ").");
         if (duel.rounds.get(winner) >= needed) { finish(duel, winner, loser); return; }
         Bukkit.getScheduler().runTaskLater(plugin, () -> beginRound(duel), 60L);
@@ -659,29 +680,83 @@ final class ArenaService implements Listener {
     boolean bet(Player player, int duelId, String on, double amount) {
         Duel duel = duels.stream().filter(d -> d.id == duelId).findFirst().orElse(null);
         if (duel == null) { CoreUtil.error(player, "No such match."); return true; }
+        String target = duel == null ? null : (duel.aName.equalsIgnoreCase(on) ? duel.a : duel.bName.equalsIgnoreCase(on) ? duel.b : null);
+        return placeWager(player, duel, target, amount);
+    }
+
+    /** Places or CHANGES a wager, while betting is still open. Changing refunds the old stake first, so the
+     *  money is always conserved. */
+    private boolean placeWager(Player player, Duel duel, String target, double amount) {
+        if (duel == null) { CoreUtil.error(player, "No such match."); return true; }
         if (duel.phase == Phase.LIVE || duel.phase == Phase.ENDING) { CoreUtil.error(player, "Betting closed when the match started."); return true; }
         String id = CoreUtil.id(player);
         if (duel.has(id)) { CoreUtil.error(player, "You cannot bet on your own match."); return true; }
-        String target = duel.aName.equalsIgnoreCase(on) ? duel.a : duel.bName.equalsIgnoreCase(on) ? duel.b : null;
-        if (target == null) { CoreUtil.error(player, "Bet on " + duel.aName + " or " + duel.bName + "."); return true; }
+        if (target == null) { CoreUtil.error(player, "Choose " + duel.aName + " or " + duel.bName + "."); return true; }
         if (amount < 0 || !Double.isFinite(amount)) { CoreUtil.error(player, "Amount cannot be negative."); return true; }
-        if (duel.wagers.stream().anyMatch(w -> w.player().equals(id))) { CoreUtil.error(player, "You already wagered on this match."); return true; }
-        if (amount > 0 && !db.changeBalance(id, -amount)) { CoreUtil.error(player, "You cannot cover that."); return true; }
+        Wager existing = duel.wagers.stream().filter(w -> w.player().equals(id)).findFirst().orElse(null);
+        if (existing != null) { db.changeBalance(id, existing.amount()); duel.wagers.remove(existing); db.arenaWagersClearFor(duel.a, duel.b); for (Wager w : duel.wagers) db.arenaWagerAdd(w.player(), w.on(), w.amount()); }
+        if (amount > 0 && !db.changeBalance(id, -amount)) { CoreUtil.error(player, "You cannot cover that."); if (existing != null) { duel.wagers.add(existing); db.arenaWagerAdd(existing.player(), existing.on(), existing.amount()); } return true; }
         duel.wagers.add(new Wager(id, target, amount));
         db.arenaWagerAdd(id, target, amount);
-        CoreUtil.msg(player, "Wagered " + CoreUtil.money(amount) + " on " + name(target) + ".");
+        actionbar(player, "Wager set: " + CoreUtil.money(amount) + " on " + name(target) + ".");
+        refreshSpectate(duel);
         return true;
     }
 
+    private Wager wagerOf(Duel duel, String id) { return duel.wagers.stream().filter(w -> w.player().equals(id)).findFirst().orElse(null); }
+
     boolean watch(Player player, int duelId) {
         Duel duel = duels.stream().filter(d -> d.id == duelId).findFirst().orElse(null);
-        if (duel == null || duel.phase != Phase.LIVE) { CoreUtil.error(player, "That match is not running."); return true; }
+        if (duel == null) { CoreUtil.error(player, "No such match."); return true; }
         if (duel.has(CoreUtil.id(player))) { CoreUtil.error(player, "You are in this duel."); return true; }
-        capture(player);
-        player.setGameMode(GameMode.SPECTATOR);
-        player.teleport(gallery(duel));
-        actionbar(player, "Spectating. You cannot affect the fight.");
+        openSpectate(player, duelId);
         return true;
+    }
+
+    /** Puts a player into the dedicated duel-spectator state: survival with an empty inventory, flying,
+     *  permanently invisible, non-colliding and untouchable, unable to interfere in any way. Their real
+     *  state and location are captured first and restored on leave. This does NOT touch the admin /spectator
+     *  vanish system -- it is a separate, self-contained state. */
+    private void enterSpectator(Player player, Duel duel) {
+        String id = CoreUtil.id(player);
+        if (spectators.containsKey(id) || byPlayer.containsKey(id)) return;
+        capture(player);
+        player.getInventory().clear();
+        player.getInventory().setArmorContents(null);
+        player.getInventory().setItemInOffHand(null);
+        player.setItemOnCursor(null);
+        player.setGameMode(GameMode.SURVIVAL);
+        player.setAllowFlight(true);
+        player.setFlying(true);
+        player.setInvisible(true);
+        player.setCollidable(false);
+        player.setInvulnerable(true);
+        for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
+        spectators.put(id, duel.id);
+        player.teleport(gallery(duel));
+        actionbar(player, "Spectating — invisible, and you cannot affect the fight.");
+    }
+
+    private void leaveSpectator(Player player) {
+        spectators.remove(CoreUtil.id(player));
+        stagedBet.remove(CoreUtil.id(player));
+        restore(player);
+    }
+
+    boolean isDuelSpectator(String id) { return spectators.containsKey(id); }
+
+    // ---- spectator cannot interfere -------------------------------------------------------------
+    @EventHandler(ignoreCancelled = true) public void specPickup(EntityPickupItemEvent e) {
+        if (e.getEntity() instanceof Player p && spectators.containsKey(CoreUtil.id(p))) e.setCancelled(true);
+    }
+    @EventHandler(ignoreCancelled = true) public void specDrop(PlayerDropItemEvent e) {
+        if (spectators.containsKey(CoreUtil.id(e.getPlayer()))) e.setCancelled(true);
+    }
+    @EventHandler(ignoreCancelled = true) public void specInteract(PlayerInteractEvent e) {
+        if (spectators.containsKey(CoreUtil.id(e.getPlayer()))) e.setCancelled(true);
+    }
+    @EventHandler(ignoreCancelled = true) public void specInteractEntity(PlayerInteractEntityEvent e) {
+        if (spectators.containsKey(CoreUtil.id(e.getPlayer()))) e.setCancelled(true);
     }
 
     boolean forfeit(Player player) {
@@ -799,9 +874,11 @@ final class ArenaService implements Listener {
 
     private void returnPlayers(Duel duel) {
         for (String id : List.of(duel.a, duel.b)) { Player player = plugin.getServer().getPlayer(id); if (player != null) restore(player); }
-        /** Any spectators sitting in this slot's gallery go home too. */
-        if (arena != null) for (Player player : new ArrayList<>(arena.getPlayers()))
-            if (!duel.has(CoreUtil.id(player)) && Math.abs(player.getLocation().getBlockX() - slotBaseX(duel.slot)) < 40 && db.arenaState(CoreUtil.id(player)) != null) restore(player);
+        for (Map.Entry<String, Integer> entry : new ArrayList<>(spectators.entrySet())) {
+            if (entry.getValue() != duel.id) continue;
+            Player player = plugin.getServer().getPlayer(entry.getKey());
+            if (player != null) leaveSpectator(player); else spectators.remove(entry.getKey());
+        }
     }
 
     private void dispose(Duel duel) {
@@ -910,6 +987,7 @@ final class ArenaService implements Listener {
     }
 
     private ItemStack icon(Material material, String name, List<String> lore) { return CoreUtil.named(material, name, lore); }
+    private ItemStack filler() { return CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE, " ", List.of()); }
 
     @EventHandler public void click(InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Menu menu)) return;
@@ -922,7 +1000,7 @@ final class ArenaService implements Listener {
                 if (clicked != null && clicked.getType() == Material.PLAYER_HEAD) {
                     String target = PlainName(clicked);
                     if (target != null) { player.closeInventory(); challenge(player, target); }
-                } else if (slot == 15) { player.closeInventory(); CoreUtil.msg(player, status(player)); }
+                } else if (slot == 15) { openMatchList(player); }
             }
             case "setup" -> {
                 Kit[] kits = Kit.values();
@@ -941,8 +1019,110 @@ final class ArenaService implements Listener {
                     default -> { }
                 }
             }
+            case "matchlist" -> {
+                if (clicked != null && clicked.hasItemMeta()) {
+                    Integer mid = clicked.getItemMeta().getPersistentDataContainer().get(new org.bukkit.NamespacedKey(plugin, "duel_id"), org.bukkit.persistence.PersistentDataType.INTEGER);
+                    if (mid != null) openSpectate(player, mid);
+                }
+            }
+            case "spectate" -> {
+                Duel duel = find(menu.duelId);
+                if (duel == null) { player.closeInventory(); return; }
+                String id = CoreUtil.id(player);
+                double[] st = stagedBet.computeIfAbsent(id, k -> new double[]{-1, 0});
+                double balance = db.player(id).balance();
+                switch (slot) {
+                    case 20 -> { st[0] = 0; openSpectate(player, menu.duelId); }
+                    case 24 -> { st[0] = 1; openSpectate(player, menu.duelId); }
+                    case 29 -> { st[1] = Math.max(0, st[1] - 1000); openSpectate(player, menu.duelId); }
+                    case 30 -> { st[1] = Math.max(0, st[1] - 100); openSpectate(player, menu.duelId); }
+                    case 32 -> { st[1] = Math.min(balance, st[1] + 100); openSpectate(player, menu.duelId); }
+                    case 33 -> { st[1] = Math.min(balance, st[1] + 1000); openSpectate(player, menu.duelId); }
+                    case 38 -> { String target = st[0] == 0 ? duel.a : st[0] == 1 ? duel.b : null;
+                                 if (target == null) actionbar(player, "Pick a fighter to back first."); else placeWager(player, duel, target, st[1]);
+                                 openSpectate(player, menu.duelId); }
+                    case 42 -> { if (spectators.containsKey(id)) leaveSpectator(player); else player.closeInventory(); }
+                    case 44 -> { if (duel.phase == Phase.LIVE) enterSpectator(player, duel); openSpectate(player, menu.duelId); }
+                    default -> { }
+                }
+            }
             default -> { }
         }
+    }
+
+    private Duel find(int id) { return duels.stream().filter(d -> d.id == id).findFirst().orElse(null); }
+
+    /** Every current match, clickable to open its spectator/betting window. */
+    void openMatchList(Player player) {
+        Menu menu = new Menu("matchlist", 0);
+        menu.inv = plugin.getServer().createInventory(menu, 54, Component.text("Duels • Matches", NamedTextColor.DARK_AQUA));
+        int slot = 0;
+        for (Duel d : duels) {
+            if (slot >= 45) break;
+            ItemStack card = new ItemStack(d.phase == Phase.LIVE ? Material.DIAMOND_SWORD : Material.CLOCK);
+            ItemMeta meta = card.getItemMeta();
+            meta.displayName(Component.text("#" + d.id + "  " + d.aName + " vs " + d.bName, NamedTextColor.GOLD));
+            meta.lore(List.of(Component.text("Kit " + d.kit.label() + " · Best of " + d.bestOf, NamedTextColor.GRAY),
+                    Component.text("Score " + d.rounds.getOrDefault(d.a, 0) + " - " + d.rounds.getOrDefault(d.b, 0), NamedTextColor.GRAY),
+                    Component.text("Status: " + d.phase, NamedTextColor.DARK_GRAY),
+                    Component.text(d.phase == Phase.LIVE ? "Click to watch" : "Click to open betting", NamedTextColor.GREEN)));
+            meta.getPersistentDataContainer().set(new org.bukkit.NamespacedKey(plugin, "duel_id"), org.bukkit.persistence.PersistentDataType.INTEGER, d.id);
+            card.setItemMeta(meta);
+            menu.inv.setItem(slot++, card);
+        }
+        if (duels.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, "No matches right now", List.of("Challenge someone with /duel <player>")));
+        player.openInventory(menu.inv);
+    }
+
+    /** The spectator / betting window. Shows both fighters, kit, series score and stakes; lets a spectator
+     *  stage and confirm (or change) a wager before the match locks; and, once the match is live, enter the
+     *  arena to watch in the dedicated invisible spectator state. */
+    void openSpectate(Player player, int duelId) {
+        Duel duel = find(duelId);
+        if (duel == null) { CoreUtil.error(player, "That match has ended."); player.closeInventory(); return; }
+        String id = CoreUtil.id(player);
+        boolean bettingOpen = duel.phase == Phase.PENDING || duel.phase == Phase.STAKING;
+        double[] st = stagedBet.computeIfAbsent(id, k -> new double[]{-1, 0});
+        Menu menu = new Menu("spectate", duelId);
+        menu.inv = plugin.getServer().createInventory(menu, 54, Component.text("Duel #" + duelId + " • Spectate", NamedTextColor.DARK_AQUA));
+        for (int f = 45; f < 54; f++) menu.inv.setItem(f, filler());
+        double poolA = 0, poolB = 0;
+        for (Wager w : duel.wagers) { if (w.on().equals(duel.a)) poolA += w.amount(); else poolB += w.amount(); }
+        menu.inv.setItem(4, icon(Material.PAPER, "#" + duelId + "  " + duel.aName + " vs " + duel.bName, List.of(
+                "Kit: " + duel.kit.label(), "Series: Best of " + duel.bestOf,
+                "Score: " + duel.rounds.getOrDefault(duel.a, 0) + " - " + duel.rounds.getOrDefault(duel.b, 0),
+                "Stakes: " + CoreUtil.money(duel.stakes.getOrDefault(duel.a, 0d)) + " / " + CoreUtil.money(duel.stakes.getOrDefault(duel.b, 0d)),
+                "Status: " + duel.phase)));
+        boolean backA = st[0] == 0, backB = st[0] == 1;
+        menu.inv.setItem(20, icon(backA ? Material.LIME_CONCRETE : Material.WHITE_CONCRETE, (backA ? "✔ " : "") + "Back " + duel.aName,
+                List.of("Pool on " + duel.aName + ": " + CoreUtil.money(poolA), bettingOpen ? "Click to back " + duel.aName : "Betting closed")));
+        menu.inv.setItem(24, icon(backB ? Material.RED_CONCRETE : Material.WHITE_CONCRETE, (backB ? "✔ " : "") + "Back " + duel.bName,
+                List.of("Pool on " + duel.bName + ": " + CoreUtil.money(poolB), bettingOpen ? "Click to back " + duel.bName : "Betting closed")));
+        if (bettingOpen) {
+            menu.inv.setItem(29, icon(Material.RED_STAINED_GLASS_PANE, "- 1,000", List.of()));
+            menu.inv.setItem(30, icon(Material.PINK_STAINED_GLASS_PANE, "- 100", List.of()));
+            menu.inv.setItem(31, icon(Material.GOLD_INGOT, "Wager amount: " + CoreUtil.money(st[1]), List.of("Pick a fighter, set an amount, confirm")));
+            menu.inv.setItem(32, icon(Material.LIME_STAINED_GLASS_PANE, "+ 100", List.of()));
+            menu.inv.setItem(33, icon(Material.GREEN_STAINED_GLASS_PANE, "+ 1,000", List.of()));
+            menu.inv.setItem(38, icon(Material.EMERALD, "Confirm wager", List.of("Backing " + (st[0] == 0 ? duel.aName : st[0] == 1 ? duel.bName : "nobody yet"),
+                    "Amount " + CoreUtil.money(st[1]), "Changing before lock refunds the old wager")));
+        } else {
+            menu.inv.setItem(31, icon(Material.BARRIER, "Betting is closed", List.of("The match has started")));
+        }
+        Wager mine = wagerOf(duel, id);
+        menu.inv.setItem(40, icon(Material.BOOK, "Your wager", mine == null ? List.of("None placed")
+                : List.of(CoreUtil.money(mine.amount()) + " on " + (mine.on().equals(duel.a) ? duel.aName : duel.bName))));
+        if (duel.phase == Phase.LIVE && !spectators.containsKey(id))
+            menu.inv.setItem(44, icon(Material.ENDER_EYE, "Enter arena to watch", List.of("Invisible, cannot interfere")));
+        menu.inv.setItem(42, icon(Material.ARROW, spectators.containsKey(id) ? "Leave spectating" : "Close", List.of()));
+        player.openInventory(menu.inv);
+    }
+
+    /** Re-render the spectate window for anyone who currently has it open on this match. */
+    private void refreshSpectate(Duel duel) {
+        for (Player p : plugin.getServer().getOnlinePlayers())
+            if (p.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m && m.kind.equals("spectate") && m.duelId == duel.id)
+                openSpectate(p, duel.id);
     }
 
     @EventHandler public void drag(InventoryDragEvent event) { if (event.getInventory().getHolder(false) instanceof Menu) event.setCancelled(true); }

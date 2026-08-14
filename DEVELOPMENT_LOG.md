@@ -271,6 +271,44 @@ slot 49. Back on Mine and Stash now works (slot 45 -> public), Pick's Back stays
 the delivery basket's Back returns to the public board after handing items back, and the stash screen got a
 Back button so it is no longer a dead end.
 
+
+## Session: 2026-08-14 (part 4) — player-facing duel/orders finishing, staging only
+
+### Kits corrected to real PvP loadouts
+- Spear now uses a TRIDENT (Loyalty III, Impaling V, Unbreaking III) -- the actual spear weapon -- not a
+  diamond sword. Elytra chest + 64 rockets.
+- Mace: Mace (Density V, Wind Burst III, Unbreaking III) so the launch-and-slam loop works, 64 Wind Charge,
+  128 building blocks (cobblestone) to tower for the slam, 2 notch + 16 gapple.
+- Sword+Shield: Diamond Sword (Sharp V, Fire Aspect II, Unbreaking III), Shield (Unb III), 2 notch + 16 gapple.
+- Axe: Diamond Axe (Sharp V, Efficiency V, Unbreaking III), 8 cobweb, 2 notch + 16 gapple.
+- All armour Prot IV + Unb III. Both duellists always get identical copies (self-test asserts parity).
+
+### Spectator: dedicated state + betting GUI
+Duel spectators now use a self-contained state (NOT the admin /spectator vanish system): survival, empty
+temporary inventory, flight, permanent invisibility, non-colliding, invulnerable, and blocked from
+pickup/interact/drop/build. Full state + location captured on enter and restored on leave. A proper
+Spectator GUI (/duel watch <id> or the hub match list) shows both fighters, kit, Bo score, stakes, per-side
+pools, wager +/- controls, confirm/change-before-lock, current personal wager, enter-arena, and leave.
+Wagers can be changed before lock (old stake refunded). GUI live-refreshes on score/wager changes.
+
+### Duel setup GUI viewer-relative (finished)
+Confirm panel is rendered per viewer (You = the viewer), with both sides' stakes and ready state, refreshing
+both open GUIs when either changes anything.
+
+### Orders marketplace rework
+/orders now opens a proper marketplace HUB with sections: Browse & fulfil, Create an order, My active orders,
+Claim deliveries, Order history. Create is category-first (Spawners, Enchanted Books, Ores & Minerals,
+Combat & Tools, Food & Farming, Redstone, Blocks, Everything Else) with per-category search and pagination,
+instead of dumping the whole registry. My-orders and history are separate views. Claim deliveries is the
+persisted stash (offline/restart safe, partial fulfilments accumulate). Manual delivery basket, confirmations
+and history-hide retained. Back navigation audited across every screen and returns to the logical parent.
+
+### Arena
+Improved procedural arena from last part (61x61 quartz/andesite, wall, corner pillars, sea lanterns, raised
+glass spectator ring, open sky for Mace/elytra) stands as the current arena. An external downloaded map was
+not integrated: a specific arena schematic/structure could not be safely sourced and content-vetted in this
+environment. The slot system is ready to stamp a supplied .nbt/.schem per slot on request.
+
 ---
 
 ## Standing lessons
