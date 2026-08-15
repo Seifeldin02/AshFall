@@ -245,6 +245,10 @@ final class ArenaService implements Listener {
 
     private boolean inArena(Player player) { return arena != null && player.getWorld().equals(arena); }
     boolean isArenaWorld(org.bukkit.World world) { return arena != null && arena.equals(world); }
+    /** True for the fillable duel item-wager box, so the relic storage guard can allow relics to be staked into
+     *  it. Relics staked here are escrowed and awarded to the winner (whose next inventory scan transfers
+     *  ownership) -- they are never actually "stored", and only one physical copy ever exists. */
+    boolean isWagerBox(org.bukkit.inventory.Inventory inv) { return inv != null && inv.getHolder(false) instanceof Menu m && m.fillable && "wagerbox".equals(m.kind); }
     /** True when a and b are the two duellists of the SAME live match -- used to let their hits through the
      *  faction/spawn PvP guards without the spurious "friendly PvP disabled" message, and to suppress the
      *  PvP-lock actionbar for them. */

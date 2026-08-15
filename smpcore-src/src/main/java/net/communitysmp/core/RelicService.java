@@ -135,6 +135,8 @@ final class RelicService implements Listener {
      *  same vanilla container types placed in claimed territory) are blocked. */
     private boolean isPersistentStorage(Inventory inventory){
         if(inventory==null)return false;
+        /** The duel item-wager box is not storage -- relics staked there are escrowed and go to the winner. */
+        if(plugin.arena()!=null&&plugin.arena().isWagerBox(inventory))return false;
         InventoryType type=inventory.getType();
         if(type==InventoryType.CHEST||type==InventoryType.ENDER_CHEST||type==InventoryType.SHULKER_BOX||type==InventoryType.BARREL
                 ||type==InventoryType.DISPENSER||type==InventoryType.DROPPER||type==InventoryType.HOPPER
