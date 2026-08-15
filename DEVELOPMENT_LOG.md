@@ -121,6 +121,13 @@ sync as scopes settle. One wager per spectator per scope; changing a scope refun
   the chest sell path count and sell the sellable items INSIDE shulker boxes sitting in the container (the
   shulker itself is never sold — it's emptied and written back). The plain `/shop sellall` (player inventory)
   path is deliberately unchanged.
+- **Destroyed BLOCKS now go to the vault (burnt + exploded), AUDIT-ONLY.** `BlockBurnEvent` records burnt
+  trees/wool/carpet etc. (fire never drops the block → a genuine loss); the existing explosion hooks now record
+  every non-spawner block in the blast too (`deliverBlock`, reason BURNED/EXPLOSION). Deliberately **never
+  recycled into shop stock**: an exploded block may also have dropped as an item, so recycling would mint a
+  duplicate — so these are logged as *Destroyed*, not *Recycled*. Aggregated by material+reason (a big blast is
+  a few rows). Gated by `discarded-vault.record-destroyed-blocks` (default true). `recordableBlock` skips
+  air/fluids/fire/technical blocks.
 
 ---
 

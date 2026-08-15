@@ -138,14 +138,52 @@ final class DiscardedVaultService implements Listener {
     /** Explosions are a real destruction path for spawners. MONITOR and ignoreCancelled, so the block is
      *  genuinely going, and once per block in the list, so one spawner is one entry. */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void entityExplode(org.bukkit.event.entity.EntityExplodeEvent event) { explodedSpawners(event.blockList()); }
+    public void entityExplode(org.bukkit.event.entity.EntityExplodeEvent event) { explodedBlocks(event.blockList()); }
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void blockExplode(org.bukkit.event.block.BlockExplodeEvent event) { explodedSpawners(event.blockList()); }
+    public void blockExplode(org.bukkit.event.block.BlockExplodeEvent event) { explodedBlocks(event.blockList()); }
 
-    private void explodedSpawners(List<org.bukkit.block.Block> blocks) {
-        for (org.bukkit.block.Block block : blocks)
+    private void explodedBlocks(List<org.bukkit.block.Block> blocks) {
+        boolean recordBlocks = plugin.getConfig().getBoolean("discarded-vault.record-destroyed-blocks", true);
+        for (org.bukkit.block.Block block : blocks) {
             if (block.getType() == Material.SPAWNER && block.getState() instanceof org.bukkit.block.CreatureSpawner spawner)
                 deliverSpawner(spawner.getSpawnedType(), 1, block.getLocation(), "EXPLOSION");
+            else if (recordBlocks)
+                deliverBlock(block.getType(), 1, block.getLocation(), "EXPLOSION");
+        }
+    }
+
+    /** A block destroyed by fire -- burnt trees, wool, carpet and the like. Fire never drops the block, so
+     *  this is always a genuine, un-recoverable loss and a clean audit entry. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void blockBurn(org.bukkit.event.block.BlockBurnEvent event) {
+        if (!plugin.getConfig().getBoolean("discarded-vault.record-destroyed-blocks", true)) return;
+        deliverBlock(event.getBlock().getType(), 1, event.getBlock().getLocation(), "BURNED");
+    }
+
+    /** Whether a destroyed block is worth an audit entry -- skip air, fluids, fire and technical blocks that
+     *  have no meaningful item form. */
+    private boolean recordableBlock(Material m) {
+        if (m == null || m.isAir() || !m.isBlock()) return false;
+        return switch (m) {
+            case FIRE, SOUL_FIRE, WATER, LAVA, BUBBLE_COLUMN, NETHER_PORTAL, END_PORTAL, END_GATEWAY, MOVING_PISTON, PISTON_HEAD, SNOW -> false;
+            default -> true;
+        };
+    }
+
+    /** A solid block destroyed with no recoverable drop (burnt, or caught in a blast). AUDIT-ONLY -- never
+     *  recycled into shop stock: an exploded block may ALSO have dropped as an item, so recycling it would mint
+     *  a duplicate, and a burnt block is a destruction record rather than a lost tradeable good. Aggregated by
+     *  material+reason, so even a large blast is only a handful of rows. */
+    void deliverBlock(Material material, int amount, Location at, String reason) {
+        if (amount <= 0 || !recordableBlock(material)) return;
+        Pending row = pending.computeIfAbsent(new Key(material.name(), reason, false), ignored -> new Pending());
+        row.amount += amount;
+        row.at = System.currentTimeMillis();
+        if (at != null && at.getWorld() != null) {
+            row.world = at.getWorld().getName();
+            row.x = at.getBlockX(); row.y = at.getBlockY(); row.z = at.getBlockZ();
+        }
+        if (pending.size() >= 400) flush();
     }
 
     private void record(ItemStack stack, Location at, String reason) {
