@@ -5,9 +5,28 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
-## Session: 2026-08-14
+## Session: 2026-08-14 → 2026-08-15
 
-Branch `staging`. Staging-only; production NOT deployed.
+Branch `staging`. All work below is on staging and NOT yet deployed to production.
+
+### Promotion status — what should go to `main`/production vs stay staging-only
+
+**Safe to promote to production (all of this session's commits — general fixes/features, no staging-only flags
+added):** `6395ff1` regression sweep · `bdd8947` duel ready-gate · `bda5664` item wagering + per-round betting ·
+`16d96ea` vault paging / dragon-egg 2M / rtp×2 / excavator trade-rebind / monument mob exemption / faction-home
+validation / AFK-notify / elite-hunt-end · (this commit) shulker sellall.
+
+**Owner specifically wants these ON production** (they were reported as prod-visible): the boss **damage-recap**
+for the 3 custom bosses (already on the world-boss path — prod just hasn't been promoted), the **regression
+sweep** (boss price, /shop cooldown, pet penalty), and **Dragon Egg 2M**.
+
+**Config files that must be copied on a production promote (not carried by the jar):** `config.yml` (rtp radii,
+`merchants.boss-chosen-price`, net-worth DRAGON_EGG) and `shop.yml` (DRAGON_EGG buy). Use
+`deploy/promote-to-production.ps1` / `deploy/check_deploy.py`; the on-disk prod ymls need the same edits made to
+staging's.
+
+**Staging-only, do NOT promote:** `trusted-admin.staging-session-persistence` (AuthMe remote-admin persistence),
+and anything else tagged staging-only in `deploy/manifest.yml`.
 
 ### Regression sweep (owner-reported)
 
@@ -95,10 +114,13 @@ sync as scopes settle. One wager per spectator per scope; changing a scope refun
 - **Elite Hunt ends when its elite is gone.** Track the elite's UUID; a credited kill already ends the event,
   and a tick check now ends it on any other disappearance (no-credit death, void, /kill, removal). A
   chunk-loaded guard on the last-known position prevents a brief chunk unload from ending a live hunt.
-- **Chat lag — investigated, not an SMPCore bug.** Every SMPCore public-chat handler is async or early-returns;
-  the one DB touch (`logChat`) is already async on a WAL connection (~sub-ms). Installed TAB v6.1.0 (rendered
-  skin heads + faction suffixes in chat/nametags) and Prism are the realistic per-message stutter sources —
-  external, to investigate in their configs, not SMPCore.
+- **Chat lag — NOT an SMPCore bug (owner-confirmed).** Owner recalls this was already audited previously and
+  traced to **console / server-side settings**, not the plugin. Re-verified the SMPCore chat path is clean
+  (every handler async or early-return; `logChat` is an async WAL insert). Do not re-audit SMPCore for this.
+- **/shop sellall chest now reaches inside shulker boxes.** `containerSellableDeep` / `removeMaterialDeep` make
+  the chest sell path count and sell the sellable items INSIDE shulker boxes sitting in the container (the
+  shulker itself is never sold — it's emptied and written back). The plain `/shop sellall` (player inventory)
+  path is deliberately unchanged.
 
 ---
 

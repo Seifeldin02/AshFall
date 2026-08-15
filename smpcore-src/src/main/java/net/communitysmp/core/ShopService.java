@@ -158,9 +158,54 @@ final class ShopService {
         return counts;
     }
     private SaleQuote containerQuote(Inventory inv,Player p){
-        Map<Material,Integer> counts=sellableFrom(inv.getContents());String day=LocalDate.now().toString();double earned=0;int sellable=0;
+        Map<Material,Integer> counts=containerSellableDeep(inv);String day=LocalDate.now().toString();double earned=0;int sellable=0;
         for(var entry:counts.entrySet()){Price price=prices.get(entry.getKey());int amount=entry.getValue(),sold=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day);int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;earned+=full*price.sell()+reduced*price.sell()*price.reduced();sellable+=amount;}
         return new SaleQuote(Math.round(earned*100)/100.0,sellable,0);
+    }
+    /** Like sellableFrom, but for /shop sellall chest it ALSO reaches into shulker boxes sitting in the
+     *  container and counts the sellable items inside them. The shulker itself is never counted or sold --
+     *  only its contents. Chest-only: the plain /shop sellall (player inventory) path is untouched. */
+    private boolean isShulkerBox(ItemStack item){return item!=null&&item.getType().name().endsWith("SHULKER_BOX")&&item.getItemMeta() instanceof org.bukkit.inventory.meta.BlockStateMeta bsm&&bsm.getBlockState() instanceof org.bukkit.block.ShulkerBox;}
+    private void countSellable(ItemStack item,Map<Material,Integer> counts){
+        if(item==null||item.getType().isAir()||!item.isSimilar(new ItemStack(item.getType())))return;
+        Price price=prices.get(item.getType());if(price!=null&&!price.luxury()&&price.sell()>=0)counts.merge(item.getType(),item.getAmount(),Integer::sum);
+    }
+    private Map<Material,Integer> containerSellableDeep(Inventory inv){
+        Map<Material,Integer> counts=new LinkedHashMap<>();
+        for(ItemStack item:inv.getContents()){
+            if(item==null||item.getType().isAir())continue;
+            if(isShulkerBox(item)){org.bukkit.block.ShulkerBox box=(org.bukkit.block.ShulkerBox)((org.bukkit.inventory.meta.BlockStateMeta)item.getItemMeta()).getBlockState();for(ItemStack inner:box.getInventory().getContents())countSellable(inner,counts);continue;}
+            countSellable(item,counts);
+        }
+        return counts;
+    }
+    /** Removes up to `amount` of `material` from the container, reaching INTO any shulker boxes it holds
+     *  (the emptied shulker is written back and kept). Returns how many were actually removed. */
+    private int removeMaterialDeep(Inventory inv,Material material,int amount){
+        int remaining=amount;
+        for(int slot=0;slot<inv.getSize()&&remaining>0;slot++){
+            ItemStack item=inv.getItem(slot);
+            if(item==null||item.getType().isAir())continue;
+            if(isShulkerBox(item)){
+                org.bukkit.inventory.meta.BlockStateMeta bsm=(org.bukkit.inventory.meta.BlockStateMeta)item.getItemMeta();
+                org.bukkit.block.ShulkerBox box=(org.bukkit.block.ShulkerBox)bsm.getBlockState();
+                Inventory boxInv=box.getInventory();boolean modified=false;
+                for(int inner=0;inner<boxInv.getSize()&&remaining>0;inner++){
+                    ItemStack it=boxInv.getItem(inner);
+                    if(it==null||it.getType()!=material||!it.isSimilar(new ItemStack(material)))continue;
+                    int take=Math.min(remaining,it.getAmount());
+                    if(take>=it.getAmount())boxInv.setItem(inner,null);else{it.setAmount(it.getAmount()-take);boxInv.setItem(inner,it);}
+                    remaining-=take;modified=true;
+                }
+                if(modified){bsm.setBlockState(box);item.setItemMeta(bsm);inv.setItem(slot,item);}
+                continue;
+            }
+            if(item.getType()!=material||!item.isSimilar(new ItemStack(material)))continue;
+            int take=Math.min(remaining,item.getAmount());
+            if(take>=item.getAmount())inv.setItem(slot,null);else{item.setAmount(item.getAmount()-take);inv.setItem(slot,item);}
+            remaining-=take;
+        }
+        return amount-remaining;
     }
     boolean sellAllChest(Player player){
         org.bukkit.util.RayTraceResult ray=player.rayTraceBlocks(6);
@@ -182,15 +227,15 @@ final class ShopService {
         FactionService.Claim claim=plugin.factions().claimAt(location);
         if(claim!=null&&!plugin.factions().isMember(player,claim.faction())&&!plugin.privileged(player)){CoreUtil.error(player,"This storage is protected by "+claim.faction().name()+".");return;}
         Inventory inv=container.getInventory();
-        Map<Material,Integer> counts=sellableFrom(inv.getContents());
+        Map<Material,Integer> counts=containerSellableDeep(inv);
         SaleQuote quote=containerQuote(inv,player);
         if(quote.sellable()<=0){CoreUtil.error(player,"Nothing left to sell in that container.");plugin.settings().marketSound(player,"failed");return;}
         if(!plugin.bank().payShopSeller(player,quote.earned(),"CONTAINER_SELLALL")){CoreUtil.error(player,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(player,"failed");return;}
         String day=LocalDate.now().toString();
         for(var entry:counts.entrySet()){
             Material material=entry.getKey();Price price=prices.get(material);int amount=entry.getValue(),sold=db.dailySold(CoreUtil.id(player),material.name(),day);int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*100)/100.0;
-            int remaining=amount;for(int slot=0;slot<inv.getSize()&&remaining>0;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType()!=material||!item.isSimilar(new ItemStack(material)))continue;int take=Math.min(remaining,item.getAmount());if(take>=item.getAmount())inv.setItem(slot,null);else{item.setAmount(item.getAmount()-take);inv.setItem(slot,item);}remaining-=take;}
-            creditStock(player,material,amount-remaining,amount);
+            int removed=removeMaterialDeep(inv,material,amount);
+            creditStock(player,material,removed,amount);
             db.recordSale(CoreUtil.id(player),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(player),"SHOP_SELL",earned,material.name());
         }
         CoreUtil.msg(player,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" from the container for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(player,"sale");
