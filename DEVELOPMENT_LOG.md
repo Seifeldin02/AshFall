@@ -48,6 +48,33 @@ through `payShopSeller` (now allowed to go negative); the auction listing fee is
 its failure-refund matches; player↔player transfers, taxes and minted income (e.g. villager-trade income) are
 untouched — only genuine player→bank sinks and shop payouts move.
 
+### Duel/vault fixes + relic wagering (staging) — pre-merge pass
+
+- **CRITICAL item-loss fixed.** `awardItemWagers`/`refundItemWagers` ran BEFORE `returnPlayers()`, and
+  `restore()` does `setContents()` — so the restored pre-duel inventory overwrote the just-awarded/refunded
+  wager items and they vanished. Now award/refund runs AFTER `returnPlayers` in both `finish` and
+  `abortAndRefund`. This was the "wagered items disappear" bug.
+- **Wager counts update live.** `refreshSetupOpen(duel)` re-renders the setup GUI for whichever duellist is
+  currently viewing it (never yanks anyone out of the box) on confirm/clear, so both sides see counts update.
+- **Relic wagering allowed.** `ArenaService.isWagerBox()` + `RelicService.isPersistentStorage()` exemption lets
+  relics be staked in the wager box (they were blocked as chest "storage"). Dupe-safe: one escrowed copy, and
+  the winner's next inventory scan transfers relic ownership; duels are far shorter than the reclaim clock.
+- **Wager Back / opponent view.** Wager-box Back returns to setup instead of closing; setup shows both wager
+  counts and a "View <opponent>'s wager" read-only screen.
+- **Vault paging fixed** — paginates in memory (fetch-all), so the ◀/▶ page arrows always navigate correctly.
+- **Vault spawner display fixed** — destroyed spawners show "<Type> Spawner" with the vanilla "interact with a
+  spawn egg" hint hidden (`HIDE_ADDITIONAL_TOOLTIP`), instead of a generic-looking egg tooltip.
+- **TNT dupers** — audited: cause is Paper `unsupported-settings.allow-piston-duplication: false` (default), NOT
+  SMPCore (its piston guard only blocks pistons crossing a claim edge). Owner set it `true` manually on both
+  staging + production. Also enables sand/gravel/carpet/rail dupers (economy note).
+
+**PENDING (next session): the designed duel arena map.** Spec captured (50x50 default black/red for
+mace/sword/axe; 100x100 for spear; glowstone+obsidian walls to world height + bedrock cap; glowstone+red
+terracotta floor; unbreakable structure, player blocks breakable; keep the per-slot temporary-snapshot model).
+Deferred deliberately: full-height walls are ~50–100k blocks/slot, so `buildSlot` needs a spread-over-ticks (or
+build-at-STAKING) rewrite + per-(slot,size) build cache + scaled spawn corners, not a one-tick main-thread build
+that would freeze the server. Not game-breaking; the current procedural arena still works meanwhile.
+
 ### Promotion status — what should go to `main`/production vs stay staging-only
 
 **Safe to promote to production (all of this session's commits — general fixes/features, no staging-only flags
