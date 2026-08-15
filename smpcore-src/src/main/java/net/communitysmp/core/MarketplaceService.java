@@ -131,9 +131,9 @@ final class MarketplaceService implements Listener {
             /** Out of stock is shown as unavailable rather than as a price, so nobody clicks a buy they
              *  cannot complete. Selling stays open at all times -- that is how the shop restocks. */
             if(!luxury&&have<=0)lore.add(Component.text("Buy: out of stock",NamedTextColor.RED));
-            else lore.add(Component.text("Buy: "+CoreUtil.money(price.buy()*buyMultiplier)+(luxury?"":" each"),NamedTextColor.GREEN));
+            else lore.add(Component.text("Buy: "+CoreUtil.money(price.buy()*buyMultiplier*plugin.bank().buyFactor())+(luxury?"":" each"),NamedTextColor.GREEN));
             if(!luxury){
-                lore.add(Component.text("Sell: "+CoreUtil.money(price.sell()*sellMultiplier)+" each",NamedTextColor.YELLOW));
+                lore.add(Component.text("Sell: "+CoreUtil.money(price.sell()*sellMultiplier*plugin.bank().sellFactor())+" each",NamedTextColor.YELLOW));
                 lore.add(Component.text("In stock: "+(have>0?CoreUtil.compact(have):"none"),have>0?NamedTextColor.AQUA:NamedTextColor.DARK_GRAY));
                 lore.add(Component.text(have>0?"Hold shift to buy/sell in bulk":"Sell some to the shop to restock it",NamedTextColor.DARK_GRAY));
             }
@@ -198,7 +198,7 @@ final class MarketplaceService implements Listener {
                 plugin.settings().marketSound(player,"failed");return;
             }
             if(right&&session.section==Section.SHOP){shop.sell(player,ref.material(),amount,view.merchant?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1);render(player,session);return;}
-            double cost=Math.round(price.buy()*amount*multiplier*100)/100.0;boolean luxury=session.section==Section.LUXURY,mandatory=luxury&&cost>=plugin.getConfig().getDouble("confirmations.mandatory-luxury-price",2_000_000);
+            double cost=Math.round(price.buy()*amount*multiplier*plugin.bank().buyFactor()*100)/100.0;boolean luxury=session.section==Section.LUXURY,mandatory=luxury&&cost>=plugin.getConfig().getDouble("confirmations.mandatory-luxury-price",2_000_000);
             plugin.confirmations().request(player,luxury?SettingsService.ConfirmationKind.LUXURY:SettingsService.ConfirmationKind.SHOP,mandatory,"Buy "+amount+" "+price.display(),List.of("Cost: "+CoreUtil.money(cost)),()->{shop.buy(player,ref.material(),amount,multiplier);render(player,session);},()->render(player,session));
         }else if(session.section==Section.AUCTION){
             Database.AuctionRow row=plugin.db().auction(ref.auction());if(row==null)return;if(row.seller().equals(CoreUtil.id(player))){auctions.cancel(player,row.id());render(player,session);return;}

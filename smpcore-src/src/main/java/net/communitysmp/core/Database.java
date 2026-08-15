@@ -913,7 +913,7 @@ final class Database implements AutoCloseable {
     synchronized boolean payShopSeller(String player,double gross,double requestedGarnish,String detail){
         gross=roundMoney(gross);if(gross<=0)return false;LoanRow loan=loan(player);double payment=loan==null?0:roundMoney(Math.min(Math.max(0,requestedGarnish),Math.min(gross,loan.debt())));boolean own=false;
         try{own=connection.getAutoCommit();if(own)connection.setAutoCommit(false);long now=System.currentTimeMillis();
-            if(update("UPDATE central_bank SET balance=balance-?,shop_payouts=shop_payouts+?,updated_at=? WHERE id=1 AND balance>=?",gross,gross,now,gross)!=1){if(own)connection.rollback();return false;}
+            if(update("UPDATE central_bank SET balance=balance-?,shop_payouts=shop_payouts+?,updated_at=? WHERE id=1",gross,gross,now)!=1){if(own)connection.rollback();return false;}
             if(!changeBalance(player,gross-payment))throw new IllegalStateException("shop payout recipient account missing");
             update("INSERT INTO bank_ledger(occurred_at,player,category,amount,detail) VALUES(?,?,?,?,?)",now,player,"SHOP_PAYOUT",-gross,detail);
             if(payment>0)applyLoanPayment(loan,payment);if(own)connection.commit();return true;

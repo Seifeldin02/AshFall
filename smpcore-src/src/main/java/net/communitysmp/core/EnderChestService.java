@@ -458,7 +458,7 @@ final class EnderChestService implements Listener {
         int current=tier(player);
         if(current>=MAX_TIER){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");return;}
         int next=current+1;
-        double cost=tierPrice(next);
+        double cost=tierPrice(next)*plugin.bank().buyFactor();
         Inventory inventory=plugin.getServer().createInventory(new UpgradeHolder(CoreUtil.id(player),returnPage),27,
                 Component.text("Ender Storage Upgrade",NamedTextColor.DARK_PURPLE));
         inventory.setItem(11,CoreUtil.named(Material.LIME_CONCRETE,"Confirm",List.of(CoreUtil.money(cost),tierCapacity(next)+" slots total")));
@@ -470,7 +470,7 @@ final class EnderChestService implements Listener {
         int current=tier(player);
         if(current>=MAX_TIER){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");openPage(player,returnPage);return;}
         int next=current+1;
-        double cost=tierPrice(next);
+        double cost=tierPrice(next)*plugin.bank().buyFactor();
         if(cost<=0){CoreUtil.error(player,"That storage expansion is not configured.");openPage(player,returnPage);return;}
         if(!plugin.bank().allowNonessential(player,"Ender Storage upgrades")){openPage(player,returnPage);return;}
         if(!plugin.bank().payServer(player,cost,"SINK","ENDER_STORAGE_TIER_"+next)){CoreUtil.error(player,"You cannot afford this upgrade.");openPage(player,returnPage);return;}

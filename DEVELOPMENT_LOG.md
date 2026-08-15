@@ -27,6 +27,27 @@ Branch `staging`. All work below is on staging and NOT yet deployed to productio
 - **Chosen kit glows.** The selected kit icon and the kit banner in the duel setup GUI now carry an enchant
   glint (`setEnchantmentGlintOverride`) in addition to the ✔ SELECTED label, so the chosen kit is obvious.
 
+### Central Bank deficit surcharge (staging)
+
+The Central Bank treasury may now go **below zero** (dropped the `balance>=?` guard on the shop-payout UPDATE).
+While the treasury is at or below zero (`BankService.deficit()`), a single shared multiplier is applied
+everywhere — no hand-doubled config values:
+- **`BankService.buyFactor()` = 2.0, `sellFactor()` = 0.5** while in deficit (both 1.0 otherwise).
+- **Every player→bank payment is doubled** by applying `buyFactor()` at each sink's amount computation (so
+  display == charge == records): `/shop` + `/luxuryshop` buys (`ShopService.buy` + `MarketplaceService` GUI
+  lore/confirm), omen/wandering shop (`MerchantService.purchase`/`purchaseWithSigils`), Ender Storage upgrades,
+  personal + faction home slots, faction expansion, auction listing fee, and the **death penalty**
+  (`takeFraction` percent+cap ×factor).
+- **Every shop sell is halved** by applying `sellFactor()` at each earned computation (command sell, the
+  `SaleQuote` builders, container sell-all, quicksell) so previews, confirmations and payout all match.
+- The surcharge lifts automatically the moment buys/fees/sinks pull the treasury back above zero — it is a
+  self-correcting recovery mechanism, computed live from `bank().balance()`, never stored.
+
+Doesn't break existing bank flows: sinks still route through `serverPayment`/`factionServerPayment`, payouts
+through `payShopSeller` (now allowed to go negative); the auction listing fee is factored once at the site so
+its failure-refund matches; player↔player transfers, taxes and minted income (e.g. villager-trade income) are
+untouched — only genuine player→bank sinks and shop payouts move.
+
 ### Promotion status — what should go to `main`/production vs stay staging-only
 
 **Safe to promote to production (all of this session's commits — general fixes/features, no staging-only flags

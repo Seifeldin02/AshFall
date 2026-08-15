@@ -197,6 +197,12 @@ final class BankService implements Listener {
 
     boolean overdue(String player){Database.LoanRow loan=accrue(player);return loan!=null&&loan.overdue();}
     Database.BankRow treasury(){return db.bank();}
+    /** The Central Bank deficit surcharge. While the treasury sits at or below zero, every player->bank payment
+     *  is charged at 2x and every shop payout is paid at 0.5x, until buys/fees/sinks pull the treasury back
+     *  above zero. This is the SINGLE source of truth so no price is ever hand-doubled at a call site. */
+    boolean deficit(){ Database.BankRow row=db.bank(); return row!=null && row.balance()<=0; }
+    double buyFactor(){ return deficit()?2.0:1.0; }
+    double sellFactor(){ return deficit()?0.5:1.0; }
 
     private Database.LoanRow accrue(Player player){return accrue(CoreUtil.id(player));}
     private Database.LoanRow accrue(String player){return db.accrueLoan(player,plugin.getConfig().getDouble("bank.loans.maximum-interest-percent",25));}
