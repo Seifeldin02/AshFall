@@ -53,12 +53,17 @@ final class ProgressService implements Listener {
     void setTracking(Player player,boolean enabled){db.preference(CoreUtil.id(player),"event_tracking",Boolean.toString(enabled));CoreUtil.msg(player,"Event tracking "+(enabled?"enabled":"disabled")+".");}
 
     void worldChanged(Player player,World.Environment environment){if(environment==World.Environment.NETHER)milestone(player,"ENTER_NETHER","entered the Nether for the first time",500,Material.GOLDEN_APPLE,true);else if(environment==World.Environment.THE_END)milestone(player,"ENTER_END","reached the End for the first time",1500,Material.ENDER_EYE,true);}
+    /** Duel kits are borrowed gear, not achievements -- nothing done inside the arena world (equipped with a
+     *  kit, breaking placed blocks, or spectating) may advance /progression. The spear's elytra was crediting
+     *  the Elytra milestone, etc. */
+    private boolean inArena(Player player){ return plugin.arena()!=null && plugin.arena().isArenaWorld(player.getWorld()); }
     void blockMined(Player player,Material material){
+        if(inArena(player))return;
         if(material==Material.DIAMOND_ORE||material==Material.DEEPSLATE_DIAMOND_ORE)milestone(player,"ADVENTURE_DIAMOND","mined their first diamond ore",250,null,false);
         else if(material==Material.ANCIENT_DEBRIS){milestone(player,"ANCIENT_DEBRIS_MINED","unearthed ancient debris",750,null,false);refreshAdvanced(player);}
     }
     void hostileKill(Player player,EntityType type,World.Environment environment){if(environment==World.Environment.NETHER&&Set.of(EntityType.BLAZE,EntityType.PIGLIN_BRUTE,EntityType.WITHER_SKELETON).contains(type))milestone(player,"ADVENTURE_NETHER","proved themselves against the Nether",500,Material.GOLDEN_APPLE,true);}
-    void acquired(Player player,Material material){switch(material){case BLAZE_ROD->milestone(player,"BLAZE_ROD","acquired their first Blaze Rod",200,null,false);case ENDER_EYE->milestone(player,"ENDER_EYE","crafted or found their first Eye of Ender",300,null,false);case NETHERITE_INGOT->milestone(player,"NETHERITE_INGOT","forged their first Netherite Ingot",750,null,true);case ELYTRA->milestone(player,"ELYTRA","claimed their first Elytra",2000,Material.FIREWORK_ROCKET,true);case WITHER_SKELETON_SKULL->milestone(player,"WITHER_SKULL","found their first Wither Skeleton Skull",350,null,false);default->{}}}
+    void acquired(Player player,Material material){if(inArena(player))return;switch(material){case BLAZE_ROD->milestone(player,"BLAZE_ROD","acquired their first Blaze Rod",200,null,false);case ENDER_EYE->milestone(player,"ENDER_EYE","crafted or found their first Eye of Ender",300,null,false);case NETHERITE_INGOT->milestone(player,"NETHERITE_INGOT","forged their first Netherite Ingot",750,null,true);case ELYTRA->milestone(player,"ELYTRA","claimed their first Elytra",2000,Material.FIREWORK_ROCKET,true);case WITHER_SKELETON_SKULL->milestone(player,"WITHER_SKULL","found their first Wither Skeleton Skull",350,null,false);default->{}}}
     void majorKill(Player player,EntityType type){if(type==EntityType.WITHER){grantAdvancement(player,"nether/summon_wither");milestone(player,"DEFEAT_WITHER","defeated the Wither for the first time",4000,Material.BEACON,true);}else if(type==EntityType.ENDER_DRAGON){grantAdvancement(player,"end/kill_dragon");milestone(player,"DEFEAT_DRAGON","defeated the Ender Dragon for the first time",6000,Material.DRAGON_BREATH,true);}refreshAdvanced(player);}
 
     void repairDragonParticipant(String name){
@@ -192,6 +197,7 @@ final class ProgressService implements Listener {
     void eliteParticipation(Player player,String tier){String key=tier.equalsIgnoreCase("legendary")?"LEGENDARY_PARTICIPANT":tier.equalsIgnoreCase("epic")?"EPIC_PARTICIPANT":null;if(key!=null){db.markMilestone(CoreUtil.id(player),key);refreshRanks(player,true);}}
     void eventParticipated(Player player){refreshRanks(player,true);}
     void inspectLoadout(Player player,boolean announce){
+        if(inArena(player))return;
         String id=CoreUtil.id(player);ItemStack[] armor=player.getInventory().getArmorContents();List<ItemStack> armorSet=armor.length<4?List.of():Arrays.asList(armor);
         boolean fullArmor=armorSet.size()==4&&armorSet.stream().allMatch(item->item!=null&&Set.of(Material.NETHERITE_HELMET,Material.NETHERITE_CHESTPLATE,Material.NETHERITE_LEGGINGS,Material.NETHERITE_BOOTS).contains(item.getType()));
         Map<Material,ItemStack> owned=new EnumMap<>(Material.class);for(ItemStack item:player.getInventory().getContents())if(item!=null)owned.putIfAbsent(item.getType(),item);
