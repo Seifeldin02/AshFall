@@ -48,6 +48,23 @@ through `payShopSeller` (now allowed to go negative); the auction listing fee is
 its failure-refund matches; player↔player transfers, taxes and minted income (e.g. villager-trade income) are
 untouched — only genuine player→bank sinks and shop payouts move.
 
+### Designed arena + 10s DC forfeit + lag pass (staging → merged to production)
+
+- **Designed duel arena built** (`ensureArena`/`addShellSteps`, replaces the old procedural 61x61). Kit-aware:
+  **50x50** for mace/sword/axe, **100x100** for spear. Floor = glowstone+red terracotta mix; walls = glowstone+
+  obsidian mix from floor+1 to **world height**, top row **bedrock**. Black/red aesthetic. Structure unbreakable;
+  player-placed blocks still break (unchanged). Built **spread over ticks** (one 24-block wall band per tick) so
+  the ~50k–110k-block shell never freezes the server; the match only starts once the shell finishes
+  (`startMatch` → `ensureArena(..., () -> beginRound)`). Cached per **(slot,size)** — a slot reused at a different
+  size has its old shell cleared first, so spear and default share slots. `corner()` scales with size;
+  spectators now watch from **inside** (walls are opaque). Multi-session per-slot temporary-snapshot model kept.
+- **DC forfeit shortened to 10s** (`arena.reconnect-grace-seconds` 45→10, resource + staging; prod uses the new
+  code default 10) with a **visible, non-chat countdown** — the remaining duellist and every spectator get an
+  actionbar "X disconnected — forfeits in Ns" each second until reconnect or forfeit.
+- **Lag/network:** `BankService.deficit()` is now **cached (1s TTL)**. It was hitting the synchronized `bank()`
+  SELECT on every `buyFactor()`/`sellFactor()` call — dozens per shop-GUI open — a needless query storm on a
+  hot path. Now at most one bank read per second regardless of call volume.
+
 ### Duel/vault fixes + relic wagering (staging) — pre-merge pass
 
 - **CRITICAL item-loss fixed.** `awardItemWagers`/`refundItemWagers` ran BEFORE `returnPlayers()`, and

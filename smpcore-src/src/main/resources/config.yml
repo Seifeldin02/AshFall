@@ -460,7 +460,7 @@ arena:
   # A void world built by us rather than a downloaded map, so there is no third-party world to vet.
   world: ashfall_arena
   # How long a disconnected duellist has to come back before forfeiting the round.
-  reconnect-grace-seconds: 45
+  reconnect-grace-seconds: 10
   # How many duels can run at once, each in its own isolated arena slot.
   max-concurrent-duels: 6
   # Cooldown between challenges, like a trade request, so invites cannot be spammed.

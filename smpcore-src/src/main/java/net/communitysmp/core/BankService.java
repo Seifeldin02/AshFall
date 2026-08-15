@@ -199,8 +199,17 @@ final class BankService implements Listener {
     Database.BankRow treasury(){return db.bank();}
     /** The Central Bank deficit surcharge. While the treasury sits at or below zero, every player->bank payment
      *  is charged at 2x and every shop payout is paid at 0.5x, until buys/fees/sinks pull the treasury back
-     *  above zero. This is the SINGLE source of truth so no price is ever hand-doubled at a call site. */
-    boolean deficit(){ Database.BankRow row=db.bank(); return row!=null && row.balance()<=0; }
+     *  above zero. This is the SINGLE source of truth so no price is ever hand-doubled at a call site.
+     *
+     *  The state is CACHED for 1s: buyFactor()/sellFactor() are called once per shop-GUI item (dozens per open),
+     *  and hitting the synchronized bank() SELECT each time was a needless query storm. A 1s staleness is
+     *  irrelevant for a treasury that moves on human timescales, and it keeps the hot shop paths query-free. */
+    private volatile boolean cachedDeficit; private volatile long deficitCheckedAt;
+    boolean deficit(){
+        long now = System.currentTimeMillis();
+        if (now - deficitCheckedAt > 1000L) { Database.BankRow row = db.bank(); cachedDeficit = row != null && row.balance() <= 0; deficitCheckedAt = now; }
+        return cachedDeficit;
+    }
     double buyFactor(){ return deficit()?2.0:1.0; }
     double sellFactor(){ return deficit()?0.5:1.0; }
 

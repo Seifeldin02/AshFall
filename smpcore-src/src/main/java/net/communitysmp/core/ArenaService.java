@@ -150,7 +150,8 @@ final class ArenaService implements Listener {
     private final Map<String, Long> lastChallenge = new ConcurrentHashMap<>();
     private World arena;
     /** Slots whose structure has already been built, so it is only laid once, not every round. */
-    private final Set<Integer> built = new HashSet<>();
+    private final Map<Integer,Integer> builtSize = new java.util.HashMap<>();
+    private final Set<Integer> building = new HashSet<>();
     private BukkitTask ticker;
 
     ArenaService(SMPCore plugin) {
@@ -188,60 +189,69 @@ final class ArenaService implements Listener {
 
     private int slotBaseX(int slot) { return slot * SLOT_SPACING; }
 
-    /** Builds the arena structure for a slot the first time it is used. Idempotent — re-run before a match
-     *  to guarantee a clean floor even if a previous match left something behind. */
-    private static final int HALF = 30;
+    /** Arena size by kit: the Spear gets a bigger floor for its mobility; every other kit shares the default. */
+    private int sizeFor(Kit kit) { return kit == Kit.SPEAR ? 100 : 50; }
 
-    /** Builds a slot's structure once. A 61x61 quartz-and-stone floor with a low bordered wall and corner
-     *  pillars, a raised glass spectator ring outside it, sea-lantern lighting, and completely OPEN SKY --
-     *  no ceiling -- so the Spear's elytra and the Mace's wind-charge launches have room. Deliberately
-     *  procedural: a downloaded world could not be fetched and content-vetted safely in this environment,
-     *  and the slot system needs an identical layout it can stamp and reset per match. */
-    private void buildSlot(int slot) {
-        if (arena == null || !built.add(slot)) return;
-        int cx = slotBaseX(slot);
-        for (int x = -HALF - 4; x <= HALF + 4; x++) for (int z = -HALF - 4; z <= HALF + 4; z++) {
-            boolean inFloor = Math.abs(x) <= HALF && Math.abs(z) <= HALF;
-            boolean onWall = Math.abs(x) == HALF || Math.abs(z) == HALF;
-            boolean gallery = (Math.abs(x) > HALF + 1 && Math.abs(x) <= HALF + 4) || (Math.abs(z) > HALF + 1 && Math.abs(z) <= HALF + 4);
-            if (inFloor) {
-                /** Subtle checker so the floor reads as a real arena, not a slab of stone. */
-                boolean light = ((x + z) & 1) == 0;
-                arena.getBlockAt(cx + x, FLOOR_Y, z).setType(light ? Material.SMOOTH_QUARTZ : Material.POLISHED_ANDESITE, false);
-            }
-            if (onWall) {
-                for (int y = 1; y <= 3; y++) arena.getBlockAt(cx + x, FLOOR_Y + y, z).setType(Material.SMOOTH_STONE, false);
-                arena.getBlockAt(cx + x, FLOOR_Y + 4, z).setType(Material.SMOOTH_STONE_SLAB, false);
-            }
-            if (gallery) {
-                /** Spectator ring: a glass floor two blocks up with a low barrier, ringing the arena. */
-                arena.getBlockAt(cx + x, FLOOR_Y + 2, z).setType(Material.GLASS, false);
-                arena.getBlockAt(cx + x, FLOOR_Y + 3, z).setType(Material.GLASS, false);
-            }
+    /** Black-and-red aesthetic. Floor is mostly red terracotta with sparse glowstone for light; walls are mostly
+     *  obsidian with sparse glowstone. Deterministic per-coordinate so a rebuild reproduces the identical map. */
+    private Material floorMat(int x, int z) { return Math.floorMod(x * 3 + z * 7, 5) == 0 ? Material.GLOWSTONE : Material.RED_TERRACOTTA; }
+    private Material wallMat(int x, int y, int z) { return Math.floorMod(x * 5 + z * 3 + y * 2, 6) == 0 ? Material.GLOWSTONE : Material.OBSIDIAN; }
+
+    /** Ensures the slot's arena exists at the requested size, THEN runs onReady. The full-height perimeter walls
+     *  are tens of thousands of blocks, so the build is spread one vertical band per tick rather than frozen
+     *  into a single tick -- the match only begins once the structure is finished. Cached per (slot,size); a
+     *  slot reused at a different size has its previous shell cleared first, so spear (100) and the default (50)
+     *  can share slots. The structure is never rebuilt between rounds (it is unbreakable and simply persists). */
+    private void ensureArena(int slot, int size, Runnable onReady) {
+        if (arena == null) { onReady.run(); return; }
+        Integer cur = builtSize.get(slot);
+        if (cur != null && cur == size) { onReady.run(); return; }
+        if (!building.add(slot)) { Bukkit.getScheduler().runTaskLater(plugin, () -> ensureArena(slot, size, onReady), 10L); return; }
+        int old = cur == null ? 0 : cur, cx = slotBaseX(slot), topY = arena.getMaxHeight() - 1;
+        List<Runnable> steps = new ArrayList<>();
+        if (old > 0 && old != size) addShellSteps(steps, cx, old, topY, true);
+        int h = size / 2, minX = cx - h, maxX = cx + h - 1, minZ = -h, maxZ = h - 1;
+        steps.add(() -> { for (int x = minX; x <= maxX; x++) for (int z = minZ; z <= maxZ; z++) arena.getBlockAt(x, FLOOR_Y, z).setType(floorMat(x, z), false); });
+        addShellSteps(steps, cx, size, topY, false);
+        runSteps(steps, () -> { builtSize.put(slot, size); building.remove(slot); plugin.getLogger().info("[Arena] built slot " + slot + " (" + size + "x" + size + ")"); onReady.run(); });
+    }
+
+    /** Perimeter-wall steps for a `size` arena, one 24-block vertical band per step so no tick sets too many
+     *  blocks. clear=true air's the shell (to wipe a previous size); clear=false lays glowstone/obsidian with a
+     *  bedrock cap on the very top row. Walls run floor+1 up to world height, fully enclosing the arena. */
+    private void addShellSteps(List<Runnable> steps, int cx, int size, int topY, boolean clear) {
+        int h = size / 2, minX = cx - h, maxX = cx + h - 1, minZ = -h, maxZ = h - 1;
+        for (int base = FLOOR_Y + 1; base <= topY; base += 24) {
+            final int y0 = base, y1 = Math.min(topY, base + 23);
+            steps.add(() -> {
+                for (int y = y0; y <= y1; y++) {
+                    for (int x = minX; x <= maxX; x++) { setShell(x, y, minZ, y == topY, clear); setShell(x, y, maxZ, y == topY, clear); }
+                    for (int z = minZ + 1; z < maxZ; z++) { setShell(minX, y, z, y == topY, clear); setShell(maxX, y, z, y == topY, clear); }
+                }
+            });
         }
-        /** Corner pillars with a lantern on top -- landmarks and light. */
-        for (int sx = -1; sx <= 1; sx += 2) for (int sz = -1; sz <= 1; sz += 2) {
-            int x = sx * HALF, z = sz * HALF;
-            for (int y = 1; y <= 6; y++) arena.getBlockAt(cx + x, FLOOR_Y + y, z).setType(Material.QUARTZ_PILLAR, false);
-            arena.getBlockAt(cx + x, FLOOR_Y + 7, z).setType(Material.SEA_LANTERN, false);
-        }
-        /** A few sea lanterns set flush into the floor edge so the arena is well lit at night. */
-        for (int i = -HALF + 6; i <= HALF - 6; i += 12) {
-            arena.getBlockAt(cx + i, FLOOR_Y, HALF - 1).setType(Material.SEA_LANTERN, false);
-            arena.getBlockAt(cx + i, FLOOR_Y, -HALF + 1).setType(Material.SEA_LANTERN, false);
-            arena.getBlockAt(cx + HALF - 1, FLOOR_Y, i).setType(Material.SEA_LANTERN, false);
-            arena.getBlockAt(cx + -HALF + 1, FLOOR_Y, i).setType(Material.SEA_LANTERN, false);
-        }
-        plugin.getLogger().info("[Arena] built slot " + slot + " at x=" + cx);
+    }
+    private void setShell(int x, int y, int z, boolean top, boolean clear) {
+        arena.getBlockAt(x, y, z).setType(clear ? Material.AIR : (top ? Material.BEDROCK : wallMat(x, y, z)), false);
+    }
+    private void runSteps(List<Runnable> steps, Runnable done) {
+        java.util.Iterator<Runnable> it = steps.iterator();
+        new org.bukkit.scheduler.BukkitRunnable() {
+            @Override public void run() {
+                if (it.hasNext()) it.next().run();
+                if (!it.hasNext()) { cancel(); done.run(); }
+            }
+        }.runTaskTimer(plugin, 0L, 1L);
     }
 
     private Location corner(Duel duel, int index) {
-        int cx = slotBaseX(duel.slot);
-        return new Location(arena, cx + (index == 0 ? -HALF + 4.5 : HALF - 4.5), FLOOR_Y + 1, 0.5, index == 0 ? 90f : -90f, 0f);
+        int cx = slotBaseX(duel.slot), h = sizeFor(duel.kit) / 2;
+        return new Location(arena, cx + (index == 0 ? -h + 3.5 : h - 4.5), FLOOR_Y + 1, 0.5, index == 0 ? 90f : -90f, 0f);
     }
 
-    /** A spectator perch on the raised glass ring, looking in. */
-    private Location gallery(Duel duel) { return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 4, HALF + 3.5, 180f, 0f); }
+    /** Spectators watch from INSIDE the arena (they are invisible, flying and non-colliding), since the
+     *  full-height walls make an outside gallery useless. Placed above the centre, looking down. */
+    private Location gallery(Duel duel) { return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 6, 0.5, 0f, 25f); }
 
     private boolean inArena(Player player) { return arena != null && player.getWorld().equals(arena); }
     boolean isArenaWorld(org.bukkit.World world) { return arena != null && arena.equals(world); }
@@ -620,10 +630,9 @@ final class ArenaService implements Listener {
         duel.phase = Phase.LIVE;
         duel.rounds.put(duel.a, 0); duel.rounds.put(duel.b, 0);
         one.closeInventory(); two.closeInventory();
-        buildSlot(duel.slot);
         plugin.getServer().broadcast(Component.text("⚔ " + one.getName() + " vs " + two.getName() + " — "
                 + duel.kit.label() + ", best of " + duel.bestOf + ". /duel watch " + duel.id + " to spectate; bet before it starts.", NamedTextColor.GOLD));
-        beginRound(duel);
+        ensureArena(duel.slot, sizeFor(duel.kit), () -> beginRound(duel));
     }
 
     /** Opens the round: clean the arena, teleport both duellists to their corners, fully re-equip and heal
@@ -981,7 +990,6 @@ final class ArenaService implements Listener {
          *  map is never modified by a match. Cheap -- a handful of blocks, not the whole arena. */
         for (long k : duel.placed) arena.getBlockAtKey(k).setType(Material.AIR, false);
         duel.placed.clear();
-        buildSlot(duel.slot);
     }
 
     // ------------------------------------------------------------------ command blocking
@@ -1004,16 +1012,25 @@ final class ArenaService implements Listener {
     }
 
     private void tick() {
-        long grace = Math.max(5, plugin.getConfig().getLong("arena.reconnect-grace-seconds", 45)) * 1000L;
+        long grace = Math.max(3, plugin.getConfig().getLong("arena.reconnect-grace-seconds", 10)) * 1000L;
+        long now = System.currentTimeMillis();
         for (Duel duel : new ArrayList<>(duels)) {
-            if (duel.phase == Phase.PENDING && System.currentTimeMillis() - duel.pendingSince > 60000) { both(duel, "Challenge expired."); dispose(duel); continue; }
+            if (duel.phase == Phase.PENDING && now - duel.pendingSince > 60000) { both(duel, "Challenge expired."); dispose(duel); continue; }
             if (duel.phase != Phase.LIVE) continue;
             for (Map.Entry<String, Long> entry : new LinkedHashMap<>(duel.disconnectedAt).entrySet()) {
-                if (System.currentTimeMillis() - entry.getValue() < grace) continue;
+                long elapsed = now - entry.getValue();
                 String loser = entry.getKey(), winner = duel.other(loser);
-                both(duel, name(loser) + " did not reconnect in time.");
-                finish(duel, winner, loser);
-                break;
+                if (elapsed >= grace) { both(duel, name(loser) + " did not reconnect in time."); finish(duel, winner, loser); break; }
+                /** Visible, non-chat countdown for the remaining duellist and every spectator of this match. */
+                int secs = (int) Math.ceil((grace - elapsed) / 1000.0);
+                String msg = name(loser) + " disconnected — forfeits in " + secs + "s";
+                Player remaining = plugin.getServer().getPlayer(winner);
+                if (remaining != null) actionbar(remaining, msg);
+                for (Map.Entry<String, Integer> sp : spectators.entrySet()) {
+                    if (sp.getValue() != duel.id) continue;
+                    Player watcher = plugin.getServer().getPlayer(sp.getKey());
+                    if (watcher != null) actionbar(watcher, msg);
+                }
             }
         }
     }
