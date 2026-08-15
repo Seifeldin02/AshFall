@@ -1124,11 +1124,14 @@ final class ArenaService implements Listener {
         String meName = meId.equals(duel.a) ? duel.aName : duel.bName, themName = meId.equals(duel.a) ? duel.bName : duel.aName;
         boolean ready = duel.confirmed.contains(meId);
         /** Rendered from THIS player's perspective: "You" is always the viewer, whichever side they are. */
-        int wagered = loadWager(duel, meId).size();
+        int wagered = loadWager(duel, meId).size(), theirWager = loadWager(duel, themId).size();
+        String themWagerName = meId.equals(duel.a) ? duel.bName : duel.aName;
         menu.inv.setItem(42, icon(Material.CHEST, "Wager items" + (wagered > 0 ? " (" + wagered + ")" : ""), List.of(
                 "Put items in to wager them", "Winner takes BOTH sides' wagered items",
-                wagered > 0 ? wagered + " stack(s) staged" : "None staged yet",
+                "You staged: " + wagered + "   " + themWagerName + ": " + theirWager,
                 "Separate from the money stake above")));
+        menu.inv.setItem(43, icon(Material.SPYGLASS, "View " + themWagerName + "'s wager", List.of(
+                theirWager > 0 ? theirWager + " stack(s) staged" : "Nothing staged yet", "Click to inspect what they staked")));
         menu.inv.setItem(40, icon(ready ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE, ready ? "Confirmed — waiting for opponent…" : "Confirm", List.of(
                 "You: " + meName + "  " + CoreUtil.money(duel.stakes.getOrDefault(meId, 0d)) + (ready ? "  (ready)" : ""),
                 "Them: " + themName + "  " + CoreUtil.money(duel.stakes.getOrDefault(themId, 0d)) + (duel.confirmed.contains(themId) ? "  (ready)" : ""),
@@ -1174,7 +1177,7 @@ final class ArenaService implements Listener {
             int raw = event.getRawSlot();
             if (raw >= 45 && raw < 54) {
                 event.setCancelled(true);
-                if (raw == 45) boxPlayer.closeInventory();
+                if (raw == 45) openSetup(boxPlayer);
                 else if (raw == 48) clearWager(boxPlayer, event.getInventory());
                 else if (raw == 49) confirmWager(boxPlayer, event.getInventory());
             }
@@ -1206,6 +1209,7 @@ final class ArenaService implements Listener {
                     case 34 -> adjustStake(player, 100000);
                     case 40 -> { player.closeInventory(); confirm(player); }
                     case 42 -> openWagerBox(player);
+                    case 43 -> openOpponentWager(player);
                     default -> { }
                 }
             }
@@ -1239,6 +1243,7 @@ final class ArenaService implements Listener {
                     default -> { }
                 }
             }
+            case "wagerview" -> { if (slot == 49) openSetup(player); return; }
             case "ready" -> {
                 Duel duel = find(menu.duelId);
                 if (duel == null || !duel.gating) { player.closeInventory(); return; }
@@ -1263,6 +1268,22 @@ final class ArenaService implements Listener {
 
     /** A real 54-slot container the duellist fills with what they want to wager. It is pre-loaded from any
      *  items already staged, so it can be edited. Only allowed before the match starts (STAKING). */
+    /** Read-only view of what the OPPONENT has wagered, so both sides can see the stakes before committing. */
+    private void openOpponentWager(Player player) {
+        Duel duel = duelOf(player);
+        if (duel == null) return;
+        String themId = duel.other(CoreUtil.id(player));
+        String themName = CoreUtil.id(player).equals(duel.a) ? duel.bName : duel.aName;
+        Menu menu = new Menu("wagerview", duel.id);
+        menu.inv = plugin.getServer().createInventory(menu, 54, Component.text(themName + "'s wager", NamedTextColor.DARK_AQUA));
+        List<ItemStack> items = loadWager(duel, themId);
+        for (int i = 0; i < items.size() && i < 45; i++) menu.inv.setItem(i, items.get(i));
+        for (int slot = 45; slot < 54; slot++) menu.inv.setItem(slot, filler());
+        menu.inv.setItem(49, icon(Material.ARROW, "Back", List.of("Duel setup")));
+        if (items.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, themName + " has not wagered anything", List.of()));
+        player.openInventory(menu.inv);
+    }
+
     private void openWagerBox(Player player) {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING) { actionbar(player, "Items can only be wagered before the match starts."); return; }
