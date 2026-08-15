@@ -48,6 +48,34 @@ through `payShopSeller` (now allowed to go negative); the auction listing fee is
 its failure-refund matches; player↔player transfers, taxes and minted income (e.g. villager-trade income) are
 untouched — only genuine player→bank sinks and shop payouts move.
 
+### Duel polish + totems + invis nametags + BIG lag fix (staging live; prod jar staged, NOT restarted)
+
+- **ESC out of the duel setup GUI = /duel cancel** (`closeSetup` — 1-tick check that ignores confirmed players
+  and players who just stepped into the wager box/viewer or a refresh). Added `cancel` to /duel autocomplete.
+- **Arena liquids now reset:** bucket-placed water/lava is tracked (`bucketEmpty` → `duel.placed`) so it's
+  cleared between matches. Old leftover liquids also get wiped by the build-time interior clear.
+- **Central Bank tax on duel winnings:** `arena.wager-tax-percent` (default 5%) taken from the money pot at
+  finish (`DUEL_POT_TAX`) and from the spectator betting pool (`DUEL_BET_TAX`).
+- **Totems work in duels:** the `lethal` round-resolver no longer intercepts a killing blow if the duellist is
+  holding a Totem of Undying — vanilla pops it and the round continues. (The spear kit carries a totem; it was
+  being bypassed every time.) Boss-totem case audited: `BossEventService.onAnyDamage` only touches boss mobs
+  (has `tierKey`), never players, so it doesn't break player totems — that rare case is vanilla (double-hit).
+- **Spectators use true Spectator gamemode:** invisible to the fighters WITH no nametag, and unable to attack /
+  make hit sounds / interfere. Fixes both spectator complaints in one go.
+- **Invisible players' nametags hidden generally:** `PacketNametagService` treats `isInvisible()` like crouching
+  (mounted overlay at zero opacity — suppresses the vanilla tag, shows nothing). (Edge: a viewer with ALL
+  nametag options off would still see vanilla tags; a scoreboard team would be needed but TAB manages those.)
+- **BIG lag fix (root cause of duper/machine lag):** `NetWorthService.removed()` / `blockChanged()` were doing
+  5+ synchronized DB writes PER BLOCK, and they run per **exploded** block and per **piston-moved** block — so
+  a TNT duper or flying-machine quarry was firing thousands of DB writes/second on the main thread. Both now
+  fast-path return for non-asset blocks (only spawners/containers/dragon eggs/hoppers are tracked). Combined
+  with the earlier bank-factor cache, this is the main code-level lag relief. Applied to the prod jar (staged),
+  takes effect on the next production restart. NOTE: the heaviest remaining lag is the stacked-spawner farms
+  (constant "Blaze x100" spawning/cramming) — intentional, not touched.
+
+Prod jar staged this session but **production was NOT restarted** (per instruction) — the code fixes go live on
+the next prod restart.
+
 ### ✅ MERGED TO PRODUCTION 2026-08-16 — everything below this session is now live on prod
 
 Prod jar swapped (`plugins/SMPCore-1.7.0.jar`), prod configs updated (boss-chosen-price 1.5M, rtp radii doubled,

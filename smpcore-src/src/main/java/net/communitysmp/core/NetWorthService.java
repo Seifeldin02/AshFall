@@ -77,7 +77,12 @@ final class NetWorthService implements Listener {
         if(holdings==null)holdings=ref.inventory().getStorageContents();
         for(ItemStack item:holdings)if(item!=null&&!item.getType().isAir()&&(plugin.shards()==null||!plugin.shards().bound(item))){double captured=plugin.capsules()==null?0:plugin.capsules().capturedValue(item);villagers+=captured*item.getAmount();value+=captured>0?0:itemValue(item);}if(value<=0)db.deleteAsset(ref.key());else db.saveAsset(new Database.AssetRow(claim.faction().id(),ref.key(),"CONTAINER","MIXED",Math.round(value*100)/100.0,System.currentTimeMillis()));if(villagers<=0)db.deleteAsset(villagerKey);else db.saveAsset(new Database.AssetRow(claim.faction().id(),villagerKey,"VILLAGER","CAPSULE",Math.round(villagers*100)/100.0,System.currentTimeMillis()));invalidate();}
     void blockChanged(Block block){
-        BlockState state=block.getState();String key=blockKey(block,state instanceof CreatureSpawner?"spawner":"container");db.deleteAsset(key);
+        BlockState state=block.getState();
+        /** Fast path: the vast majority of block changes (piston moves of slime/redstone, ordinary placements)
+         *  are not trackable assets. Skipping them here avoids per-block DB writes -- the flood a TNT duper or
+         *  flying-machine quarry was generating thousands of times a second on the main thread. */
+        if(!(state instanceof Container)&&!(state instanceof CreatureSpawner)&&block.getType()!=Material.DRAGON_EGG)return;
+        String key=blockKey(block,state instanceof CreatureSpawner?"spawner":"container");db.deleteAsset(key);
         if(state instanceof Container container){
             if(container instanceof Chest chest&&chest.getInventory().getHolder() instanceof DoubleChest doubleChest)for(InventoryHolder side:List.of(doubleChest.getLeftSide(),doubleChest.getRightSide()))if(side instanceof Chest half){db.deleteAsset(blockKey(half.getBlock(),"container"));db.deleteAsset(blockKey(half.getBlock(),"container")+":villagers");}
             containerChanged(container.getInventory());
@@ -86,7 +91,7 @@ final class NetWorthService implements Listener {
         else db.deleteAsset(blockKey(block,"dragonegg"));
         invalidate();
     }
-    void removed(Block block){db.deleteAsset(blockKey(block,"ihopper"));db.deleteAsset(blockKey(block,"container"));db.deleteAsset(blockKey(block,"container")+":villagers");db.deleteAsset(blockKey(block,"spawner"));db.deleteAsset(blockKey(block,"dragonegg"));if(block.getState() instanceof Chest chest&&chest.getInventory().getHolder() instanceof DoubleChest doubleChest){for(InventoryHolder side:List.of(doubleChest.getLeftSide(),doubleChest.getRightSide()))if(side instanceof Chest half){db.deleteAsset(blockKey(half.getBlock(),"container"));db.deleteAsset(blockKey(half.getBlock(),"container")+":villagers");}}invalidate();}
+    void removed(Block block){Material t=block.getType();if(t!=Material.SPAWNER&&t!=Material.DRAGON_EGG&&!(block.getState() instanceof Container))return;db.deleteAsset(blockKey(block,"ihopper"));db.deleteAsset(blockKey(block,"container"));db.deleteAsset(blockKey(block,"container")+":villagers");db.deleteAsset(blockKey(block,"spawner"));db.deleteAsset(blockKey(block,"dragonegg"));if(block.getState() instanceof Chest chest&&chest.getInventory().getHolder() instanceof DoubleChest doubleChest){for(InventoryHolder side:List.of(doubleChest.getLeftSide(),doubleChest.getRightSide()))if(side instanceof Chest half){db.deleteAsset(blockKey(half.getBlock(),"container"));db.deleteAsset(blockKey(half.getBlock(),"container")+":villagers");}}invalidate();}
     /** A placed Industrial Hopper is itself worth something to the faction, on top of whatever is inside
      *  it. One row per block position, so ten hoppers are ten rows, the same hopper can never be counted
      *  twice, and the row disappears with the block exactly like every other asset. */

@@ -247,7 +247,10 @@ final class PacketNametagService implements Listener {
                 }
                 /** Sneaking is part of the change key so crouching re-sends at once, rather than waiting for
                  *  the balance or health to happen to change. */
-                boolean sneaking=target.isSneaking();
+                /** An invisible player (potion or otherwise) is treated like a crouching one: the overlay stays
+                 *  mounted -- which suppresses the vanilla nametag -- but renders at zero opacity, so no name
+                 *  floats over an invisible player. Standard behaviour, and the same DIM path crouch uses. */
+                boolean sneaking=target.isSneaking()||target.isInvisible();
                 String variant=render(snapshot,money,faction,hearts)+(sneaking?SNEAK_MARK:"");
                 String previous=seen.get(id);
                 if(variant.equals(previous))continue;

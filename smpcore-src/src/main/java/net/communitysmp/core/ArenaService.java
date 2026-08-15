@@ -745,6 +745,11 @@ final class ArenaService implements Listener {
         if (duel == null || duel.phase != Phase.LIVE || duel.gating || !inArena(hurt)) return;
         if (duel.resolving) { event.setCancelled(true); return; }
         if (hurt.getHealth() - event.getFinalDamage() > 0.0001) return;
+        /** Let a Totem of Undying do its job: if the duellist is holding one, DON'T intercept -- vanilla pops
+         *  it, revives them, and the round continues. Only a genuinely fatal blow with no totem ends the round.
+         *  (The spear kit carries a totem; the old unconditional intercept made it useless in duels.) */
+        if (hurt.getInventory().getItemInMainHand().getType() == Material.TOTEM_OF_UNDYING
+                || hurt.getInventory().getItemInOffHand().getType() == Material.TOTEM_OF_UNDYING) return;
         event.setCancelled(true);
         duel.resolving = true;
         hurt.setHealth(hurt.getAttribute(Attribute.MAX_HEALTH).getValue());
@@ -802,7 +807,11 @@ final class ArenaService implements Listener {
         duel.phase = Phase.ENDING;
         double pot = db.arenaEscrowOf(duel.a) + db.arenaEscrowOf(duel.b);
         db.arenaEscrowClear(duel.a); db.arenaEscrowClear(duel.b);
-        if (pot > 0) { db.changeBalance(winner, pot); db.recordEconomy(winner, "DUEL_WIN", pot, loser); }
+        if (pot > 0) {
+            double potTax = Math.round(pot * wagerTax() * 100) / 100.0, potNet = pot - potTax;
+            db.changeBalance(winner, potNet); db.recordEconomy(winner, "DUEL_WIN", potNet, loser);
+            if (potTax > 0) plugin.bank().creditFee(potTax, winner, "DUEL_POT_TAX");
+        }
         settleWagerScope(duel, 0, winner, "match");
         plugin.getServer().broadcast(Component.text("⚔ " + name(winner) + " defeats " + name(loser)
                 + (pot > 0 ? " and takes " + CoreUtil.money(pot) : ""), NamedTextColor.GOLD));
@@ -816,6 +825,8 @@ final class ArenaService implements Listener {
      *  round's own pool (paid the moment round N ends). Winners split the losing side of the SAME scope and get
      *  their own stake back; if nobody backed the winner the losing pool is sunk. Settled wagers are removed and
      *  the DB mirror is resynced so the remaining (still-open) wagers stay crash-safe. */
+    /** Slight Central Bank cut taken from duel winnings (the money pot and the spectator betting pool). */
+    private double wagerTax() { return Math.max(0, Math.min(50, plugin.getConfig().getDouble("arena.wager-tax-percent", 5))) / 100.0; }
     private void settleWagerScope(Duel duel, int round, String winner, String label) {
         List<Wager> scope = new ArrayList<>();
         for (Wager w : duel.wagers) if (w.round() == round) scope.add(w);
@@ -825,6 +836,8 @@ final class ArenaService implements Listener {
         if (winningPool <= 0) {
             if (losingPool > 0) plugin.bank().creditSink(losingPool, "ARENA", "SPECTATOR_POOL");
         } else {
+            double betTax = Math.round(losingPool * wagerTax() * 100) / 100.0;
+            if (betTax > 0) { plugin.bank().creditFee(betTax, winner, "DUEL_BET_TAX"); losingPool -= betTax; }
             for (Wager w : scope) {
                 if (!w.on().equals(winner)) continue;
                 double payout = Math.round((w.amount() + losingPool * (w.amount() / winningPool)) * 100) / 100.0;
@@ -898,19 +911,11 @@ final class ArenaService implements Listener {
         String id = CoreUtil.id(player);
         if (spectators.containsKey(id) || byPlayer.containsKey(id)) return;
         capture(player);
-        player.getInventory().clear();
-        player.getInventory().setArmorContents(null);
-        player.getInventory().setItemInOffHand(null);
-        player.setItemOnCursor(null);
-        player.setGameMode(GameMode.SURVIVAL);
-        player.setAllowFlight(true);
-        player.setFlying(true);
-        player.setInvisible(true);
-        player.setCollidable(false);
-        player.setInvulnerable(true);
-        for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
         spectators.put(id, duel.id);
         player.teleport(gallery(duel));
+        /** True Spectator mode: the fighters can't see the spectator or their nametag, and a spectator cannot
+         *  attack, make hit sounds, or interfere in any way -- the standard, clean way to watch. */
+        player.setGameMode(GameMode.SPECTATOR);
         actionbar(player, "Spectating — invisible, and you cannot affect the fight.");
     }
 
@@ -969,6 +974,12 @@ final class ArenaService implements Listener {
     // ------------------------------------------------------------------ building / map protection
     private long key(int x, int y, int z) { return org.bukkit.block.Block.getBlockKey(x, y, z); }
 
+    @EventHandler(ignoreCancelled = true) public void bucketEmpty(org.bukkit.event.player.PlayerBucketEmptyEvent event) {
+        Duel duel = duelOf(event.getPlayer());
+        if (duel == null || duel.phase != Phase.LIVE || !inArena(event.getPlayer())) return;
+        org.bukkit.block.Block b = event.getBlock();
+        duel.placed.add(key(b.getX(), b.getY(), b.getZ()));
+    }
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void place(BlockPlaceEvent event) {
         if (!inArena(event.getPlayer())) return;
@@ -1169,6 +1180,22 @@ final class ArenaService implements Listener {
     }
 
     private void refreshSetup(Duel duel) { openSetup(a(duel)); openSetup(b(duel)); }
+    /** Closing the setup GUI with ESC cancels the duel, exactly like /duel cancel -- unless the player has
+     *  confirmed (and is just waiting for their opponent) or merely stepped into another duel screen (the wager
+     *  box/viewer, or a live setup refresh), which must NOT count as a cancel. */
+    @EventHandler public void closeSetup(InventoryCloseEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !menu.kind.equals("setup")) return;
+        if (!(event.getPlayer() instanceof Player player)) return;
+        String id = CoreUtil.id(player);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!player.isOnline()) return;
+            Duel d = byPlayer.get(id);
+            if (d == null || (d.phase != Phase.STAKING && d.phase != Phase.PENDING) || d.confirmed.contains(id)) return;
+            if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m
+                    && (m.kind.equals("setup") || m.kind.equals("wagerbox") || m.kind.equals("wagerview"))) return;
+            forfeit(player);
+        }, 2L);
+    }
     /** Re-render the setup GUI live for whichever duellist currently has it open, so wager counts update on
      *  both sides the moment either confirms/clears -- without yanking anyone who is inside the wager box. */
     private void refreshSetupOpen(Duel duel) {

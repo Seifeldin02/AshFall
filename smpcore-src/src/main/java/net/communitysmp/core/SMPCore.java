@@ -630,7 +630,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(args.length==2&&name.equals("msg")&&(args[0].equalsIgnoreCase("block")||args[0].equalsIgnoreCase("unblock")))return publicOnlineNames(sender,args[1]);
         if(args.length==1&&name.equals("rtp"))return filter(args[0],List.of("queue"));
         if(name.equals("duel")&&sender instanceof Player duelPlayer){
-            List<String> subs=List.of("accept","decline","kit","series","stake","confirm","bet","watch","status","forfeit");
+            List<String> subs=List.of("accept","decline","kit","series","stake","confirm","bet","watch","status","forfeit","cancel");
             if(args.length==1){List<String> options=new ArrayList<>(arena.onlineChallengeable(duelPlayer));options.addAll(subs);return filter(args[0],options);}
             String s0=args[0].toLowerCase(Locale.ROOT);
             if(args.length==2&&s0.equals("kit"))return filter(args[1],List.of("mace","sword","axe","spear"));
