@@ -210,6 +210,14 @@ final class ArenaService implements Listener {
         int old = cur == null ? 0 : cur, cx = slotBaseX(slot), topY = arena.getMaxHeight() - 1;
         List<Runnable> steps = new ArrayList<>();
         if (old > 0 && old != size) addShellSteps(steps, cx, old, topY, true);
+        /** Wipe any leftover low structure at this slot (e.g. the old procedural arena, or a previous larger
+     *  floor/interior) before laying the new map, so the arena is always clean. One Y-layer per tick over a
+     *  footprint that covers the old 61x61 arena plus this size, up to a modest height. */
+        int clearHalf = Math.max(size / 2 + 1, 32);
+        for (int cy = FLOOR_Y; cy <= FLOOR_Y + 12; cy++) {
+            final int y = cy, x0 = cx - clearHalf, x1 = cx + clearHalf;
+            steps.add(() -> { for (int x = x0; x <= x1; x++) for (int z = -clearHalf; z <= clearHalf; z++) arena.getBlockAt(x, y, z).setType(Material.AIR, false); });
+        }
         int h = size / 2, minX = cx - h, maxX = cx + h - 1, minZ = -h, maxZ = h - 1;
         steps.add(() -> { for (int x = minX; x <= maxX; x++) for (int z = minZ; z <= maxZ; z++) arena.getBlockAt(x, FLOOR_Y, z).setType(floorMat(x, z), false); });
         addShellSteps(steps, cx, size, topY, false);
