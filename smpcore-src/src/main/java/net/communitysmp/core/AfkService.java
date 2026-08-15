@@ -26,6 +26,17 @@ final class AfkService implements Listener {
 
     boolean isAfk(Player player){return afk.contains(player.getUniqueId());}
 
+    /** The one place any "you just pinged someone who's away" notice is produced. Every command that notifies
+     *  another player (/tpa, /tpahere, /duel, /msg, and any future one of the same shape) routes through here
+     *  instead of writing its own AFK line, so the wording is identical everywhere and adding a new such command
+     *  is a one-liner. Sends the initiator ONE grey note and returns whether the target was AFK. No-ops (and
+     *  returns false) for a null target or self, and never changes the command's own behaviour beyond the note. */
+    boolean notifyIfAfk(Player initiator,Player target){
+        if(initiator==null||target==null||initiator.equals(target)||!afk.contains(target.getUniqueId()))return false;
+        initiator.sendMessage(Component.text("(Note: "+plugin.nicknames().displayName(target)+" is currently AFK and may not respond right away.)",NamedTextColor.GRAY));
+        return true;
+    }
+
     boolean toggle(Player player){
         boolean now=afk.add(player.getUniqueId());
         if(!now)afk.remove(player.getUniqueId());

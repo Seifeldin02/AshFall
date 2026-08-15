@@ -47,7 +47,7 @@ final class MessagingService {
         if(!plugin.settings().privateMessages(sender)){CoreUtil.error(sender,"Private Messages are disabled in /settings.");return;}
         if(!plugin.settings().privateMessages(target)||plugin.db().hasBlocked(CoreUtil.id(target),CoreUtil.id(sender))){CoreUtil.error(sender,plugin.nicknames().displayName(target)+" is not accepting private messages.");return;}
         String clean=message.trim();if(clean.isBlank()){CoreUtil.error(sender,"Message cannot be empty.");return;}if(clean.length()>256)clean=clean.substring(0,256);
-        if(plugin.afk().isAfk(target))sender.sendMessage(Component.text(plugin.nicknames().displayName(target)+" is currently AFK and may not see this right away.",NamedTextColor.GRAY));
+        plugin.afk().notifyIfAfk(sender,target);
         sender.sendMessage(Component.text("You → "+plugin.nicknames().displayName(target)+": ",NamedTextColor.GRAY).append(Component.text(clean,NamedTextColor.WHITE)));
         target.sendMessage(Component.text(plugin.nicknames().displayName(sender)+" → You: ",NamedTextColor.GRAY).append(Component.text(clean,NamedTextColor.WHITE)));
         plugin.db().logChat("DM",CoreUtil.id(sender),sender.getName(),CoreUtil.id(target),target.getName(),clean);

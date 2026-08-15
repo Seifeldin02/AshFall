@@ -301,7 +301,7 @@ final class TeleportService {
             warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
             return true;
         }
-        if(plugin.afk().isAfk(target))CoreUtil.msg(from,plugin.nicknames().displayName(target)+" is currently AFK; the request may sit unanswered for a while.");
+        plugin.afk().notifyIfAfk(from,target);
         long seconds=Math.max(1,plugin.getConfig().getLong("teleport.request-seconds",60)),expiry=System.currentTimeMillis()+seconds*1000L;
         String targetId=CoreUtil.id(target);Request request=new Request(CoreUtil.id(from),expiry,here);requests.put(targetId,request);
         CoreUtil.msg(from,"Teleport"+(here?" here":"")+" request sent to "+plugin.nicknames().displayName(target)+". It expires in "+seconds+" seconds.");

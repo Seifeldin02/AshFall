@@ -520,6 +520,7 @@ final class ArenaService implements Listener {
         duels.add(duel);
         byPlayer.put(duel.a, duel); byPlayer.put(duel.b, duel);
         CoreUtil.msg(from, "Challenge sent to " + target.getName() + ". It expires in 60 seconds.");
+        plugin.afk().notifyIfAfk(from, target);
         /** A chat prompt like a trade request -- clickable, no sudden GUI. The setup GUI only opens once the
          *  target actually accepts. */
         target.sendMessage(Component.text(from.getName() + " has challenged you to a duel.", NamedTextColor.GOLD));

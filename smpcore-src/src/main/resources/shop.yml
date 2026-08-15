@@ -164,7 +164,7 @@ luxuries:
     buy: 150000
     display: Ancient Upgrade Pattern
   DRAGON_EGG:
-    buy: 50000000
+    buy: 2000000
     display: Dragon Egg
   IRON_GOLEM_SPAWN_EGG:
     buy: 50000000

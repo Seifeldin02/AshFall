@@ -475,6 +475,23 @@ final class SettingsService implements Listener {
         }catch(Throwable ignored){}
         return false;
     }
+    /** Ocean-monument garrison, judged by BOTH type and location, exactly like the bastion rule above so the
+     *  two exemptions stay identical in shape. Guardians patrol open ocean freely, so type alone is wrong, and a
+     *  guardian that merely drifted out of the structure is cleared normally. Elder Guardians and Guardians
+     *  standing inside an Ocean Monument are the monument's garrison and are exempt from Hostile Mobs Off. */
+    private static final java.util.Set<org.bukkit.entity.EntityType> MONUMENT_GARRISON=java.util.Set.of(
+            org.bukkit.entity.EntityType.GUARDIAN,org.bukkit.entity.EntityType.ELDER_GUARDIAN);
+    boolean isMonumentThreat(org.bukkit.entity.LivingEntity living){
+        if(!MONUMENT_GARRISON.contains(living.getType()))return false;
+        org.bukkit.Location at=living.getLocation();
+        if(at.getWorld()==null||at.getWorld().getEnvironment()!=org.bukkit.World.Environment.NORMAL)return false;
+        try{
+            for(org.bukkit.generator.structure.GeneratedStructure structure:
+                    at.getWorld().getStructures(at.getBlockX()>>4,at.getBlockZ()>>4,org.bukkit.generator.structure.Structure.MONUMENT))
+                if(structure.getBoundingBox().contains(at.getX(),at.getY(),at.getZ()))return true;
+        }catch(Throwable ignored){}
+        return false;
+    }
     /** One-time migration to the intended confirmation defaults. Applied per player and recorded, so a
      *  later restart cannot re-apply it over a choice they have since made -- the whole point is that these
      *  are DEFAULTS, not enforced values. Anyone who had already set a preference keeps it. */
@@ -492,6 +509,7 @@ final class SettingsService implements Listener {
         /** Reinforcements summoned by a world boss are part of that fight and must not be cleared. */
         if(plugin.bosses().isWorldBossAdd(living))return false;
         if(isBastionThreat(living))return false;
+        if(isMonumentThreat(living))return false;
         if(plugin.bosses().isOrdinaryElite(living))return true;
         if(enemy instanceof Tameable tame&&tame.isTamed())return false;
         if(living.customName()!=null)return false;

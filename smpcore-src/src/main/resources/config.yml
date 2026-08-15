@@ -156,15 +156,15 @@ teleport:
   request-seconds: 60
 
 rtp:
-  radius: 5000
+  radius: 10000
   request-throttle-seconds: 4
   warmup-seconds: 3
   protected-distance: 1000
   attempts: 32
   radii:
-    overworld: 5000
-    nether: 4000
-    end: 5000
+    overworld: 10000
+    nether: 8000
+    end: 10000
 
 bounties:
   minimum: 100
@@ -336,7 +336,7 @@ net-worth:
     ELYTRA: 250000
     TOTEM_OF_UNDYING: 50000
     ENCHANTED_GOLDEN_APPLE: 100000
-    DRAGON_EGG: 1000000
+    DRAGON_EGG: 2000000
     NETHER_STAR: 30000
     WITHER_SKELETON_SKULL: 15000
     BEACON: 60000
@@ -348,7 +348,7 @@ net-worth:
     ECHO_SHARD: 5000
   spawners:
     # Virtual stacking made placed spawners a genuine income engine rather than decoration, so the highest
-    # earners are valued accordingly. IRON_GOLEM matches the Dragon Egg at 1,000,000 as the flagship buy.
+    # earners are valued accordingly. IRON_GOLEM is the flagship spawner buy; the Dragon Egg is a 2,000,000 cosmetic.
     IRON_GOLEM: 1000000
     default: 25000
     ZOMBIE: 30000

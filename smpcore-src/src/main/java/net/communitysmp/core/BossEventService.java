@@ -93,6 +93,10 @@ final class BossEventService {
      *  map. Cleared on every new event start, reported to each participant once the event ends. */
     private final Map<String, Double> eventEarnings = new HashMap<>();
     private UUID worldBossId; private long bossSpawnedAt, nextHintAt; private int hintStage,worldBossActiveCount=1;private double worldBossBaseHealth;private Origin worldBossOrigin=Origin.NATURAL;private WorldBossKind worldBossKind=WorldBossKind.ASHEN_KNIGHT;
+    /** The Elite Hunt target: once it is dead or otherwise gone the event must end rather than idle until its
+     *  timer. eliteHuntLast is its last-known live position, used to tell "genuinely gone" from "chunk not
+     *  ticking right now" so a brief unload never ends a live hunt. */
+    private UUID eliteHuntId; private Location eliteHuntLast;
     private World forcedBossWorld;private int forcedBossChunkX,forcedBossChunkZ;private boolean forcedBossChunkSet;
     private BukkitTask ticker, visuals, motionTask;
 
@@ -957,14 +961,14 @@ final class BossEventService {
         switch (type) { case WORLD_BOSS -> { LivingEntity boss = spawnWorldBoss(eventCenter,origin,kind); if (boss == null){clearFailedEvent();return false;}eventCenter = boss.getLocation(); } case ELITE_HUNT -> { /** Elite Hunt is now a straight 90/10 epic-to-legendary roll regardless of event tier: the tiered
                   *  ladder meant most hunts produced a merely "rare" mob, which is not worth tracking across
                   *  the map. Both tiers spawn in the overworld, which is where the hunt marker sends people. */
-                 String eliteTier=ThreadLocalRandom.current().nextDouble()<bosses.getDouble("elite-hunt.legendary-chance",0.10)?"legendary":"epic";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere.");  case TASK_MASTER -> { Location placed=plugin.taskMaster().begin(eventCenter,eventEnds); if(placed!=null)eventCenter=placed; broadcastWorldEvent("✦ WORLD EVENT • TASK MASTER","A courier is taking contracts nearby. He is invisible -- look for the telltale swirl.","Destination: X "+eventCenter.getBlockX()+", Y "+eventCenter.getBlockY()+", Z "+eventCenter.getBlockZ()); } default -> { } }
+                 String eliteTier=ThreadLocalRandom.current().nextDouble()<bosses.getDouble("elite-hunt.legendary-chance",0.10)?"legendary":"epic";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); eliteHuntId = elite.getUniqueId(); eliteHuntLast = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere.");  case TASK_MASTER -> { Location placed=plugin.taskMaster().begin(eventCenter,eventEnds); if(placed!=null)eventCenter=placed; broadcastWorldEvent("✦ WORLD EVENT • TASK MASTER","A courier is taking contracts nearby. He is invisible -- look for the telltale swirl.","Destination: X "+eventCenter.getBlockX()+", Y "+eventCenter.getBlockY()+", Z "+eventCenter.getBlockZ()); } default -> { } }
         if(origin==Origin.NATURAL){rememberNatural(type);scheduledEvents.put(selectedTier,chooseNatural(selectedTier));}
         for (Player p : plugin.getServer().getOnlinePlayers()) if(plugin.settings().bossNotifications(p))CoreUtil.msg(p, "Use /events for instructions or /events track off to disable navigation."); persistEvent();persistEventTimers(); return true;
     }
     private EventTier defaultTier(EventType type){return type==EventType.WORLD_BOSS?EventTier.RARE:EventTier.MAJOR;}
     private int eventInt(String path,int fallback){return events.getInt("tiers."+eventTier.name().toLowerCase(Locale.ROOT)+"."+path,events.getInt(path,fallback));}
     private double eventDouble(String path,double fallback){return events.getDouble("tiers."+eventTier.name().toLowerCase(Locale.ROOT)+"."+path,events.getDouble(path,fallback));}
-    private void clearFailedEvent(){eventType=null;eventCenter=null;eventEnds=0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventOrigin=Origin.NATURAL;db.state("current_event","");}
+    private void clearFailedEvent(){eventType=null;eventCenter=null;eventEnds=0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventOrigin=Origin.NATURAL;eliteHuntId=null;eliteHuntLast=null;db.state("current_event","");}
     private String locationLine() { return "Destination: X " + eventCenter.getBlockX() + ", Z " + eventCenter.getBlockZ(); }
     /** Every event's coordinate origin — deliberately never a player's location. Anchoring on a random
      *  online player (the old randomSafeNearPlayer behavior for MICRO events) let repeated events
@@ -1062,7 +1066,24 @@ final class BossEventService {
         }
         if(worldBossId==null&&forcedBossChunkSet)releaseBossChunk();
         if(eventType==EventType.WORLD_BOSS&&worldBoss()==null&&worldBossChunkObservedEmpty()){plugin.getLogger().warning("World boss event had no boss entity; recovering event state.");finishEvent(false);return;}
-        if(eventType!=null){if(now>=eventEnds)finishEvent(false);else if(eventType==EventType.TASK_MASTER)plugin.taskMaster().tick();return;}
+        if(eventType!=null){
+            /** Elite Hunt ends the moment its elite is dead or gone, not when the timer runs out. A credited
+             *  kill already ends it in rewardElite; this covers every other way it can leave the world (killed
+             *  with no participant credit, void, /kill, plugin removal). The chunk-loaded guard distinguishes
+             *  "genuinely gone" from "its chunk simply isn't ticking right now" so a brief unload never ends a
+             *  live hunt -- the same false-positive that once made world bosses look like they had vanished. */
+            if(eventType==EventType.ELITE_HUNT&&eliteHuntId!=null){
+                org.bukkit.entity.Entity elite=plugin.getServer().getEntity(eliteHuntId);
+                if(elite!=null){
+                    if(elite.isDead()){finishEvent(false);return;}
+                    eliteHuntLast=elite.getLocation();
+                } else {
+                    boolean chunkLoaded=eliteHuntLast!=null&&eliteHuntLast.getWorld()!=null
+                            &&eliteHuntLast.getWorld().isChunkLoaded(eliteHuntLast.getBlockX()>>4,eliteHuntLast.getBlockZ()>>4);
+                    if(chunkLoaded){finishEvent(false);return;}
+                }
+            }
+            if(now>=eventEnds)finishEvent(false);else if(eventType==EventType.TASK_MASTER)plugin.taskMaster().tick();return;}
         if(!plugin.getConfig().getBoolean("events.automatic",true))return;
         for(EventTier tier:List.of(EventTier.RARE,EventTier.MAJOR,EventTier.MICRO)){
             if(eventRemaining.getOrDefault(tier,Long.MAX_VALUE)>0||!enoughPlayers(tier))continue;
@@ -2008,7 +2029,7 @@ final class BossEventService {
         /** King of the Hill retired; nothing to award here any more. */
         if (!success && finished != EventType.WORLD_BOSS && finished != EventType.HUNT) broadcastNotice(Component.text("The world event has ended.", NamedTextColor.GRAY));
         if(finished==EventType.RESOURCE_RUSH)for(var entry:eventEarnings.entrySet()){Player earner=find(entry.getKey());if(earner!=null&&entry.getValue()>=.01)CoreUtil.msg(earner,"You made "+CoreUtil.money(entry.getValue())+" during Resource Rush!");}
-        EventTier finishedTier=eventTier;Origin finishedOrigin=eventOrigin;long nextDelay=activeTierNextDelay;eventType = null;eventCenter = null;eventEnds = 0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventEarnings.clear();db.state("current_event", "");
+        EventTier finishedTier=eventTier;Origin finishedOrigin=eventOrigin;long nextDelay=activeTierNextDelay;eventType = null;eventCenter = null;eventEnds = 0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventEarnings.clear();eliteHuntId=null;eliteHuntLast=null;db.state("current_event", "");
         if(finishedOrigin==Origin.NATURAL){eventRemaining.put(finishedTier,nextDelay>0?nextDelay:randomRemaining(finishedTier));scheduledEvents.computeIfAbsent(finishedTier,this::chooseNatural);persistEventTimers();}
         // A player/admin-summoned event borrows this tier's "only one event at a time" slot without
         // resetting its own independent natural timer. If that timer happened to run out while the summoned

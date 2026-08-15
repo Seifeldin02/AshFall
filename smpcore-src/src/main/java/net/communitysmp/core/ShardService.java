@@ -319,6 +319,24 @@ final class ShardService implements Listener {
     private boolean safeToolBlock(Player player,Block block){if(block.getType().isAir()||Set.of(Material.BEDROCK,Material.BARRIER,Material.SPAWNER).contains(block.getType())||block.getState() instanceof org.bukkit.block.Container)return false;if(plugin.spawnClaims().contains(block.getLocation())&&!plugin.isAdmin(player))return false;FactionService.Claim claim=plugin.factions().claimAt(block.getLocation());return claim==null||plugin.factions().isMember(player,claim.faction());}
 
     @EventHandler public void drop(PlayerDropItemEvent event){if(bound(event.getItemDrop().getItemStack())){event.setCancelled(true);CoreUtil.error(event.getPlayer(),"Shard rewards are account-bound.");}}
+    /** AxTrade (and any other GUI-mediated hand-off) moves a Shard-bound tool between two online players without
+     *  ever firing a drop or pickup event, so its ownership tag stayed pointed at the giver -- which is exactly
+     *  why a traded Excavator's 3x3 mining stopped working for the player who received it (belongsTo() saw the
+     *  old owner and refused). Re-scanning the closer's own inventory one tick after ANY inventory closes
+     *  re-binds any bound tool they now physically hold to them, generically, with no compile-time dependency on
+     *  the trade plugin. This mirrors RelicService.reconcileOnInventoryClose; there is only ever one physical
+     *  copy, so re-binding it to its new holder cannot duplicate anything. */
+    @EventHandler public void reconcileOnInventoryClose(org.bukkit.event.inventory.InventoryCloseEvent event){
+        if(!(event.getPlayer() instanceof Player player))return;
+        plugin.getServer().getScheduler().runTask(plugin,()->{
+            if(!player.isOnline())return;
+            String id=CoreUtil.id(player);
+            for(ItemStack item:player.getInventory().getContents()){
+                if(!bound(item))continue;
+                if(!id.equals(item.getItemMeta().getPersistentDataContainer().get(boundKey,PersistentDataType.STRING)))transferBinding(item,player);
+            }
+        });
+    }
     @EventHandler public void pickup(EntityPickupItemEvent event){
         if(!(event.getEntity() instanceof Player player))return;
         ItemStack stack=event.getItem().getItemStack();

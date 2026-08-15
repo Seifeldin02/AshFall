@@ -61,7 +61,7 @@ final class DiscardedVaultService implements Listener {
         private int x, y, z;
     }
 
-    private record VaultHolder() implements InventoryHolder {
+    private record VaultHolder(int page) implements InventoryHolder {
         @Override public Inventory getInventory() { return null; }
     }
 
@@ -197,20 +197,23 @@ final class DiscardedVaultService implements Listener {
 
     // ------------------------------------------------------------------ admin view (read only)
     void show(CommandSender sender, int page) {
-        List<String[]> totals = plugin.db().discardedTotals(45 * Math.max(1, page));
-        int from = 45 * (Math.max(1, page) - 1);
-        if (from >= totals.size() && !totals.isEmpty()) { CoreUtil.error(sender, "No vault entries on page " + page + "."); return; }
-        List<String[]> slice = totals.subList(Math.min(from, totals.size()), totals.size());
+        int p = Math.max(1, page);
+        int from = 45 * (p - 1);
+        /** Pull one row past this page's window so we can tell whether a next page exists. */
+        List<String[]> totals = plugin.db().discardedTotals(from + 45 + 1);
+        if (from >= totals.size() && !totals.isEmpty()) { CoreUtil.error(sender, "No vault entries on page " + p + "."); return; }
+        boolean hasNext = totals.size() > from + 45;
+        List<String[]> slice = totals.subList(Math.min(from, totals.size()), Math.min(from + 45, totals.size()));
         if (!(sender instanceof Player viewer)) {
-            CoreUtil.msg(sender, "Discarded vault — " + slice.size() + " material(s), page " + Math.max(1, page));
+            CoreUtil.msg(sender, "Discarded vault — " + slice.size() + " material(s), page " + p);
             for (String[] row : slice)
                 CoreUtil.msg(sender, "  " + row[0] + " destroyed=" + row[1] + " recycled=" + row[2]
                         + " last=" + row[3] + " at " + row[4] + " " + row[5] + "," + row[6] + "," + row[7]
                         + " (" + ago(Long.parseLong(row[8])) + " ago)");
             return;
         }
-        Inventory inv = Bukkit.createInventory(new VaultHolder(), 54,
-                Component.text("Discarded Vault • Audit", NamedTextColor.DARK_RED));
+        Inventory inv = Bukkit.createInventory(new VaultHolder(p), 54,
+                Component.text("Discarded Vault • Audit (page " + p + ")", NamedTextColor.DARK_RED));
         int slot = 0;
         for (String[] row : slice) {
             if (slot >= 45) break;
@@ -226,10 +229,16 @@ final class DiscardedVaultService implements Listener {
             inv.setItem(slot++, CoreUtil.named(material == null ? Material.BARRIER : material,
                     CoreUtil.pretty(row[0]), lore));
         }
-        inv.setItem(49, CoreUtil.named(Material.WRITABLE_BOOK, "Audit record only",
-                List.of("This is a log of items that left the world.",
-                        "Nothing can be withdrawn from it.",
-                        "Eligible commodities were returned to shop stock.")));
+        inv.setItem(49, CoreUtil.named(Material.WRITABLE_BOOK, "Audit record only — page " + p,
+                List.of("A log of items that permanently left the world.",
+                        "Destroyed = gone for good (never delivered anywhere).",
+                        "Recycled = eligible commodities put back into shop stock.",
+                        "Nothing can be withdrawn from this vault.")));
+        /** In-GUI paging, so the whole ledger is reachable without retyping the command. */
+        if (p > 1) inv.setItem(45, CoreUtil.named(Material.ARROW, "◀ Previous page",
+                List.of("Go to page " + (p - 1))));
+        if (hasNext) inv.setItem(53, CoreUtil.named(Material.ARROW, "Next page ▶",
+                List.of("Go to page " + (p + 1))));
         viewer.openInventory(inv);
     }
 
@@ -241,9 +250,14 @@ final class DiscardedVaultService implements Listener {
         return Math.max(1, since.toMinutes()) + "m";
     }
 
-    /** Read-only in the strongest sense available: every interaction with the audit screen is refused. */
+    /** Read-only in the strongest sense available: every interaction with the audit screen is refused. The
+     *  only clicks that DO anything are the page arrows, which just reopen the vault at another page. */
     @EventHandler public void click(InventoryClickEvent event) {
-        if (event.getInventory().getHolder(false) instanceof VaultHolder) event.setCancelled(true);
+        if (!(event.getInventory().getHolder(false) instanceof VaultHolder holder)) return;
+        event.setCancelled(true);
+        if (!(event.getWhoClicked() instanceof Player viewer)) return;
+        if (event.getRawSlot() == 45 && holder.page() > 1) show(viewer, holder.page() - 1);
+        else if (event.getRawSlot() == 53) show(viewer, holder.page() + 1);
     }
     @EventHandler public void drag(InventoryDragEvent event) {
         if (event.getInventory().getHolder(false) instanceof VaultHolder) event.setCancelled(true);

@@ -65,6 +65,41 @@ viewer's wagers. Round bets settle the instant that round ends (`settleWagerScop
 settle at `finish`. `arena_wagers` gained a `round` column; `syncWagerDb` keeps the crash-refund mirror in
 sync as scopes settle. One wager per spectator per scope; changing a scope refunds the old stake.
 
+### Second regression/feature batch (staging)
+
+- **Discarded ("Ashfall") Vault — in-GUI paging.** `DiscardedVaultService.show` now renders ◀/▶ page arrows
+  (holder carries the page; click navigates), reachable without retyping `/ashfall vault <page>`. Its info book
+  spells out the two states it tracks — **Destroyed** (items that permanently left the world) and **Recycled**
+  (eligible commodities returned to shop stock). There is NO "delivered" state in the vault; "delivered" is an
+  Orders concept (a seller delivering goods to a buyer's stash), unrelated to the vault ledger.
+- **Dragon Egg worth 2,000,000.** `shop.yml` buy 50,000,000 → 2,000,000 (was level with the Iron Golem
+  spawner, which produces ongoing value, so nobody bought the egg); `config.yml` net-worth base-value
+  1,000,000 → 2,000,000 so its valuation matches. Resource + staging on-disk.
+- **/rtp range doubled.** `rtp.radius` 5000→10000 and `rtp.radii` overworld 5000→10000, nether 4000→8000,
+  end 5000→10000. `random-spawn.radius` (first-join scatter) left alone. Resource + staging on-disk.
+- **3×3 excavator re-binds on trade.** Shard-bound tools are soulbound (drop blocked) but AxTrade's GUI
+  hand-off bypassed that, leaving the tool bound to the seller so `belongsTo` refused the buyer and the 3×3
+  died. Added `ShardService.reconcileOnInventoryClose` (mirrors the relic one): one tick after any inventory
+  closes, re-bind any bound tool the closer now physically holds to them. Only ever one physical copy, so no
+  duplication.
+- **Ocean monuments exempt from Hostile Mobs Off.** Mirrored the bastion logic exactly: `MONUMENT_GARRISON`
+  (Guardian, Elder Guardian) + `isMonumentThreat` (type AND inside a `Structure.MONUMENT` box, overworld),
+  used on BOTH the removal sweep (`removableHostile`) and the spawn gate (GameplayListener), same as bastions.
+- **Stale faction /f home disabled + removed.** `/f home` now validates the home still sits in THIS faction's
+  claim (`claimAt(...).faction.id()==f.id()`); if the base was destroyed and the faction moved/unclaimed, the
+  stale home is deleted and the teleport refused, instead of dropping into lost/hostile ground.
+- **Unified AFK-notify.** New `AfkService.notifyIfAfk(initiator,target)` is the single source for the "you
+  pinged someone who's away" line; `/tpa`, `/tpahere`, `/msg` and `/duel` all route through it (consistent
+  wording, one-liner to add more). `/trade` is AxTrade's own command (external) and not routed. No behaviour
+  change beyond the notice.
+- **Elite Hunt ends when its elite is gone.** Track the elite's UUID; a credited kill already ends the event,
+  and a tick check now ends it on any other disappearance (no-credit death, void, /kill, removal). A
+  chunk-loaded guard on the last-known position prevents a brief chunk unload from ending a live hunt.
+- **Chat lag — investigated, not an SMPCore bug.** Every SMPCore public-chat handler is async or early-returns;
+  the one DB touch (`logChat`) is already async on a WAL connection (~sub-ms). Installed TAB v6.1.0 (rendered
+  skin heads + faction suffixes in chat/nametags) and Prism are the realistic per-message stutter sources —
+  external, to investigate in their configs, not SMPCore.
+
 ---
 
 ## Session: 2026-08-12 → 2026-08-13
