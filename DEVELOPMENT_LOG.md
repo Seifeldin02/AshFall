@@ -41,6 +41,30 @@ Branch `staging`. Staging-only; production NOT deployed.
 Built green, swapped `plugins/SMPCore.jar` on staging (0 players online, no announce needed), relaunched via
 the conhost schtasks hatch — console is a real `cmd` window, SMPCore enabled with no errors.
 
+### Duel overhaul (staging)
+
+**Ready-gate round flow.** Every round now opens behind a ready-gate: both duellists are teleported to their
+corners, fully re-equipped/healed (equip() already tops health/food/effects), then FROZEN on their block
+(`freeze`/PlayerMoveEvent, look-only) and made unhittable (`gateShield` cancels damage at LOWEST;
+`combatOverride` no longer un-cancels while `duel.gating`) until each clicks Ready in a 27-slot GUI.
+`startFight` drops the gate the instant both are ready. `Duel.gating` + `Duel.roundReady` track it per round;
+`beginRound` re-runs between rounds so every round starts identical. Closing the Ready GUI while gated and
+not-ready reopens it (`closeGate`). `lethal` skips while gating; disconnect during the gate forfeits via the
+existing reconnect-grace tick (phase stays LIVE throughout).
+
+**Item wagering (DB-escrowed, crash-safe).** New `arena_item_wager(duel,player,items BLOB)` table. A "Wager
+items" button in the setup GUI opens a real 54-slot box (`Menu.fillable` — clicks/drags allowed for it only);
+on close the contents are serialised to the DB escrow. Winner takes both sides' items (`awardItemWagers`;
+overflow drops at their feet, or to the order-stash if offline via `stashAddItem`). `refundItemWagers` on
+abort, `arenaItemWagerRefundAll` on boot — items are never lost. Separate from the money stake.
+
+**Per-round spectator betting.** `Wager` gained a `round` field (0 = whole match, N = that round). Betting is
+now open through each round's ready-gate (`bettingOpen`), not just before the match. The spectate GUI has a
+"this round / whole match" scope toggle (best-of-3+), shows the scoped pool per fighter and lists all of the
+viewer's wagers. Round bets settle the instant that round ends (`settleWagerScope` in `roundOver`); match bets
+settle at `finish`. `arena_wagers` gained a `round` column; `syncWagerDb` keeps the crash-refund mirror in
+sync as scopes settle. One wager per spectator per scope; changing a scope refunds the old stake.
+
 ---
 
 ## Session: 2026-08-12 → 2026-08-13

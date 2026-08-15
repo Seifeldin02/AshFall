@@ -103,7 +103,7 @@ final class ArenaService implements Listener {
         Material icon() { return icon; }
     }
 
-    private record Wager(String player, String on, double amount) {}
+    private record Wager(String player, String on, double amount, int round) {}
 
     /** One live match and everything it owns. Nothing here is shared with another duel. */
     private final class Duel {
@@ -486,6 +486,7 @@ final class ArenaService implements Listener {
             db.recordEconomy(player, "DUEL_REFUND", amount, "server-restart");
         });
         db.arenaWagersRefundAll((player, amount) -> db.changeBalance(player, amount));
+        db.arenaItemWagerRefundAll((player, items) -> giveOrStash(player, items, "Your wagered duel items were returned after the restart."));
     }
 
     @EventHandler public void rejoin(PlayerJoinEvent event) {
@@ -762,8 +763,10 @@ final class ArenaService implements Listener {
 
     private void roundOver(Duel duel, String winner, String loser) {
         if (duel.phase != Phase.LIVE) return;
+        int roundNo = duel.rounds.get(duel.a) + duel.rounds.get(duel.b) + 1;
         duel.rounds.merge(winner, 1, Integer::sum);
         int needed = duel.bestOf / 2 + 1;
+        settleWagerScope(duel, roundNo, winner, "round " + roundNo);
         refreshSpectate(duel);
         both(duel, "Round to " + name(winner) + " (" + duel.rounds.get(duel.a) + " - " + duel.rounds.get(duel.b) + ").");
         if (duel.rounds.get(winner) >= needed) { finish(duel, winner, loser); return; }
@@ -778,7 +781,8 @@ final class ArenaService implements Listener {
         double pot = db.arenaEscrowOf(duel.a) + db.arenaEscrowOf(duel.b);
         db.arenaEscrowClear(duel.a); db.arenaEscrowClear(duel.b);
         if (pot > 0) { db.changeBalance(winner, pot); db.recordEconomy(winner, "DUEL_WIN", pot, loser); }
-        settleWagers(duel, winner);
+        settleWagerScope(duel, 0, winner, "match");
+        awardItemWagers(duel, winner, loser);
         plugin.getServer().broadcast(Component.text("⚔ " + name(winner) + " defeats " + name(loser)
                 + (pot > 0 ? " and takes " + CoreUtil.money(pot) : ""), NamedTextColor.GOLD));
         resetArena(duel);
@@ -786,47 +790,70 @@ final class ArenaService implements Listener {
         dispose(duel);
     }
 
-    private void settleWagers(Duel duel, String winner) {
+    /** Settle every wager in ONE scope: round 0 is the whole-match pool (paid at finish); round N is that
+     *  round's own pool (paid the moment round N ends). Winners split the losing side of the SAME scope and get
+     *  their own stake back; if nobody backed the winner the losing pool is sunk. Settled wagers are removed and
+     *  the DB mirror is resynced so the remaining (still-open) wagers stay crash-safe. */
+    private void settleWagerScope(Duel duel, int round, String winner, String label) {
+        List<Wager> scope = new ArrayList<>();
+        for (Wager w : duel.wagers) if (w.round() == round) scope.add(w);
+        if (scope.isEmpty()) return;
         double winningPool = 0, losingPool = 0;
-        for (Wager w : duel.wagers) if (w.on().equals(winner)) winningPool += w.amount(); else losingPool += w.amount();
+        for (Wager w : scope) if (w.on().equals(winner)) winningPool += w.amount(); else losingPool += w.amount();
         if (winningPool <= 0) {
             if (losingPool > 0) plugin.bank().creditSink(losingPool, "ARENA", "SPECTATOR_POOL");
-            db.arenaWagersClearFor(duel.a, duel.b);
-            return;
+        } else {
+            for (Wager w : scope) {
+                if (!w.on().equals(winner)) continue;
+                double payout = Math.round((w.amount() + losingPool * (w.amount() / winningPool)) * 100) / 100.0;
+                db.changeBalance(w.player(), payout);
+                db.recordEconomy(w.player(), "DUEL_WAGER", payout, winner);
+                Player better = plugin.getServer().getPlayer(w.player());
+                if (better != null) CoreUtil.msg(better, "Your " + label + " wager on " + name(winner) + " returned " + CoreUtil.money(payout) + ".");
+            }
         }
-        for (Wager w : duel.wagers) {
-            if (!w.on().equals(winner)) continue;
-            double payout = Math.round((w.amount() + losingPool * (w.amount() / winningPool)) * 100) / 100.0;
-            db.changeBalance(w.player(), payout);
-            db.recordEconomy(w.player(), "DUEL_WAGER", payout, winner);
-            Player better = plugin.getServer().getPlayer(w.player());
-            if (better != null) CoreUtil.msg(better, "Your wager on " + name(winner) + " returned " + CoreUtil.money(payout) + ".");
-        }
+        duel.wagers.removeAll(scope);
+        syncWagerDb(duel);
+    }
+
+    /** Rewrite the arena_wagers DB mirror from the wagers still open in memory (used after a scope settles). */
+    private void syncWagerDb(Duel duel) {
         db.arenaWagersClearFor(duel.a, duel.b);
+        for (Wager w : duel.wagers) db.arenaWagerAdd(w.player(), w.on(), w.amount(), w.round());
     }
 
     boolean bet(Player player, int duelId, String on, double amount) {
         Duel duel = duels.stream().filter(d -> d.id == duelId).findFirst().orElse(null);
         if (duel == null) { CoreUtil.error(player, "No such match."); return true; }
         String target = duel == null ? null : (duel.aName.equalsIgnoreCase(on) ? duel.a : duel.bName.equalsIgnoreCase(on) ? duel.b : null);
-        return placeWager(player, duel, target, amount);
+        return placeWager(player, duel, target, amount, 0);
     }
 
-    /** Places or CHANGES a wager, while betting is still open. Changing refunds the old stake first, so the
+    /** True while spectators may place or change bets: before the match (pending/staking) and during every
+     *  round's ready-gate. It is closed only while a round is actively being fought. */
+    private boolean bettingOpen(Duel duel) {
+        return duel.phase == Phase.PENDING || duel.phase == Phase.STAKING || (duel.phase == Phase.LIVE && duel.gating);
+    }
+
+    /** The round a "this round" bet applies to: the one about to be fought (or round 1 before the match). */
+    private int currentRound(Duel duel) { return duel.rounds.getOrDefault(duel.a, 0) + duel.rounds.getOrDefault(duel.b, 0) + 1; }
+
+    /** Places or CHANGES a wager for a given scope (round 0 = whole match, N = a specific round), while betting
+     *  is open. A spectator may hold one wager per scope. Changing a scope refunds its old stake first, so the
      *  money is always conserved. */
-    private boolean placeWager(Player player, Duel duel, String target, double amount) {
+    private boolean placeWager(Player player, Duel duel, String target, double amount, int round) {
         if (duel == null) { CoreUtil.error(player, "No such match."); return true; }
-        if (duel.phase == Phase.LIVE || duel.phase == Phase.ENDING) { CoreUtil.error(player, "Betting closed when the match started."); return true; }
+        if (!bettingOpen(duel)) { CoreUtil.error(player, "Betting is only open before the match and between rounds."); return true; }
         String id = CoreUtil.id(player);
         if (duel.has(id)) { CoreUtil.error(player, "You cannot bet on your own match."); return true; }
         if (target == null) { CoreUtil.error(player, "Choose " + duel.aName + " or " + duel.bName + "."); return true; }
         if (amount < 0 || !Double.isFinite(amount)) { CoreUtil.error(player, "Amount cannot be negative."); return true; }
-        Wager existing = duel.wagers.stream().filter(w -> w.player().equals(id)).findFirst().orElse(null);
-        if (existing != null) { db.changeBalance(id, existing.amount()); duel.wagers.remove(existing); db.arenaWagersClearFor(duel.a, duel.b); for (Wager w : duel.wagers) db.arenaWagerAdd(w.player(), w.on(), w.amount()); }
-        if (amount > 0 && !db.changeBalance(id, -amount)) { CoreUtil.error(player, "You cannot cover that."); if (existing != null) { duel.wagers.add(existing); db.arenaWagerAdd(existing.player(), existing.on(), existing.amount()); } return true; }
-        duel.wagers.add(new Wager(id, target, amount));
-        db.arenaWagerAdd(id, target, amount);
-        actionbar(player, "Wager set: " + CoreUtil.money(amount) + " on " + name(target) + ".");
+        if (round != 0 && round < currentRound(duel)) { CoreUtil.error(player, "That round is already over."); return true; }
+        Wager existing = duel.wagers.stream().filter(w -> w.player().equals(id) && w.round() == round).findFirst().orElse(null);
+        if (existing != null) { db.changeBalance(id, existing.amount()); duel.wagers.remove(existing); syncWagerDb(duel); }
+        if (amount > 0 && !db.changeBalance(id, -amount)) { CoreUtil.error(player, "You cannot cover that."); if (existing != null) { duel.wagers.add(existing); syncWagerDb(duel); } return true; }
+        if (amount > 0) { duel.wagers.add(new Wager(id, target, amount, round)); syncWagerDb(duel); }
+        actionbar(player, "Wager set: " + CoreUtil.money(amount) + " on " + name(target) + (round == 0 ? " (whole match)." : " (round " + round + ")."));
         refreshSpectate(duel);
         return true;
     }
@@ -994,7 +1021,8 @@ final class ArenaService implements Listener {
         }
         for (Wager w : duel.wagers) if (w.amount() > 0) db.changeBalance(w.player(), w.amount());
         db.arenaWagersClearFor(duel.a, duel.b);
-        both(duel, "Duel cancelled — " + why + ". All stakes and wagers refunded.");
+        refundItemWagers(duel);
+        both(duel, "Duel cancelled — " + why + ". All stakes, money bets and wagered items refunded.");
         resetArena(duel);
         returnPlayers(duel);
         dispose(duel);
@@ -1043,6 +1071,9 @@ final class ArenaService implements Listener {
     // ------------------------------------------------------------------ GUIs
     private final class Menu implements InventoryHolder {
         final String kind; final int duelId; Inventory inv;
+        /** When true this inventory is a real container the player fills (the item-wager box), so clicks and
+         *  drags are NOT cancelled. Every other Menu is a button panel and stays fully click-locked. */
+        boolean fillable = false;
         Menu(String kind, int duelId) { this.kind = kind; this.duelId = duelId; }
         @Override public Inventory getInventory() { return inv; }
     }
@@ -1090,6 +1121,11 @@ final class ArenaService implements Listener {
         String meName = meId.equals(duel.a) ? duel.aName : duel.bName, themName = meId.equals(duel.a) ? duel.bName : duel.aName;
         boolean ready = duel.confirmed.contains(meId);
         /** Rendered from THIS player's perspective: "You" is always the viewer, whichever side they are. */
+        int wagered = loadWager(duel, meId).size();
+        menu.inv.setItem(42, icon(Material.CHEST, "Wager items" + (wagered > 0 ? " (" + wagered + ")" : ""), List.of(
+                "Put items in to wager them", "Winner takes BOTH sides' wagered items",
+                wagered > 0 ? wagered + " stack(s) staged" : "None staged yet",
+                "Separate from the money stake above")));
         menu.inv.setItem(40, icon(ready ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE, ready ? "Confirmed — waiting for opponent…" : "Confirm", List.of(
                 "You: " + meName + "  " + CoreUtil.money(duel.stakes.getOrDefault(meId, 0d)) + (ready ? "  (ready)" : ""),
                 "Them: " + themName + "  " + CoreUtil.money(duel.stakes.getOrDefault(themId, 0d)) + (duel.confirmed.contains(themId) ? "  (ready)" : ""),
@@ -1121,6 +1157,7 @@ final class ArenaService implements Listener {
 
     @EventHandler public void click(InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Menu menu)) return;
+        if (menu.fillable) return; // the wager box is a real container -- let the player move items in/out
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player)) return;
         int slot = event.getRawSlot();
@@ -1146,6 +1183,7 @@ final class ArenaService implements Listener {
                     case 33 -> adjustStake(player, 10000);
                     case 34 -> adjustStake(player, 100000);
                     case 40 -> { player.closeInventory(); confirm(player); }
+                    case 42 -> openWagerBox(player);
                     default -> { }
                 }
             }
@@ -1159,20 +1197,23 @@ final class ArenaService implements Listener {
                 Duel duel = find(menu.duelId);
                 if (duel == null) { player.closeInventory(); return; }
                 String id = CoreUtil.id(player);
-                double[] st = stagedBet.computeIfAbsent(id, k -> new double[]{-1, 0});
+                double[] st = stagedBet.computeIfAbsent(id, k -> new double[]{-1, 0, 0});
+                if (st.length < 3) { st = new double[]{st[0], st[1], 0}; stagedBet.put(id, st); }
                 double balance = db.player(id).balance();
                 switch (slot) {
                     case 20 -> { st[0] = 0; openSpectate(player, menu.duelId); }
                     case 24 -> { st[0] = 1; openSpectate(player, menu.duelId); }
+                    case 22 -> { if (duel.bestOf > 1) st[2] = st[2] == 0 ? 1 : 0; openSpectate(player, menu.duelId); }
                     case 29 -> { st[1] = Math.max(0, st[1] - 1000); openSpectate(player, menu.duelId); }
                     case 30 -> { st[1] = Math.max(0, st[1] - 100); openSpectate(player, menu.duelId); }
                     case 32 -> { st[1] = Math.min(balance, st[1] + 100); openSpectate(player, menu.duelId); }
                     case 33 -> { st[1] = Math.min(balance, st[1] + 1000); openSpectate(player, menu.duelId); }
                     case 38 -> { String target = st[0] == 0 ? duel.a : st[0] == 1 ? duel.b : null;
-                                 if (target == null) actionbar(player, "Pick a fighter to back first."); else placeWager(player, duel, target, st[1]);
+                                 int scope = (duel.bestOf > 1 && st[2] != 0) ? currentRound(duel) : 0;
+                                 if (target == null) actionbar(player, "Pick a fighter to back first."); else placeWager(player, duel, target, st[1], scope);
                                  openSpectate(player, menu.duelId); }
                     case 42 -> { if (spectators.containsKey(id)) leaveSpectator(player); else player.closeInventory(); }
-                    case 44 -> { if (duel.phase == Phase.LIVE) enterSpectator(player, duel); openSpectate(player, menu.duelId); }
+                    case 44 -> { if (duel.phase == Phase.LIVE && !duel.gating) enterSpectator(player, duel); openSpectate(player, menu.duelId); }
                     default -> { }
                 }
             }
@@ -1186,6 +1227,85 @@ final class ArenaService implements Listener {
                 }
             }
             default -> { }
+        }
+    }
+
+    // ------------------------------------------------------------------ item wagering
+    /** Items wagered by a duellist, read from the DB escrow (empty list if none). */
+    private List<ItemStack> loadWager(Duel duel, String id) {
+        byte[] raw = db.arenaItemWagerGet(duel.id, id);
+        List<ItemStack> out = new ArrayList<>();
+        if (raw != null) try { for (ItemStack it : ItemStack.deserializeItemsFromBytes(raw)) if (it != null && !it.getType().isAir()) out.add(it); } catch (Throwable ignored) { }
+        return out;
+    }
+
+    /** A real 54-slot container the duellist fills with what they want to wager. It is pre-loaded from any
+     *  items already staged, so it can be edited. Only allowed before the match starts (STAKING). */
+    private void openWagerBox(Player player) {
+        Duel duel = duelOf(player);
+        if (duel == null || duel.phase != Phase.STAKING) { actionbar(player, "Items can only be wagered before the match starts."); return; }
+        Menu menu = new Menu("wagerbox", duel.id);
+        menu.fillable = true;
+        menu.inv = plugin.getServer().createInventory(menu, 54, Component.text("Wager items — winner takes all", NamedTextColor.DARK_AQUA));
+        for (ItemStack it : loadWager(duel, CoreUtil.id(player))) menu.inv.addItem(it);
+        player.openInventory(menu.inv);
+        CoreUtil.msg(player, "Drop items in to wager them. Close the box to lock them in; the winner takes both sides' items.");
+    }
+
+    /** On closing the wager box, escrow whatever is inside to the DB (crash-safe) and hand any surplus back if
+     *  the match already ended/started while it was open. Then return the duellist to the setup GUI. */
+    @EventHandler public void closeWager(InventoryCloseEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !menu.kind.equals("wagerbox")) return;
+        if (!(event.getPlayer() instanceof Player player)) return;
+        String id = CoreUtil.id(player);
+        Duel duel = find(menu.duelId);
+        List<ItemStack> items = new ArrayList<>();
+        for (ItemStack it : event.getInventory().getContents()) if (it != null && !it.getType().isAir()) items.add(it);
+        if (duel == null || duel.phase != Phase.STAKING) {
+            /** Match vanished or already started while the box was open -- never eat the items. */
+            if (duel != null) db.arenaItemWagerClear(duel.id, id);
+            giveOrStash(id, items, "Your items were returned — the match was no longer accepting wagers.");
+            return;
+        }
+        if (items.isEmpty()) db.arenaItemWagerClear(duel.id, id);
+        else db.arenaItemWagerSave(duel.id, id, ItemStack.serializeItemsAsBytes(items.toArray(new ItemStack[0])));
+        actionbar(player, items.isEmpty() ? "No items wagered." : items.size() + " item stack(s) wagered.");
+        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); });
+        refreshSetup(duel);
+    }
+
+    /** Winner receives both sides' wagered items (their own back + the loser's). Overflow drops at their feet;
+     *  if they are offline it goes to their claim-later stash. */
+    private void awardItemWagers(Duel duel, String winner, String loser) {
+        List<ItemStack> pot = new ArrayList<>(loadWager(duel, winner));
+        pot.addAll(loadWager(duel, loser));
+        db.arenaItemWagerClear(duel.id, winner); db.arenaItemWagerClear(duel.id, loser);
+        if (pot.isEmpty()) return;
+        giveOrStash(winner, pot, "You won " + pot.size() + " wagered item stack(s).");
+        both(duel, name(winner) + " takes the wagered items.");
+    }
+
+    private void refundItemWagers(Duel duel) {
+        for (String id : List.of(duel.a, duel.b)) {
+            List<ItemStack> items = loadWager(duel, id);
+            db.arenaItemWagerClear(duel.id, id);
+            if (!items.isEmpty()) giveOrStash(id, items, "Your wagered items were returned.");
+        }
+    }
+
+    /** Give items to a player: to their inventory if online (surplus dropped at their feet), else into their
+     *  persistent claim-later stash so nothing is ever lost. */
+    private void giveOrStash(String id, List<ItemStack> items, String note) {
+        if (items == null || items.isEmpty()) return;
+        Player player = plugin.getServer().getPlayer(id);
+        if (player != null && player.isOnline()) {
+            for (ItemStack it : items) {
+                if (it == null || it.getType().isAir()) continue;
+                for (ItemStack leftover : player.getInventory().addItem(it).values()) player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+            }
+            CoreUtil.msg(player, note);
+        } else {
+            for (ItemStack it : items) db.stashAddItem(id, it);
         }
     }
 
@@ -1220,37 +1340,50 @@ final class ArenaService implements Listener {
         Duel duel = find(duelId);
         if (duel == null) { CoreUtil.error(player, "That match has ended."); player.closeInventory(); return; }
         String id = CoreUtil.id(player);
-        boolean bettingOpen = duel.phase == Phase.PENDING || duel.phase == Phase.STAKING;
-        double[] st = stagedBet.computeIfAbsent(id, k -> new double[]{-1, 0});
+        boolean bettingOpen = bettingOpen(duel);
+        double[] st = stagedBet.computeIfAbsent(id, k -> new double[]{-1, 0, 0});
+        if (st.length < 3) { double[] grown = new double[]{st[0], st[1], 0}; stagedBet.put(id, grown); st = grown; }
         Menu menu = new Menu("spectate", duelId);
         menu.inv = plugin.getServer().createInventory(menu, 54, Component.text("Duel #" + duelId + " • Spectate", NamedTextColor.DARK_AQUA));
         for (int f = 45; f < 54; f++) menu.inv.setItem(f, filler());
+        /** Scope of the bet being staged: 0 = whole match, else the current round. Best-of-1 has only a match. */
+        int cur = currentRound(duel);
+        boolean perRound = duel.bestOf > 1 && st[2] != 0;
+        int scope = perRound ? cur : 0;
+        String scopeLabel = perRound ? "round " + cur : "whole match";
         double poolA = 0, poolB = 0;
-        for (Wager w : duel.wagers) { if (w.on().equals(duel.a)) poolA += w.amount(); else poolB += w.amount(); }
+        for (Wager w : duel.wagers) { if (w.round() != scope) continue; if (w.on().equals(duel.a)) poolA += w.amount(); else poolB += w.amount(); }
         menu.inv.setItem(4, icon(Material.PAPER, "#" + duelId + "  " + duel.aName + " vs " + duel.bName, List.of(
                 "Kit: " + duel.kit.label(), "Series: Best of " + duel.bestOf,
                 "Score: " + duel.rounds.getOrDefault(duel.a, 0) + " - " + duel.rounds.getOrDefault(duel.b, 0),
                 "Stakes: " + CoreUtil.money(duel.stakes.getOrDefault(duel.a, 0d)) + " / " + CoreUtil.money(duel.stakes.getOrDefault(duel.b, 0d)),
-                "Status: " + duel.phase)));
+                "Status: " + (duel.gating ? "READY-GATE (betting open)" : duel.phase.toString()))));
         boolean backA = st[0] == 0, backB = st[0] == 1;
         menu.inv.setItem(20, icon(backA ? Material.LIME_CONCRETE : Material.WHITE_CONCRETE, (backA ? "✔ " : "") + "Back " + duel.aName,
-                List.of("Pool on " + duel.aName + ": " + CoreUtil.money(poolA), bettingOpen ? "Click to back " + duel.aName : "Betting closed")));
+                List.of(scopeLabel + " pool on " + duel.aName + ": " + CoreUtil.money(poolA), bettingOpen ? "Click to back " + duel.aName : "Betting closed")));
         menu.inv.setItem(24, icon(backB ? Material.RED_CONCRETE : Material.WHITE_CONCRETE, (backB ? "✔ " : "") + "Back " + duel.bName,
-                List.of("Pool on " + duel.bName + ": " + CoreUtil.money(poolB), bettingOpen ? "Click to back " + duel.bName : "Betting closed")));
+                List.of(scopeLabel + " pool on " + duel.bName + ": " + CoreUtil.money(poolB), bettingOpen ? "Click to back " + duel.bName : "Betting closed")));
         if (bettingOpen) {
+            if (duel.bestOf > 1)
+                menu.inv.setItem(22, icon(perRound ? Material.CLOCK : Material.NETHER_STAR, "Betting on: " + scopeLabel, List.of(
+                        "Click to switch between", "this round and the whole match",
+                        "Match bets pay when the match ends;", "round bets pay when that round ends")));
             menu.inv.setItem(29, icon(Material.RED_STAINED_GLASS_PANE, "- 1,000", List.of()));
             menu.inv.setItem(30, icon(Material.PINK_STAINED_GLASS_PANE, "- 100", List.of()));
             menu.inv.setItem(31, icon(Material.GOLD_INGOT, "Wager amount: " + CoreUtil.money(st[1]), List.of("Pick a fighter, set an amount, confirm")));
             menu.inv.setItem(32, icon(Material.LIME_STAINED_GLASS_PANE, "+ 100", List.of()));
             menu.inv.setItem(33, icon(Material.GREEN_STAINED_GLASS_PANE, "+ 1,000", List.of()));
-            menu.inv.setItem(38, icon(Material.EMERALD, "Confirm wager", List.of("Backing " + (st[0] == 0 ? duel.aName : st[0] == 1 ? duel.bName : "nobody yet"),
-                    "Amount " + CoreUtil.money(st[1]), "Changing before lock refunds the old wager")));
+            menu.inv.setItem(38, icon(Material.EMERALD, "Confirm " + scopeLabel + " wager", List.of("Backing " + (st[0] == 0 ? duel.aName : st[0] == 1 ? duel.bName : "nobody yet"),
+                    "Amount " + CoreUtil.money(st[1]), "On: " + scopeLabel, "Changing this scope refunds the old wager")));
         } else {
-            menu.inv.setItem(31, icon(Material.BARRIER, "Betting is closed", List.of("The match has started")));
+            menu.inv.setItem(31, icon(Material.BARRIER, "Betting is closed", List.of("Opens again at the next round's ready-gate")));
         }
-        Wager mine = wagerOf(duel, id);
-        menu.inv.setItem(40, icon(Material.BOOK, "Your wager", mine == null ? List.of("None placed")
-                : List.of(CoreUtil.money(mine.amount()) + " on " + (mine.on().equals(duel.a) ? duel.aName : duel.bName))));
+        List<Wager> mineAll = new ArrayList<>();
+        for (Wager w : duel.wagers) if (w.player().equals(id)) mineAll.add(w);
+        List<String> mineLore = new ArrayList<>();
+        if (mineAll.isEmpty()) mineLore.add("None placed");
+        else for (Wager w : mineAll) mineLore.add(CoreUtil.money(w.amount()) + " on " + (w.on().equals(duel.a) ? duel.aName : duel.bName) + (w.round() == 0 ? " (match)" : " (round " + w.round() + ")"));
+        menu.inv.setItem(40, icon(Material.BOOK, "Your wagers", mineLore));
         if (duel.phase == Phase.LIVE && !spectators.containsKey(id))
             menu.inv.setItem(44, icon(Material.ENDER_EYE, "Enter arena to watch", List.of("Invisible, cannot interfere")));
         menu.inv.setItem(42, icon(Material.ARROW, spectators.containsKey(id) ? "Leave spectating" : "Close", List.of()));
@@ -1264,7 +1397,7 @@ final class ArenaService implements Listener {
                 openSpectate(p, duel.id);
     }
 
-    @EventHandler public void drag(InventoryDragEvent event) { if (event.getInventory().getHolder(false) instanceof Menu) event.setCancelled(true); }
+    @EventHandler public void drag(InventoryDragEvent event) { if (event.getInventory().getHolder(false) instanceof Menu m && !m.fillable) event.setCancelled(true); }
 
     private String PlainName(ItemStack head) {
         if (head == null || !head.hasItemMeta() || !head.getItemMeta().hasDisplayName()) return null;

@@ -175,10 +175,13 @@ final class Database implements AutoCloseable {
              *  mid-duel neither loses a stake nor strands somebody in a kit. */
             s.execute("CREATE TABLE IF NOT EXISTS arena_escrow (player TEXT PRIMARY KEY, amount REAL NOT NULL DEFAULT 0)");
             s.execute("CREATE TABLE IF NOT EXISTS arena_wagers (id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, backed TEXT NOT NULL, amount REAL NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS arena_item_wager (duel INTEGER NOT NULL, player TEXT NOT NULL, items BLOB NOT NULL, PRIMARY KEY(duel,player))");
             s.execute("CREATE TABLE IF NOT EXISTS arena_state (player TEXT PRIMARY KEY, items BLOB NOT NULL, world TEXT NOT NULL, x REAL, y REAL, z REAL, yaw REAL, pitch REAL, level INTEGER, exp REAL, health REAL, food INTEGER, gamemode TEXT)");
             /** Added after arena_state shipped: saturation, potion effects, flight and the rest, packed into
              *  one text column so a duellist is restored to EXACTLY their pre-duel state, not just inventory. */
             try{s.execute("ALTER TABLE arena_state ADD COLUMN extra TEXT");}catch(SQLException ignored){}
+            /** Added with per-round spectator betting: 0 = whole match, N = a specific round. */
+            try{s.execute("ALTER TABLE arena_wagers ADD COLUMN round INTEGER NOT NULL DEFAULT 0");}catch(SQLException ignored){}
             s.execute("CREATE TABLE IF NOT EXISTS smp_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, buyer TEXT NOT NULL, buyer_name TEXT NOT NULL, item_key TEXT NOT NULL, amount INTEGER NOT NULL, filled INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, escrow REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON smp_orders(status)");
             /** Added after the table shipped, so guarded rather than assumed. */
@@ -711,7 +714,7 @@ final class Database implements AutoCloseable {
     synchronized void arenaEscrowSet(String player,double amount){update("INSERT OR REPLACE INTO arena_escrow(player,amount) VALUES(?,?)",player,amount);}
     synchronized double arenaEscrowOf(String player){Double v=one("SELECT amount FROM arena_escrow WHERE player=?",rs->rs.getDouble(1),player);return v==null?0:v;}
     synchronized void arenaEscrowClear(String player){update("DELETE FROM arena_escrow WHERE player=?",player);}
-    synchronized void arenaWagerAdd(String player,String backed,double amount){update("INSERT INTO arena_wagers(player,backed,amount) VALUES(?,?,?)",player,backed,amount);}
+    synchronized void arenaWagerAdd(String player,String backed,double amount,int round){update("INSERT INTO arena_wagers(player,backed,amount,round) VALUES(?,?,?,?)",player,backed,amount,round);}
     synchronized void arenaWagersClear(){update("DELETE FROM arena_wagers",new Object[0]);}
     synchronized void arenaWagersClearFor(String a,String b){update("DELETE FROM arena_wagers WHERE backed=? OR backed=?",a,b);}
     /** On boot, any escrow or wagers still present belong to a match a restart interrupted -- refund and
@@ -725,6 +728,26 @@ final class Database implements AutoCloseable {
         for(String[] row:list("SELECT player,amount FROM arena_wagers",rs->new String[]{rs.getString(1),String.valueOf(rs.getDouble(2))}))
             if(Double.parseDouble(row[1])>0)refund.accept(row[0],Double.parseDouble(row[1]));
         update("DELETE FROM arena_wagers",new Object[0]);
+    }
+    /** Item wagers are escrowed to the DB the moment a duellist locks their wager box, so a crash or restart
+     *  can never eat their items -- they are handed back by arenaItemWagerRefundAll on boot. Keyed by (duel,
+     *  player); duel ids reset each boot, so any surviving row is orphaned and refunded. */
+    synchronized void arenaItemWagerSave(int duel,String player,byte[] items){update("INSERT OR REPLACE INTO arena_item_wager(duel,player,items) VALUES(?,?,?)",duel,player,items);}
+    synchronized byte[] arenaItemWagerGet(int duel,String player){return one("SELECT items FROM arena_item_wager WHERE duel=? AND player=?",rs->rs.getBytes(1),duel,player);}
+    synchronized void arenaItemWagerClear(int duel,String player){update("DELETE FROM arena_item_wager WHERE duel=? AND player=?",duel,player);}
+    synchronized void arenaItemWagerRefundAll(java.util.function.BiConsumer<String,List<ItemStack>> refund){
+        for(Object[] row:list("SELECT player,items FROM arena_item_wager",rs->new Object[]{rs.getString(1),rs.getBytes(2)})){
+            List<ItemStack> items=new ArrayList<>();
+            try{for(ItemStack it:ItemStack.deserializeItemsFromBytes((byte[])row[1]))if(it!=null&&!it.getType().isAir())items.add(it);}catch(Throwable ignored){}
+            refund.accept((String)row[0],items);
+        }
+        update("DELETE FROM arena_item_wager",new Object[0]);
+    }
+    /** Drop a single arbitrary item into a player's order-stash (their persistent "claim later" store) -- used
+     *  to return escrowed duel items to an OFFLINE owner without losing them. */
+    synchronized void stashAddItem(String owner,ItemStack item){
+        if(item==null||item.getType().isAir())return;
+        update("INSERT INTO smp_order_stash(owner,item,created_at) VALUES(?,?,?)",owner,ItemStack.serializeItemsAsBytes(new ItemStack[]{item}),System.currentTimeMillis());
     }
 
     record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status,int notified,int notifiedEnd,int hidden){}
