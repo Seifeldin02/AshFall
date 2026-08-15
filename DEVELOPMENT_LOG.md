@@ -48,6 +48,13 @@ through `payShopSeller` (now allowed to go negative); the auction listing fee is
 its failure-refund matches; player↔player transfers, taxes and minted income (e.g. villager-trade income) are
 untouched — only genuine player→bank sinks and shop payouts move.
 
+### ✅ MERGED TO PRODUCTION 2026-08-16 — everything below this session is now live on prod
+
+Prod jar swapped (`plugins/SMPCore-1.7.0.jar`), prod configs updated (boss-chosen-price 1.5M, rtp radii doubled,
+net-worth + shop Dragon Egg 2M; reconnect-grace uses the code default 10; `allow-piston-duplication` was set by
+the owner). Booted clean: SMPCore enabled, arena ready, 1678-item catalogue, DB migrations applied with no
+errors. Staging-only `trusted-admin.staging-session-persistence` deliberately NOT copied.
+
 ### Designed arena + 10s DC forfeit + lag pass (staging → merged to production)
 
 - **Designed duel arena built** (`ensureArena`/`addShellSteps`, replaces the old procedural 61x61). Kit-aware:
