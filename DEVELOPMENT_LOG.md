@@ -9,6 +9,24 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 Branch `staging`. All work below is on staging and NOT yet deployed to production.
 
+### Enchanted-item orders + duel wager confirm + kit glow (staging)
+
+- **Enchanted-item orders (DonutOrders-style, native).** New `enchanted:MATERIAL/ENCHANT/level/...` key type.
+  Clicking an enchantable base item in the create picker opens an **enchant chooser** (`openEnchantPicker`): one
+  book per enchantment the item can *legally* take (`enchantment.canEnchantItem` = the realism filter, so no
+  Efficiency-on-sword etc.), left-click raises / right-click lowers (capped at vanilla max), and an enchant that
+  **conflicts** with a chosen one locks out (`conflictsWith`). Confirm with none = a plain order. Matching
+  (`matchesEnchanted`) is by item **TYPE + exact enchant set**, ignoring display name/lore, rejecting custom
+  PDC (relics/bound) and damaged items. `canonical`/`display`/`categoryOf` all handle the new prefix; the
+  buyer's stash receives the clean canonical enchanted item. Keys are composed at order time (sorted, so the
+  same set = the same identity); the catalogue itself is unchanged.
+- **Item-wager Confirm button.** The wager box now has a control bar (Back / Clear / Confirm). Items are
+  escrowed to the DB **only on Confirm** (append), closing the box **returns** unconfirmed items, and Clear
+  returns everything staked. No more silent commit-on-close. Dupe-safe: escrow is never pulled into an editable
+  state, so an escrowed item can't be dragged back out for free. Control-bar slots are click/drag-locked.
+- **Chosen kit glows.** The selected kit icon and the kit banner in the duel setup GUI now carry an enchant
+  glint (`setEnchantmentGlintOverride`) in addition to the ✔ SELECTED label, so the chosen kit is obvious.
+
 ### Promotion status — what should go to `main`/production vs stay staging-only
 
 **Safe to promote to production (all of this session's commits — general fixes/features, no staging-only flags

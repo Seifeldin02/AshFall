@@ -61,10 +61,10 @@ import java.util.function.Consumer;
  *  so a restart, a logout or a crash resumes from the same state. */
 final class OrdersService implements Listener {
 
-    private static final String VANILLA = "vanilla:", SPAWNER = "smpcore:spawner/", BOOK = "vanilla:ENCHANTED_BOOK/";
+    private static final String VANILLA = "vanilla:", SPAWNER = "smpcore:spawner/", BOOK = "vanilla:ENCHANTED_BOOK/", ENCHANTED = "enchanted:";
 
     /** Which screen an inventory belongs to, so one click handler can serve them all. */
-    private enum Screen { HUB, PUBLIC, MINE, HISTORY, CATEGORY, PICK, CONFIRM, STASH, DELIVER }
+    private enum Screen { HUB, PUBLIC, MINE, HISTORY, CATEGORY, PICK, CONFIRM, STASH, DELIVER, ENCHANT }
     /** Insertable area of the delivery screen: the top three rows, and nothing else. */
     private static final int DELIVER_SLOTS = 27;
 
@@ -92,11 +92,18 @@ final class OrdersService implements Listener {
         private double unit;
     }
 
+    /** A base item plus the custom enchantments being chosen for it, before the amount/price prompts. */
+    private static final class EnchantDraft {
+        private Material base;
+        private final Map<Enchantment, Integer> enchants = new LinkedHashMap<>();
+    }
+
     private final SMPCore plugin;
     private final Database db;
     /** Chat prompts in flight. Cleared on use, on cancel and on quit; nothing else depends on them. */
     private final Map<UUID, Consumer<String>> prompts = new LinkedHashMap<>();
     private final Map<UUID, Draft> drafts = new LinkedHashMap<>();
+    private final Map<UUID, EnchantDraft> enchantDrafts = new LinkedHashMap<>();
     private List<String> catalogue = List.of();
     private BukkitTask expiryTask;
 
@@ -148,6 +155,13 @@ final class OrdersService implements Listener {
             book.setItemMeta(meta);
             return book;
         }
+        if (key.startsWith(ENCHANTED)) {
+            Material material = enchantedMaterial(key);
+            if (material == null || !material.isItem()) return null;
+            ItemStack item = new ItemStack(material);
+            for (Map.Entry<Enchantment, Integer> entry : enchantedEnchants(key).entrySet()) item.addUnsafeEnchantment(entry.getKey(), entry.getValue());
+            return item;
+        }
         if (key.startsWith(VANILLA)) {
             Material material = Material.matchMaterial(key.substring(VANILLA.length()));
             return material == null || !material.isItem() ? null : new ItemStack(material);
@@ -161,6 +175,160 @@ final class OrdersService implements Listener {
 
     private EntityType entityType(String name) {
         try { return EntityType.valueOf(name); } catch (IllegalArgumentException error) { return null; }
+    }
+
+    // ------------------------------------------------------------------ enchanted-item orders
+    private Material enchantedMaterial(String key) {
+        String body = key.substring(ENCHANTED.length());
+        int slash = body.indexOf('/');
+        return Material.matchMaterial(slash < 0 ? body : body.substring(0, slash));
+    }
+
+    private Map<Enchantment, Integer> enchantedEnchants(String key) {
+        Map<Enchantment, Integer> map = new LinkedHashMap<>();
+        String[] parts = key.substring(ENCHANTED.length()).split("/");
+        for (int i = 1; i + 1 < parts.length; i += 2) {
+            Enchantment enchantment = enchantment(parts[i]);
+            int level;
+            try { level = Integer.parseInt(parts[i + 1]); } catch (NumberFormatException error) { continue; }
+            if (enchantment != null) map.put(enchantment, level);
+        }
+        return map;
+    }
+
+    /** Exactly the ordered TYPE carrying EXACTLY the ordered enchantments -- display name and lore are ignored
+     *  (a renamed item still counts), but any custom persistent data (relics, bound items, custom spawners) is
+     *  rejected, and a damaged item is refused so the buyer gets what they paid for. */
+    private boolean matchesEnchanted(String key, ItemStack stack) {
+        Material material = enchantedMaterial(key);
+        if (material == null || stack.getType() != material) return false;
+        if (!stack.getEnchantments().equals(enchantedEnchants(key))) return false;
+        ItemMeta meta = stack.getItemMeta();
+        if (meta == null || !meta.getPersistentDataContainer().getKeys().isEmpty()) return false;
+        return !(meta instanceof org.bukkit.inventory.meta.Damageable damage && damage.hasDamage());
+    }
+
+    /** A base item is enchantable if the vanilla rules allow at least one enchantment on it -- the same realism
+     *  filter the picker uses, so unrealistic enchants (Efficiency on a sword, Sharpness on a pickaxe) can never
+     *  be chosen. Books are excluded; enchanted books have their own order type. */
+    private boolean isEnchantableBase(Material material) {
+        if (material == null || material == Material.ENCHANTED_BOOK || material == Material.BOOK) return false;
+        ItemStack probe = new ItemStack(material);
+        for (Enchantment enchantment : org.bukkit.Registry.ENCHANTMENT) if (enchantment.canEnchantItem(probe)) return true;
+        return false;
+    }
+
+    private List<Enchantment> applicableEnchants(Material material) {
+        ItemStack probe = new ItemStack(material);
+        List<Enchantment> list = new ArrayList<>();
+        for (Enchantment enchantment : org.bukkit.Registry.ENCHANTMENT) if (enchantment.canEnchantItem(probe)) list.add(enchantment);
+        list.sort(java.util.Comparator.comparing(enchantment -> enchantment.getKey().getKey()));
+        return list;
+    }
+
+    private boolean conflictsWithSelected(Enchantment candidate, Map<Enchantment, Integer> selected) {
+        for (Enchantment other : selected.keySet())
+            if (!other.equals(candidate) && (candidate.conflictsWith(other) || other.conflictsWith(candidate))) return true;
+        return false;
+    }
+
+    /** Canonical, sorted key so the same enchant set always produces the same identity string. */
+    private String composeEnchantedKey(Material material, Map<Enchantment, Integer> enchants) {
+        List<Enchantment> ordered = new ArrayList<>(enchants.keySet());
+        ordered.sort(java.util.Comparator.comparing(enchantment -> enchantment.getKey().getKey()));
+        StringBuilder sb = new StringBuilder(ENCHANTED).append(material.name());
+        for (Enchantment enchantment : ordered)
+            sb.append('/').append(enchantment.getKey().getKey().toUpperCase(Locale.ROOT)).append('/').append(enchants.get(enchantment));
+        return sb.toString();
+    }
+
+    private static String roman(int n) {
+        return switch (n) {
+            case 1 -> "I"; case 2 -> "II"; case 3 -> "III"; case 4 -> "IV"; case 5 -> "V";
+            case 6 -> "VI"; case 7 -> "VII"; case 8 -> "VIII"; case 9 -> "IX"; case 10 -> "X";
+            default -> String.valueOf(n);
+        };
+    }
+
+    /** From the item picker: a plain enchantable base opens the enchant chooser first; everything else goes
+     *  straight to the amount/price prompts. */
+    private void startOrderFor(Player player, String key) {
+        if (key.startsWith(VANILLA)) {
+            Material material = Material.matchMaterial(key.substring(VANILLA.length()));
+            if (isEnchantableBase(material)) {
+                EnchantDraft draft = new EnchantDraft();
+                draft.base = material;
+                enchantDrafts.put(player.getUniqueId(), draft);
+                openEnchantPicker(player);
+                return;
+            }
+        }
+        beginDraft(player, key);
+    }
+
+    /** The enchant chooser: one book per enchantment the item can legally take. Left-click raises the level,
+     *  right-click lowers/removes it, and an enchant that conflicts with a chosen one locks out. Confirming with
+     *  none selected simply orders the item plain. */
+    private void openEnchantPicker(Player player) {
+        EnchantDraft draft = enchantDrafts.get(player.getUniqueId());
+        if (draft == null || draft.base == null) { openPick(player, 1, null); return; }
+        Holder holder = new Holder(Screen.ENCHANT, 1, null, 0);
+        holder.inv = plugin.getServer().createInventory(holder, 54, Component.text("Enchant " + CoreUtil.pretty(draft.base.name()), NamedTextColor.DARK_AQUA));
+        List<Enchantment> applicable = applicableEnchants(draft.base);
+        for (int i = 0; i < applicable.size() && i < 45; i++) {
+            Enchantment enchantment = applicable.get(i);
+            int level = draft.enchants.getOrDefault(enchantment, 0);
+            boolean blocked = level == 0 && conflictsWithSelected(enchantment, draft.enchants);
+            String name = CoreUtil.pretty(enchantment.getKey().getKey());
+            Material icon = level > 0 ? Material.ENCHANTED_BOOK : (blocked ? Material.GRAY_DYE : Material.BOOK);
+            List<String> lore = new ArrayList<>();
+            if (blocked) lore.add("Conflicts with a chosen enchant");
+            else if (level > 0) { lore.add("Selected: " + roman(level) + "  (max " + roman(enchantment.getMaxLevel()) + ")"); lore.add("Left-click: raise   Right-click: lower"); }
+            else { lore.add("Not selected  (max " + roman(enchantment.getMaxLevel()) + ")"); lore.add("Left-click to add"); }
+            holder.inv.setItem(i, CoreUtil.named(icon, name + (level > 0 ? " " + roman(level) : ""), lore));
+        }
+        for (int slot = 45; slot < 54; slot++) holder.inv.setItem(slot, filler());
+        holder.inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Item picker")));
+        holder.inv.setItem(48, CoreUtil.named(Material.CHEST, "Order it plain", List.of("No enchantments")));
+        String composed = draft.enchants.isEmpty() ? VANILLA + draft.base.name() : composeEnchantedKey(draft.base, draft.enchants);
+        ItemStack preview = canonical(composed);
+        if (preview == null) preview = new ItemStack(draft.base);
+        ItemMeta pm = preview.getItemMeta();
+        if (pm != null) {
+            pm.displayName(Component.text(display(composed), NamedTextColor.GOLD));
+            pm.lore(List.of(Component.text(draft.enchants.size() + " enchantment(s) chosen", NamedTextColor.GRAY)));
+            preview.setItemMeta(pm);
+        }
+        holder.inv.setItem(49, preview);
+        holder.inv.setItem(50, CoreUtil.named(Material.LIME_CONCRETE, "Confirm & set amount",
+                List.of(draft.enchants.isEmpty() ? "No enchants — orders it plain" : draft.enchants.size() + " enchant(s) chosen", "Then choose amount and price")));
+        player.openInventory(holder.inv);
+    }
+
+    private void handleEnchantClick(Player player, InventoryClickEvent event, int slot) {
+        EnchantDraft draft = enchantDrafts.get(player.getUniqueId());
+        if (draft == null || draft.base == null) { openPick(player, 1, null); return; }
+        if (slot == 45) { enchantDrafts.remove(player.getUniqueId()); openPick(player, 1, null); return; }
+        if (slot == 48) { enchantDrafts.remove(player.getUniqueId()); beginDraft(player, VANILLA + draft.base.name()); return; }
+        if (slot == 50) {
+            String key = draft.enchants.isEmpty() ? VANILLA + draft.base.name() : composeEnchantedKey(draft.base, draft.enchants);
+            enchantDrafts.remove(player.getUniqueId());
+            beginDraft(player, key);
+            return;
+        }
+        if (slot >= 45) return;
+        List<Enchantment> applicable = applicableEnchants(draft.base);
+        if (slot >= applicable.size()) return;
+        Enchantment enchantment = applicable.get(slot);
+        int level = draft.enchants.getOrDefault(enchantment, 0);
+        if (event.isRightClick()) {
+            if (level <= 1) draft.enchants.remove(enchantment); else draft.enchants.put(enchantment, level - 1);
+        } else if (level == 0) {
+            if (conflictsWithSelected(enchantment, draft.enchants)) { CoreUtil.error(player, CoreUtil.pretty(enchantment.getKey().getKey()) + " conflicts with an enchant you already chose."); return; }
+            draft.enchants.put(enchantment, 1);
+        } else if (level < enchantment.getMaxLevel()) draft.enchants.put(enchantment, level + 1);
+        else { CoreUtil.error(player, CoreUtil.pretty(enchantment.getKey().getKey()) + " is already at its maximum (" + roman(enchantment.getMaxLevel()) + ")."); return; }
+        openEnchantPicker(player);
     }
 
     /** Does this stack satisfy that order?
@@ -177,6 +345,7 @@ final class OrdersService implements Listener {
         }
         /** A spawner must never satisfy a plain vanilla:SPAWNER order either. */
         if (stack.getType() == Material.SPAWNER && plugin.spawners().typeOf(stack) != null) return false;
+        if (key.startsWith(ENCHANTED)) return matchesEnchanted(key, stack);
         ItemStack want = canonical(key);
         return want != null && stack.isSimilar(want);
     }
@@ -192,6 +361,7 @@ final class OrdersService implements Listener {
     }
 
     Cat categoryOf(String key) {
+        if (key.startsWith(ENCHANTED)) { Material m = enchantedMaterial(key); return m == null ? Cat.MISC : categoryOf(VANILLA + m.name()); }
         if (key.startsWith(SPAWNER)) return Cat.SPAWNERS;
         if (key.startsWith(BOOK)) return Cat.BOOKS;
         Material m = Material.matchMaterial(key.substring(VANILLA.length()));
@@ -263,6 +433,17 @@ final class OrdersService implements Listener {
         if (key.startsWith(BOOK)) {
             String[] parts = key.substring(BOOK.length()).split("/");
             return CoreUtil.pretty(parts[0]) + " " + (parts.length > 1 ? parts[1] : "") + " Book";
+        }
+        if (key.startsWith(ENCHANTED)) {
+            Material material = enchantedMaterial(key);
+            StringBuilder sb = new StringBuilder(material == null ? "?" : CoreUtil.pretty(material.name()));
+            boolean first = true;
+            for (Map.Entry<Enchantment, Integer> entry : enchantedEnchants(key).entrySet()) {
+                sb.append(first ? " (" : ", "); first = false;
+                sb.append(CoreUtil.pretty(entry.getKey().getKey().getKey())).append(' ').append(roman(entry.getValue()));
+            }
+            if (!first) sb.append(')');
+            return sb.toString();
         }
         return CoreUtil.pretty(key.substring(key.indexOf(':') + 1));
     }
@@ -620,10 +801,11 @@ final class OrdersService implements Listener {
                     if (clicked == null || clicked.getType().isAir()) return;
                     List<String> keys = holder.category == null ? filtered(holder.search) : inCategory(Cat.valueOf(holder.category), holder.search);
                     int index = (holder.page - 1) * 45 + slot;
-                    if (index < keys.size()) beginDraft(player, keys.get(index));
+                    if (index < keys.size()) startOrderFor(player, keys.get(index));
                 }
                 return;
             }
+            case ENCHANT -> { handleEnchantClick(player, event, slot); return; }
             case STASH -> {
                 if (slot == 45) { openPublic(player); return; }
                 if (slot == 49) { collect(player); return; }

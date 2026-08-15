@@ -1099,12 +1099,14 @@ final class ArenaService implements Listener {
         Menu menu = new Menu("setup", duel.id);
         menu.inv = plugin.getServer().createInventory(menu, 45, Component.text("Duel setup", NamedTextColor.DARK_AQUA));
         /** A clear banner up top showing the currently selected kit, so it is obvious at a glance. */
-        menu.inv.setItem(4, icon(duel.kit.icon(), "Kit: " + duel.kit.label(), List.of(duel.kit.blurb(), "Best of " + duel.bestOf)));
+        menu.inv.setItem(4, glow(icon(duel.kit.icon(), "Kit: " + duel.kit.label(), List.of(duel.kit.blurb(), "Best of " + duel.bestOf))));
         int[] kitSlots = {10, 12, 14, 16};
         Kit[] kits = Kit.values();
         for (int i = 0; i < kits.length; i++) {
             boolean sel = duel.kit == kits[i];
-            menu.inv.setItem(kitSlots[i], icon(kits[i].icon(), (sel ? "\u2714 SELECTED \u2014 " : "") + kits[i].label(), List.of(kits[i].blurb(), sel ? "This kit is selected" : "Click to pick this kit")));
+            ItemStack ico = icon(kits[i].icon(), (sel ? "\u2714 SELECTED \u2014 " : "") + kits[i].label(), List.of(kits[i].blurb(), sel ? "This kit is selected" : "Click to pick this kit"));
+            if (sel) glow(ico);
+            menu.inv.setItem(kitSlots[i], ico);
         }
         menu.inv.setItem(20, icon(duel.bestOf == 1 ? Material.LIME_DYE : Material.GRAY_DYE, "Best of 1", List.of(duel.bestOf == 1 ? "Selected" : "Click")));
         menu.inv.setItem(24, icon(duel.bestOf == 3 ? Material.LIME_DYE : Material.GRAY_DYE, "Best of 3", List.of(duel.bestOf == 3 ? "Selected" : "Click")));
@@ -1154,11 +1156,30 @@ final class ArenaService implements Listener {
     }
 
     private ItemStack icon(Material material, String name, List<String> lore) { return CoreUtil.named(material, name, lore); }
+    /** Adds an enchantment glint to an icon (no real enchantment) so the selected choice clearly stands out. */
+    private ItemStack glow(ItemStack item) {
+        if (item == null) return null;
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) { meta.setEnchantmentGlintOverride(true); item.setItemMeta(meta); }
+        return item;
+    }
     private ItemStack filler() { return CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE, " ", List.of()); }
 
     @EventHandler public void click(InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Menu menu)) return;
-        if (menu.fillable) return; // the wager box is a real container -- let the player move items in/out
+        if (menu.fillable) {
+            /** The wager box: the top 45 slots and the player's own inventory are freely usable; the bottom row
+             *  is a control bar (Back / Clear / Confirm) and stays click-locked. */
+            if (!(event.getWhoClicked() instanceof Player boxPlayer)) return;
+            int raw = event.getRawSlot();
+            if (raw >= 45 && raw < 54) {
+                event.setCancelled(true);
+                if (raw == 45) boxPlayer.closeInventory();
+                else if (raw == 48) clearWager(boxPlayer, event.getInventory());
+                else if (raw == 49) confirmWager(boxPlayer, event.getInventory());
+            }
+            return;
+        }
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player)) return;
         int slot = event.getRawSlot();
@@ -1247,10 +1268,47 @@ final class ArenaService implements Listener {
         if (duel == null || duel.phase != Phase.STAKING) { actionbar(player, "Items can only be wagered before the match starts."); return; }
         Menu menu = new Menu("wagerbox", duel.id);
         menu.fillable = true;
-        menu.inv = plugin.getServer().createInventory(menu, 54, Component.text("Wager items — winner takes all", NamedTextColor.DARK_AQUA));
-        for (ItemStack it : loadWager(duel, CoreUtil.id(player))) menu.inv.addItem(it);
+        menu.inv = plugin.getServer().createInventory(menu, 54, Component.text("Wager items \u2014 winner takes all", NamedTextColor.DARK_AQUA));
+        for (int slot = 45; slot < 54; slot++) menu.inv.setItem(slot, filler());
+        int already = loadWager(duel, CoreUtil.id(player)).size();
+        menu.inv.setItem(45, icon(Material.ARROW, "Back", List.of("Return to duel setup", "Unconfirmed items above are returned")));
+        menu.inv.setItem(48, icon(Material.CAULDRON, "Clear wager", List.of(already > 0 ? "Return all " + already + " staged stack(s)" : "Nothing staged yet")));
+        menu.inv.setItem(49, icon(Material.LIME_CONCRETE, "Confirm wager", List.of("Add the items above to your wager", "Winner takes both sides' wagered items")));
+        menu.inv.setItem(53, icon(Material.BOOK, "Currently wagered", List.of(already + " stack(s) staged", "Add more above, then Confirm")));
         player.openInventory(menu.inv);
-        CoreUtil.msg(player, "Drop items in to wager them. Close the box to lock them in; the winner takes both sides' items.");
+        CoreUtil.msg(player, "Put items in the top area, then click Confirm to stake them. Closing without confirming returns them.");
+    }
+
+    /** Appends the items staged in the top of the box to the player's DB item-wager escrow, then clears the box
+     *  and returns to setup. Escrow only ever changes here and in clearWager, so nothing is wagered by accident
+     *  and an already-escrowed item can never be pulled back out of the box for free. */
+    private void confirmWager(Player player, Inventory box) {
+        String id = CoreUtil.id(player);
+        Duel duel = duelOf(player);
+        List<ItemStack> staged = new ArrayList<>();
+        for (int i = 0; i < 45; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) staged.add(it); }
+        if (duel == null || duel.phase != Phase.STAKING) { giveOrStash(id, staged, "Your items were returned \u2014 the match was no longer accepting wagers."); player.closeInventory(); return; }
+        if (staged.isEmpty()) { actionbar(player, "Put items in the box first, then Confirm."); return; }
+        List<ItemStack> full = new ArrayList<>(loadWager(duel, id));
+        full.addAll(staged);
+        db.arenaItemWagerSave(duel.id, id, ItemStack.serializeItemsAsBytes(full.toArray(new ItemStack[0])));
+        for (int i = 0; i < 45; i++) box.setItem(i, null);
+        actionbar(player, "Wager confirmed \u2014 " + full.size() + " stack(s) staked.");
+        player.closeInventory();
+        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); });
+    }
+
+    /** Returns every item the player has wagered (confirmed escrow plus anything unconfirmed still in the box)
+     *  and empties their escrow. */
+    private void clearWager(Player player, Inventory box) {
+        String id = CoreUtil.id(player);
+        Duel duel = duelOf(player);
+        List<ItemStack> back = new ArrayList<>();
+        for (int i = 0; i < 45; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) { back.add(it); box.setItem(i, null); } }
+        if (duel != null) { back.addAll(loadWager(duel, id)); db.arenaItemWagerClear(duel.id, id); }
+        giveOrStash(id, back, "Wager cleared \u2014 items returned.");
+        player.closeInventory();
+        if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); });
     }
 
     /** On closing the wager box, escrow whatever is inside to the DB (crash-safe) and hand any surplus back if
@@ -1259,20 +1317,11 @@ final class ArenaService implements Listener {
         if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !menu.kind.equals("wagerbox")) return;
         if (!(event.getPlayer() instanceof Player player)) return;
         String id = CoreUtil.id(player);
-        Duel duel = find(menu.duelId);
-        List<ItemStack> items = new ArrayList<>();
-        for (ItemStack it : event.getInventory().getContents()) if (it != null && !it.getType().isAir()) items.add(it);
-        if (duel == null || duel.phase != Phase.STAKING) {
-            /** Match vanished or already started while the box was open -- never eat the items. */
-            if (duel != null) db.arenaItemWagerClear(duel.id, id);
-            giveOrStash(id, items, "Your items were returned — the match was no longer accepting wagers.");
-            return;
-        }
-        if (items.isEmpty()) db.arenaItemWagerClear(duel.id, id);
-        else db.arenaItemWagerSave(duel.id, id, ItemStack.serializeItemsAsBytes(items.toArray(new ItemStack[0])));
-        actionbar(player, items.isEmpty() ? "No items wagered." : items.size() + " item stack(s) wagered.");
-        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); });
-        refreshSetup(duel);
+        /** Anything still in the TOP of the box was never confirmed, so closing hands it straight back -- closing
+         *  is a cancel. Confirmed items already live in the DB escrow and are untouched here. */
+        List<ItemStack> unconfirmed = new ArrayList<>();
+        for (int i = 0; i < 45; i++) { ItemStack it = event.getInventory().getItem(i); if (it != null && !it.getType().isAir()) unconfirmed.add(it); }
+        if (!unconfirmed.isEmpty()) giveOrStash(id, unconfirmed, "Unconfirmed wager items were returned.");
     }
 
     /** Winner receives both sides' wagered items (their own back + the loser's). Overflow drops at their feet;
@@ -1398,7 +1447,11 @@ final class ArenaService implements Listener {
                 openSpectate(p, duel.id);
     }
 
-    @EventHandler public void drag(InventoryDragEvent event) { if (event.getInventory().getHolder(false) instanceof Menu m && !m.fillable) event.setCancelled(true); }
+    @EventHandler public void drag(InventoryDragEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof Menu m)) return;
+        if (!m.fillable) { event.setCancelled(true); return; }
+        for (int raw : event.getRawSlots()) if (raw >= 45 && raw < 54) { event.setCancelled(true); return; }
+    }
 
     private String PlainName(ItemStack head) {
         if (head == null || !head.hasItemMeta() || !head.getItemMeta().hasDisplayName()) return null;
