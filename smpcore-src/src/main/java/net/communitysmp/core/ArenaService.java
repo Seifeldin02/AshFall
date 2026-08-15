@@ -787,11 +787,11 @@ final class ArenaService implements Listener {
         db.arenaEscrowClear(duel.a); db.arenaEscrowClear(duel.b);
         if (pot > 0) { db.changeBalance(winner, pot); db.recordEconomy(winner, "DUEL_WIN", pot, loser); }
         settleWagerScope(duel, 0, winner, "match");
-        awardItemWagers(duel, winner, loser);
         plugin.getServer().broadcast(Component.text("⚔ " + name(winner) + " defeats " + name(loser)
                 + (pot > 0 ? " and takes " + CoreUtil.money(pot) : ""), NamedTextColor.GOLD));
         resetArena(duel);
         returnPlayers(duel);
+        awardItemWagers(duel, winner, loser);
         dispose(duel);
     }
 
@@ -1026,10 +1026,10 @@ final class ArenaService implements Listener {
         }
         for (Wager w : duel.wagers) if (w.amount() > 0) db.changeBalance(w.player(), w.amount());
         db.arenaWagersClearFor(duel.a, duel.b);
-        refundItemWagers(duel);
         both(duel, "Duel cancelled — " + why + ". All stakes, money bets and wagered items refunded.");
         resetArena(duel);
         returnPlayers(duel);
+        refundItemWagers(duel);
         dispose(duel);
     }
 
@@ -1144,6 +1144,12 @@ final class ArenaService implements Listener {
     }
 
     private void refreshSetup(Duel duel) { openSetup(a(duel)); openSetup(b(duel)); }
+    /** Re-render the setup GUI live for whichever duellist currently has it open, so wager counts update on
+     *  both sides the moment either confirms/clears -- without yanking anyone who is inside the wager box. */
+    private void refreshSetupOpen(Duel duel) {
+        for (Player p : new Player[]{a(duel), b(duel)})
+            if (p != null && p.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m && "setup".equals(m.kind)) openSetup(p);
+    }
 
     /** GUI stake adjustment: nudge the stake up or down, clamped to what the player can actually cover. */
     private void adjustStake(Player player, double delta) {
@@ -1320,7 +1326,7 @@ final class ArenaService implements Listener {
         for (int i = 0; i < 45; i++) box.setItem(i, null);
         actionbar(player, "Wager confirmed \u2014 " + full.size() + " stack(s) staked.");
         player.closeInventory();
-        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); });
+        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); refreshSetupOpen(duel); });
     }
 
     /** Returns every item the player has wagered (confirmed escrow plus anything unconfirmed still in the box)
@@ -1333,7 +1339,7 @@ final class ArenaService implements Listener {
         if (duel != null) { back.addAll(loadWager(duel, id)); db.arenaItemWagerClear(duel.id, id); }
         giveOrStash(id, back, "Wager cleared \u2014 items returned.");
         player.closeInventory();
-        if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); });
+        if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); refreshSetupOpen(duel); });
     }
 
     /** On closing the wager box, escrow whatever is inside to the DB (crash-safe) and hand any surplus back if

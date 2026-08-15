@@ -235,15 +235,17 @@ final class DiscardedVaultService implements Listener {
 
     // ------------------------------------------------------------------ admin view (read only)
     void show(CommandSender sender, int page) {
-        int p = Math.max(1, page);
-        int from = 45 * (p - 1);
-        /** Pull one row past this page's window so we can tell whether a next page exists. */
-        List<String[]> totals = plugin.db().discardedTotals(from + 45 + 1);
-        if (from >= totals.size() && !totals.isEmpty()) { CoreUtil.error(sender, "No vault entries on page " + p + "."); return; }
-        boolean hasNext = totals.size() > from + 45;
-        List<String[]> slice = totals.subList(Math.min(from, totals.size()), Math.min(from + 45, totals.size()));
+        /** Fetch the whole aggregated ledger and paginate in memory, so page navigation is always exact -- the
+         *  old limit-per-page query made the "next page exists?" test and the slice disagree at the boundary. */
+        List<String[]> totals = plugin.db().discardedTotals(5000);
+        int perPage = 45;
+        int maxPage = Math.max(1, (totals.size() + perPage - 1) / perPage);
+        int p = Math.min(Math.max(1, page), maxPage);
+        int from = perPage * (p - 1);
+        boolean hasNext = p < maxPage;
+        List<String[]> slice = totals.subList(Math.min(from, totals.size()), Math.min(from + perPage, totals.size()));
         if (!(sender instanceof Player viewer)) {
-            CoreUtil.msg(sender, "Discarded vault — " + slice.size() + " material(s), page " + p);
+            CoreUtil.msg(sender, "Discarded vault \u2014 " + slice.size() + " material(s), page " + p + "/" + maxPage);
             for (String[] row : slice)
                 CoreUtil.msg(sender, "  " + row[0] + " destroyed=" + row[1] + " recycled=" + row[2]
                         + " last=" + row[3] + " at " + row[4] + " " + row[5] + "," + row[6] + "," + row[7]
@@ -251,32 +253,36 @@ final class DiscardedVaultService implements Listener {
             return;
         }
         Inventory inv = Bukkit.createInventory(new VaultHolder(p), 54,
-                Component.text("Discarded Vault • Audit (page " + p + ")", NamedTextColor.DARK_RED));
+                Component.text("Discarded Vault \u2022 Audit (page " + p + "/" + maxPage + ")", NamedTextColor.DARK_RED));
         int slot = 0;
         for (String[] row : slice) {
             if (slot >= 45) break;
-            Material material = Material.matchMaterial(row[0]);
-            /** SPAWNER_BLAZE and friends are ledger labels, not materials -- show them as a spawner. */
-            if (material == null && row[0].startsWith("SPAWNER_")) material = Material.SPAWNER;
+            String matName = row[0];
+            boolean spawner = matName.startsWith("SPAWNER_");
+            Material material = spawner ? Material.SPAWNER : Material.matchMaterial(matName);
+            /** Name the specific spawner ("Blaze Spawner") and hide the vanilla "interact with a spawn egg"
+             *  tooltip that made every destroyed spawner look like a blank generic one. */
+            String display = spawner ? CoreUtil.pretty(matName.substring("SPAWNER_".length())) + " Spawner" : CoreUtil.pretty(matName);
             List<String> lore = new ArrayList<>();
             lore.add("Destroyed: " + CoreUtil.compact(Long.parseLong(row[1])));
             lore.add("Recycled into shop stock: " + CoreUtil.compact(Long.parseLong(row[2])));
             lore.add("Last reason: " + row[3]);
             lore.add("Last seen: " + row[4] + " " + row[5] + ", " + row[6] + ", " + row[7]);
             lore.add(ago(Long.parseLong(row[8])) + " ago");
-            inv.setItem(slot++, CoreUtil.named(material == null ? Material.BARRIER : material,
-                    CoreUtil.pretty(row[0]), lore));
+            ItemStack icon = CoreUtil.named(material == null ? Material.BARRIER : material, display, lore);
+            if (spawner) {
+                org.bukkit.inventory.meta.ItemMeta meta = icon.getItemMeta();
+                if (meta != null) { meta.addItemFlags(org.bukkit.inventory.ItemFlag.HIDE_ADDITIONAL_TOOLTIP); icon.setItemMeta(meta); }
+            }
+            inv.setItem(slot++, icon);
         }
-        inv.setItem(49, CoreUtil.named(Material.WRITABLE_BOOK, "Audit record only — page " + p,
+        inv.setItem(49, CoreUtil.named(Material.WRITABLE_BOOK, "Audit record only \u2014 page " + p + "/" + maxPage,
                 List.of("A log of items that permanently left the world.",
                         "Destroyed = gone for good (never delivered anywhere).",
                         "Recycled = eligible commodities put back into shop stock.",
                         "Nothing can be withdrawn from this vault.")));
-        /** In-GUI paging, so the whole ledger is reachable without retyping the command. */
-        if (p > 1) inv.setItem(45, CoreUtil.named(Material.ARROW, "◀ Previous page",
-                List.of("Go to page " + (p - 1))));
-        if (hasNext) inv.setItem(53, CoreUtil.named(Material.ARROW, "Next page ▶",
-                List.of("Go to page " + (p + 1))));
+        if (p > 1) inv.setItem(45, CoreUtil.named(Material.ARROW, "\u25c0 Previous page", List.of("Go to page " + (p - 1))));
+        if (hasNext) inv.setItem(53, CoreUtil.named(Material.ARROW, "Next page \u25b6", List.of("Go to page " + (p + 1))));
         viewer.openInventory(inv);
     }
 
