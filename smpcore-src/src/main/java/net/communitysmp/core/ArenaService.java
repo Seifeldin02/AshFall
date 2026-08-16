@@ -911,17 +911,34 @@ final class ArenaService implements Listener {
         String id = CoreUtil.id(player);
         if (spectators.containsKey(id) || byPlayer.containsKey(id)) return;
         capture(player);
+        player.getInventory().clear();
+        player.getInventory().setArmorContents(null);
+        player.getInventory().setItemInOffHand(null);
+        player.setItemOnCursor(null);
+        player.setGameMode(GameMode.SURVIVAL);
+        player.setAllowFlight(true);
+        player.setFlying(true);
+        player.setInvisible(true);
+        player.setCollidable(false);
+        player.setInvulnerable(true);
+        for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
         spectators.put(id, duel.id);
         player.teleport(gallery(duel));
-        /** True Spectator mode: the fighters can't see the spectator or their nametag, and a spectator cannot
-         *  attack, make hit sounds, or interfere in any way -- the standard, clean way to watch. */
-        player.setGameMode(GameMode.SPECTATOR);
+        /** Hide the spectator ENTIRELY (body AND nametag) from the two duellists, so no name floats over the
+         *  fight -- all while staying in survival, so the admin-only Spectator gamemode is never touched. Other
+         *  viewers still just see an ordinary invisible player (whose nametag the packet service also hides). */
+        Player fa = a(duel), fb = b(duel);
+        if (fa != null) fa.hidePlayer(plugin, player);
+        if (fb != null) fb.hidePlayer(plugin, player);
         actionbar(player, "Spectating — invisible, and you cannot affect the fight.");
     }
 
     private void leaveSpectator(Player player) {
         spectators.remove(CoreUtil.id(player));
         stagedBet.remove(CoreUtil.id(player));
+        /** Make the ex-spectator visible again to everyone (idempotent -- showPlayer is a no-op where they were
+         *  never hidden). */
+        for (Player viewer : plugin.getServer().getOnlinePlayers()) viewer.showPlayer(plugin, player);
         restore(player);
     }
 
@@ -938,6 +955,16 @@ final class ArenaService implements Listener {
         if (spectators.containsKey(CoreUtil.id(e.getPlayer()))) e.setCancelled(true);
     }
     @EventHandler(ignoreCancelled = true) public void specInteractEntity(PlayerInteractEntityEvent e) {
+        if (spectators.containsKey(CoreUtil.id(e.getPlayer()))) e.setCancelled(true);
+    }
+    /** A spectator can neither deal damage nor make the attack/hit sounds that come with swinging at a fighter.
+     *  Cancelled as early as possible (LOWEST) so the melee never reaches the sound logic. */
+    @EventHandler(priority = EventPriority.LOWEST) public void specAttack(EntityDamageByEntityEvent e) {
+        Player src = e.getDamager() instanceof Player p ? p
+                : e.getDamager() instanceof org.bukkit.entity.Projectile pr && pr.getShooter() instanceof Player sh ? sh : null;
+        if (src != null && spectators.containsKey(CoreUtil.id(src))) e.setCancelled(true);
+    }
+    @EventHandler(ignoreCancelled = true) public void specSwing(org.bukkit.event.player.PlayerAnimationEvent e) {
         if (spectators.containsKey(CoreUtil.id(e.getPlayer()))) e.setCancelled(true);
     }
 

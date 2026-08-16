@@ -60,8 +60,12 @@ untouched — only genuine player→bank sinks and shop payouts move.
   holding a Totem of Undying — vanilla pops it and the round continues. (The spear kit carries a totem; it was
   being bypassed every time.) Boss-totem case audited: `BossEventService.onAnyDamage` only touches boss mobs
   (has `tierKey`), never players, so it doesn't break player totems — that rare case is vanilla (double-hit).
-- **Spectators use true Spectator gamemode:** invisible to the fighters WITH no nametag, and unable to attack /
-  make hit sounds / interfere. Fixes both spectator complaints in one go.
+- **Spectators stay in SURVIVAL** (the admin-only Spectator gamemode is deliberately never used for duel
+  spectators — it makes them fully server-invisible, which is unintended). Instead: `hidePlayer(plugin, spectator)`
+  from BOTH duellists hides the spectator's body AND nametag from the fighters robustly (regardless of nametag
+  settings); `showPlayer` for everyone on leave. Hit sounds killed by cancelling a spectator's
+  `EntityDamageByEntityEvent` at LOWEST (`specAttack`) and their `PlayerAnimationEvent` (`specSwing`), on top of
+  the existing interact/pickup/drop guards. Admin Spectator-vanish logic untouched.
 - **Invisible players' nametags hidden generally:** `PacketNametagService` treats `isInvisible()` like crouching
   (mounted overlay at zero opacity — suppresses the vanilla tag, shows nothing). (Edge: a viewer with ALL
   nametag options off would still see vanilla tags; a scoreboard team would be needed but TAB manages those.)
