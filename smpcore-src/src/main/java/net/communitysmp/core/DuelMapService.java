@@ -6,6 +6,7 @@ import org.bukkit.World;
 import org.bukkit.WorldCreator;
 import org.bukkit.WorldType;
 import org.bukkit.GameRule;
+import org.bukkit.Material;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.LivingEntity;
@@ -17,17 +18,27 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Duel maps: one private template world per map, and a disposable clone of that template for every match.
+/** Duel maps: one private template world per map, a COMMITTED SNAPSHOT of that template on disk, and a
+ *  disposable clone of that snapshot for every match.
  *
- *  A template is never entered by matchmaking -- it exists so an admin can build, and so an instance has
- *  something authoritative to copy. Every duel gets its own instance world cloned from the template as it
- *  stands at that moment, which is what gives concurrent duels on the same map complete isolation: terrain,
- *  chests and mobs in one match cannot be observed from another, and nothing a duellist breaks survives the
- *  match. Editing a template therefore affects future matches only; instances already running keep the copy
- *  they started with.
+ *  A template is never entered by matchmaking -- it exists so an admin can build. {@code /ashfall duelmap
+ *  save} turns the live template into a committed snapshot; matches only ever clone the committed snapshot,
+ *  never the live world. That separation is what makes editing safe: an admin can be standing in a
+ *  half-built template while matches run, and a save that fails at any point leaves the previous good
+ *  snapshot in place rather than publishing a torn one.
  *
- *  Instances are deleted when the duel ends. Any that survive a crash are recognisable by their name prefix
- *  and removed at startup, before matchmaking can hand one out. */
+ *  Every duel gets its own instance world cloned from the snapshot, which is what gives concurrent duels on
+ *  the same map complete isolation: terrain, chests and mobs in one match cannot be observed from another,
+ *  and nothing a duellist breaks survives the match. Instances are deleted when the duel ends; any that
+ *  survive a crash are recognisable by their name prefix and removed at startup.
+ *
+ *  WHERE WORLDS LIVE. Paper does not put a Bukkit-created world in the world container -- it puts it in
+ *  {@code <level-name>/dimensions/<namespace>/<world>}. Writing a cloned folder to the container instead
+ *  produced a world Paper never read: it generated a fresh empty one at the real path, so every instance
+ *  came up void and every chest, sign, trial spawner and vault was "missing". The template itself was always
+ *  fine -- its region files were on disk the whole time, one directory away from where the clone looked.
+ *  {@link #customWorldDir()} resolves the real directory from a world Bukkit has already opened, and
+ *  {@link #createInstance} re-verifies that against the world Bukkit actually returns. */
 class DuelMapService implements org.bukkit.event.Listener {
 
     /** How the arena reacts to a duellist breaking a block. */
@@ -36,31 +47,67 @@ class DuelMapService implements org.bukkit.event.Listener {
          *  it, is refused. Used by the two built flat arenas. */
         PLACED_ONLY,
         /** Terrain inside the playable bounds is fully breakable, explosions included. Boundary barriers and
-         *  control infrastructure are still protected. Used by the imported maps. */
+         *  control infrastructure are still protected, as is anything outside the bounds. */
         FULL
     }
 
     record DuelMap(String key, String name, BreakRule rule,
                    double p1x, double p1y, double p1z,
                    double p2x, double p2y, double p2z,
-                   Double specx, Double specy, Double specz) {
+                   Double specx, Double specy, Double specz,
+                   int[] bounds, String sourceWorld) {
 
-        String templateWorld() { return "duel_tpl_" + key; }
+        String templateWorld() { return TEMPLATE_PREFIX + key; }
 
         /** The two duellists always face each other: the yaw is derived from the spawn pair rather than
          *  stored, so moving a spawn point can never leave somebody staring at a wall. */
         float yawP1() { return facing(p1x, p1z, p2x, p2z); }
         float yawP2() { return facing(p2x, p2z, p1x, p1z); }
 
-        private static float facing(double fromX, double fromZ, double toX, double toZ) {
+        static float facing(double fromX, double fromZ, double toX, double toZ) {
             double dx = toX - fromX, dz = toZ - fromZ;
-            return (float) (Math.toDegrees(Math.atan2(-dx, dz)));
+            return (float) Math.toDegrees(Math.atan2(-dx, dz));
         }
 
         /** Spectators sit above the midpoint of the two spawns unless an admin pinned a spot. */
         double[] spectator(int fallbackHeight) {
             if (specx != null && specy != null && specz != null) return new double[]{specx, specy, specz};
             return new double[]{(p1x + p2x) / 2.0, Math.max(p1y, p2y) + fallbackHeight, (p1z + p2z) / 2.0};
+        }
+
+        boolean inBounds(int x, int y, int z) {
+            if (bounds == null) return true;
+            return x >= bounds[0] && x <= bounds[3] && y >= bounds[1] && y <= bounds[4] && z >= bounds[2] && z <= bounds[5];
+        }
+
+        Location p1(World world) { return standable(world, p1x, p1y, p1z, yawP1()); }
+        Location p2(World world) { return standable(world, p2x, p2y, p2z, yawP2()); }
+
+        /** The configured point, lifted out of the floor if it is inside one.
+         *
+         *  Spawn points get recorded two ways in practice: as the block a player stands IN, and as the block
+         *  they stand ON. Skyroot Village's pair were recorded the second way, so taking them literally spawns
+         *  a duellist inside a dirt path. Rather than quietly rewriting somebody's coordinates, the point is
+         *  taken as given and the player is stood on top of whatever is actually there -- which is the same
+         *  place under either reading. Capped at a few blocks so this can never turn a genuinely wrong spawn
+         *  into a silently different one. */
+        static Location standable(World world, double x, double y, double z, float yaw) {
+            if (world == null) return new Location(world, x, y, z, yaw, 0f);
+            int bx = (int) Math.floor(x), bz = (int) Math.floor(z), by = (int) Math.floor(y);
+            for (int lift = 0; lift <= 6; lift++) {
+                int at = by + lift;
+                if (at + 1 >= world.getMaxHeight()) break;
+                if (!world.getBlockAt(bx, at, bz).getType().isSolid()
+                        && !world.getBlockAt(bx, at + 1, bz).getType().isSolid())
+                    return new Location(world, x, at + (lift == 0 ? y - by : 0), z, yaw, 0f);
+            }
+            return new Location(world, x, y, z, yaw, 0f);
+        }
+
+        /** What a duellist would be standing on. Reported by the verifier so a spawn hanging over lava is
+         *  called out rather than discovered by the first player to use the map. */
+        Material footing(World world, Location at) {
+            return world.getBlockAt(at.getBlockX(), at.getBlockY() - 1, at.getBlockZ()).getType();
         }
     }
 
@@ -69,8 +116,11 @@ class DuelMapService implements org.bukkit.event.Listener {
     /** instance world name -> map key, for the worlds this process created. */
     private final Map<String, String> liveInstances = new LinkedHashMap<>();
     private final AtomicInteger counter = new AtomicInteger();
+    /** Resolved once: the directory Paper actually keeps Bukkit-created worlds in. */
+    private File customWorldDir;
 
     static final String INSTANCE_PREFIX = "duel_inst_";
+    static final String TEMPLATE_PREFIX = "duel_tpl_";
 
     DuelMapService(SMPCore plugin) {
         this.plugin = plugin;
@@ -83,18 +133,79 @@ class DuelMapService implements org.bukkit.event.Listener {
         Bukkit.getScheduler().runTaskTimer(plugin, this::sweepDetached, 1200L, 1200L);
     }
 
+    // ------------------------------------------------------------------ filesystem layout
+
+    /** The directory Paper actually creates Bukkit worlds in.
+     *
+     *  Resolved from a world Bukkit has already opened rather than assumed, because the answer changed:
+     *  modern Paper nests custom worlds under {@code <level-name>/dimensions/<namespace>/}, while older
+     *  builds put them straight in the world container. Getting this wrong is silent -- the clone lands
+     *  somewhere Paper never looks and the instance comes up empty -- so it is resolved, cached, and then
+     *  re-verified against reality every time an instance world is opened. */
+    File customWorldDir() {
+        if (customWorldDir != null) return customWorldDir;
+        List<World> worlds = Bukkit.getWorlds();
+        World main = worlds.isEmpty() ? null : worlds.get(0);
+        for (World world : worlds) {
+            if (world == main) continue;
+            File folder = world.getWorldFolder();
+            if (folder != null && folder.getParentFile() != null) return customWorldDir = folder.getParentFile();
+        }
+        if (main != null && main.getWorldFolder() != null) {
+            File dimensions = new File(main.getWorldFolder(), "dimensions");
+            File vanilla = new File(dimensions, "minecraft");
+            if (vanilla.isDirectory()) return customWorldDir = vanilla;
+            File[] namespaces = dimensions.listFiles(File::isDirectory);
+            if (namespaces != null && namespaces.length > 0) return customWorldDir = namespaces[0];
+        }
+        return customWorldDir = Bukkit.getWorldContainer();
+    }
+
+    /** Every directory a duel world could plausibly be sitting in, including the container older builds
+     *  used, so orphan recovery cannot miss a folder just because the layout changed under it. */
+    private List<File> worldSearchPath() {
+        LinkedHashSet<File> out = new LinkedHashSet<>();
+        out.add(customWorldDir());
+        out.add(Bukkit.getWorldContainer());
+        List<World> worlds = Bukkit.getWorlds();
+        if (!worlds.isEmpty() && worlds.get(0).getWorldFolder() != null) {
+            File dimensions = new File(worlds.get(0).getWorldFolder(), "dimensions");
+            File[] namespaces = dimensions.listFiles(File::isDirectory);
+            if (namespaces != null) out.addAll(Arrays.asList(namespaces));
+        }
+        return new ArrayList<>(out);
+    }
+
+    /** Where committed snapshots live: inside the plugin's own data folder, deliberately NOT in the world
+     *  container, so Paper never sees a snapshot as a world and nothing can accidentally load one. */
+    File snapshotRoot() { return new File(plugin.getDataFolder(), "duel-templates"); }
+    File snapshotOf(DuelMap map) { return new File(snapshotRoot(), map.key()); }
+
+    /** A snapshot is identified by its region files, NOT by a level.dat.
+     *
+     *  In Paper's dimension layout a non-main world folder has no level.dat at all -- the level data lives in
+     *  the parent world and the dimension folder holds only region/entities/poi/data. Requiring level.dat here
+     *  would reject every snapshot ever taken. */
+    boolean hasSnapshot(DuelMap map) { return regionFiles(snapshotOf(map)).length > 0; }
+
+    private static File[] regionFiles(File worldFolder) {
+        File[] files = new File(worldFolder, "region").listFiles((d, n) -> n.endsWith(".mca") && new File(d, n).length() > 0);
+        return files == null ? new File[0] : files;
+    }
+
     /** Deletes instance folders that no longer belong to a loaded world or a live match. */
     int sweepDetached() {
-        File container = Bukkit.getWorldContainer();
-        File[] children = container.listFiles();
-        if (children == null) return 0;
         int removed = 0;
-        for (File child : children) {
-            if (!child.isDirectory() || !child.getName().startsWith(INSTANCE_PREFIX)) continue;
-            if (liveInstances.containsKey(child.getName())) continue;
-            if (Bukkit.getWorld(child.getName()) != null) continue;
-            deleteQuietly(child);
-            if (!child.exists()) removed++;
+        for (File container : worldSearchPath()) {
+            File[] children = container.listFiles();
+            if (children == null) continue;
+            for (File child : children) {
+                if (!child.isDirectory() || !child.getName().startsWith(INSTANCE_PREFIX)) continue;
+                if (liveInstances.containsKey(child.getName())) continue;
+                if (Bukkit.getWorld(child.getName()) != null) continue;
+                deleteQuietly(child);
+                if (!child.exists()) removed++;
+            }
         }
         if (removed > 0) plugin.getLogger().info("[duel-maps] swept " + removed + " detached instance folder(s)");
         return removed;
@@ -106,9 +217,10 @@ class DuelMapService implements org.bukkit.event.Listener {
         maps.clear();
         org.bukkit.configuration.ConfigurationSection root = plugin.getConfig().getConfigurationSection("duel-maps");
         if (root == null) return;
-        for (String key : root.getKeys(false)) {
-            org.bukkit.configuration.ConfigurationSection s = root.getConfigurationSection(key);
+        for (String raw : root.getKeys(false)) {
+            org.bukkit.configuration.ConfigurationSection s = root.getConfigurationSection(raw);
             if (s == null) continue;
+            String key = raw.toLowerCase(Locale.ROOT);
             List<Double> p1 = s.getDoubleList("p1"), p2 = s.getDoubleList("p2"), spec = s.getDoubleList("spectator");
             if (p1.size() < 3 || p2.size() < 3) {
                 plugin.getLogger().warning("[duel-maps] " + key + " is missing p1/p2 spawns; skipped.");
@@ -116,21 +228,34 @@ class DuelMapService implements org.bukkit.event.Listener {
             }
             BreakRule rule = "placed-only".equalsIgnoreCase(s.getString("break-rule", "full"))
                     ? BreakRule.PLACED_ONLY : BreakRule.FULL;
+            List<Integer> box = s.getIntegerList("bounds");
+            int[] bounds = box.size() < 6 ? null : new int[]{
+                    Math.min(box.get(0), box.get(3)), Math.min(box.get(1), box.get(4)), Math.min(box.get(2), box.get(5)),
+                    Math.max(box.get(0), box.get(3)), Math.max(box.get(1), box.get(4)), Math.max(box.get(2), box.get(5))};
             maps.put(key, new DuelMap(key, s.getString("name", key), rule,
                     p1.get(0), p1.get(1), p1.get(2), p2.get(0), p2.get(1), p2.get(2),
                     spec.size() >= 3 ? spec.get(0) : null,
                     spec.size() >= 3 ? spec.get(1) : null,
-                    spec.size() >= 3 ? spec.get(2) : null));
+                    spec.size() >= 3 ? spec.get(2) : null,
+                    bounds, s.getString("source-world")));
         }
     }
 
     Collection<DuelMap> maps() { return maps.values(); }
     DuelMap map(String key) { return key == null ? null : maps.get(key.toLowerCase(Locale.ROOT)); }
 
+    /** Maps a player may actually be sent to: registered, and with a committed snapshot to clone. A map an
+     *  admin has not finished building is simply not offered, rather than failing at teleport time. */
+    List<DuelMap> playableMaps() {
+        List<DuelMap> out = new ArrayList<>();
+        for (DuelMap m : maps.values()) if (hasSnapshot(m)) out.add(m);
+        return out;
+    }
+
     // ------------------------------------------------------------------ template worlds
 
     /** Loads (creating if absent) the private template world for a map. Templates are void worlds with mob
-     *  spawning off; they are kept loaded only while an admin is editing or an instance is being cloned. */
+     *  spawning off; they are kept loaded only while an admin is editing or a snapshot is being committed. */
     World template(DuelMap map) {
         World world = Bukkit.getWorld(map.templateWorld());
         if (world != null) { loadPlayArea(world, map); return world; }
@@ -139,88 +264,267 @@ class DuelMapService implements org.bukkit.event.Listener {
                 .type(WorldType.FLAT)
                 .environment(World.Environment.NORMAL)
                 .createWorld();
-        if (world != null) { applyWorldRules(world, true); loadPlayArea(world, map); }
+        if (world != null) {
+            if (customWorldDir == null && world.getWorldFolder() != null && world.getWorldFolder().getParentFile() != null)
+                customWorldDir = world.getWorldFolder().getParentFile();
+            applyWorldRules(world, true);
+            loadPlayArea(world, map);
+        }
         return world;
     }
 
-
-    /** The chunks that make up the arena, centred on the spawn pair. A void template has nothing loaded by
-     *  default, so without this an admin's /setblock silently fails and a clone copies empty region files. */
+    /** The chunks that make up the arena. A void template has nothing loaded by default, so without this an
+     *  admin's /setblock lands in a chunk that is dropped again before anything reads it. Driven by the
+     *  map's declared bounds where it has them, and by a radius around the spawn pair where it does not. */
     void loadPlayArea(World world, DuelMap map) {
-        int radius = Math.max(1, plugin.getConfig().getInt("duel-loot.load-radius-chunks", 12));
-        int cx = (int) Math.floor((map.p1x() + map.p2x()) / 2.0) >> 4, cz = (int) Math.floor((map.p1z() + map.p2z()) / 2.0) >> 4;
-        for (int dx = -radius; dx <= radius; dx++)
-            for (int dz = -radius; dz <= radius; dz++) world.getChunkAt(cx + dx, cz + dz).load(true);
+        int[] c = chunkRange(map);
+        for (int cx = c[0]; cx <= c[2]; cx++)
+            for (int cz = c[1]; cz <= c[3]; cz++) world.getChunkAt(cx, cz).load(true);
     }
 
-    /** Writes a template's chunks to disk so a clone copies the current state rather than a stale one. */
+    /** minChunkX, minChunkZ, maxChunkX, maxChunkZ for a map's playable area. */
+    int[] chunkRange(DuelMap map) {
+        if (map.bounds() != null) {
+            int[] b = map.bounds();
+            return new int[]{b[0] >> 4, b[2] >> 4, b[3] >> 4, b[5] >> 4};
+        }
+        int radius = Math.max(1, plugin.getConfig().getInt("duel-loot.load-radius-chunks", 12));
+        int cx = (int) Math.floor((map.p1x() + map.p2x()) / 2.0) >> 4;
+        int cz = (int) Math.floor((map.p1z() + map.p2z()) / 2.0) >> 4;
+        return new int[]{cx - radius, cz - radius, cx + radius, cz + radius};
+    }
+
+    // ------------------------------------------------------------------ committing a template
+
+    /** Commits the live template to disk as the snapshot future matches clone.
+     *
+     *  The write barrier is a FULL WORLD UNLOAD with save=true: Bukkit flushes every dirty chunk and closes
+     *  every region file before returning, so what is on disk afterwards is exactly the template. Nothing
+     *  weaker is sufficient -- World.save() only queues the writes.
+     *
+     *  Publication is atomic: the copy is built beside the live snapshot under a .tmp name, validated, and
+     *  only then swapped in by rename. A save that fails at any point leaves the previous snapshot exactly
+     *  as it was, so a torn template can never reach a match. */
+    synchronized String commitTemplate(DuelMap map) {
+        World tpl = Bukkit.getWorld(map.templateWorld());
+        File source;
+        if (tpl != null) {
+            Location out = Bukkit.getWorlds().get(0).getSpawnLocation();
+            for (Player p : new ArrayList<>(tpl.getPlayers())) p.teleport(out);
+            source = tpl.getWorldFolder();
+            tpl.save();
+            if (!Bukkit.unloadWorld(tpl, true)) {
+                plugin.getLogger().warning("[duel-maps] template " + map.key() + " would not unload; snapshot NOT updated.");
+                return "The template world would not unload, so nothing was committed. The previous snapshot is unchanged.";
+            }
+        } else {
+            source = new File(customWorldDir(), map.templateWorld());
+            if (!source.isDirectory())
+                return "There is no template world for " + map.key() + " yet. Run /ashfall duelmap create " + map.key() + " first.";
+        }
+        File root = snapshotRoot();
+        root.mkdirs();
+        File live = snapshotOf(map);
+        File tmp = new File(root, map.key() + ".tmp"), parked = new File(root, map.key() + ".old");
+        String result;
+        try {
+            deleteQuietly(tmp); deleteQuietly(parked);
+            copyWorldFolder(source.toPath(), tmp.toPath());
+            String bad = validateSnapshot(tmp, map);
+            if (bad != null) throw new IOException(bad);
+            if (live.exists() && !live.renameTo(parked)) throw new IOException("the previous snapshot could not be parked");
+            if (!tmp.renameTo(live)) {
+                if (parked.exists()) parked.renameTo(live);
+                throw new IOException("the new snapshot could not be published");
+            }
+            deleteQuietly(parked);
+            result = "Committed " + map.name() + " (" + describeSnapshot(live) + "). Future matches use it; running matches keep the copy they started with.";
+            plugin.getLogger().info("[duel-maps] committed snapshot for " + map.key() + " -> " + live.getAbsolutePath());
+        } catch (IOException e) {
+            deleteQuietly(tmp);
+            plugin.getLogger().warning("[duel-maps] commit failed for " + map.key() + ": " + e.getMessage());
+            result = "Save FAILED (" + e.getMessage() + "). The previous snapshot is untouched and still in use.";
+        } finally {
+            /** Reopen for the admin who is presumably still building. */
+            template(map);
+        }
+        return result;
+    }
+
+    /** A snapshot is only publishable if it is a world AND it actually contains the region file covering the
+     *  arena. That second half is the whole point: the defect this guards against produced a perfectly valid
+     *  world folder that simply had no arena in it, and nothing downstream noticed until a duellist stood in
+     *  an empty void. */
+    private String validateSnapshot(File folder, DuelMap map) {
+        if (!new File(folder, "region").isDirectory()) return "the snapshot has no region directory";
+        Set<String> present = new HashSet<>();
+        for (File f : regionFiles(folder)) present.add(f.getName());
+        if (present.isEmpty()) return "the snapshot contains no region files at all";
+        int sx = (int) Math.floor((map.p1x() + map.p2x()) / 2.0) >> 4, sz = (int) Math.floor((map.p1z() + map.p2z()) / 2.0) >> 4;
+        String spawnRegion = "r." + (sx >> 5) + "." + (sz >> 5) + ".mca";
+        if (!present.contains(spawnRegion))
+            return "the arena's own region file " + spawnRegion + " was never written - the template's chunks never reached disk";
+        int[] c = chunkRange(map);
+        List<String> missing = new ArrayList<>();
+        for (int rx = c[0] >> 5; rx <= (c[2] >> 5); rx++)
+            for (int rz = c[1] >> 5; rz <= (c[3] >> 5); rz++) {
+                String name = "r." + rx + "." + rz + ".mca";
+                if (!present.contains(name)) missing.add(name);
+            }
+        /** A bounds box can legitimately overhang into a region that was never generated; that is worth
+         *  saying out loud but is not a reason to refuse the save. */
+        if (!missing.isEmpty())
+            plugin.getLogger().info("[duel-maps] " + map.key() + ": " + missing.size()
+                    + " region(s) inside the declared bounds were never generated (" + String.join(", ", missing) + ")");
+        return null;
+    }
+
+    private String describeSnapshot(File folder) {
+        File[] files = regionFiles(folder);
+        long bytes = 0;
+        for (File f : files) bytes += f.length();
+        return files.length + " region file(s), " + (bytes / 1024 / 1024) + " MB";
+    }
+
+    /** Commit and report success as a boolean, for callers that only need to know whether to continue. */
     boolean saveTemplate(DuelMap map) {
-        World world = Bukkit.getWorld(map.templateWorld());
-        if (world == null) return false;
-        flushTemplate(world, map);
-        return true;
+        String result = commitTemplate(map);
+        return result != null && result.startsWith("Committed");
     }
 
     // ------------------------------------------------------------------ instances
 
-    /** Clones the map's template into a fresh, uniquely named world and loads it. Returns null on failure. */
+    /** Clones the map's COMMITTED SNAPSHOT into a fresh, uniquely named world and loads it. Never touches
+     *  the live template, so an admin can be editing while matches start. Returns null on failure. */
     World createInstance(DuelMap map) {
-        if (template(map) == null) { plugin.getLogger().warning("[duel-maps] template missing for " + map.key()); return null; }
-        String name = INSTANCE_PREFIX + map.key() + "_" + System.currentTimeMillis() + "_" + counter.incrementAndGet();
-        File target = new File(Bukkit.getWorldContainer(), name);
-        if (!snapshotTemplate(map, target.toPath())) { deleteQuietly(target); return null; }
-        /** uid.dat identifies a world; a copy that keeps it collides with its source. */
-        new File(target, "uid.dat").delete();
-        new File(target, "session.lock").delete();
-        World instance = new WorldCreator(name).generator(new ArenaService.VoidGenerator())
-                .type(WorldType.FLAT).environment(World.Environment.NORMAL).createWorld();
-        if (instance == null) { deleteQuietly(target); return null; }
+        if (map == null) return null;
+        if (!hasSnapshot(map)) {
+            plugin.getLogger().info("[duel-maps] " + map.key() + " has no committed snapshot; committing one now.");
+            if (!saveTemplate(map)) {
+                plugin.getLogger().warning("[duel-maps] cannot create an instance of " + map.key() + ": no snapshot.");
+                return null;
+            }
+        }
+        World instance = openClone(map, customWorldDir());
+        if (instance == null) return null;
+        /** Trust nothing about where the world landed: if Bukkit opened a folder other than the one we wrote,
+         *  the layout assumption is wrong and the instance is empty. Correct the cached directory from the
+         *  world Bukkit just handed back and clone again into the right place. This is the guard that turns
+         *  the original silent-empty-instance failure into something that self-heals and says so. */
+        File opened = instance.getWorldFolder();
+        if (opened != null && opened.getParentFile() != null && !opened.getParentFile().equals(customWorldDir())) {
+            File corrected = opened.getParentFile();
+            plugin.getLogger().warning("[duel-maps] expected world directory " + customWorldDir().getAbsolutePath()
+                    + " but Paper opened " + opened.getAbsolutePath() + "; correcting and re-cloning.");
+            String stale = instance.getName();
+            File staleCopy = new File(customWorldDir(), stale);
+            Bukkit.unloadWorld(instance, false);
+            liveInstances.remove(stale);
+            deleteQuietly(opened);
+            deleteQuietly(staleCopy);
+            customWorldDir = corrected;
+            instance = openClone(map, corrected);
+            if (instance == null) return null;
+        }
         applyWorldRules(instance, false);
         purgeMobs(instance);
-        liveInstances.put(name, map.key());
         fillChests(instance, map);
         return instance;
     }
 
-
-    /** World.save() queues region writes rather than completing them, so a clone taken straight afterwards
-     *  can copy a folder that does not yet contain the builder's latest chunks -- which is exactly how a
-     *  freshly placed chest goes missing in the instance. Unloading each loaded chunk with save=true forces
-     *  the write to finish before the copy starts; the template reloads them on demand. */
-    private void flushTemplate(World tpl, DuelMap map) {
-        tpl.save();
-        for (org.bukkit.Chunk chunk : tpl.getLoadedChunks()) chunk.unload(true);
-        tpl.save();
+    private World openClone(DuelMap map, File dir) {
+        String name = nextInstanceName(map);
+        File target = new File(dir, name);
+        deleteQuietly(target);
+        try { copyWorldFolder(snapshotOf(map).toPath(), target.toPath()); }
+        catch (IOException e) {
+            plugin.getLogger().warning("[duel-maps] clone failed for " + map.key() + ": " + e.getMessage());
+            deleteQuietly(target);
+            return null;
+        }
+        World instance = openCopied(map, name, target);
+        if (instance == null) deleteQuietly(target);
+        return instance;
     }
 
-    /** Takes a committed, quiescent copy of a template.
+    private String nextInstanceName(DuelMap map) {
+        return INSTANCE_PREFIX + map.key() + "_" + System.currentTimeMillis() + "_" + counter.incrementAndGet();
+    }
+
+    private World openCopied(DuelMap map, String name, File target) {
+        /** Belt and braces over copyWorldFolder's own exclusion: a snapshot taken by an older build could
+         *  still have an identity file in it, and Paper would refuse the clone as a duplicate world. */
+        new File(target, "uid.dat").delete();
+        new File(target, "session.lock").delete();
+        new File(new File(target, "data" + File.separator + "paper"), "metadata.dat").delete();
+        World instance = new WorldCreator(name).generator(new ArenaService.VoidGenerator())
+                .type(WorldType.FLAT).environment(World.Environment.NORMAL).createWorld();
+        if (instance == null) return null;
+        liveInstances.put(name, map.key());
+        return instance;
+    }
+
+    /** The variant matchmaking uses. Same result as {@link #createInstance}, but the two expensive parts are
+     *  kept off the main thread's critical path: the folder copy runs asynchronously (the committed snapshot
+     *  is immutable, so nothing can be racing it), and the arena's chunks are pulled in a slice at a time
+     *  rather than all at once. An imported map is a couple of hundred chunks; loading those in one tick is a
+     *  visible freeze for everyone on the server, and a duel starting is not worth that.
      *
-     *  Saving alone is not enough: Paper queues region writes, so a folder copied straight after save() can
-     *  be missing whole chunks -- which is how chest, sign and spawner block entities went absent from
-     *  clones. Fully UNLOADING the world is the deterministic barrier: Bukkit flushes every dirty chunk and
-     *  closes every region file before returning, so what is on disk afterwards is exactly the template.
-     *  The world is reopened immediately afterwards, so an admin editing it sees only a brief pause. */
-    private synchronized boolean snapshotTemplate(DuelMap map, java.nio.file.Path target) {
-        World tpl = Bukkit.getWorld(map.templateWorld());
-        java.io.File folder;
-        if (tpl != null) {
-            for (Player p : new ArrayList<>(tpl.getPlayers()))
-                p.teleport(Bukkit.getWorlds().get(0).getSpawnLocation());
-            folder = tpl.getWorldFolder();
-            tpl.save();
-            if (!Bukkit.unloadWorld(tpl, true)) {
-                plugin.getLogger().warning("[duel-maps] template " + map.key() + " would not unload; snapshot may be stale.");
-                return false;
+     *  {@code done} is called on the main thread with the ready instance, or with null if anything failed. */
+    void prepareInstance(DuelMap map, java.util.function.Consumer<World> done) {
+        if (map == null) { done.accept(null); return; }
+        if (!hasSnapshot(map) && !saveTemplate(map)) { done.accept(null); return; }
+        String name = nextInstanceName(map);
+        File dir = customWorldDir();
+        File target = new File(dir, name);
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            boolean copied;
+            try { deleteQuietly(target); copyWorldFolder(snapshotOf(map).toPath(), target.toPath()); copied = true; }
+            catch (IOException e) { plugin.getLogger().warning("[duel-maps] clone failed for " + map.key() + ": " + e.getMessage()); copied = false; }
+            boolean ok = copied;
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!ok) { deleteQuietly(target); done.accept(null); return; }
+                World instance = openCopied(map, name, target);
+                if (instance == null) { deleteQuietly(target); done.accept(null); return; }
+                File opened = instance.getWorldFolder();
+                if (opened != null && opened.getParentFile() != null && !opened.getParentFile().equals(dir)) {
+                    /** Layout assumption was wrong: fall back to the synchronous path, which re-resolves the
+                     *  directory from what Paper actually returned and re-clones into it. */
+                    plugin.getLogger().warning("[duel-maps] expected " + dir.getAbsolutePath() + " but Paper opened "
+                            + opened.getAbsolutePath() + "; falling back to a verified clone.");
+                    Bukkit.unloadWorld(instance, false);
+                    liveInstances.remove(name);
+                    deleteQuietly(opened); deleteQuietly(target);
+                    customWorldDir = opened.getParentFile();
+                    done.accept(createInstance(map));
+                    return;
+                }
+                applyWorldRules(instance, false);
+                loadPlayAreaSliced(instance, map, () -> {
+                    purgeMobs(instance);
+                    fillChests(instance, map, false);
+                    done.accept(instance);
+                });
+            });
+        });
+    }
+
+    /** Pulls the arena's chunks in over several ticks, then runs {@code done}. */
+    private void loadPlayAreaSliced(World world, DuelMap map, Runnable done) {
+        int[] c = chunkRange(map);
+        List<int[]> chunks = new ArrayList<>();
+        for (int cx = c[0]; cx <= c[2]; cx++) for (int cz = c[1]; cz <= c[3]; cz++) chunks.add(new int[]{cx, cz});
+        int perTick = Math.max(1, plugin.getConfig().getInt("duel-loot.chunks-per-tick", 24));
+        java.util.Iterator<int[]> it = chunks.iterator();
+        new org.bukkit.scheduler.BukkitRunnable() {
+            @Override public void run() {
+                for (int i = 0; i < perTick && it.hasNext(); i++) {
+                    int[] at = it.next();
+                    world.getChunkAt(at[0], at[1]).load(true);
+                }
+                if (!it.hasNext()) { cancel(); done.run(); }
             }
-        } else {
-            folder = new java.io.File(Bukkit.getWorldContainer(), map.templateWorld());
-            if (!folder.isDirectory()) return false;
-        }
-        boolean ok;
-        try { copyWorldFolder(folder.toPath(), target); ok = true; }
-        catch (IOException e) { plugin.getLogger().warning("[duel-maps] snapshot failed for " + map.key() + ": " + e.getMessage()); ok = false; }
-        template(map);
-        return ok;
+        }.runTaskTimer(plugin, 0L, 1L);
     }
 
     /** Unloads and deletes an instance world entirely. Any players still inside are moved out first. */
@@ -243,7 +547,9 @@ class DuelMapService implements org.bukkit.event.Listener {
     }
 
     /** Startup recovery: every instance world is disposable by definition, so anything on disk at boot is
-     *  the residue of a crash and is removed before matchmaking can hand it out. */
+     *  the residue of a crash and is removed before matchmaking can hand it out. Half-written snapshots from
+     *  a save that died mid-flight are residue too, and a parked snapshot with no live sibling means the
+     *  atomic swap was interrupted between its two renames -- that one is put back rather than deleted. */
     int cleanupOrphans() {
         int removed = 0;
         for (World world : new ArrayList<>(Bukkit.getWorlds()))
@@ -253,32 +559,56 @@ class DuelMapService implements org.bukkit.event.Listener {
                 deleteQuietly(folder);
                 removed++;
             }
-        File container = Bukkit.getWorldContainer();
-        File[] children = container.listFiles();
-        if (children != null) for (File child : children)
-            if (child.isDirectory() && child.getName().startsWith(INSTANCE_PREFIX)) { deleteQuietly(child); removed++; }
+        for (File container : worldSearchPath()) {
+            File[] children = container.listFiles();
+            if (children == null) continue;
+            for (File child : children)
+                if (child.isDirectory() && child.getName().startsWith(INSTANCE_PREFIX)) { deleteQuietly(child); removed++; }
+        }
+        File[] staging = snapshotRoot().listFiles((d, n) -> n.endsWith(".tmp"));
+        if (staging != null) for (File f : staging) deleteQuietly(f);
+        File[] parked = snapshotRoot().listFiles((d, n) -> n.endsWith(".old"));
+        if (parked != null) for (File f : parked) {
+            File live = new File(snapshotRoot(), f.getName().substring(0, f.getName().length() - 4));
+            if (!live.exists() && f.renameTo(live)) plugin.getLogger().warning("[duel-maps] restored parked snapshot " + live.getName());
+            else deleteQuietly(f);
+        }
         liveInstances.clear();
         if (removed > 0) plugin.getLogger().info("[duel-maps] removed " + removed + " orphaned duel instance(s)");
         return removed;
     }
 
     List<String> instanceNames() { return new ArrayList<>(liveInstances.keySet()); }
-
+    boolean isInstance(World world) { return world != null && liveInstances.containsKey(world.getName()); }
 
     // ------------------------------------------------------------------ arena block rules
 
     /** instance world -> blocks a duellist placed during THIS match. Only these may be broken again on a
      *  PLACED_ONLY map, which is what keeps the two built arenas pristine while still letting players
-     *  block-clutch. Cleared with the instance. */
+     *  block-clutch. Cleared between rounds and with the instance. */
     private final Map<String, Set<Long>> placed = new java.util.concurrent.ConcurrentHashMap<>();
 
-    private static long key(org.bukkit.block.Block b) {
-        return ((long) b.getX() & 0x3FFFFFF) << 38 | ((long) b.getZ() & 0x3FFFFFF) << 12 | ((long) (b.getY() + 2048) & 0xFFF);
+    private static long key(org.bukkit.block.Block b) { return key(b.getX(), b.getY(), b.getZ()); }
+    private static long key(int x, int y, int z) {
+        return ((long) x & 0x3FFFFFFL) << 38 | ((long) z & 0x3FFFFFFL) << 12 | ((long) (y + 2048) & 0xFFFL);
+    }
+    private static int unpackX(long k) { int x = (int) ((k >> 38) & 0x3FFFFFFL); return (x & 0x2000000) != 0 ? x | 0xFC000000 : x; }
+    private static int unpackZ(long k) { int z = (int) ((k >> 12) & 0x3FFFFFFL); return (z & 0x2000000) != 0 ? z | 0xFC000000 : z; }
+    private static int unpackY(long k) { return (int) (k & 0xFFFL) - 2048; }
+
+    /** Wipes every block the duellists placed in an instance, so each round starts on the map as built.
+     *  Returns how many were cleared. */
+    int clearPlaced(World world) {
+        if (world == null) return 0;
+        Set<Long> mine = placed.remove(world.getName());
+        if (mine == null) return 0;
+        for (long k : mine) world.getBlockAt(unpackX(k), unpackY(k), unpackZ(k)).setType(Material.AIR, false);
+        return mine.size();
     }
 
     /** Infrastructure the builder placed to make the map work at all. Protected under BOTH rules, because a
      *  duellist mining the boundary out of a fully-breakable map would simply leave it. */
-    private boolean infrastructure(org.bukkit.Material m) {
+    private boolean infrastructure(Material m) {
         return switch (m) {
             case BARRIER, BEDROCK, COMMAND_BLOCK, CHAIN_COMMAND_BLOCK, REPEATING_COMMAND_BLOCK,
                  STRUCTURE_BLOCK, STRUCTURE_VOID, JIGSAW, LIGHT, END_PORTAL_FRAME -> true;
@@ -293,26 +623,44 @@ class DuelMapService implements org.bukkit.event.Listener {
         return k == null ? null : maps.get(k);
     }
 
+    /** True when this block may not be removed by anybody, under either rule. */
+    private boolean protectedBlock(DuelMap m, org.bukkit.block.Block b) {
+        return infrastructure(b.getType()) || !m.inBounds(b.getX(), b.getY(), b.getZ());
+    }
+
     @org.bukkit.event.EventHandler(ignoreCancelled = true)
     public void place(org.bukkit.event.block.BlockPlaceEvent e) {
-        DuelMap m = mapOfWorld(e.getBlock().getWorld());
+        org.bukkit.block.Block block = e.getBlock();
+        DuelMap m = mapOfWorld(block.getWorld());
         if (m == null) return;
-        placed.computeIfAbsent(e.getBlock().getWorld().getName(), n -> java.util.concurrent.ConcurrentHashMap.newKeySet())
-              .add(key(e.getBlock()));
+        /** Placing outside the playable bounds would let a duellist simply bridge out of the map. */
+        if (!m.inBounds(block.getX(), block.getY(), block.getZ())) { e.setCancelled(true); return; }
+        placed.computeIfAbsent(block.getWorld().getName(), n -> java.util.concurrent.ConcurrentHashMap.newKeySet())
+              .add(key(block));
+    }
+
+    /** THE break rule, as a pure decision, so it can be asserted directly instead of only observed by
+     *  swinging a pickaxe in a live match. Both the block-break listener and the explosion filter go through
+     *  this, which is what guarantees a duellist and a stick of TNT are held to the same rule. */
+    boolean breakAllowed(DuelMap m, org.bukkit.block.Block block, boolean placedThisMatch) {
+        if (m == null) return true;
+        if (protectedBlock(m, block)) return false;
+        return m.rule() == BreakRule.FULL || placedThisMatch;
     }
 
     @org.bukkit.event.EventHandler(ignoreCancelled = true)
     public void breakBlock(org.bukkit.event.block.BlockBreakEvent e) {
-        DuelMap m = mapOfWorld(e.getBlock().getWorld());
+        org.bukkit.block.Block block = e.getBlock();
+        DuelMap m = mapOfWorld(block.getWorld());
         if (m == null) return;
-        if (infrastructure(e.getBlock().getType())) { e.setCancelled(true); return; }
-        if (m.rule() == BreakRule.FULL) return;
-        Set<Long> mine = placed.get(e.getBlock().getWorld().getName());
-        if (mine == null || !mine.remove(key(e.getBlock()))) e.setCancelled(true);
+        Set<Long> mine = placed.get(block.getWorld().getName());
+        boolean own = mine != null && mine.remove(key(block));
+        if (!breakAllowed(m, block, own)) e.setCancelled(true);
     }
 
     /** Explosions follow the same rule as a pickaxe: on a PLACED_ONLY map they may only consume blocks the
-     *  duellists themselves placed, and on either map they never touch boundary infrastructure. */
+     *  duellists themselves placed, and on either map they never touch boundary infrastructure or anything
+     *  outside the playable bounds. */
     @org.bukkit.event.EventHandler(ignoreCancelled = true)
     public void entityExplode(org.bukkit.event.entity.EntityExplodeEvent e) { filterBlast(e.getLocation().getWorld(), e.blockList()); }
 
@@ -323,40 +671,90 @@ class DuelMapService implements org.bukkit.event.Listener {
         DuelMap m = mapOfWorld(world);
         if (m == null) return;
         Set<Long> mine = placed.get(world.getName());
-        blocks.removeIf(b -> infrastructure(b.getType())
-                || (m.rule() == BreakRule.PLACED_ONLY && (mine == null || !mine.remove(key(b)))));
+        blocks.removeIf(b -> !breakAllowed(m, b, mine != null && mine.remove(key(b))));
     }
 
+    /** Nothing leaves a duel instance under its own steam: an ender pearl or chorus fruit landing outside the
+     *  bounds would put a duellist in unreachable void. Plugin and command teleports (the match itself, an
+     *  admin) are exempt. */
+    @org.bukkit.event.EventHandler(ignoreCancelled = true)
+    public void teleport(org.bukkit.event.player.PlayerTeleportEvent e) {
+        if (e.getTo() == null) return;
+        DuelMap m = mapOfWorld(e.getTo().getWorld());
+        if (m == null || m.bounds() == null) return;
+        if (e.getCause() == org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.PLUGIN
+                || e.getCause() == org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.COMMAND) return;
+        if (!m.inBounds(e.getTo().getBlockX(), e.getTo().getBlockY(), e.getTo().getBlockZ())) e.setCancelled(true);
+    }
 
     // ------------------------------------------------------------------ chest loot
 
-    /** Fills every chest in a fresh instance. Templates are never touched, so each match rolls its own loot
-     *  and nothing can carry between instances. A connected double chest is ONE container as far as Bukkit
-     *  is concerned, so iterating block states would roll it twice -- the halves are de-duplicated by their
-     *  shared inventory before any rolling happens. */
-    void fillChests(World world, DuelMap map) {
-        if (world == null || map == null) return;
+    /** Fills every chest in a fresh instance. Templates and snapshots are never touched, so each match rolls
+     *  its own loot and nothing can carry between instances. A connected double chest is ONE container as far
+     *  as Bukkit is concerned, so iterating block states would roll it twice -- the halves are de-duplicated
+     *  by the position of their left half before any rolling happens. */
+    int fillChests(World world, DuelMap map) { return fillChests(world, map, true); }
+
+    int fillChests(World world, DuelMap map, boolean loadArea) {
+        if (world == null || map == null) return 0;
         boolean keys = plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key());
-        Set<org.bukkit.inventory.Inventory> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        Set<String> seen = new HashSet<>();
         int filled = 0;
         /** A freshly cloned world has nothing loaded, so its chests are invisible until the playable area is
-         *  pulled in. Load a radius around the spawn pair -- that is the arena by definition -- before
-         *  looking for containers, otherwise loot silently never generates. */
-        int radius = Math.max(1, plugin.getConfig().getInt("duel-loot.load-radius-chunks", 12));
-        int cx = (int) Math.floor((map.p1x() + map.p2x()) / 2.0) >> 4, cz = (int) Math.floor((map.p1z() + map.p2z()) / 2.0) >> 4;
-        for (int dx = -radius; dx <= radius; dx++)
-            for (int dz = -radius; dz <= radius; dz++) world.getChunkAt(cx + dx, cz + dz).load(true);
+         *  pulled in. The sliced loader does that itself, and passes false so it is not repeated. */
+        if (loadArea) loadPlayArea(world, map);
         for (org.bukkit.Chunk chunk : world.getLoadedChunks())
-            for (org.bukkit.block.BlockState state : chunk.getTileEntities()) {
-                if (!(state instanceof org.bukkit.block.Chest chest)) continue;
+            for (org.bukkit.block.BlockState snapshot : chunk.getTileEntities()) {
+                if (!(snapshot instanceof org.bukkit.block.Chest)) continue;
+                /** getTileEntities hands back SNAPSHOTS; writing into a snapshot's inventory changes nothing
+                 *  in the world. Re-read the live block state before touching anything. */
+                if (!(snapshot.getBlock().getState(false) instanceof org.bukkit.block.Chest chest)) continue;
                 org.bukkit.inventory.Inventory inv = chest.getInventory();
-                if (!seen.add(inv)) continue;
-                boolean isDouble = inv.getHolder() instanceof org.bukkit.block.DoubleChest;
+                if (!seen.add(containerId(chest, inv))) continue;
                 inv.clear();
-                roll(inv, isDouble, keys);
+                roll(inv, inv.getHolder(false) instanceof org.bukkit.block.DoubleChest, keys);
                 filled++;
             }
         if (filled > 0) plugin.getLogger().info("[duel-maps] " + world.getName() + ": populated " + filled + " chest(s)");
+        return filled;
+    }
+
+    /** One identity per physical container: both halves of a double chest resolve to the same string, which
+     *  is what stops a double chest being rolled twice and getting double loot. */
+    private String containerId(org.bukkit.block.Chest chest, org.bukkit.inventory.Inventory inv) {
+        if (inv.getHolder(false) instanceof org.bukkit.block.DoubleChest dc) {
+            org.bukkit.inventory.InventoryHolder left = dc.getLeftSide();
+            Location at = left instanceof org.bukkit.block.Chest c ? c.getLocation() : chest.getLocation();
+            return "d" + at.getBlockX() + ":" + at.getBlockY() + ":" + at.getBlockZ();
+        }
+        return "s" + chest.getX() + ":" + chest.getY() + ":" + chest.getZ();
+    }
+
+    /** Counts the containers a loaded instance presents, de-duplicated exactly as the loot roller counts
+     *  them. Used by the loot report so configured key chances can be judged against the real chest count
+     *  instead of in the abstract. Returns {singles, doubles}. */
+    int[] chestCensus(World world) {
+        int single = 0, dbl = 0, barrels = 0, vaults = 0, spawners = 0;
+        Set<String> seen = new HashSet<>();
+        for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+            for (org.bukkit.block.BlockState snapshot : chunk.getTileEntities()) {
+                if (snapshot instanceof org.bukkit.block.Barrel) { barrels++; continue; }
+                if (!(snapshot instanceof org.bukkit.block.Chest)) continue;
+                if (!(snapshot.getBlock().getState(false) instanceof org.bukkit.block.Chest chest)) continue;
+                org.bukkit.inventory.Inventory inv = chest.getInventory();
+                if (!seen.add(containerId(chest, inv))) continue;
+                if (inv.getHolder(false) instanceof org.bukkit.block.DoubleChest) dbl++; else single++;
+            }
+            /** Vaults and trial spawners are block entities too, so they come out of the same cheap list --
+             *  no block scan needed. They matter because a map whose loot is behind vaults is exactly the map
+             *  that needs trial keys, which is the whole reason two maps may roll them. */
+            for (org.bukkit.block.BlockState snapshot : chunk.getTileEntities()) {
+                Material type = snapshot.getType();
+                if (type == Material.VAULT) vaults++;
+                else if (type == Material.TRIAL_SPAWNER || type == Material.SPAWNER) spawners++;
+            }
+        }
+        return new int[]{single, dbl, barrels, vaults, spawners};
     }
 
     /** Single chests carry useful-but-moderate support; double chests roll a stronger table with a real but
@@ -378,19 +776,38 @@ class DuelMapService implements org.bukkit.event.Listener {
             if (parts.length < 3) continue;
             try {
                 if (rng.nextDouble() >= Double.parseDouble(parts[2])) continue;
-                org.bukkit.Material mat = org.bukkit.Material.valueOf(parts[0].toUpperCase(Locale.ROOT));
+                Material mat = Material.valueOf(parts[0].toUpperCase(Locale.ROOT));
                 String[] range = parts[1].split("-");
                 int lo = Integer.parseInt(range[0]), hi = range.length > 1 ? Integer.parseInt(range[1]) : lo;
                 put(inv, new org.bukkit.inventory.ItemStack(mat, Math.max(1, rng.nextInt(lo, hi + 1))), rng);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { }
         }
-        /** Trial keys exist on two maps only, and the ominous variant is the rarer of the pair. */
+        /** Trial keys exist on two maps only, and the ominous variant is the rarer of the pair. Rolled
+         *  exclusively, so a chest yields at most one key and never both kinds. */
         if (trialKeys) {
-            double normal = plugin.getConfig().getDouble("duel-loot.trial-key-chance", big ? .12 : .06);
-            double ominous = plugin.getConfig().getDouble("duel-loot.ominous-key-chance", big ? .04 : .015);
-            if (rng.nextDouble() < ominous) put(inv, new org.bukkit.inventory.ItemStack(org.bukkit.Material.OMINOUS_TRIAL_KEY), rng);
-            else if (rng.nextDouble() < normal) put(inv, new org.bukkit.inventory.ItemStack(org.bukkit.Material.TRIAL_KEY), rng);
+            double normal = plugin.getConfig().getDouble("duel-loot.trial-key-chance", .10);
+            double ominous = plugin.getConfig().getDouble("duel-loot.ominous-key-chance", .03);
+            if (rng.nextDouble() < ominous) put(inv, new org.bukkit.inventory.ItemStack(Material.OMINOUS_TRIAL_KEY), rng);
+            else if (rng.nextDouble() < normal) put(inv, new org.bukkit.inventory.ItemStack(Material.TRIAL_KEY), rng);
         }
+    }
+
+    /** Rolls a map's loot table `trials` times into a scratch inventory and reports what came out, so the
+     *  trial-key restriction and the configured rates can be checked as numbers rather than by opening
+     *  chests until something interesting happens. Returns {normal keys, ominous keys, chests that rolled}. */
+    int[] lootProbe(DuelMap map, boolean big, int trials) {
+        boolean keys = plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key());
+        int normal = 0, ominous = 0;
+        for (int i = 0; i < trials; i++) {
+            org.bukkit.inventory.Inventory scratch = Bukkit.createInventory(null, big ? 54 : 27);
+            roll(scratch, big, keys);
+            for (org.bukkit.inventory.ItemStack item : scratch.getContents()) {
+                if (item == null) continue;
+                if (item.getType() == Material.TRIAL_KEY) normal += item.getAmount();
+                if (item.getType() == Material.OMINOUS_TRIAL_KEY) ominous += item.getAmount();
+            }
+        }
+        return new int[]{normal, ominous, trials};
     }
 
     private void put(org.bukkit.inventory.Inventory inv, org.bukkit.inventory.ItemStack item, java.util.Random rng) {
@@ -399,6 +816,21 @@ class DuelMapService implements org.bukkit.event.Listener {
             if (inv.getItem(slot) == null) { inv.setItem(slot, item); return; }
         }
         inv.addItem(item);
+    }
+
+    /** Expected trial-key yield for a map, given how many chests it actually has. Reported by
+     *  /ashfall duelmap loot, so the configured rates can be judged against the real chest count. */
+    String lootReport(DuelMap map, int singles, int doubles) {
+        boolean keys = plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key());
+        int chests = singles + doubles;
+        if (!keys) return map.name() + ": " + chests + " chest(s) (" + singles + " single, " + doubles + " double); trial keys are NOT enabled on this map.";
+        double normal = plugin.getConfig().getDouble("duel-loot.trial-key-chance", .10);
+        double ominous = plugin.getConfig().getDouble("duel-loot.ominous-key-chance", .03);
+        /** Ominous is rolled first and wins outright, so the normal key's real chance is conditional. */
+        double perOminous = ominous, perNormal = (1 - ominous) * normal;
+        return map.name() + ": " + chests + " chest(s) (" + singles + " single, " + doubles + " double)"
+                + String.format(" | per chest: ominous %.1f%%, normal %.1f%%", perOminous * 100, perNormal * 100)
+                + String.format(" | expected per match: %.2f ominous, %.2f normal", perOminous * chests, perNormal * chests);
     }
 
     // ------------------------------------------------------------------ world hygiene
@@ -417,8 +849,25 @@ class DuelMapService implements org.bukkit.event.Listener {
         world.setGameRule(GameRule.ANNOUNCE_ADVANCEMENTS, false);
         world.setGameRule(GameRule.DO_IMMEDIATE_RESPAWN, true);
         world.setGameRule(GameRule.MOB_GRIEFING, false);
+        world.setGameRule(GameRule.FALL_DAMAGE, true);
+        world.setGameRule(GameRule.DO_PATROL_SPAWNING, false);
+        world.setGameRule(GameRule.DO_TRADER_SPAWNING, false);
+        world.setGameRule(GameRule.DISABLE_RAIDS, true);
         world.setTime(6000);
         world.setStorm(false);
+    }
+
+    /** Belt-and-braces over DO_MOB_SPAWNING: trial spawners, imported spawner blocks and spawn eggs do not
+     *  all honour the gamerule, and an imported dungeon map is full of them. Only explicitly plugin-spawned
+     *  entities (CUSTOM) are let through, so nothing natural ever appears in a duel. */
+    @org.bukkit.event.EventHandler(ignoreCancelled = true)
+    public void spawn(org.bukkit.event.entity.CreatureSpawnEvent e) {
+        World world = e.getLocation().getWorld();
+        if (world == null) return;
+        String name = world.getName();
+        if (!name.startsWith(INSTANCE_PREFIX) && !name.startsWith(TEMPLATE_PREFIX)) return;
+        if (e.getSpawnReason() == org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM) return;
+        e.setCancelled(true);
     }
 
     /** Clears anything that drifted in or was cloned along with the template. Item frames, armour stands and
@@ -432,21 +881,81 @@ class DuelMapService implements org.bukkit.event.Listener {
         }
     }
 
+    // ------------------------------------------------------------------ flat arena builder
+
+    /** Lays the designed black-and-red flat arena into a template world: a size x size floor of red
+     *  terracotta speckled with glowstone, full-height obsidian-and-glowstone perimeter walls, and a bedrock
+     *  cap on the top row. Spread over ticks -- the walls are 50k-100k blocks and doing that in one tick
+     *  freezes the server. */
+    void buildFlatArena(DuelMap map, int size, Runnable done) {
+        World world = template(map);
+        if (world == null) { if (done != null) done.run(); return; }
+        int half = size / 2, minX = -half, maxX = half - 1, minZ = -half, maxZ = half - 1;
+        int floorY = (int) Math.floor(Math.min(map.p1y(), map.p2y())) - 1, topY = world.getMaxHeight() - 1;
+        List<Runnable> steps = new ArrayList<>();
+        /** Clear anything already standing, so a rebuild at a different size leaves nothing behind. */
+        for (int y = floorY; y <= Math.min(topY, floorY + 16); y++) {
+            final int yy = y;
+            steps.add(() -> { for (int x = minX - 1; x <= maxX + 1; x++) for (int z = minZ - 1; z <= maxZ + 1; z++)
+                world.getBlockAt(x, yy, z).setType(Material.AIR, false); });
+        }
+        steps.add(() -> { for (int x = minX; x <= maxX; x++) for (int z = minZ; z <= maxZ; z++)
+            world.getBlockAt(x, floorY, z).setType(floorMat(x, z), false); });
+        for (int base = floorY + 1; base <= topY; base += 24) {
+            final int y0 = base, y1 = Math.min(topY, base + 23);
+            steps.add(() -> {
+                for (int y = y0; y <= y1; y++) {
+                    boolean cap = y == topY;
+                    for (int x = minX; x <= maxX; x++) { shell(world, x, y, minZ, cap); shell(world, x, y, maxZ, cap); }
+                    for (int z = minZ + 1; z < maxZ; z++) { shell(world, minX, y, z, cap); shell(world, maxX, y, z, cap); }
+                }
+            });
+        }
+        java.util.Iterator<Runnable> it = steps.iterator();
+        new org.bukkit.scheduler.BukkitRunnable() {
+            @Override public void run() {
+                for (int i = 0; i < 2 && it.hasNext(); i++) it.next().run();
+                if (!it.hasNext()) { cancel(); if (done != null) done.run(); }
+            }
+        }.runTaskTimer(plugin, 1L, 1L);
+    }
+
+    private void shell(World world, int x, int y, int z, boolean cap) {
+        world.getBlockAt(x, y, z).setType(cap ? Material.BEDROCK : wallMat(x, y, z), false);
+    }
+    private static Material floorMat(int x, int z) { return Math.floorMod(x * 3 + z * 7, 5) == 0 ? Material.GLOWSTONE : Material.RED_TERRACOTTA; }
+    private static Material wallMat(int x, int y, int z) { return Math.floorMod(x * 5 + z * 3 + y * 2, 6) == 0 ? Material.GLOWSTONE : Material.OBSIDIAN; }
+
     // ------------------------------------------------------------------ filesystem
 
     private void copyWorldFolder(Path source, Path target) throws IOException {
+        if (!Files.isDirectory(source)) throw new IOException("source " + source + " is not a directory");
         Files.walkFileTree(source, new SimpleFileVisitor<>() {
             @Override public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                 Files.createDirectories(target.resolve(source.relativize(dir).toString()));
                 return FileVisitResult.CONTINUE;
             }
             @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                String name = file.getFileName().toString();
-                if (name.equals("session.lock") || name.equals("uid.dat")) return FileVisitResult.CONTINUE;
+                if (identityFile(file)) return FileVisitResult.CONTINUE;
                 Files.copy(file, target.resolve(source.relativize(file).toString()), StandardCopyOption.REPLACE_EXISTING);
                 return FileVisitResult.CONTINUE;
             }
         });
+    }
+
+    /** Files that carry a world's IDENTITY rather than its contents, and so must never travel with a copy.
+     *
+     *  Paper refuses to load a world whose stored UUID matches one it already has -- "is a duplicate of
+     *  another world and has been prevented from loading" -- and in the current layout that UUID lives in
+     *  data/paper/metadata.dat, not in the uid.dat older versions used. Copying it made every clone silently
+     *  refuse to open, which surfaced only as a null world several layers up. Both names are excluded, so the
+     *  copy works on either layout. */
+    private static boolean identityFile(Path file) {
+        String name = file.getFileName().toString();
+        if (name.equals("session.lock") || name.equals("uid.dat")) return true;
+        Path parent = file.getParent();
+        return name.equals("metadata.dat") && parent != null && parent.getFileName() != null
+                && parent.getFileName().toString().equals("paper");
     }
 
     private void deleteWithRetry(File folder, int attemptsLeft) {
@@ -461,7 +970,56 @@ class DuelMapService implements org.bukkit.event.Listener {
     private void deleteQuietly(File folder) {
         if (folder == null || !folder.exists()) return;
         try (java.util.stream.Stream<Path> walk = Files.walk(folder.toPath())) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) {} });
-        } catch (IOException ignored) {}
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) { } });
+        } catch (IOException ignored) { }
+    }
+
+    // ------------------------------------------------------------------ self test
+
+    /** Registry integrity and the arithmetic around it. The end-to-end persistence proof needs a live server
+     *  and so lives in {@link DuelMapCanary}, run from /ashfall duelmap canary. */
+    boolean selfTest() {
+        if (maps.size() < 6) return false;
+        for (String required : List.of("arena50", "arena100", "temple_of_tides", "cinder_crucible", "deepstone_mines", "skyroot_village"))
+            if (!maps.containsKey(required)) return false;
+        if (maps.get("arena50").rule() != BreakRule.PLACED_ONLY || maps.get("arena100").rule() != BreakRule.PLACED_ONLY) return false;
+        for (String full : List.of("temple_of_tides", "cinder_crucible", "deepstone_mines", "skyroot_village"))
+            if (maps.get(full).rule() != BreakRule.FULL) return false;
+        /** Trial keys are restricted to exactly the two maps that are allowed them, and ominous is rarer. */
+        List<String> keyMaps = plugin.getConfig().getStringList("duel-loot.trial-key-maps");
+        if (keyMaps.size() != 2 || !keyMaps.contains("cinder_crucible") || !keyMaps.contains("deepstone_mines")) return false;
+        double normal = plugin.getConfig().getDouble("duel-loot.trial-key-chance", -1);
+        double ominous = plugin.getConfig().getDouble("duel-loot.ominous-key-chance", -1);
+        if (!(normal > 0 && ominous > 0 && ominous < normal)) return false;
+        for (DuelMap m : maps.values()) {
+            /** Facing: each duellist's yaw must point at the other, for every registered map. */
+            if (!facesEachOther(m)) return false;
+            /** A spawn outside its own map's bounds would drop a duellist into the void. */
+            if (m.bounds() != null
+                    && (!m.inBounds((int) Math.floor(m.p1x()), (int) Math.floor(m.p1y()), (int) Math.floor(m.p1z()))
+                     || !m.inBounds((int) Math.floor(m.p2x()), (int) Math.floor(m.p2y()), (int) Math.floor(m.p2z())))) return false;
+        }
+        /** The placed-block key packs and unpacks negative coordinates without loss -- the flat arenas
+         *  straddle 0, so a sign-extension bug here would silently disable block clutching on half the map. */
+        for (int[] p : new int[][]{{0, 64, 0}, {-25, 64, -25}, {24, 319, 24}, {9153, 232, 11208}, {-9153, -60, -11208}}) {
+            long k = key(p[0], p[1], p[2]);
+            if (unpackX(k) != p[0] || unpackY(k) != p[1] || unpackZ(k) != p[2]) return false;
+        }
+        return true;
+    }
+
+    /** True when standing at p1 with yawP1 puts p2 directly in front, and vice versa. */
+    static boolean facesEachOther(DuelMap m) {
+        return looksAt(m.p1x(), m.p1z(), m.yawP1(), m.p2x(), m.p2z())
+            && looksAt(m.p2x(), m.p2z(), m.yawP2(), m.p1x(), m.p1z());
+    }
+
+    private static boolean looksAt(double fromX, double fromZ, float yaw, double toX, double toZ) {
+        double rad = Math.toRadians(yaw);
+        double dirX = -Math.sin(rad), dirZ = Math.cos(rad);
+        double dx = toX - fromX, dz = toZ - fromZ;
+        double len = Math.sqrt(dx * dx + dz * dz);
+        if (len < 1.0e-6) return false;
+        return (dirX * dx + dirZ * dz) / len > 0.999;
     }
 }

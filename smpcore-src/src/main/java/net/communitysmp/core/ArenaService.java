@@ -90,6 +90,20 @@ final class ArenaService implements Listener {
 
     enum Phase { PENDING, STAKING, LIVE, ENDING }
 
+    /** Setup runs in three stages, each with its own screen and its own both-sides confirmation. Nothing is
+     *  charged and no arena is built until the last one is agreed: the money leaves the players' balances at
+     *  the final confirm, so backing out of stage two or three costs nobody anything and needs no refund at
+     *  all. Changing anything at any stage clears BOTH confirmations, so neither player can be walked into a
+     *  choice they did not agree to. */
+    enum Stage {
+        KIT("Kit"), MAP("Map"), OPTIONS("Final Options");
+        private final String label;
+        Stage(String label) { this.label = label; }
+        String label() { return label; }
+        Stage next() { return this == KIT ? MAP : OPTIONS; }
+        Stage previous() { return this == OPTIONS ? MAP : KIT; }
+    }
+
     enum Kit {
         MACE("Mace", Material.MACE, "Wind charges for height, mace to land it."),
         SWORD("Sword + Shield", Material.DIAMOND_SWORD, "Sharpness V and a shield to time."),
@@ -115,6 +129,21 @@ final class ArenaService implements Listener {
         int bestOf = 1;
         Phase phase = Phase.PENDING;
         long pendingSince = System.currentTimeMillis();
+        /** Which setup screen the pair is on, and when they arrived, for the per-stage timeout. */
+        Stage stage = Stage.KIT;
+        long stageSince = System.currentTimeMillis();
+        /** The chosen map, and the throwaway world cloned from it once the match actually starts. Null until
+         *  the final confirmation: an instance is never created for a duel that has not been agreed. */
+        String mapKey;
+        DuelMapService.DuelMap map;
+        World instance;
+        /** Final Options. Visibility Effects is ON by default: while it is on, both duellists are kept
+         *  Glowing and given Night Vision for the whole fight regardless of their own /settings, so neither
+         *  can lose the other in a dark corner of an imported map. */
+        boolean visibility = true;
+        /** True from the moment the arena starts being cloned, so a second confirmation click (or a race
+         *  between the two players' clicks) cannot start two instances for one duel. */
+        boolean starting = false;
         final Map<String, Double> stakes = new LinkedHashMap<>();
         final Set<String> confirmed = new HashSet<>();
         final Map<String, Integer> rounds = new LinkedHashMap<>();
@@ -252,17 +281,36 @@ final class ArenaService implements Listener {
         }.runTaskTimer(plugin, 0L, 1L);
     }
 
+    /** Where each duellist starts. The spawn pair comes from the map, and the yaw is derived from the pair
+     *  rather than stored, so the two always begin facing each other however the points are moved. */
     private Location corner(Duel duel, int index) {
+        if (duel.instance != null && duel.map != null)
+            return index == 0 ? duel.map.p1(duel.instance) : duel.map.p2(duel.instance);
         int cx = slotBaseX(duel.slot), h = sizeFor(duel.kit) / 2;
         return new Location(arena, cx + (index == 0 ? -h + 3.5 : h - 4.5), FLOOR_Y + 1, 0.5, index == 0 ? 90f : -90f, 0f);
     }
 
     /** Spectators watch from INSIDE the arena (they are invisible, flying and non-colliding), since the
      *  full-height walls make an outside gallery useless. Placed above the centre, looking down. */
-    private Location gallery(Duel duel) { return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 6, 0.5, 0f, 25f); }
+    private Location gallery(Duel duel) {
+        if (duel.instance != null && duel.map != null) {
+            double[] at = duel.map.spectator(plugin.getConfig().getInt("duel-spectator-fallback-height", 10));
+            return new Location(duel.instance, at[0], at[1], at[2], 0f, 25f);
+        }
+        return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 6, 0.5, 0f, 25f);
+    }
 
-    private boolean inArena(Player player) { return arena != null && player.getWorld().equals(arena); }
-    boolean isArenaWorld(org.bukkit.World world) { return arena != null && arena.equals(world); }
+    private boolean inArena(Player player) { return isArenaWorld(player.getWorld()); }
+
+    /** True for any world a duel runs in: the legacy shared arena, and every per-match instance world. Other
+     *  services key their duel exclusions off this (graves, progression), so a per-match instance must be
+     *  recognised here or a duel death would start dropping graves again. */
+    boolean isArenaWorld(org.bukkit.World world) {
+        if (world == null) return false;
+        if (arena != null && arena.equals(world)) return true;
+        DuelMapService maps = plugin.duelMaps();
+        return maps != null && maps.isInstance(world);
+    }
     /** True for the fillable duel item-wager box, so the relic storage guard can allow relics to be staked into
      *  it. Relics staked here are escrowed and awarded to the winner (whose next inventory scan transfers
      *  ownership) -- they are never actually "stored", and only one physical copy ever exists. */
@@ -579,8 +627,10 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.PENDING || !CoreUtil.id(player).equals(duel.b)) { CoreUtil.error(player, "No challenge for you."); return true; }
         duel.phase = Phase.STAKING;
+        duel.stage = Stage.KIT;
+        duel.stageSince = System.currentTimeMillis();
         both(duel, "Duel accepted. Set up the match.");
-        openSetup(a(duel)); openSetup(b(duel));
+        openStage(duel);
         return true;
     }
 
@@ -595,19 +645,19 @@ final class ArenaService implements Listener {
     boolean setKit(Player player, String name) {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING) { CoreUtil.error(player, "Not in a duel setup."); return true; }
+        if (duel.stage != Stage.KIT || duel.starting) { CoreUtil.error(player, "The kit is already locked in for this duel."); return true; }
         try { duel.kit = Kit.valueOf(name.toUpperCase(Locale.ROOT)); } catch (IllegalArgumentException e) { CoreUtil.error(player, "Kits: mace, sword, axe, spear."); return true; }
-        duel.confirmed.clear();
-        refreshSetup(duel);
+        changed(duel);
         return true;
     }
 
     boolean setSeries(Player player, int best) {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING) { CoreUtil.error(player, "Not in a duel setup."); return true; }
+        if (duel.stage != Stage.KIT || duel.starting) { CoreUtil.error(player, "The series length is already locked in."); return true; }
         if (best != 1 && best != 3) { CoreUtil.error(player, "Best of 1 or 3."); return true; }
         duel.bestOf = best;
-        duel.confirmed.clear();
-        refreshSetup(duel);
+        changed(duel);
         return true;
     }
 
@@ -615,10 +665,10 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING) { CoreUtil.error(player, "Not in a duel setup."); return true; }
         if (amount < 0 || !Double.isFinite(amount)) { CoreUtil.error(player, "Stake cannot be negative."); return true; }
+        if (duel.stage != Stage.KIT || duel.starting) { CoreUtil.error(player, "Stakes are already locked in for this duel."); return true; }
         if (amount > 0 && db.player(CoreUtil.id(player)).balance() < amount) { CoreUtil.error(player, "You cannot cover that."); return true; }
         duel.stakes.put(CoreUtil.id(player), amount);
-        duel.confirmed.remove(CoreUtil.id(player));
-        refreshSetup(duel);
+        changed(duel);
         return true;
     }
 
@@ -626,31 +676,155 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         String id = CoreUtil.id(player);
         if (duel == null || duel.phase != Phase.STAKING) { CoreUtil.error(player, "Not in a duel setup."); return true; }
+        if (duel.starting) { actionbar(player, "The arena is already being prepared."); return true; }
+        /** A stage cannot be confirmed past unless its own choice is actually valid -- the map stage in
+         *  particular, since a map with no committed snapshot is not something a match can be sent to. */
+        if (duel.stage == Stage.MAP && selectedMap(duel) == null) {
+            CoreUtil.error(player, "Pick a map first.");
+            return true;
+        }
         duel.confirmed.add(id);
         actionbar(player, "Confirmed. Waiting for the other duellist.");
-        refreshSetup(duel);
+        refreshStage(duel);
         if (!duel.confirmed.contains(duel.a) || !duel.confirmed.contains(duel.b)) return true;
+        if (duel.stage != Stage.OPTIONS) {
+            advance(duel, duel.stage.next());
+            return true;
+        }
+        /** Final confirmation. Only NOW does anybody's money move, and only now is an arena built. */
+        DuelMapService.DuelMap map = selectedMap(duel);
+        if (map == null) { both(duel, "That map is no longer available; pick another."); advance(duel, Stage.MAP); return true; }
         double sa = duel.stakes.getOrDefault(duel.a, 0d), sb = duel.stakes.getOrDefault(duel.b, 0d);
         if (sa > 0 && !db.changeBalance(duel.a, -sa)) { both(duel, "Challenger could not cover their stake; duel cancelled."); dispose(duel); return true; }
         if (sb > 0 && !db.changeBalance(duel.b, -sb)) { if (sa > 0) db.changeBalance(duel.a, sa); both(duel, "Opponent could not cover their stake; duel cancelled."); dispose(duel); return true; }
         db.arenaEscrowSet(duel.a, sa); db.arenaEscrowSet(duel.b, sb);
+        duel.map = map;
         startMatch(duel);
         return true;
+    }
+
+    // ------------------------------------------------------------------ the three-stage setup
+
+    /** Moves the pair to a stage, clearing both confirmations and resetting the stage's own timeout. */
+    private void advance(Duel duel, Stage to) {
+        duel.stage = to;
+        duel.stageSince = System.currentTimeMillis();
+        duel.confirmed.clear();
+        both(duel, "Stage " + (to.ordinal() + 1) + " of 3 — " + to.label() + ".");
+        openStage(duel);
+    }
+
+    /** Step back one stage. Available from the map and options screens; from the kit screen there is nothing
+     *  behind it, so Back there cancels the duel exactly as closing the window does. */
+    boolean back(Player player) {
+        Duel duel = duelOf(player);
+        if (duel == null || duel.phase != Phase.STAKING || duel.starting) return true;
+        if (duel.stage == Stage.KIT) { forfeit(player); return true; }
+        both(duel, name(CoreUtil.id(player)) + " went back to " + duel.stage.previous().label() + ".");
+        advance(duel, duel.stage.previous());
+        return true;
+    }
+
+    /** Any change at any stage un-confirms BOTH sides. Nobody is ever committed to something they did not
+     *  see: a late switch of kit, map or option always costs a fresh agreement from both. */
+    private void changed(Duel duel) {
+        duel.confirmed.clear();
+        refreshStage(duel);
+    }
+
+    private void openStage(Duel duel) { openStage(a(duel), duel); openStage(b(duel), duel); }
+
+    private void openStage(Player player, Duel duel) {
+        if (player == null || duel == null) return;
+        switch (duel.stage) {
+            case KIT -> openSetup(player);
+            case MAP -> openMapSelect(player);
+            case OPTIONS -> openOptions(player);
+        }
+    }
+
+    private void refreshStage(Duel duel) { openStage(duel); }
+
+    /** Re-render whichever setup screen a duellist currently has open, without yanking anybody who has
+     *  stepped into a side screen (the wager box or the opponent's wager viewer). */
+    private void refreshStageOpen(Duel duel) {
+        for (Player p : new Player[]{a(duel), b(duel)})
+            if (p != null && p.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m
+                    && (m.kind.equals("setup") || m.kind.equals("map") || m.kind.equals("options")))
+                openStage(p, duel);
+    }
+
+    /** The map the pair have chosen, or null when it is unset or no longer playable. */
+    private DuelMapService.DuelMap selectedMap(Duel duel) {
+        DuelMapService maps = plugin.duelMaps();
+        if (maps == null || duel.mapKey == null) return null;
+        DuelMapService.DuelMap map = maps.map(duel.mapKey);
+        return map != null && maps.hasSnapshot(map) ? map : null;
+    }
+
+    /** Every map is available to every kit -- map choice and kit choice are completely independent. */
+    private List<DuelMapService.DuelMap> availableMaps() {
+        DuelMapService maps = plugin.duelMaps();
+        return maps == null ? List.of() : maps.playableMaps();
+    }
+
+    boolean setMap(Player player, String key) {
+        Duel duel = duelOf(player);
+        if (duel == null || duel.phase != Phase.STAKING || duel.stage != Stage.MAP || duel.starting) return true;
+        DuelMapService maps = plugin.duelMaps();
+        DuelMapService.DuelMap map = maps == null ? null : maps.map(key);
+        if (map == null || !maps.hasSnapshot(map)) { CoreUtil.error(player, "That map is not available."); return true; }
+        duel.mapKey = map.key();
+        changed(duel);
+        return true;
+    }
+
+    private void toggleVisibility(Player player) {
+        Duel duel = duelOf(player);
+        if (duel == null || duel.phase != Phase.STAKING || duel.stage != Stage.OPTIONS || duel.starting) return;
+        duel.visibility = !duel.visibility;
+        changed(duel);
     }
 
     // ------------------------------------------------------------------ the match
     private Player a(Duel d) { return plugin.getServer().getPlayer(d.a); }
     private Player b(Duel d) { return plugin.getServer().getPlayer(d.b); }
 
+    /** Builds this match its OWN arena world -- a clone of the chosen map's committed snapshot -- and starts
+     *  the first round in it. Two matches on the same map get two separate worlds, so their terrain, chests
+     *  and damage are completely invisible to each other, and editing the template afterwards changes
+     *  neither of them. The clone is prepared off the main thread and its chunks are pulled in a slice at a
+     *  time, so a duel starting never freezes the server for everybody else. */
     private void startMatch(Duel duel) {
         Player one = a(duel), two = b(duel);
         if (one == null || two == null) { abortAndRefund(duel, "a duellist went offline"); return; }
-        duel.phase = Phase.LIVE;
+        DuelMapService maps = plugin.duelMaps();
+        if (maps == null || duel.map == null) { abortAndRefund(duel, "the duel map service is unavailable"); return; }
+        duel.starting = true;
         duel.rounds.put(duel.a, 0); duel.rounds.put(duel.b, 0);
         one.closeInventory(); two.closeInventory();
-        plugin.getServer().broadcast(Component.text("⚔ " + one.getName() + " vs " + two.getName() + " — "
-                + duel.kit.label() + ", best of " + duel.bestOf + ". /duel watch " + duel.id + " to spectate; bet before it starts.", NamedTextColor.GOLD));
-        ensureArena(duel.slot, sizeFor(duel.kit), () -> beginRound(duel));
+        both(duel, "Preparing " + duel.map.name() + "…");
+        maps.prepareInstance(duel.map, instance -> {
+            duel.starting = false;
+            /** Everything can have changed while the clone was being built: either duellist may have
+             *  disconnected, and the duel may already have been cancelled out from under us. */
+            if (duel.phase != Phase.STAKING || !duels.contains(duel)) {
+                if (instance != null) maps.destroyInstance(instance, null);
+                return;
+            }
+            Player p1 = a(duel), p2 = b(duel);
+            if (instance == null) {
+                if (p1 != null || p2 != null) abortAndRefund(duel, "the arena could not be prepared");
+                return;
+            }
+            if (p1 == null || p2 == null) { maps.destroyInstance(instance, null); abortAndRefund(duel, "a duellist went offline"); return; }
+            duel.instance = instance;
+            duel.phase = Phase.LIVE;
+            plugin.getServer().broadcast(Component.text("⚔ " + p1.getName() + " vs " + p2.getName() + " — "
+                    + duel.kit.label() + " on " + duel.map.name() + ", best of " + duel.bestOf
+                    + ". /duel watch " + duel.id + " to spectate; bet before it starts.", NamedTextColor.GOLD));
+            beginRound(duel);
+        });
     }
 
     /** Opens the round: clean the arena, teleport both duellists to their corners, fully re-equip and heal
@@ -667,6 +841,9 @@ final class ArenaService implements Listener {
         capture(one); capture(two);
         one.teleport(corner(duel, 0)); two.teleport(corner(duel, 1));
         equip(one, duel.kit); equip(two, duel.kit);
+        /** equip() strips every effect, so the duel's own Visibility Effects are re-applied straight after
+         *  rather than waiting for the one-second enforcement tick to notice. */
+        applyVisibility(duel);
         int round = duel.rounds.get(duel.a) + duel.rounds.get(duel.b) + 1;
         both(duel, "Round " + round + " — ready up when you are set. Spectators may bet now.");
         openReady(one, duel); openReady(two, duel);
@@ -1011,15 +1188,20 @@ final class ArenaService implements Listener {
     // ------------------------------------------------------------------ building / map protection
     private long key(int x, int y, int z) { return org.bukkit.block.Block.getBlockKey(x, y, z); }
 
+    /** The legacy shared-slot arena world only. Per-match instance worlds have their own break rules, owned
+     *  by DuelMapService, which is what lets an imported map be fully breakable while the built flat arenas
+     *  stay pristine -- so this class must not also have an opinion about blocks inside one. */
+    private boolean inLegacyArena(Player player) { return arena != null && player.getWorld().equals(arena); }
+
     @EventHandler(ignoreCancelled = true) public void bucketEmpty(org.bukkit.event.player.PlayerBucketEmptyEvent event) {
         Duel duel = duelOf(event.getPlayer());
-        if (duel == null || duel.phase != Phase.LIVE || !inArena(event.getPlayer())) return;
+        if (duel == null || duel.phase != Phase.LIVE || !inLegacyArena(event.getPlayer())) return;
         org.bukkit.block.Block b = event.getBlock();
         duel.placed.add(key(b.getX(), b.getY(), b.getZ()));
     }
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void place(BlockPlaceEvent event) {
-        if (!inArena(event.getPlayer())) return;
+        if (!inLegacyArena(event.getPlayer())) return;
         Duel duel = duelOf(event.getPlayer());
         if (duel == null || duel.phase != Phase.LIVE) { event.setCancelled(true); return; }
         org.bukkit.block.Block block = event.getBlockPlaced();
@@ -1028,7 +1210,7 @@ final class ArenaService implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void breakBlock(BlockBreakEvent event) {
-        if (!inArena(event.getPlayer())) return;
+        if (!inLegacyArena(event.getPlayer())) return;
         Duel duel = duelOf(event.getPlayer());
         org.bukkit.block.Block block = event.getBlock();
         /** Only a block placed by a duellist this round may be broken. The arena map itself never can. */
@@ -1041,6 +1223,15 @@ final class ArenaService implements Listener {
 
     /** Clears every block the duellists placed and rebuilds the slot's floor, so no match leaves a mark. */
     private void resetArena(Duel duel) {
+        /** In an instance the terrain itself needs no repair -- the world is thrown away when the match ends
+         *  and the next match gets a fresh clone -- but blocks placed in round one must not still be standing
+         *  in round two, so the placed set is wiped between rounds either way. */
+        if (duel.instance != null) {
+            DuelMapService maps = plugin.duelMaps();
+            if (maps != null) maps.clearPlaced(duel.instance);
+            duel.placed.clear();
+            return;
+        }
         if (arena == null) return;
         /** Structure is built once and left standing; a reset only removes what the duellists placed, so the
          *  map is never modified by a match. Cheap -- a handful of blocks, not the whole arena. */
@@ -1063,16 +1254,34 @@ final class ArenaService implements Listener {
     @EventHandler public void quit(PlayerQuitEvent event) {
         String id = CoreUtil.id(event.getPlayer());
         Duel duel = byPlayer.get(id);
-        if (duel != null && duel.phase == Phase.LIVE && duel.has(id)) duel.disconnectedAt.put(id, System.currentTimeMillis());
-        else if (inArena(event.getPlayer())) restore(event.getPlayer());
+        if (duel != null && duel.phase == Phase.LIVE && duel.has(id)) { duel.disconnectedAt.put(id, System.currentTimeMillis()); return; }
+        /** Dropping out DURING setup cancels the duel rather than leaving the other player staring at a
+         *  screen waiting for somebody who is not coming back. Nothing has been charged yet at that point,
+         *  so this costs neither side anything -- but any items already staged in the wager box are returned. */
+        if (duel != null && duel.has(id) && (duel.phase == Phase.PENDING || duel.phase == Phase.STAKING)) {
+            if (duel.starting) return;
+            abortAndRefund(duel, event.getPlayer().getName() + " disconnected during setup");
+            return;
+        }
+        if (inArena(event.getPlayer())) restore(event.getPlayer());
     }
 
     private void tick() {
         long grace = Math.max(3, plugin.getConfig().getLong("arena.reconnect-grace-seconds", 10)) * 1000L;
+        long setupTimeout = Math.max(30, plugin.getConfig().getLong("arena.setup-timeout-seconds", 180)) * 1000L;
         long now = System.currentTimeMillis();
         for (Duel duel : new ArrayList<>(duels)) {
             if (duel.phase == Phase.PENDING && now - duel.pendingSince > 60000) { both(duel, "Challenge expired."); dispose(duel); continue; }
+            /** A setup stage nobody finishes must not hold a concurrency slot for ever. Each stage gets its
+             *  own clock, reset whenever the pair move between stages, so a slow but active setup is never
+             *  cut off -- only an abandoned one. The clone in progress is exempt: it finishes or fails on its
+             *  own, and cancelling a duel out from under it would leave the world behind. */
+            if (duel.phase == Phase.STAKING && !duel.starting && now - duel.stageSince > setupTimeout) {
+                abortAndRefund(duel, "the " + duel.stage.label() + " stage timed out");
+                continue;
+            }
             if (duel.phase != Phase.LIVE) continue;
+            applyVisibility(duel);
             for (Map.Entry<String, Long> entry : new LinkedHashMap<>(duel.disconnectedAt).entrySet()) {
                 long elapsed = now - entry.getValue();
                 String loser = entry.getKey(), winner = duel.other(loser);
@@ -1106,6 +1315,24 @@ final class ArenaService implements Listener {
         dispose(duel);
     }
 
+    /** Keeps both duellists Glowing and with Night Vision for the whole fight when the option is on.
+     *
+     *  Applied continuously rather than once: potion effects are cleared at every round start, a golden
+     *  apple or a milk bucket would otherwise wipe them mid-fight, and the player's own /settings night
+     *  vision is not something the duel should have to negotiate with. The effects are short and constantly
+     *  refreshed, so nothing lingers once the match is over -- and restore() clears every effect anyway
+     *  before putting back the ones the player had before the duel.
+     *
+     *  With the option OFF nothing is forced in either direction: the players simply keep whatever they had. */
+    private void applyVisibility(Duel duel) {
+        if (!duel.visibility || duel.phase != Phase.LIVE) return;
+        for (Player player : new Player[]{a(duel), b(duel)}) {
+            if (player == null || !inArena(player)) continue;
+            player.addPotionEffect(new PotionEffect(PotionEffectType.GLOWING, 100, 0, true, false, false));
+            player.addPotionEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, 400, 0, true, false, false));
+        }
+    }
+
     private void returnPlayers(Duel duel) {
         for (String id : List.of(duel.a, duel.b)) { Player player = plugin.getServer().getPlayer(id); if (player != null) restore(player); }
         for (Map.Entry<String, Integer> entry : new ArrayList<>(spectators.entrySet())) {
@@ -1115,9 +1342,19 @@ final class ArenaService implements Listener {
         }
     }
 
+    /** The single place a duel stops existing, so the arena world it owned is destroyed on EVERY exit path --
+     *  a clean finish, a forfeit, a refund, a cancelled setup or a shutdown. An instance world is worthless
+     *  the moment its match ends; anything that still survives (a Windows file handle, a crash) is swept by
+     *  the detached sweeper or removed at the next startup. */
     private void dispose(Duel duel) {
         byPlayer.remove(duel.a); byPlayer.remove(duel.b);
         duels.remove(duel);
+        if (duel.instance != null) {
+            DuelMapService maps = plugin.duelMaps();
+            World world = duel.instance;
+            duel.instance = null;
+            if (maps != null) maps.destroyInstance(world, null);
+        }
     }
 
     private String name(String id) { Player p = plugin.getServer().getPlayer(id); return p != null ? p.getName() : (byPlayer.containsKey(id) ? id : id); }
@@ -1142,7 +1379,10 @@ final class ArenaService implements Listener {
         if (duels.isEmpty()) return "No duels are running.";
         StringBuilder sb = new StringBuilder("Matches:");
         for (Duel d : duels) sb.append("\n  #").append(d.id).append(" ").append(d.aName).append(" vs ").append(d.bName)
-                .append(" | ").append(d.kit.label()).append(" | Bo").append(d.bestOf).append(" | ").append(d.phase);
+                .append(" | ").append(d.kit.label()).append(" | ").append(d.map != null ? d.map.name() : (d.mapKey == null ? "no map" : d.mapKey))
+                .append(" | Bo").append(d.bestOf).append(" | ").append(d.phase)
+                .append(d.phase == Phase.STAKING ? " (" + d.stage.label() + ")" : "")
+                .append(d.instance != null ? " | " + d.instance.getName() : "");
         return sb.toString();
     }
 
@@ -1216,28 +1456,106 @@ final class ArenaService implements Listener {
         player.openInventory(menu.inv);
     }
 
-    private void refreshSetup(Duel duel) { openSetup(a(duel)); openSetup(b(duel)); }
-    /** Closing the setup GUI with ESC cancels the duel, exactly like /duel cancel -- unless the player has
-     *  confirmed (and is just waiting for their opponent) or merely stepped into another duel screen (the wager
-     *  box/viewer, or a live setup refresh), which must NOT count as a cancel. */
+    // ---- stage 2: the map --------------------------------------------------------------------------
+    /** Every map is offered to every kit -- there is no map a kit cannot use and no kit a map belongs to.
+     *  Maps with no committed snapshot are not shown at all rather than shown and then failing. */
+    private void openMapSelect(Player player) {
+        if (player == null) return;
+        Duel duel = duelOf(player);
+        if (duel == null) return;
+        Menu menu = new Menu("map", duel.id);
+        menu.inv = plugin.getServer().createInventory(menu, 45, Component.text("Duel setup — Map (2/3)", NamedTextColor.DARK_AQUA));
+        List<DuelMapService.DuelMap> maps = availableMaps();
+        menu.inv.setItem(4, icon(Material.FILLED_MAP, "Choose the arena",
+                List.of("Kit: " + duel.kit.label() + " · Best of " + duel.bestOf, "Every kit can use every map.")));
+        int[] slots = {10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25};
+        for (int i = 0; i < maps.size() && i < slots.length; i++) {
+            DuelMapService.DuelMap map = maps.get(i);
+            boolean picked = map.key().equals(duel.mapKey);
+            ItemStack ico = icon(mapIcon(map), (picked ? "✔ SELECTED — " : "") + map.name(), List.of(
+                    map.rule() == DuelMapService.BreakRule.PLACED_ONLY
+                            ? "Only blocks placed this match can be broken"
+                            : "Fully breakable, explosions included",
+                    picked ? "This map is selected" : "Click to pick this map"));
+            if (picked) glow(ico);
+            menu.inv.setItem(slots[i], ico);
+        }
+        if (maps.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, "No maps are ready",
+                List.of("An admin must build and save a duel map", "before matches can be played on one.")));
+        DuelMapService.DuelMap chosen = selectedMap(duel);
+        stageFooter(menu, duel, player, chosen == null ? "Pick a map first" : "Confirm " + chosen.name());
+        player.openInventory(menu.inv);
+    }
+
+    private Material mapIcon(DuelMapService.DuelMap map) {
+        return switch (map.key()) {
+            case "arena50" -> Material.RED_TERRACOTTA;
+            case "arena100" -> Material.OBSIDIAN;
+            case "temple_of_tides" -> Material.PRISMARINE;
+            case "cinder_crucible" -> Material.MAGMA_BLOCK;
+            case "deepstone_mines" -> Material.DEEPSLATE;
+            case "skyroot_village" -> Material.OAK_LOG;
+            default -> Material.MAP;
+        };
+    }
+
+    // ---- stage 3: final options --------------------------------------------------------------------
+    private void openOptions(Player player) {
+        if (player == null) return;
+        Duel duel = duelOf(player);
+        if (duel == null) return;
+        DuelMapService.DuelMap map = selectedMap(duel);
+        Menu menu = new Menu("options", duel.id);
+        menu.inv = plugin.getServer().createInventory(menu, 45, Component.text("Duel setup — Final Options (3/3)", NamedTextColor.DARK_AQUA));
+        menu.inv.setItem(4, icon(duel.kit.icon(), "Everything so far", List.of(
+                "Kit: " + duel.kit.label(),
+                "Map: " + (map == null ? "none" : map.name()),
+                "Best of " + duel.bestOf,
+                "Your stake: " + CoreUtil.money(duel.stakes.getOrDefault(CoreUtil.id(player), 0d)))));
+        menu.inv.setItem(22, glow(icon(duel.visibility ? Material.GLOW_INK_SAC : Material.INK_SAC,
+                "Visibility Effects: " + (duel.visibility ? "ON" : "OFF"), List.of(
+                duel.visibility ? "Both duellists glow and keep Night Vision" : "Neither effect is forced on anybody",
+                duel.visibility ? "for the whole duel, whatever your /settings say" : "You each keep whatever you already had",
+                "Click to turn " + (duel.visibility ? "OFF" : "ON")))));
+        stageFooter(menu, duel, player, "Confirm and start the duel");
+        player.openInventory(menu.inv);
+    }
+
+    /** The shared bottom bar of the map and options screens: Back, and a Confirm that shows both sides'
+     *  state so neither player has to ask whether the other has agreed yet. */
+    private void stageFooter(Menu menu, Duel duel, Player player, String confirmHint) {
+        String meId = CoreUtil.id(player), themId = duel.other(meId);
+        String meName = meId.equals(duel.a) ? duel.aName : duel.bName, themName = meId.equals(duel.a) ? duel.bName : duel.aName;
+        boolean ready = duel.confirmed.contains(meId);
+        menu.inv.setItem(36, icon(Material.ARROW, "Back", List.of("Return to " + duel.stage.previous().label(),
+                "Both confirmations are cleared")));
+        menu.inv.setItem(44, icon(Material.BARRIER, "Cancel duel", List.of("Calls the whole thing off", "Nothing has been charged yet")));
+        menu.inv.setItem(40, icon(ready ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE,
+                ready ? "Confirmed — waiting for " + themName + "…" : confirmHint, List.of(
+                meName + ": " + (ready ? "READY" : "not ready"),
+                themName + ": " + (duel.confirmed.contains(themId) ? "READY" : "not ready"),
+                "Stage " + (duel.stage.ordinal() + 1) + " of 3")));
+    }
+
+    /** Closing any setup screen with ESC cancels the duel, exactly like /duel cancel -- unless the player has
+     *  confirmed (and is just waiting for their opponent) or merely stepped into another duel screen (the
+     *  wager box/viewer, the next stage, or a live refresh), which must NOT count as a cancel. */
     @EventHandler public void closeSetup(InventoryCloseEvent event) {
-        if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !menu.kind.equals("setup")) return;
+        if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !isSetupScreen(menu.kind)) return;
         if (!(event.getPlayer() instanceof Player player)) return;
         String id = CoreUtil.id(player);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!player.isOnline()) return;
             Duel d = byPlayer.get(id);
-            if (d == null || (d.phase != Phase.STAKING && d.phase != Phase.PENDING) || d.confirmed.contains(id)) return;
+            if (d == null || (d.phase != Phase.STAKING && d.phase != Phase.PENDING) || d.confirmed.contains(id) || d.starting) return;
             if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m
-                    && (m.kind.equals("setup") || m.kind.equals("wagerbox") || m.kind.equals("wagerview"))) return;
+                    && (isSetupScreen(m.kind) || m.kind.equals("wagerbox") || m.kind.equals("wagerview"))) return;
             forfeit(player);
         }, 2L);
     }
-    /** Re-render the setup GUI live for whichever duellist currently has it open, so wager counts update on
-     *  both sides the moment either confirms/clears -- without yanking anyone who is inside the wager box. */
-    private void refreshSetupOpen(Duel duel) {
-        for (Player p : new Player[]{a(duel), b(duel)})
-            if (p != null && p.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m && "setup".equals(m.kind)) openSetup(p);
+
+    private static boolean isSetupScreen(String kind) {
+        return kind.equals("setup") || kind.equals("map") || kind.equals("options");
     }
 
     /** GUI stake adjustment: nudge the stake up or down, clamped to what the player can actually cover. */
@@ -1253,8 +1571,7 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         if (duel == null) return;
         duel.stakes.put(CoreUtil.id(player), amount);
-        duel.confirmed.remove(CoreUtil.id(player));
-        refreshSetup(duel);
+        changed(duel);
     }
 
     private ItemStack icon(Material material, String name, List<String> lore) { return CoreUtil.named(material, name, lore); }
@@ -1309,6 +1626,27 @@ final class ArenaService implements Listener {
                     case 40 -> { player.closeInventory(); confirm(player); }
                     case 42 -> openWagerBox(player);
                     case 43 -> openOpponentWager(player);
+                    default -> { }
+                }
+            }
+            case "map" -> {
+                List<DuelMapService.DuelMap> options = availableMaps();
+                int[] mapSlots = {10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25};
+                for (int i = 0; i < options.size() && i < mapSlots.length; i++)
+                    if (slot == mapSlots[i]) { setMap(player, options.get(i).key()); return; }
+                switch (slot) {
+                    case 36 -> back(player);
+                    case 40 -> confirm(player);
+                    case 44 -> { player.closeInventory(); forfeit(player); }
+                    default -> { }
+                }
+            }
+            case "options" -> {
+                switch (slot) {
+                    case 22 -> toggleVisibility(player);
+                    case 36 -> back(player);
+                    case 40 -> confirm(player);
+                    case 44 -> { player.closeInventory(); forfeit(player); }
                     default -> { }
                 }
             }
@@ -1415,7 +1753,7 @@ final class ArenaService implements Listener {
         for (int i = 0; i < 45; i++) box.setItem(i, null);
         actionbar(player, "Wager confirmed \u2014 " + full.size() + " stack(s) staked.");
         player.closeInventory();
-        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); refreshSetupOpen(duel); });
+        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); });
     }
 
     /** Returns every item the player has wagered (confirmed escrow plus anything unconfirmed still in the box)
@@ -1428,7 +1766,7 @@ final class ArenaService implements Listener {
         if (duel != null) { back.addAll(loadWager(duel, id)); db.arenaItemWagerClear(duel.id, id); }
         giveOrStash(id, back, "Wager cleared \u2014 items returned.");
         player.closeInventory();
-        if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openSetup(player); refreshSetupOpen(duel); });
+        if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); });
     }
 
     /** On closing the wager box, escrow whatever is inside to the DB (crash-safe) and hand any surplus back if
@@ -1605,6 +1943,21 @@ final class ArenaService implements Listener {
         }
         double winning = 300, losing = 700, payout = 0;
         for (double stake : new double[]{100, 200}) payout += stake + losing * (stake / winning);
-        return Math.abs(payout - (winning + losing)) < 0.01;
+        if (Math.abs(payout - (winning + losing)) >= 0.01) return false;
+
+        /** The three-stage setup walks forward Kit -> Map -> Final Options and back again, and never runs
+         *  off either end: Back from the first stage is a cancel (handled separately) and Confirm on the last
+         *  is the start, so next()/previous() must saturate rather than wrap. */
+        if (Stage.KIT.next() != Stage.MAP || Stage.MAP.next() != Stage.OPTIONS || Stage.OPTIONS.next() != Stage.OPTIONS) return false;
+        if (Stage.OPTIONS.previous() != Stage.MAP || Stage.MAP.previous() != Stage.KIT || Stage.KIT.previous() != Stage.KIT) return false;
+        if (Stage.values().length != 3 || Stage.KIT.ordinal() != 0 || Stage.OPTIONS.ordinal() != 2) return false;
+
+        /** Visibility Effects default ON, and both of its effects are real. */
+        if (PotionEffectType.GLOWING == null || PotionEffectType.NIGHT_VISION == null) return false;
+        Duel probe = new Duel(-1, 0, "a", "b");
+        if (!probe.visibility || probe.stage != Stage.KIT || probe.mapKey != null || probe.instance != null || probe.starting) return false;
+
+        /** A setup timeout that could fire while an arena is being cloned would strand the instance. */
+        return plugin.getConfig().getLong("arena.setup-timeout-seconds", 180) >= 30;
     }
 }

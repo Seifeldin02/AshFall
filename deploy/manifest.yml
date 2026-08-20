@@ -20,10 +20,13 @@ sync:
     note: |
       Main plugin config. Owner-fixed values that have silently failed to reach production before:
         EXPECTED staging-only difference: trusted-admin.same-machine-autologin is set on staging and must
-  NEVER appear in production or in the shipped resource -- it is what lets an admin reuse AuthMe's
-  same-IP session from this machine. A config.yml DIFF consisting solely of that key is correct.
-  progression.rank-rewards.VANGUARD  250000   (the code fallback in ProgressService must match)
+        NEVER appear in production or in the shipped resource -- it is what lets an admin reuse AuthMe's
+        same-IP session from this machine. A config.yml DIFF consisting solely of that key is correct.
+        progression.rank-rewards.VANGUARD  250000   (the code fallback in ProgressService must match)
         shop.buy-multiple                  5        (commodity buy = 5x sell, derived at load)
+        NEW 2026-08-20 (duel rebuild): duel-maps.*.bounds, duel-maps.*.source-world,
+        duel-maps-import.columns-per-tick, arena.setup-timeout-seconds, duel-loot.chunks-per-tick and
+        industrial-hopper.comparator-output. A jar swap does NOT carry any of them.
   - path: plugins/SMPCore/bosses.yml
   - path: plugins/SMPCore/shop.yml
     note: |
@@ -89,6 +92,24 @@ env:
       level-name: "world"
   - path: plugins/Geyser-Spigot/config.yml
     note: Bedrock listener port differs (prod 19132 / staging 19133)
+
+  - path: plugins/SMPCore/duel-templates
+    note: |
+      COMMITTED DUEL MAP SNAPSHOTS (added 2026-08-20). One folder per map key; each is a world folder
+      (region/, entities/, poi/, data/) with NO level.dat -- that is normal for a Paper dimension folder and
+      is not a sign of a broken copy. These are what a duel match actually clones; the live duel_tpl_* worlds
+      are only what admins build in and are NOT needed on production.
+
+      A jar swap alone does not carry these. Without them production reports every imported map as
+      "NOT COMMITTED - matches cannot use this map" (check with /ashfall duelmap snapshots) and the map is
+      simply not offered on the duel Map screen.
+
+      arena50 and arena100 CAN be regenerated on production instead, from code:
+        /ashfall duelmap build arena50   and   /ashfall duelmap build arena100
+      The four imported maps cannot -- /ashfall duelmap import reads the SOURCE overworld, and those arenas
+      were built on staging after the 2026-08-17 world clone. Copy the folders.
+
+      Do NOT copy duel-templates/__canary; it is a test artefact of /ashfall duelmap canary.
 
 plugins:
   # Geyser and Floodgate are the Bedrock runtime. These are pinned by FILENAME here, but the filename is

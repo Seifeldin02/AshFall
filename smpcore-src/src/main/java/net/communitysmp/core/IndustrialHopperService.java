@@ -87,9 +87,16 @@ import java.util.Map;
  *  dirty flush, on world save, on chunk unload and on shutdown. Because it lives in the block it saves and
  *  loads with the chunk: there is no registry to rebuild on boot and no world scan anywhere.
  *
+ *  COMPARATORS still have to work, and a comparator reads the block's own five slots, not ours. Those five
+ *  slots therefore carry a CALIBRATION WEIGHT: a marked stack whose size is chosen so that vanilla's own
+ *  container-signal formula, applied over five slots, produces exactly the strength the twenty-seven slots
+ *  deserve. It is a readout, not storage -- invisible to every transfer path, never dropped, never counted,
+ *  and recomputed whenever the real contents change. A full readout arises only when the real inventory is
+ *  genuinely full, so vanilla's "is this container full" checks stay truthful as a side effect.
+ *
  *  Known deviation: a vanilla hopper underneath an Industrial Hopper cannot pull from it, because the five
- *  slots vanilla would pull from are always empty. Point the Industrial Hopper at it instead -- that is the
- *  normal way to chain hoppers, and it runs at nine items a tick rather than one per eight. */
+ *  slots vanilla would pull from hold no real items. Point the Industrial Hopper at it instead -- that is the
+ *  normal way to chain hoppers, and it runs at nine items a cycle rather than one. */
 final class IndustrialHopperService implements Listener {
 
     private static final int SLOTS = 27;
@@ -111,7 +118,7 @@ final class IndustrialHopperService implements Listener {
     }
 
     private final SMPCore plugin;
-    private final NamespacedKey blockKey, itemKey, dataKey;
+    private final NamespacedKey blockKey, itemKey, dataKey, signalKey;
     /** Location key -> the one Bay for that block. Entries are created in exactly one place (bay) and
      *  removed in exactly one place (forget/dropAll), which is what keeps a location from ever ending up
      *  with two inventories. */
@@ -123,6 +130,7 @@ final class IndustrialHopperService implements Listener {
         blockKey = new NamespacedKey(plugin, "industrial_hopper");
         itemKey = new NamespacedKey(plugin, "industrial_hopper_item");
         dataKey = new NamespacedKey(plugin, "industrial_hopper_store");
+        signalKey = new NamespacedKey(plugin, "industrial_hopper_signal");
         registerRecipe();
         /** One pass over chunks that are ALREADY loaded when the plugin enables. ChunkLoadEvent covers
          *  everything after this point, but spawn chunks are up before we are. Bounded by what is already
@@ -352,7 +360,7 @@ final class IndustrialHopperService implements Listener {
         /** The native five should already be empty; drop anything that somehow is not. */
         if (block.getState(false) instanceof Container container) {
             for (ItemStack item : container.getInventory().getContents())
-                if (item != null && !item.getType().isAir()) world.dropItemNaturally(at, item);
+                if (item != null && !item.getType().isAir() && !isSignalMarker(item)) world.dropItemNaturally(at, item);
             container.getInventory().clear();
         }
         bays.remove(key(bay.at));
@@ -463,6 +471,80 @@ final class IndustrialHopperService implements Listener {
         bay.dirty = true;
     }
 
+    // ------------------------------------------------------------------ test surface
+    /** A deliberately small, explicitly-named set of hooks for {@link IndustrialHopperVerify}.
+     *
+     *  The alternative is a test that pokes at redstone through RCON and infers behaviour from item counts,
+     *  which is exactly how this block's comparator and locking bugs went unnoticed: {@code /setblock}-placed
+     *  redstone does not propagate updates the way a player-placed circuit does, so the rig lied. These run
+     *  the real transfer code against real block inventories in a real world, one cycle at a time, and assert
+     *  what actually happened. Nothing here bypasses the ownership model: every one of them goes through the
+     *  same single authoritative inventory every other path uses. */
+    void sweepOnce() { sweep(); }
+
+    /** Items in the authoritative 27-slot store. */
+    int storedCount(Block block) {
+        Bay bay = bay(block);
+        if (bay == null) return -1;
+        return count(bay.inv);
+    }
+
+    boolean setStored(Block block, int slot, ItemStack item) {
+        Bay bay = bay(block);
+        if (bay == null) return false;
+        bay.inv.setItem(slot, item);
+        bay.dirty = true;
+        return true;
+    }
+
+    /** Real items sitting in the block's own five slots. Should always be zero: the calibration weight is
+     *  not an item as far as anything in this class is concerned. */
+    int nativeRealCount(Block block) {
+        if (!(block.getState(false) instanceof Container container)) return -1;
+        int sum = 0;
+        for (ItemStack item : container.getInventory().getContents())
+            if (item != null && !item.getType().isAir() && !isSignalMarker(item)) sum += item.getAmount();
+        return sum;
+    }
+
+    int nativeCalibration(Block block) {
+        if (!(block.getState(false) instanceof Container container)) return -1;
+        int sum = 0;
+        for (ItemStack item : container.getInventory().getContents())
+            if (isSignalMarker(item)) sum += item.getAmount();
+        return sum;
+    }
+
+    int comparatorLevelAt(Block block) {
+        Bay bay = bay(block);
+        return bay == null ? -1 : comparatorLevel(bay.inv);
+    }
+
+    void refreshComparatorNow(Block block) {
+        Bay bay = bay(block);
+        if (bay != null) refreshComparator(block, bay);
+    }
+
+    /** Writes the store into the block and drops the in-memory Bay, so the next read has to come off the
+     *  block's own data -- the same path a chunk unload and a restart take. */
+    boolean flushAndForget(Block block) {
+        Bay bay = bay(block);
+        if (bay == null) return false;
+        boolean ok = flush(bay);
+        forget(bay);
+        return ok;
+    }
+
+    /** Exactly what the break handler does once a break is final: contents out, block item out, bay gone. */
+    boolean dropAllForTest(Block block) {
+        Bay bay = bay(block);
+        if (bay == null) return false;
+        dropAll(bay, block);
+        return true;
+    }
+
+    void explodeForTest(List<Block> blocks) { explode(blocks); }
+
     // ------------------------------------------------------------------ transfer
     private void sweep() {
         if (bays.isEmpty()) return;
@@ -485,11 +567,122 @@ final class IndustrialHopperService implements Listener {
             /** Redstone lock, read from the block's own vanilla `enabled` state rather than re-derived
              *  from power levels, so a locked Industrial Hopper is locked under exactly the conditions a
              *  locked vanilla hopper is. */
-            if (block.getBlockData() instanceof org.bukkit.block.data.type.Hopper data && !data.isEnabled()) continue;
+            if (block.getBlockData() instanceof org.bukkit.block.data.type.Hopper data && !data.isEnabled()) {
+                /** A locked hopper still has to report its contents to a comparator; only the item movement
+                 *  stops. This is also how a comparator-and-lock loop is built, so getting it wrong would
+                 *  break the most common redstone use of the block. */
+                refreshComparator(block, bay);
+                continue;
+            }
             drainNative(block, bay);
+            collectItems(block, bay);
             pullFromAbove(block, bay, budget);
             pushToFacing(block, bay, budget);
+            refreshComparator(block, bay);
         }
+    }
+
+    /** Picks up item entities floating in the hopper's suction box, exactly as a vanilla hopper does.
+     *
+     *  Vanilla drives this through the block's own five slots, and those hold no real items here, so relying
+     *  on it alone would make collection depend on the calibration weight rather than on whether there is
+     *  actually room. Doing it directly means a duel-hopper under a mob farm behaves like a vanilla one:
+     *  it collects while it has space and stops when it is genuinely full. */
+    private void collectItems(Block block, Bay bay) {
+        Location at = bay.at;
+        org.bukkit.util.BoundingBox box = new org.bukkit.util.BoundingBox(
+                at.getBlockX(), at.getBlockY() + 0.6875, at.getBlockZ(),
+                at.getBlockX() + 1, at.getBlockY() + 1.5, at.getBlockZ() + 1);
+        for (org.bukkit.entity.Entity entity : block.getWorld().getNearbyEntities(box, e -> e instanceof Item)) {
+            Item dropped = (Item) entity;
+            if (!dropped.isValid()) continue;
+            ItemStack stack = dropped.getItemStack();
+            if (stack == null || stack.getType().isAir()) continue;
+            int room = space(bay.inv, stack);
+            if (room <= 0) continue;
+            int take = Math.min(room, stack.getAmount());
+            /** Decrement the entity FIRST, then credit what was taken -- the same remove-before-add order
+             *  every other path here uses, so a rejected remainder can never become a second copy. */
+            ItemStack piece = stack.clone();
+            piece.setAmount(take);
+            if (take >= stack.getAmount()) dropped.remove();
+            else { ItemStack left = stack.clone(); left.setAmount(stack.getAmount() - take); dropped.setItemStack(left); }
+            for (ItemStack rejected : bay.inv.addItem(piece).values()) dropAt(bay.at, rejected);
+            bay.dirty = true;
+        }
+    }
+
+    // ------------------------------------------------------------------ comparator output
+
+    /** Vanilla's container signal, computed over the real twenty-seven slots.
+     *
+     *  Identical formula to the one a comparator applies to any container: the mean fill fraction scaled to
+     *  fourteen, plus one for "not empty". Kept as a pure function so it can be asserted in the self test
+     *  rather than only observed with redstone. */
+    static int comparatorLevel(Inventory inv) {
+        double fill = 0;
+        boolean any = false;
+        ItemStack[] contents = inv.getStorageContents();
+        for (ItemStack item : contents) {
+            if (item == null || item.getType().isAir()) continue;
+            any = true;
+            fill += (double) item.getAmount() / Math.max(1, item.getMaxStackSize());
+        }
+        return (int) Math.floor(fill / contents.length * 14) + (any ? 1 : 0);
+    }
+
+    /** How many calibration items the five native slots must hold for vanilla to read back `level`.
+     *
+     *  Vanilla over five 64-stack slots reports floor(14n/320) + 1 for n > 0, so the smallest n that lands
+     *  on a given level is ceil((level-1) * 320 / 14). Level 15 needs all 320 -- which is only ever asked
+     *  for when the real inventory is completely full, so a "full" native inventory always means a full
+     *  real inventory and vanilla's own fullness checks stay honest. */
+    static int signalUnits(int level) {
+        if (level <= 0) return 0;
+        if (level >= 15) return 5 * 64;
+        /** Level 1 is "not empty", which vanilla awards for ANY item at all -- the scaled term is zero there,
+         *  so the answer is one item, not none. Returning zero would have made a barely-filled hopper read as
+         *  empty, which is precisely the state a comparator lock is usually watching for. */
+        return Math.max(1, (int) Math.ceil((level - 1) * 320.0 / 14.0));
+    }
+
+    private boolean isSignalMarker(ItemStack item) {
+        return item != null && item.hasItemMeta()
+                && item.getItemMeta().getPersistentDataContainer().has(signalKey, PersistentDataType.BYTE);
+    }
+
+    private ItemStack signalMarker(int amount) {
+        ItemStack item = new ItemStack(Material.GRAY_STAINED_GLASS_PANE, amount);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text("Comparator Calibration", NamedTextColor.DARK_GRAY));
+        meta.lore(List.of(Component.text("Reports this hopper's 27 slots to comparators.", NamedTextColor.DARK_GRAY)));
+        meta.getPersistentDataContainer().set(signalKey, PersistentDataType.BYTE, (byte) 1);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    /** Writes the calibration weight into the block's own five slots so an adjacent comparator reads the
+     *  strength the twenty-seven slots deserve. Only touched when the level actually changes -- a block
+     *  update every sweep for every hopper on the server would be an expensive way to say nothing. */
+    private void refreshComparator(Block block, Bay bay) {
+        if (!plugin.getConfig().getBoolean("industrial-hopper.comparator-output", true)) return;
+        if (!(block.getState(false) instanceof Container container)) return;
+        Inventory own = container.getInventory();
+        int want = signalUnits(comparatorLevel(bay.inv));
+        int have = 0;
+        for (ItemStack item : own.getContents()) if (isSignalMarker(item)) have += item.getAmount();
+        if (have == want) return;
+        for (int slot = 0; slot < own.getSize(); slot++) if (isSignalMarker(own.getItem(slot))) own.setItem(slot, null);
+        int left = want;
+        for (int slot = 0; slot < own.getSize() && left > 0; slot++) {
+            if (own.getItem(slot) != null && !own.getItem(slot).getType().isAir()) continue;
+            int here = Math.min(64, left);
+            own.setItem(slot, signalMarker(here));
+            left -= here;
+        }
+        /** applyPhysics=true so neighbouring comparators are told to re-read; without it the signal only
+         *  updates the next time something else happens to poke the block. */
+        container.update(true, true);
     }
 
     /** Nothing should ever rest in the native five. If something does get in -- a plugin, a command, a
@@ -501,6 +694,9 @@ final class IndustrialHopperService implements Listener {
         for (int slot = 0; slot < own.getSize(); slot++) {
             ItemStack live = own.getItem(slot);
             if (live == null || live.getType().isAir()) continue;
+            /** The calibration weight is a readout, not contents -- draining it into the real inventory
+             *  would turn the comparator's own scaffolding into items a player could take out. */
+            if (isSignalMarker(live)) continue;
             /** Detached before the slot is cleared, for the same reason as in move(). */
             ItemStack item = live.clone();
             own.setItem(slot, null);
@@ -520,8 +716,59 @@ final class IndustrialHopperService implements Listener {
             if (move(upper.inv, bay.inv, budget, above.getLocation()) > 0) { upper.dirty = true; bay.dirty = true; }
             return;
         }
-        if (!(above.getState(false) instanceof Container source)) return;
-        if (move(source.getInventory(), bay.inv, budget, above.getLocation()) > 0) bay.dirty = true;
+        if (above.getState(false) instanceof Container source) {
+            Inventory from = source.getInventory();
+            /** Vanilla pulls through the container's DOWN face, and for a furnace that face exposes only the
+             *  result and the fuel slot. Taking from slot 0 would have a hopper under a furnace steal the ore
+             *  back out before it ever smelted, which is not a subtle difference to anybody with a farm. */
+            int moved = from instanceof FurnaceInventory ? moveFromSlots(from, bay.inv, new int[]{2, 1}, budget, bay.at)
+                      : from instanceof org.bukkit.inventory.BrewerInventory ? moveFromSlots(from, bay.inv, new int[]{0, 1, 2, 3}, budget, bay.at)
+                      : move(from, bay.inv, budget, above.getLocation());
+            if (moved > 0) bay.dirty = true;
+            return;
+        }
+        /** A container minecart sitting in the block above is a source too -- that is how a vanilla hopper
+         *  unloads a chest minecart, and an industrial hopper under a rail has to do the same. */
+        Inventory cart = cartInventory(above);
+        if (cart != null && move(cart, bay.inv, budget, above.getLocation()) > 0) bay.dirty = true;
+    }
+
+    /** The inventory of a container minecart standing in a block space, or null when there is not one. */
+    private Inventory cartInventory(Block block) {
+        org.bukkit.util.BoundingBox box = new org.bukkit.util.BoundingBox(
+                block.getX(), block.getY(), block.getZ(), block.getX() + 1, block.getY() + 1, block.getZ() + 1);
+        for (org.bukkit.entity.Entity entity : block.getWorld().getNearbyEntities(box, e -> e instanceof InventoryHolder))
+            if (entity instanceof org.bukkit.entity.Minecart && entity instanceof InventoryHolder holder) return holder.getInventory();
+        return null;
+    }
+
+    /** Transfer restricted to a specific set of source slots, in order, for containers where vanilla only
+     *  exposes part of the inventory to the face a hopper is reading through. */
+    private int moveFromSlots(Inventory from, Inventory to, int[] slots, int budget, Location spillAt) {
+        int moved = 0;
+        for (int slot : slots) {
+            if (moved >= budget || slot >= from.getSize()) continue;
+            ItemStack live = from.getItem(slot);
+            if (live == null || live.getType().isAir()) continue;
+            /** A furnace's fuel slot only gives up empty buckets, exactly as vanilla does -- otherwise a
+             *  hopper underneath would drain the coal it was just fed. */
+            if (from instanceof FurnaceInventory && slot == 1 && live.getType() != Material.BUCKET) continue;
+            ItemStack item = live.clone();
+            int take = Math.min(item.getAmount(), budget - moved);
+            ItemStack piece = item.clone();
+            piece.setAmount(take);
+            ItemStack keep = item.clone();
+            keep.setAmount(item.getAmount() - take);
+            from.setItem(slot, keep.getAmount() <= 0 ? null : keep);
+            int rejected = total(to.addItem(piece).values());
+            moved += take - rejected;
+            if (rejected > 0) {
+                ItemStack back = item.clone();
+                back.setAmount(rejected);
+                for (ItemStack lost : from.addItem(back).values()) dropAt(spillAt, lost);
+            }
+        }
+        return moved;
     }
 
     private void pushToFacing(Block block, Bay bay, int budget) {
@@ -532,7 +779,12 @@ final class IndustrialHopperService implements Listener {
             if (move(bay.inv, other.inv, budget, bay.at) > 0) { bay.dirty = true; other.dirty = true; }
             return;
         }
-        if (!(target.getState(false) instanceof Container container)) return;
+        if (!(target.getState(false) instanceof Container container)) {
+            /** A container minecart in the facing block space is a destination, just as it is for vanilla. */
+            Inventory cart = cartInventory(target);
+            if (cart != null && move(bay.inv, cart, budget, bay.at) > 0) bay.dirty = true;
+            return;
+        }
         Inventory into = container.getInventory();
         if (into instanceof FurnaceInventory) {
             /** Vanilla routes by direction rather than by first free slot: down into the smelting slot,
@@ -542,17 +794,49 @@ final class IndustrialHopperService implements Listener {
             if (moveIntoSlot(bay.inv, into, index, budget) > 0) bay.dirty = true;
             return;
         }
+        if (into instanceof org.bukkit.inventory.BrewerInventory) {
+            /** Brewing stands route by face too: from above only the ingredient slot is reachable, from the
+             *  side only fuel and the three bottle slots. Without this, blaze powder lands in a bottle slot
+             *  and the stand stops working. */
+            int[] slots = directional.getFacing() == BlockFace.DOWN ? new int[]{3} : new int[]{4, 0, 1, 2};
+            int moved = 0;
+            for (int index : slots) {
+                if (moved >= budget) break;
+                moved += moveIntoSlot(bay.inv, into, index, budget - moved, item -> brewingSlotAccepts(index, item));
+            }
+            if (moved > 0) bay.dirty = true;
+            return;
+        }
         if (move(bay.inv, into, budget, bay.at) > 0) bay.dirty = true;
+    }
+
+    /** Which brewing-stand slot will take which item, mirroring vanilla's own placement rules. */
+    private static boolean brewingSlotAccepts(int slot, ItemStack item) {
+        boolean blaze = item.getType() == Material.BLAZE_POWDER;
+        boolean bottle = switch (item.getType()) {
+            case POTION, SPLASH_POTION, LINGERING_POTION, GLASS_BOTTLE -> true;
+            default -> false;
+        };
+        return switch (slot) {
+            case 4 -> blaze;
+            case 3 -> !blaze && !bottle;
+            default -> bottle;
+        };
     }
 
     /** Transfer into one specific destination slot, for containers where vanilla cares which slot an item
      *  lands in. Same contract as move: the source is decremented first and only the accepted amount is
      *  ever written, so the count on both sides always adds up. */
     private int moveIntoSlot(Inventory from, Inventory to, int index, int budget) {
+        return moveIntoSlot(from, to, index, budget, item -> true);
+    }
+
+    private int moveIntoSlot(Inventory from, Inventory to, int index, int budget, java.util.function.Predicate<ItemStack> accepts) {
         int moved = 0;
         for (int slot = 0; slot < from.getSize() && moved < budget; slot++) {
             ItemStack live = from.getItem(slot);
             if (live == null || live.getType().isAir()) continue;
+            if (!accepts.test(live)) continue;
             ItemStack item = live.clone();
             ItemStack existing = to.getItem(index);
             ItemStack current = existing == null ? null : existing.clone();
@@ -646,15 +930,19 @@ final class IndustrialHopperService implements Listener {
                 stored += item.getAmount();
                 tally.merge(item.getType(), item.getAmount(), Integer::sum);
             }
-        int nativeHeld = 0;
+        int nativeHeld = 0, calibration = 0;
         if (block.getState(false) instanceof Container container)
-            for (ItemStack item : container.getInventory().getContents())
-                if (item != null && !item.getType().isAir()) nativeHeld += item.getAmount();
+            for (ItemStack item : container.getInventory().getContents()) {
+                if (item == null || item.getType().isAir()) continue;
+                if (isSignalMarker(item)) calibration += item.getAmount(); else nativeHeld += item.getAmount();
+            }
         boolean enabled = !(block.getBlockData() instanceof org.bukkit.block.data.type.Hopper data) || data.isEnabled();
         return "Industrial Hopper " + world.getName() + " " + x + " " + y + " " + z
                 + " | facing=" + (block.getBlockData() instanceof Directional d ? d.getFacing() : "?")
                 + " enabled=" + enabled + " dirty=" + bay.dirty + " viewers=" + bay.inv.getViewers().size()
-                + " STORED=" + stored + " native=" + nativeHeld + " " + tally;
+                + " STORED=" + stored + " native=" + nativeHeld
+                + " comparator=" + comparatorLevel(bay.inv) + " (calibration " + calibration + "/" + signalUnits(comparatorLevel(bay.inv)) + ")"
+                + " " + tally;
     }
 
     /** Exact item count at a position, computed server-side. Console tooling cannot count a container
@@ -670,7 +958,7 @@ final class IndustrialHopperService implements Listener {
         int held = 0;
         if (block.getState(false) instanceof Container container)
             for (ItemStack item : container.getInventory().getContents())
-                if (item != null && !item.getType().isAir()) held += item.getAmount();
+                if (item != null && !item.getType().isAir() && !isSignalMarker(item)) held += item.getAmount();
         return "COUNT " + x + " " + y + " " + z + " type=" + block.getType() + " container=" + held
                 + " industrial=" + (bay == null ? -1 : stored) + " TOTAL=" + (held + stored);
     }
@@ -701,7 +989,7 @@ final class IndustrialHopperService implements Listener {
                 if (item != null && !item.getType().isAir()) sum += item.getAmount();
         if (block.getState(false) instanceof Container container)
             for (ItemStack item : container.getInventory().getContents())
-                if (item != null && !item.getType().isAir()) sum += item.getAmount();
+                if (item != null && !item.getType().isAir() && !isSignalMarker(item)) sum += item.getAmount();
         return sum;
     }
 
@@ -747,7 +1035,38 @@ final class IndustrialHopperService implements Listener {
             move(destination, drain, 9, null);
             if (count(destination) + count(drain) != 9 * 64) return false;
         }
-        return count(destination) == 0 && count(drain) == 9 * 64;
+        if (count(destination) != 0 || count(drain) != 9 * 64) return false;
+
+        /** NINE ITEMS PER OPERATION, not nine per slot. A source holding one item in each of 27 slots must
+         *  give up exactly nine per cycle, not 27 -- that distinction is the whole throughput contract of
+         *  the block and it is invisible in a test that only uses full stacks. */
+        Inventory sparse = Bukkit.createInventory(null, SLOTS), sink = Bukkit.createInventory(null, 54);
+        for (int slot = 0; slot < SLOTS; slot++) sparse.setItem(slot, new ItemStack(Material.DIAMOND, 1));
+        if (move(sparse, sink, 9, null) != 9 || count(sink) != 9 || count(sparse) != SLOTS - 9) return false;
+        Inventory oneStack = Bukkit.createInventory(null, SLOTS), sink2 = Bukkit.createInventory(null, 54);
+        oneStack.setItem(0, new ItemStack(Material.DIAMOND, 64));
+        if (move(oneStack, sink2, 9, null) != 9 || count(oneStack) != 55) return false;
+
+        /** Comparator parity: the twenty-seven-slot reading, and the calibration weight that makes vanilla's
+         *  five-slot formula reproduce it. Every level from empty to full must round-trip exactly. */
+        Inventory gauge = Bukkit.createInventory(null, SLOTS);
+        if (comparatorLevel(gauge) != 0 || signalUnits(0) != 0) return false;
+        gauge.setItem(0, new ItemStack(Material.DIAMOND, 1));
+        if (comparatorLevel(gauge) != 1) return false;
+        for (int slot = 0; slot < SLOTS; slot++) gauge.setItem(slot, new ItemStack(Material.DIAMOND, 64));
+        if (comparatorLevel(gauge) != 15 || signalUnits(15) != 5 * 64) return false;
+        for (int level = 1; level <= 15; level++) {
+            int units = signalUnits(level);
+            if (units <= 0 || units > 5 * 64) return false;
+            /** What vanilla will read back off five 64-stack slots holding `units` items. */
+            if ((int) Math.floor(units / 64.0 / 5 * 14) + 1 != level) return false;
+            if (level > 1 && units <= signalUnits(level - 1)) return false;
+        }
+        /** A half-full store must not read as full, or a comparator lock would cut a farm off early. */
+        Inventory half = Bukkit.createInventory(null, SLOTS);
+        for (int slot = 0; slot < SLOTS; slot++) half.setItem(slot, new ItemStack(Material.DIAMOND, 32));
+        int mid = comparatorLevel(half);
+        return mid > 1 && mid < 15 && signalUnits(mid) < 5 * 64;
     }
 
     private static int count(Inventory inv) {

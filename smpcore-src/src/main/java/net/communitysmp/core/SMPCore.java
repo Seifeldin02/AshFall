@@ -343,7 +343,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(args[0].equalsIgnoreCase("help")){if(args.length==1)adminHelp(sender);else adminSectionHelp(sender,args[1]);return true;}
         try{
             switch(args[0].toLowerCase(Locale.ROOT)){
-                case"hopper"->{if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
+                case"hopper"->{if(args.length>=2&&args[1].equalsIgnoreCase("verify")){CoreUtil.msg(sender,"Verifying Industrial Hopper parity against a live rig:");for(String line:new IndustrialHopperVerify(this,industrialHoppers).run())CoreUtil.msg(sender,"  "+line);return true;}if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
                 case"vault"->{int page=1;if(args.length>1)try{page=Math.max(1,Integer.parseInt(args[1]));}catch(NumberFormatException ignored){}CoreUtil.msg(sender,vault.summaryLine());vault.show(sender,page);}
                 case"balance"->adminBalance(sender,args);
                 case"boss"->adminBoss(sender,args);
@@ -538,6 +538,17 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     // ------------------------------------------------------------------ duel map templates
     private final Map<String,org.bukkit.Location> duelMapReturn=new java.util.concurrent.ConcurrentHashMap<>();
     private static double round2(double v){return Math.round(v*100)/100.0;}
+    private static String fmt(org.bukkit.Location at){return round2(at.getX())+", "+round2(at.getY())+", "+round2(at.getZ());}
+    /** Which duel maps a match could actually be sent to right now. A map with no committed snapshot is not
+     *  a failure -- it just has not been built yet -- but it is the single most useful thing to see in a
+     *  selftest, because it is exactly what stops the duel flow reaching a player. */
+    private String duelMapSnapshotStatus(){
+        if(duelMaps==null)return "unavailable";
+        List<String> missing=new ArrayList<>();
+        int total=0;
+        for(DuelMapService.DuelMap m:duelMaps.maps()){total++;if(!duelMaps.hasSnapshot(m))missing.add(m.key());}
+        return (total-missing.size())+"/"+total+(missing.isEmpty()?" (all playable)":" - not yet built: "+String.join(", ",missing));
+    }
     /** /ashfall duelmap ... -- template maintenance without touching the filesystem. Templates are private
      *  build worlds; instances are the disposable clones matches actually run in. */
     private void adminDuelMap(CommandSender sender,String[] args){
@@ -549,7 +560,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 CoreUtil.msg(sender,"Duel templates:");
                 for(DuelMapService.DuelMap m:svc.maps())
                     CoreUtil.msg(sender,"  "+m.key()+" - "+m.name()+" ["+m.rule()+"] world="+m.templateWorld()
-                        +(getServer().getWorld(m.templateWorld())!=null?" (loaded)":" (not loaded)"));
+                        +(getServer().getWorld(m.templateWorld())!=null?" (loaded)":" (not loaded)")
+                        +(svc.hasSnapshot(m)?" [committed]":" [NOT COMMITTED]"));
                 List<String> live=svc.instanceNames();
                 CoreUtil.msg(sender,"Live instances: "+(live.isEmpty()?"none":String.join(", ",live)));
             }
@@ -573,8 +585,66 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"save"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
                 if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap save <map>");return;}
-                CoreUtil.msg(sender,svc.saveTemplate(m)?"Committed "+m.name()+"; future matches use it. Running matches keep the copy they started with."
-                        :"That template is not loaded.");
+                CoreUtil.msg(sender,svc.commitTemplate(m));
+            }
+            case"import"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap import <map>");return;}
+                if(!DuelMapImporter.available()){CoreUtil.error(sender,"WorldEdit is not installed on this server, so an import cannot run here.");return;}
+                new DuelMapImporter(this,svc).run(sender,m);
+            }
+            case"build"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap build <arena50|arena100>");return;}
+                int size=m.key().equals("arena100")?100:m.key().equals("arena50")?50:0;
+                if(size==0){CoreUtil.error(sender,"Only the two flat arenas are built from code; the rest are imported.");return;}
+                CoreUtil.msg(sender,"Building "+m.name()+" ("+size+"x"+size+"). This takes a few seconds.");
+                svc.buildFlatArena(m,size,()->CoreUtil.msg(sender,svc.commitTemplate(m)));
+            }
+            case"verify"->{
+                CoreUtil.msg(sender,"Verifying the duel arena pipeline end to end:");
+                for(String line:new DuelMapVerify(this,svc).run())CoreUtil.msg(sender,"  "+line);
+            }
+            case"dryrun"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap dryrun <map>");return;}
+                long began=System.currentTimeMillis();
+                CoreUtil.msg(sender,"Preparing "+m.name()+" exactly as a match would (async clone + sliced chunk load)...");
+                /** The result arrives a few ticks later, by which time an RCON caller has already been
+                 *  disconnected -- so every line goes to the log as well as to whoever asked. */
+                java.util.function.Consumer<String> say=line->{CoreUtil.msg(sender,line);getLogger().info("[duel-maps] dryrun "+m.key()+": "+line);};
+                svc.prepareInstance(m,world->{
+                    if(world==null){say.accept("Match preparation FAILED for "+m.key()+".");return;}
+                    org.bukkit.Location p1=m.p1(world),p2=m.p2(world);
+                    int[] census=svc.chestCensus(world);
+                    say.accept("ready in "+(System.currentTimeMillis()-began)+" ms: "+world.getName());
+                    say.accept("p1 "+fmt(p1)+" yaw "+Math.round(p1.getYaw())+" on "+m.footing(world,p1));
+                    say.accept("p2 "+fmt(p2)+" yaw "+Math.round(p2.getYaw())+" on "+m.footing(world,p2));
+                    say.accept("facing each other: "+DuelMapService.facesEachOther(m)
+                        +" | chests filled: "+(census[0]+census[1])+" | living mobs: "+world.getLivingEntities().size()
+                        +" | mob spawning: "+world.getGameRuleValue(org.bukkit.GameRule.DO_MOB_SPAWNING));
+                    svc.destroyInstance(world,null);
+                    say.accept("instance dropped; world unloaded: "+(getServer().getWorld(world.getName())==null));
+                });
+            }
+            case"canary"->{
+                CoreUtil.msg(sender,"Duel template persistence canary - building, saving, unloading, reloading and cloning:");
+                for(String line:new DuelMapCanary(this,svc).run())CoreUtil.msg(sender,"  "+line);
+            }
+            case"loot"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap loot <map>");return;}
+                org.bukkit.World probe=svc.createInstance(m);
+                if(probe==null){CoreUtil.error(sender,"Could not clone that map to count its chests.");return;}
+                int[] census=svc.chestCensus(probe);
+                CoreUtil.msg(sender,svc.lootReport(m,census[0],census[1]));
+                svc.destroyInstance(probe,null);
+            }
+            case"snapshots"->{
+                CoreUtil.msg(sender,"Committed snapshots in "+svc.snapshotRoot().getAbsolutePath()+":");
+                for(DuelMapService.DuelMap m:svc.maps())
+                    CoreUtil.msg(sender,"  "+m.key()+": "+(svc.hasSnapshot(m)?"committed":"NOT COMMITTED - matches cannot use this map"));
+                CoreUtil.msg(sender,"Custom worlds live in "+svc.customWorldDir().getAbsolutePath());
             }
             case"create"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
@@ -616,7 +686,9 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"reload"->{svc.reload();CoreUtil.msg(sender,"Duel map registry reloaded.");}
             default->{
                 CoreUtil.msg(sender,"DUEL MAPS - /ashfall duelmap ...");
-                CoreUtil.msg(sender,"  list | create <map> | enter <map> | exit | save <map> | test <map> | drop <world> | orphans | setspawn <map> <p1|p2|spectator> | reload");
+                CoreUtil.msg(sender,"  list | create <map> | enter <map> | exit | save <map> | test <map> | drop <world> | orphans");
+                CoreUtil.msg(sender,"  setspawn <map> <p1|p2|spectator> | reload | import <map> | build <arena50|arena100>");
+                CoreUtil.msg(sender,"  canary (template persistence proof) | verify (full pipeline) | dryrun <map> | loot <map> | snapshots");
             }
         }
     }
@@ -719,7 +791,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String claimInfo=claim==null?"none":claim.size()+"x"+claim.size()+" | center "+((claim.minX()+claim.maxX())/2)+", "+((claim.minZ()+claim.maxZ())/2)+" | bounds X "+claim.minX()+".."+claim.maxX()+", Z "+claim.minZ()+".."+claim.maxZ();
         CoreUtil.msg(s,target.name()+" — "+f.name()+" ["+f.tag()+"] | members="+String.join(",",db.factionMembers(f.id()))+" | bank="+CoreUtil.money(f.balance())+" | claim="+claimInfo+" | net-worth="+CoreUtil.money(netWorth.value(f.id())));
     }
-    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
+    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
 
     /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
     private boolean duel(Player p,String[] args){
@@ -729,6 +801,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"accept"->arena.accept(p);
             case"decline"->arena.decline(p);
             case"confirm"->arena.confirm(p);
+            case"back"->arena.back(p);
+            case"map"->{if(args.length<2){CoreUtil.error(p,"Usage: /duel map <map>");yield true;}yield arena.setMap(p,args[1]);}
             case"forfeit","cancel"->arena.forfeit(p);
             case"status"->{CoreUtil.msg(p,arena.status(p));yield true;}
             case"kit"->{if(args.length<2){CoreUtil.error(p,"Kits: mace, sword, axe, spear.");yield true;}yield arena.setKit(p,args[1]);}

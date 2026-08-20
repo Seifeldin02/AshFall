@@ -5,6 +5,285 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-08-20 — duel arena rebuild (maps, instances, three-stage setup) + Industrial Hopper parity — 🟡 STAGING ONLY
+
+**NOTHING IN THIS SESSION IS ON PRODUCTION.** Everything below is built, deployed and tested on staging
+(`C:\MinecraftServer-Staging`, port 25566 / RCON 25576) only. Production was not restarted, deployed to, or
+touched in any way. See the **promotion checklist** at the end of this section for exactly what a push to
+production would and would not carry.
+
+### The blocking defect: duel template blocks never reached their clones
+
+Every duel instance came up as an empty void. Chests, signs, trial spawners and vaults were all "not a block
+entity" in the clone, and the template's own region file for the arena (`r.17.21.mca`) appeared to be missing.
+The previous session's diagnosis was that far-from-origin chunks in a void template never persist.
+
+**That diagnosis was wrong, and the template was never broken.** `r.17.21.mca` existed the whole time — 3.2 MB
+of it — at `world/dimensions/minecraft/duel_tpl_cinder_crucible/region/`. The real cause:
+
+> **Paper does not put a Bukkit-created world in the world container.** It puts it in
+> `<level-name>/dimensions/<namespace>/<world>`. `createInstance` copied the template folder to
+> `<worldContainer>/duel_inst_...`, then called `createWorld(...)`, which looked in
+> `world/dimensions/minecraft/duel_inst_...`, found nothing, and **generated a brand-new empty void world**.
+> The copied folder sat at the root, unused and unread, and the instance a player would have stood in was
+> genuinely empty. Every symptom followed from that one wrong directory.
+
+Two further layout facts fell out of fixing it, both of which broke the first attempts:
+
+- **A non-main world folder has no `level.dat`.** Level data lives in the parent world. The first snapshot
+  validator required `level.dat` and rejected every snapshot ever taken.
+- **A world's identity now lives in `data/paper/metadata.dat`, not `uid.dat`.** Copying it made Paper refuse
+  the clone with *"is a duplicate of another world and has been prevented from loading"* — surfacing several
+  layers up as a null world with no explanation.
+
+### What replaced it
+
+`DuelMapService` now separates the **live template** (what an admin builds in) from a **committed snapshot**
+(what matches clone). Templates are worlds; snapshots are plain folders under
+`plugins/SMPCore/duel-templates/<key>/`, deliberately outside the world container so Paper never sees one as
+a world.
+
+- **`/ashfall duelmap save <map>` commits atomically.** Full world unload with `save=true` as the write
+  barrier (a `World.save()` only *queues* the writes), copy to `<key>.tmp`, validate, then publish by rename.
+  A failure at any point leaves the previous good snapshot exactly as it was and says so. Interrupted swaps
+  are repaired at boot: a parked `<key>.old` with no live sibling is put back rather than deleted.
+- **Snapshot validation refuses to publish an arena-less snapshot.** The region file covering the spawn pair
+  must be present and non-empty. This is the specific check that would have caught the original defect the
+  first time somebody saved.
+- **`createInstance` verifies the directory it assumed against the one Paper actually opened**, and if they
+  differ it re-resolves, re-clones and logs loudly. The layout can change again without this failing silently.
+- **`prepareInstance` is the path matches use**: the folder copy runs off the main thread (the snapshot is
+  immutable, so nothing can race it) and the arena's chunks are pulled ~24 per tick. A 14-million-block map
+  is ready in **0.3–0.7 s** with no server freeze.
+- **Orphan recovery scans every plausible directory**, the container included, so leftovers from the old
+  layout are cleaned up too. Ten stale instance folders from the previous session were removed on first boot.
+
+### Proof, not assertion: `/ashfall duelmap canary`
+
+The old pipeline failed while every intermediate step looked healthy — the template read back correctly, the
+save reported success, the clone produced a valid world, and only a player standing in the arena could tell.
+So the fix ships with a canary that asserts against real state on disk at every stage, at the exact
+coordinates the failure was first reported (`9153, 232, 11208` — chunk 572,700, region r.17.21.mca):
+
+```
+ok  1. void template created: duel_tpl___canary at ...\world\dimensions\minecraft\duel_tpl___canary
+ok  2. distant chunk 572,700 loaded (region r.17.21.mca)
+ok  3. chest+item, sign, trial spawner and vault placed and read back in memory
+ok  4. committed atomically: (8 region file(s), 7 MB)
+ok  5. r.17.21.mca written to the snapshot (1164 KB)
+ok  6. template reloaded from disk still holds all four block entities
+ok  7. two independent clones, both complete, neither affected by the other
+ok  7b. loot census sees 1 single + 1 double chest, so a double chest rolls once
+ok  8. the snapshot committed before this restart survived the JVM intact
+CANARY PASSED
+```
+
+It plants four different block-entity kinds so a container-only failure is distinguishable from a total one.
+The container whose *contents* are asserted is a **barrel**, not a chest: an instance re-rolls every chest by
+design, so a chest's contents legitimately differ from the template's. The first run of the canary "failed" on
+a chest that had in fact survived perfectly and then been correctly re-rolled — the probe was wrong, not the
+code.
+
+### The six maps
+
+All six are built, committed and playable on staging. Map choice is fully independent of kit: every kit can
+use every map, and there is no Classic map and no kit-exclusive arena.
+
+| Key | Name | Rule | Source | Chests | Vaults |
+|---|---|---|---|---|---|
+| `arena50` | Flat 50×50 | placed-only | built from code | 0 | 0 |
+| `arena100` | Flat 100×100 | placed-only | built from code | 0 | 0 |
+| `temple_of_tides` | Temple of Tides | full | imported, 2,845,850 blocks | 41 + 1 double | 0 |
+| `cinder_crucible` | Cinder Crucible | full | imported, 2,913,504 blocks | 35 + 1 double | 21 |
+| `deepstone_mines` | Deepstone Mines | full | imported, 3,426,500 blocks | 0 | 18 |
+| `skyroot_village` | Skyroot Village | full | imported, 14,335,488 blocks | 19 + 7 double | 0 |
+
+- **The two flat arenas are built from code**, not imported: `/ashfall duelmap build arena50|arena100` lays
+  the owner's black-and-red design (red terracotta + glowstone floor, obsidian + glowstone full-height walls,
+  bedrock cap) spread over ticks, then commits.
+- **The four real maps are imported by exact cuboid, block by block, through WorldEdit** —
+  `/ashfall duelmap import <map>`. Deliberately **not** a region-file copy: the arenas were built in the
+  shared survival world and their selections overlap the same `.mca` files as unrelated terrain, so copying
+  region files would have dragged in whatever else shared the region. Sliced two chunk columns per tick;
+  the largest map takes ~43 s and is invisible to anybody else on the server.
+- Spawns are stored in source coordinates so nothing shifts, and **yaw is derived from the spawn pair at
+  runtime**, so the two duellists always face each other however the points are moved.
+- **Skyroot's spawns were recorded as the block you stand ON, not IN** (the other maps use the opposite
+  convention). Rather than quietly rewriting the owner's coordinates, a spawn inside a solid block is now
+  lifted to the first standable spot above it, capped at six blocks — the same place under either reading.
+
+### Break rules
+
+Both models are implemented as **one shared predicate**, which is what guarantees a pickaxe and a stick of
+TNT are held to the same rule — the explosion half was written but never exercised before.
+
+- `placed-only` (both flat arenas): only blocks placed during **that specific match** may be broken. Original
+  terrain resists players *and* explosions.
+- `full` (the four imported maps): terrain inside the bounds is fully breakable including by explosions.
+- Under **both** rules: barriers, bedrock, command/structure/jigsaw blocks and anything outside the declared
+  bounds are protected, and a duellist cannot place outside the bounds either (no bridging out of the map).
+- Ender pearls and chorus fruit cannot land outside the bounds.
+
+### The three-stage setup flow
+
+Kit → Map → Final Options, each with its own screen and its own both-sides confirmation. The **initial kit GUI
+is unchanged**.
+
+- **Nothing is charged and no arena is built until the last confirmation.** Money now leaves the players'
+  balances at the final confirm, not the first, so backing out of stage two or three costs nobody anything
+  and needs no refund path at all.
+- **Any change at any stage clears BOTH confirmations** — neither player can be walked into a choice they did
+  not see.
+- **Back** returns to the previous stage (from the kit stage it cancels, as closing the window always has).
+  **Cancel** is on every stage. ESC still cancels, and still does not count as a cancel when the player is
+  merely stepping into the wager box, the opponent's wager viewer, or the next stage.
+- **Per-stage timeout** (`arena.setup-timeout-seconds`, default 180) with the clock reset on every stage
+  change, so a slow but active setup is never cut off and an abandoned one never holds a concurrency slot.
+  The clock is suspended while an arena is being cloned, so a timeout can never strand an instance.
+- **Disconnecting during setup cancels the duel** instead of leaving the other player staring at a screen.
+- **Final Options carries Visibility Effects, default ON.** While on, both duellists are kept Glowing and
+  given Night Vision for the whole fight regardless of their own `/settings` — re-applied every second and
+  again after every round's re-equip, because `equip()` strips effects and a milk bucket would otherwise end
+  it. Off forces neither. Restoration clears every effect before putting back what the player had, so nothing
+  the duel applied ever follows them out.
+
+### Matches now run in their own world
+
+`startMatch` clones the chosen map and runs the match there. Two matches on one map are two separate worlds:
+terrain, chests and damage in one are invisible to the other, and editing a template afterwards changes
+neither. Instances are destroyed on **every** exit path (clean finish, forfeit, refund, cancelled setup,
+shutdown) from the single `dispose` method, so there is no path that leaks one.
+
+- `isArenaWorld` now covers instance worlds, so the graves and progression exclusions follow duels into them.
+- `ArenaService`'s own block-break handling is scoped to the legacy shared arena only; `DuelMapService` owns
+  the rules inside instances, which is what lets an imported map be fully breakable while the flat arenas
+  stay pristine.
+- Blocks placed during round one are cleared before round two.
+- Natural spawning is off by gamerule **and** by a `CreatureSpawnEvent` guard, because trial spawners and
+  imported spawner blocks do not honour the gamerule — and the imported maps contain 11 spawners between them.
+
+### Industrial Hopper — vanilla parity
+
+A vanilla hopper with exactly two differences: 27 slots, and **nine items per transfer operation, not nine per
+slot**. Verified, and three real deviations fixed:
+
+- **Comparators now read the real 27 slots.** A comparator reads the block's own five slots, which are empty
+  by design, so every Industrial Hopper on the server read as zero. The five slots now carry a **calibration
+  weight**: a marked stack sized so vanilla's own five-slot signal formula reproduces the twenty-seven-slot
+  reading exactly, checked for every level from 1 to 15. It is a readout, not storage — invisible to every
+  transfer path, never dropped, never counted, and recomputed only when the level actually changes. A full
+  readout arises only when the real inventory is genuinely full, so vanilla's own "is this container full"
+  checks stay truthful as a side effect. (Bug found by the new test: level 1 computed a weight of *zero*, so a
+  barely-filled hopper read as empty — precisely the state a comparator lock usually watches for.)
+- **A hopper under a furnace no longer steals the ore.** Vanilla exposes only the result and fuel slots
+  through a furnace's down face; this pulled from slot 0 and would have taken the input back out of every
+  furnace array on the server. Fuel is now only taken as empty buckets, as vanilla does. Brewing stands route
+  by face too (ingredient from above; fuel and bottles from the side), so blaze powder can no longer land in a
+  potion slot.
+- **Container minecarts work in both directions** — unloading a chest minecart above and loading one it faces.
+- **Dropped-item collection is done directly** rather than relying on vanilla's pickup into the block's five
+  slots, so collection depends on whether there is actually room, not on the calibration weight. A full hopper
+  leaves the item on the floor rather than deleting it.
+
+### Test coverage added
+
+The legacy 46-check selftest covered none of this work. Three new suites, all runnable from the console:
+
+- **`/ashfall duelmap canary`** — the template-persistence proof above, including across a restart (it stores
+  a token stamped with the JVM start time, so the cross-restart claim is real rather than assumed).
+- **`/ashfall duelmap verify`** — the full pipeline per map: clone, spawn standability/headroom/facing, break
+  rule for both a pickaxe and an explosion, infrastructure and out-of-bounds protection, gamerules, mob
+  purge, autosave off, container census, concurrent-instance independence, instance drop and folder removal,
+  and the trial-key restriction measured over 8,000 rolls per map.
+- **`/ashfall hopper verify`** — builds a real rig in a private void world and drives one hopper cycle at a
+  time: placement/facing, pull, push, the nine-per-operation budget, redstone lock, comparator across all 15
+  levels in both directions, floor pickup (including a full hopper leaving items alone), container minecarts
+  both ways, furnace face routing both ways, breaking, explosions, and the serialise/deserialise path a chunk
+  unload and a restart take. Conservation is re-checked after **every** cycle.
+- Plus `/ashfall duelmap dryrun <map>`, which exercises the exact async path a real match uses and reports
+  timings, resolved spawns and facing.
+- `/ashfall selftest` gained two lines: the duel map registry check, and how many maps have a committed
+  snapshot (a map with no snapshot is what silently stops the duel flow reaching a player).
+
+Current staging results: **`/ashfall selftest` all green**, **CANARY PASSED**, **DUEL PIPELINE VERIFIED — no
+failures**, **INDUSTRIAL HOPPER PARITY VERIFIED — no failures**.
+
+### Two things needing the owner's decision (staging warnings, not code faults)
+
+1. **Cinder Crucible P2 spawns over lava.** The specified point `9153, 232, 11157` has lava at y=231 across at
+   least a 3×3 area; P1 is fine (soul sand). Deliberately **not** auto-relocated — moving somebody's arena
+   spawn is their call. Fix by standing where you want it and running
+   `/ashfall duelmap setspawn cinder_crucible p2`.
+2. **Deepstone Mines has 18 vaults but no chests inside its bounds**, so no trial key can ever be found on it
+   even though it is one of the two maps allowed to roll them. The specified bounds start at y=210; its chests
+   are presumably below that. Either widen the bounds and re-import, or add chests to the template.
+
+Trial keys are otherwise correctly restricted to Cinder Crucible and Deepstone Mines. The configured 10%/3%
+rates measure as **10.03% normal / 3.00% ominous** on Cinder and **9.91% / 3.08%** on Deepstone; note that the
+ominous roll wins outright, so the normal key's real per-chest rate is 10% × (1 − 3%) = **9.7%**. Against
+Cinder's 36 chests that is ~3.5 normal and ~1.1 ominous keys per match.
+
+### Deploy notes / gotchas hit this session
+
+- **`plugins/SMPCore/config.yml` needs the new keys** — `duel-maps.*.bounds`, `duel-maps.*.source-world`,
+  `duel-maps-import.columns-per-tick`, `arena.setup-timeout-seconds`, `duel-loot.chunks-per-tick`,
+  `industrial-hopper.comparator-output`. A jar swap alone does **not** propagate them. Staging's copy was
+  patched surgically to preserve its staging-only auth keys; a backup is at `config.yml.bak-preduelmaps`.
+- **RCON `stop` was silently swallowed** by the deploy script's use of the empty-type-0-packet multi-packet
+  trick — Paper closed the connection part-way through the command sequence, the script believed the server
+  had stopped, and the next JVM died on `session.lock` (*"another process has locked a portion of the file"*).
+  The scratchpad RCON client no longer uses that trick, and the redeploy script now waits on the **java
+  process actually exiting**, not on the listening ports (which close early, while the JVM is still saving).
+- Several dead `cmd` console windows accumulate on staging, one per restart cycle, each parked at `pause`.
+  Harmless, but worth closing by hand.
+
+### Promotion checklist — what a push to production carries
+
+**Ready to promote (already merged in previous sessions or complete and verified now):**
+
+- Everything from the 2026-08-17 session, already live.
+- Non-duel items from the pending batch: production forced-chunk cleanup, the plugin-vs-admin force-load
+  ownership registry, Cinder Warlord nether-roof spawning, the 0.5% special-tool drop split across six
+  `/shardshop` tools, TNT at 726.81 plus the crafted utility shop items, sigil faction values (75k/400k),
+  `/fly` and `/flyspeed` with `smpcore.fly`, and the duel kit changes.
+- Industrial Hopper parity fixes and their test suite.
+- The duel map engine, the six maps, the three-stage setup flow and their test suites.
+
+**Must NOT be promoted as-is / needs action first:**
+
+- **The four imported maps must be promoted as their committed snapshot folders**
+  (`plugins/SMPCore/duel-templates/<key>/`, ~7–40 MB each), copied across as part of the deploy. They are not
+  in Git, and they are what a match actually clones — a jar swap alone leaves production with four maps that
+  report `NOT COMMITTED` and cannot be selected. Now recorded in `deploy/manifest.yml`.
+  WorldEdit *is* installed on production (`worldedit-bukkit-7.4.4.jar`, and it is a hard `depend` in
+  plugin.yml), so `/ashfall duelmap import` would run there — but only if the source arenas exist in the
+  production overworld at those coordinates. They were built on staging after the 2026-08-17 world clone, so
+  assume they do not; check with `/ashfall hopper <x> <y> <z> world` at a map's spawn before relying on it.
+  Copying the snapshots is the safer path either way and does not depend on the answer.
+- **The two owner decisions above** (Cinder P2 spawn over lava; Deepstone bounds/chests) should be settled
+  before players see those maps.
+- **The three-stage GUI has not been exercised by two real players.** Every mechanism behind it is asserted,
+  but the clicking has not been done. See the manual acceptance steps below.
+- The `duel_tpl___canary` template world and its snapshot are test artefacts. Harmless, never offered to a
+  player (the canary map is not in config), but there is no reason to copy them to production.
+
+**Manual acceptance still outstanding (needs two players on staging):**
+
+1. Challenge → accept → kit + confirm both → map + confirm both → Final Options + confirm both → fight.
+2. Back from Map and from Final Options; change something after one side confirms and check both
+   confirmations clear.
+3. Cancel from each stage; ESC from each stage; one player disconnecting at each stage.
+4. In-match: place and break your own block on a flat arena, then try to break the floor (must refuse), then
+   TNT on the floor (must refuse). On an imported map, break terrain and TNT it (must work), then try a
+   barrier (must refuse).
+5. Visibility Effects ON — both glow and keep night vision through a whole best-of-3, including after a
+   golden apple and a milk bucket. Then a duel with it OFF.
+6. Two matches on the same map at once; confirm neither can see the other's damage or loot, and that both
+   worlds are gone afterwards.
+7. Full inventory/XP/health/location restoration after a win, a forfeit and a disconnect.
+
+---
+
 ## Session: 2026-08-17 — Discarded Vault v2 + spawner/market/auction/admin changes — ✅ PROMOTED TO PRODUCTION
 
 **✅ MERGED TO PRODUCTION 2026-08-17 (evening).** Everything in this session is now live on prod: full build
