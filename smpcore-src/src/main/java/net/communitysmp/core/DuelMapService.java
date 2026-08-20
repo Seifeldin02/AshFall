@@ -539,6 +539,8 @@ class DuelMapService implements org.bukkit.event.Listener {
         boolean unloaded = Bukkit.unloadWorld(world, false);
         liveInstances.remove(name);
         placed.remove(name);
+        looted.remove(name);
+        lastFill.remove(name);
         if (!unloaded) plugin.getLogger().warning("[duel-maps] " + name + " refused to unload; it will be swept at next startup.");
         /** Windows does not release the region-file handles the instant a world unloads, so a delete
          *  attempted in the same tick silently leaves the folder behind. Retry on a short delay until it
@@ -587,6 +589,11 @@ class DuelMapService implements org.bukkit.event.Listener {
      *  PLACED_ONLY map, which is what keeps the two built arenas pristine while still letting players
      *  block-clutch. Cleared between rounds and with the instance. */
     private final Map<String, Set<Long>> placed = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Instance worlds whose loot has already been rolled. Loot happens exactly once per instance, at its
+     *  creation, and this is what makes that literal rather than incidental. */
+    private final Set<String> looted = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** instance world -> {chests filled, chests left stocked}, for the admin readouts. */
+    private final Map<String, int[]> lastFill = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static long key(org.bukkit.block.Block b) { return key(b.getX(), b.getY(), b.getZ()); }
     private static long key(int x, int y, int z) {
@@ -693,13 +700,27 @@ class DuelMapService implements org.bukkit.event.Listener {
      *  its own loot and nothing can carry between instances. A connected double chest is ONE container as far
      *  as Bukkit is concerned, so iterating block states would roll it twice -- the halves are de-duplicated
      *  by the position of their left half before any rolling happens. */
-    int fillChests(World world, DuelMap map) { return fillChests(world, map, true); }
+    int fillChests(World world, DuelMap map) { return fillChests(world, map, true)[0]; }
 
-    int fillChests(World world, DuelMap map, boolean loadArea) {
-        if (world == null || map == null) return 0;
+    /** Rolls this match's loot into every EMPTY chest the committed template contained.
+     *
+     *  "Empty in the template" is the entire eligibility rule, and it needs no registry, no coordinate list
+     *  and no config: an admin places a chest in the template, saves, and every future match finds it and
+     *  fills it. A chest the builder deliberately STOCKED is left exactly as they left it -- rolling over it
+     *  would destroy the thing they put there on purpose.
+     *
+     *  A chest a duellist places during the match can never qualify, because this runs once, at instance
+     *  creation, before either player is teleported in. {@link #looted} makes that "once" literal: a chunk
+     *  that unloads and comes back, or any second call for any reason, cannot re-roll a world's loot -- which
+     *  would otherwise be a free item printer in the middle of a match.
+     *
+     *  Returns {containers filled, containers left alone because the builder had stocked them}. */
+    int[] fillChests(World world, DuelMap map, boolean loadArea) {
+        if (world == null || map == null) return new int[]{0, 0};
+        if (!looted.add(world.getName())) return new int[]{0, 0};
         boolean keys = plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key());
         Set<String> seen = new HashSet<>();
-        int filled = 0;
+        int filled = 0, stocked = 0;
         /** A freshly cloned world has nothing loaded, so its chests are invisible until the playable area is
          *  pulled in. The sliced loader does that itself, and passes false so it is not repeated. */
         if (loadArea) loadPlayArea(world, map);
@@ -710,14 +731,28 @@ class DuelMapService implements org.bukkit.event.Listener {
                  *  in the world. Re-read the live block state before touching anything. */
                 if (!(snapshot.getBlock().getState(false) instanceof org.bukkit.block.Chest chest)) continue;
                 org.bukkit.inventory.Inventory inv = chest.getInventory();
+                /** Both halves of a double chest resolve to one identity, so it is considered -- and rolled --
+                 *  exactly once however many block entities it presents. */
                 if (!seen.add(containerId(chest, inv))) continue;
-                inv.clear();
+                if (!isEmpty(inv)) { stocked++; continue; }
                 roll(inv, inv.getHolder(false) instanceof org.bukkit.block.DoubleChest, keys);
                 filled++;
             }
-        if (filled > 0) plugin.getLogger().info("[duel-maps] " + world.getName() + ": populated " + filled + " chest(s)");
-        return filled;
+        if (filled > 0 || stocked > 0)
+            plugin.getLogger().info("[duel-maps] " + world.getName() + ": rolled loot into " + filled
+                    + " empty template chest(s); left " + stocked + " pre-stocked chest(s) untouched");
+        lastFill.put(world.getName(), new int[]{filled, stocked});
+        return new int[]{filled, stocked};
     }
+
+    private static boolean isEmpty(org.bukkit.inventory.Inventory inv) {
+        for (org.bukkit.inventory.ItemStack item : inv.getContents())
+            if (item != null && !item.getType().isAir()) return false;
+        return true;
+    }
+
+    /** What the one loot roll did in a live instance, for the admin readouts. */
+    int[] lastFill(World world) { return world == null ? null : lastFill.get(world.getName()); }
 
     /** One identity per physical container: both halves of a double chest resolve to the same string, which
      *  is what stops a double chest being rolled twice and getting double loot. */
@@ -734,7 +769,7 @@ class DuelMapService implements org.bukkit.event.Listener {
      *  them. Used by the loot report so configured key chances can be judged against the real chest count
      *  instead of in the abstract. Returns {singles, doubles}. */
     int[] chestCensus(World world) {
-        int single = 0, dbl = 0, barrels = 0, vaults = 0, spawners = 0;
+        int single = 0, dbl = 0, barrels = 0, vaults = 0, spawners = 0, empty = 0;
         Set<String> seen = new HashSet<>();
         for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
             for (org.bukkit.block.BlockState snapshot : chunk.getTileEntities()) {
@@ -744,6 +779,7 @@ class DuelMapService implements org.bukkit.event.Listener {
                 org.bukkit.inventory.Inventory inv = chest.getInventory();
                 if (!seen.add(containerId(chest, inv))) continue;
                 if (inv.getHolder(false) instanceof org.bukkit.block.DoubleChest) dbl++; else single++;
+                if (isEmpty(inv)) empty++;
             }
             /** Vaults and trial spawners are block entities too, so they come out of the same cheap list --
              *  no block scan needed. They matter because a map whose loot is behind vaults is exactly the map
@@ -754,7 +790,7 @@ class DuelMapService implements org.bukkit.event.Listener {
                 else if (type == Material.TRIAL_SPAWNER || type == Material.SPAWNER) spawners++;
             }
         }
-        return new int[]{single, dbl, barrels, vaults, spawners};
+        return new int[]{single, dbl, barrels, vaults, spawners, empty};
     }
 
     /** Single chests carry useful-but-moderate support; double chests roll a stronger table with a real but
@@ -820,17 +856,23 @@ class DuelMapService implements org.bukkit.event.Listener {
 
     /** Expected trial-key yield for a map, given how many chests it actually has. Reported by
      *  /ashfall duelmap loot, so the configured rates can be judged against the real chest count. */
-    String lootReport(DuelMap map, int singles, int doubles) {
-        boolean keys = plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key());
-        int chests = singles + doubles;
-        if (!keys) return map.name() + ": " + chests + " chest(s) (" + singles + " single, " + doubles + " double); trial keys are NOT enabled on this map.";
+    String lootReport(DuelMap map, World instance) {
+        int[] census = chestCensus(instance), fill = lastFill(instance);
+        int singles = census[0], doubles = census[1];
+        /** ELIGIBLE means "was empty in the template". In an instance the roll has already happened, so the
+         *  honest source for that number is what the roll actually did, not what is in the chests now. */
+        int eligible = fill != null ? fill[0] : census[5], stocked = fill != null ? fill[1] : (singles + doubles) - census[5];
+        String head = map.name() + ": " + (singles + doubles) + " chest(s) (" + singles + " single, " + doubles
+                + " double) | " + eligible + " empty in the template and rolled, " + stocked + " pre-stocked and left alone";
+        if (!plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key()))
+            return head + "; trial keys are NOT enabled on this map.";
         double normal = plugin.getConfig().getDouble("duel-loot.trial-key-chance", .10);
         double ominous = plugin.getConfig().getDouble("duel-loot.ominous-key-chance", .03);
         /** Ominous is rolled first and wins outright, so the normal key's real chance is conditional. */
         double perOminous = ominous, perNormal = (1 - ominous) * normal;
-        return map.name() + ": " + chests + " chest(s) (" + singles + " single, " + doubles + " double)"
-                + String.format(" | per chest: ominous %.1f%%, normal %.1f%%", perOminous * 100, perNormal * 100)
-                + String.format(" | expected per match: %.2f ominous, %.2f normal", perOminous * chests, perNormal * chests);
+        return head
+                + String.format(" | per eligible chest: ominous %.1f%%, normal %.1f%%", perOminous * 100, perNormal * 100)
+                + String.format(" | expected per match: %.2f ominous, %.2f normal", perOminous * eligible, perNormal * eligible);
     }
 
     // ------------------------------------------------------------------ world hygiene

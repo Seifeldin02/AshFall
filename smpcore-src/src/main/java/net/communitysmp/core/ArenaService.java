@@ -732,6 +732,28 @@ final class ArenaService implements Listener {
         refreshStage(duel);
     }
 
+    /** Ids whose duel screen the PLUGIN is currently swapping.
+     *
+     *  Closing a duel setup screen by hand is a cancel, and Bukkit cannot tell us who closed it: opening the
+     *  next stage fires InventoryCloseEvent for the previous one exactly as pressing ESC does. Every
+     *  plugin-driven open or close therefore runs inside {@link #transition}, and the close handler ignores
+     *  anything that happens while the flag is set. The flag is set and cleared synchronously around the
+     *  call, because InventoryCloseEvent fires inside openInventory/closeInventory rather than a tick later. */
+    private final Set<String> screenTransition = ConcurrentHashMap.newKeySet();
+
+    private void transition(Player player, Runnable action) {
+        if (player != null) transition(CoreUtil.id(player), action);
+    }
+
+    private void transition(String id, Runnable action) {
+        boolean outermost = screenTransition.add(id);
+        try { action.run(); }
+        finally { if (outermost) screenTransition.remove(id); }
+    }
+
+    /** True when the plugin, not the player, is responsible for the screen closing right now. */
+    private boolean isTransitioning(Player player) { return screenTransition.contains(CoreUtil.id(player)); }
+
     private void openStage(Duel duel) { openStage(a(duel), duel); openStage(b(duel), duel); }
 
     private void openStage(Player player, Duel duel) {
@@ -802,7 +824,7 @@ final class ArenaService implements Listener {
         if (maps == null || duel.map == null) { abortAndRefund(duel, "the duel map service is unavailable"); return; }
         duel.starting = true;
         duel.rounds.put(duel.a, 0); duel.rounds.put(duel.b, 0);
-        one.closeInventory(); two.closeInventory();
+        transition(one, one::closeInventory); transition(two, two::closeInventory);
         both(duel, "Preparing " + duel.map.name() + "…");
         maps.prepareInstance(duel.map, instance -> {
             duel.starting = false;
@@ -868,7 +890,7 @@ final class ArenaService implements Listener {
                 "You: " + (meReady ? "READY" : "not ready"),
                 themName + ": " + (themReady ? "READY" : "not ready"),
                 "The round starts the instant you are both ready.")));
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     private void refreshReady(Duel duel) { if (duel.gating) { openReady(a(duel), duel); openReady(b(duel), duel); } }
@@ -1406,7 +1428,7 @@ final class ArenaService implements Listener {
             menu.inv.setItem(18 + slot++, icon(Material.PLAYER_HEAD, online.getName(), List.of("Click to challenge")));
         }
         menu.inv.setItem(15, icon(Material.ENDER_EYE, "Live matches", List.of(liveMatches().size() + " running", "Click to view / spectate / bet")));
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     private void openSetup(Player player) {
@@ -1453,7 +1475,7 @@ final class ArenaService implements Listener {
                 "You: " + meName + "  " + CoreUtil.money(duel.stakes.getOrDefault(meId, 0d)) + (ready ? "  (ready)" : ""),
                 "Them: " + themName + "  " + CoreUtil.money(duel.stakes.getOrDefault(themId, 0d)) + (duel.confirmed.contains(themId) ? "  (ready)" : ""),
                 "Kit " + duel.kit.label() + " · Best of " + duel.bestOf)));
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     // ---- stage 2: the map --------------------------------------------------------------------------
@@ -1484,7 +1506,7 @@ final class ArenaService implements Listener {
                 List.of("An admin must build and save a duel map", "before matches can be played on one.")));
         DuelMapService.DuelMap chosen = selectedMap(duel);
         stageFooter(menu, duel, player, chosen == null ? "Pick a map first" : "Confirm " + chosen.name());
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     private Material mapIcon(DuelMapService.DuelMap map) {
@@ -1518,7 +1540,7 @@ final class ArenaService implements Listener {
                 duel.visibility ? "for the whole duel, whatever your /settings say" : "You each keep whatever you already had",
                 "Click to turn " + (duel.visibility ? "OFF" : "ON")))));
         stageFooter(menu, duel, player, "Confirm and start the duel");
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     /** The shared bottom bar of the map and options screens: Back, and a Confirm that shows both sides'
@@ -1537,21 +1559,38 @@ final class ArenaService implements Listener {
                 "Stage " + (duel.stage.ordinal() + 1) + " of 3")));
     }
 
-    /** Closing any setup screen with ESC cancels the duel, exactly like /duel cancel -- unless the player has
-     *  confirmed (and is just waiting for their opponent) or merely stepped into another duel screen (the
-     *  wager box/viewer, the next stage, or a live refresh), which must NOT count as a cancel. */
+    /** Closing a setup screen by hand IS a cancel, at every stage, and goes through exactly the same path
+     *  /duel cancel does -- {@link #forfeit}, which for a duel that has not started yet aborts it, refunds
+     *  both sides and returns any staged wager items.
+     *
+     *  There is no "already confirmed" exemption: a player who has confirmed and then closes the window has
+     *  walked away from the duel, and leaving the match half-alive waiting for them is exactly the state this
+     *  is meant to avoid. The only closes that do NOT cancel are the ones the plugin itself performs while
+     *  swapping screens, and those are recognised by the {@link #screenTransition} guard rather than guessed
+     *  at from what happens to be open a couple of ticks later. */
     @EventHandler public void closeSetup(InventoryCloseEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !isSetupScreen(menu.kind)) return;
         if (!(event.getPlayer() instanceof Player player)) return;
-        String id = CoreUtil.id(player);
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (!player.isOnline()) return;
-            Duel d = byPlayer.get(id);
-            if (d == null || (d.phase != Phase.STAKING && d.phase != Phase.PENDING) || d.confirmed.contains(id) || d.starting) return;
-            if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu m
-                    && (isSetupScreen(m.kind) || m.kind.equals("wagerbox") || m.kind.equals("wagerview"))) return;
-            forfeit(player);
-        }, 2L);
+        if (isTransitioning(player)) return;
+        Duel duel = byPlayer.get(CoreUtil.id(player));
+        if (duel == null || duel.starting) return;
+        if (duel.phase != Phase.STAKING && duel.phase != Phase.PENDING) return;
+        /** Deferred by a tick purely because cancelling inside the close event would re-enter inventory
+         *  handling; the DECISION has already been made here, so nothing can change it in between. */
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            Duel current = byPlayer.get(CoreUtil.id(player));
+            if (current != duel || duel.starting) return;
+            if (duel.phase != Phase.STAKING && duel.phase != Phase.PENDING) return;
+            cancelSetup(player, duel);
+        });
+    }
+
+    /** The one place a manually closed setup screen turns into a cancellation, so the close handler, the
+     *  Cancel button and /duel cancel cannot drift apart. */
+    private void cancelSetup(Player player, Duel duel) {
+        Player other = plugin.getServer().getPlayer(duel.other(CoreUtil.id(player)));
+        if (other != null) transition(other, other::closeInventory);
+        forfeit(player);
     }
 
     private static boolean isSetupScreen(String kind) {
@@ -1593,7 +1632,7 @@ final class ArenaService implements Listener {
             int raw = event.getRawSlot();
             if (raw >= 45 && raw < 54) {
                 event.setCancelled(true);
-                if (raw == 45) openSetup(boxPlayer);
+                if (raw == 45) { Duel back = duelOf(boxPlayer); if (back != null) openStage(boxPlayer, back); }
                 else if (raw == 48) clearWager(boxPlayer, event.getInventory());
                 else if (raw == 49) confirmWager(boxPlayer, event.getInventory());
             }
@@ -1623,7 +1662,7 @@ final class ArenaService implements Listener {
                     case 32 -> adjustStake(player, 1000);
                     case 33 -> adjustStake(player, 10000);
                     case 34 -> adjustStake(player, 100000);
-                    case 40 -> { player.closeInventory(); confirm(player); }
+                    case 40 -> { transition(player, player::closeInventory); confirm(player); }
                     case 42 -> openWagerBox(player);
                     case 43 -> openOpponentWager(player);
                     default -> { }
@@ -1637,7 +1676,7 @@ final class ArenaService implements Listener {
                 switch (slot) {
                     case 36 -> back(player);
                     case 40 -> confirm(player);
-                    case 44 -> { player.closeInventory(); forfeit(player); }
+                    case 44 -> { transition(player, player::closeInventory); forfeit(player); }
                     default -> { }
                 }
             }
@@ -1646,7 +1685,7 @@ final class ArenaService implements Listener {
                     case 22 -> toggleVisibility(player);
                     case 36 -> back(player);
                     case 40 -> confirm(player);
-                    case 44 -> { player.closeInventory(); forfeit(player); }
+                    case 44 -> { transition(player, player::closeInventory); forfeit(player); }
                     default -> { }
                 }
             }
@@ -1680,7 +1719,7 @@ final class ArenaService implements Listener {
                     default -> { }
                 }
             }
-            case "wagerview" -> { if (slot == 49) openSetup(player); return; }
+            case "wagerview" -> { if (slot == 49) { Duel back = duelOf(player); if (back != null) openStage(player, back); } return; }
             case "ready" -> {
                 Duel duel = find(menu.duelId);
                 if (duel == null || !duel.gating) { player.closeInventory(); return; }
@@ -1718,7 +1757,7 @@ final class ArenaService implements Listener {
         for (int slot = 45; slot < 54; slot++) menu.inv.setItem(slot, filler());
         menu.inv.setItem(49, icon(Material.ARROW, "Back", List.of("Duel setup")));
         if (items.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, themName + " has not wagered anything", List.of()));
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     private void openWagerBox(Player player) {
@@ -1772,14 +1811,28 @@ final class ArenaService implements Listener {
     /** On closing the wager box, escrow whatever is inside to the DB (crash-safe) and hand any surplus back if
      *  the match already ended/started while it was open. Then return the duellist to the setup GUI. */
     @EventHandler public void closeWager(InventoryCloseEvent event) {
-        if (!(event.getInventory().getHolder(false) instanceof Menu menu) || !menu.kind.equals("wagerbox")) return;
+        if (!(event.getInventory().getHolder(false) instanceof Menu menu)) return;
+        if (!menu.kind.equals("wagerbox") && !menu.kind.equals("wagerview")) return;
         if (!(event.getPlayer() instanceof Player player)) return;
         String id = CoreUtil.id(player);
         /** Anything still in the TOP of the box was never confirmed, so closing hands it straight back -- closing
          *  is a cancel. Confirmed items already live in the DB escrow and are untouched here. */
         List<ItemStack> unconfirmed = new ArrayList<>();
-        for (int i = 0; i < 45; i++) { ItemStack it = event.getInventory().getItem(i); if (it != null && !it.getType().isAir()) unconfirmed.add(it); }
+        if (menu.kind.equals("wagerbox"))
+            for (int i = 0; i < 45; i++) { ItemStack it = event.getInventory().getItem(i); if (it != null && !it.getType().isAir()) unconfirmed.add(it); }
         if (!unconfirmed.isEmpty()) giveOrStash(id, unconfirmed, "Unconfirmed wager items were returned.");
+        /** The wager box is a sub-screen of the kit stage, not a stage of its own, so closing it puts the
+         *  duellist back on their stage rather than cancelling. That also keeps the invariant the cancel rule
+         *  depends on: during setup a duellist always has a stage screen open, so closing one really does
+         *  mean they walked away. */
+        Duel duel = byPlayer.get(id);
+        if (duel == null || duel.phase != Phase.STAKING || duel.starting) return;
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline() || byPlayer.get(id) != duel || duel.phase != Phase.STAKING) return;
+            if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof Menu open
+                    && (isSetupScreen(open.kind) || open.kind.equals("wagerbox") || open.kind.equals("wagerview"))) return;
+            openStage(player, duel);
+        });
     }
 
     /** Winner receives both sides' wagered items (their own back + the loser's). Overflow drops at their feet;
@@ -1838,7 +1891,7 @@ final class ArenaService implements Listener {
             menu.inv.setItem(slot++, card);
         }
         if (duels.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, "No matches right now", List.of("Challenge someone with /duel <player>")));
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     /** The spectator / betting window. Shows both fighters, kit, series score and stakes; lets a spectator
@@ -1895,7 +1948,7 @@ final class ArenaService implements Listener {
         if (duel.phase == Phase.LIVE && !spectators.containsKey(id))
             menu.inv.setItem(44, icon(Material.ENDER_EYE, "Enter arena to watch", List.of("Invisible, cannot interfere")));
         menu.inv.setItem(42, icon(Material.ARROW, spectators.containsKey(id) ? "Leave spectating" : "Close", List.of()));
-        player.openInventory(menu.inv);
+        transition(player, () -> player.openInventory(menu.inv));
     }
 
     /** Re-render the spectate window for anyone who currently has it open on this match. */
@@ -1958,6 +2011,31 @@ final class ArenaService implements Listener {
         if (!probe.visibility || probe.stage != Stage.KIT || probe.mapKey != null || probe.instance != null || probe.starting) return false;
 
         /** A setup timeout that could fire while an arena is being cloned would strand the instance. */
-        return plugin.getConfig().getLong("arena.setup-timeout-seconds", 180) >= 30;
+        if (plugin.getConfig().getLong("arena.setup-timeout-seconds", 180) < 30) return false;
+
+        /** All three stage screens must be recognised as setup screens, or closing one of them would not
+         *  cancel -- which is the entire behaviour the close handler exists for. */
+        if (!isSetupScreen("setup") || !isSetupScreen("map") || !isSetupScreen("options")) return false;
+        if (isSetupScreen("wagerbox") || isSetupScreen("wagerview") || isSetupScreen("ready")) return false;
+
+        /** The screen-transition guard. Bukkit fires InventoryCloseEvent for the old screen when the plugin
+         *  opens the new one, exactly as it does when a player presses ESC, so the guard is the only thing
+         *  standing between "advance to the map stage" and "cancel the duel". It must suppress while a swap
+         *  is in progress, nest correctly, and -- critically -- clear itself even when the swap throws,
+         *  because a stuck flag would make manual closes stop cancelling for the rest of the session. */
+        String guardId = "__selftest_transition";
+        screenTransition.remove(guardId);
+        if (screenTransition.contains(guardId)) return false;
+        boolean[] sawInner = {false, false};
+        transition(guardId, () -> {
+            sawInner[0] = screenTransition.contains(guardId);
+            transition(guardId, () -> sawInner[1] = screenTransition.contains(guardId));
+            /** A nested transition must not release the flag when it returns. */
+            sawInner[0] &= screenTransition.contains(guardId);
+        });
+        if (!sawInner[0] || !sawInner[1] || screenTransition.contains(guardId)) return false;
+        try { transition(guardId, () -> { throw new IllegalStateException("boom"); }); }
+        catch (IllegalStateException expected) { /* the point is what happens next */ }
+        return !screenTransition.contains(guardId);
     }
 }

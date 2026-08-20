@@ -113,16 +113,23 @@ final class DuelMapVerify {
             else out.add("   spawn footing: " + under1 + " / " + under2);
 
             int[] census = maps.chestCensus(world);
+            int[] fill = maps.lastFill(world);
             out.add("   containers: " + census[0] + " single chest, " + census[1] + " double chest, "
                     + census[2] + " barrel, " + census[3] + " vault, " + census[4] + " spawner");
-            out.add("   " + maps.lootReport(map, census[0], census[1]));
+            out.add("   " + maps.lootReport(map, world));
+            /** Every chest that was empty in the template must have been rolled, and every chest the builder
+             *  stocked must have been left alone -- that is the whole eligibility rule, checked per map. */
+            check("every empty template chest was rolled and no stocked one was touched",
+                    fill != null && fill[0] + fill[1] == census[0] + census[1]);
+            check("re-running the loot roll is a no-op (no reroll on reload)",
+                    maps.fillChests(world, map, false)[0] == 0);
             if (census[3] > 0 && !plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key()))
                 out.add("WARN this map has " + census[3] + " vault(s) but is not allowed to roll trial keys,"
                         + " so nothing on it can ever be opened.");
             boolean keyMap = plugin.getConfig().getStringList("duel-loot.trial-key-maps").contains(map.key());
             if (census[3] == 0 && keyMap)
                 out.add("WARN this map may roll trial keys but has no vaults for them to open.");
-            if (keyMap && census[3] > 0 && census[0] + census[1] == 0)
+            if (keyMap && census[3] > 0 && (fill == null ? census[0] + census[1] : fill[0]) == 0)
                 out.add("WARN this map has " + census[3] + " vault(s) and may roll trial keys, but it has no chests"
                         + " inside its configured bounds, so no key can ever be found on it. Widen the bounds"
                         + " (currently y " + map.bounds()[1] + ".." + map.bounds()[4] + ") or add chests.");

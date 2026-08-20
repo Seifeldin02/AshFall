@@ -537,6 +537,25 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
 
     // ------------------------------------------------------------------ duel map templates
     private final Map<String,org.bukkit.Location> duelMapReturn=new java.util.concurrent.ConcurrentHashMap<>();
+    /** Every /ashfall duelmap subcommand, in the order the help prints them. Single source of truth for the
+     *  help text, the tab completion and the "unknown subcommand" reply, so they cannot drift apart. */
+    private static final List<String> DUELMAP_SUBS=List.of("list","snapshots","create","enter","exit","build","import",
+        "save","setspawn","test","dryrun","drop","orphans","reload","loot","canary","verify");
+
+    /** Registered map ids, straight from the live registry. */
+    private List<String> duelMapKeys(){return duelMaps==null?List.of():duelMaps.maps().stream().map(DuelMapService.DuelMap::key).toList();}
+
+    /** Concise usage plus the values that would actually have worked -- an admin should never have to guess
+     *  a map id or go and read the source to find out what a subcommand wanted. */
+    private void duelMapUsage(CommandSender sender,String sub,String what){
+        CoreUtil.error(sender,"Usage: /ashfall duelmap "+sub+" <"+what+">");
+        if(what.equals("map"))CoreUtil.msg(sender,"Maps: "+String.join(", ",duelMapKeys()));
+        else if(what.equals("instance-world")){
+            List<String> live=duelMaps==null?List.of():duelMaps.instanceNames();
+            CoreUtil.msg(sender,"Live instances: "+(live.isEmpty()?"none":String.join(", ",live)));
+        }
+    }
+
     private static double round2(double v){return Math.round(v*100)/100.0;}
     private static String fmt(org.bukkit.Location at){return round2(at.getX())+", "+round2(at.getY())+", "+round2(at.getZ());}
     /** Which duel maps a match could actually be sent to right now. A map with no committed snapshot is not
@@ -568,7 +587,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"enter"->{
                 if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap enter <map>");return;}
+                if(m==null){duelMapUsage(sender,"enter","map");return;}
                 org.bukkit.World w=svc.template(m);
                 if(w==null){CoreUtil.error(sender,"Could not load that template world.");return;}
                 duelMapReturn.put(p.getUniqueId().toString(),p.getLocation());
@@ -584,18 +603,18 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             }
             case"save"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap save <map>");return;}
+                if(m==null){duelMapUsage(sender,"save","map");return;}
                 CoreUtil.msg(sender,svc.commitTemplate(m));
             }
             case"import"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap import <map>");return;}
+                if(m==null){duelMapUsage(sender,"import","map");return;}
                 if(!DuelMapImporter.available()){CoreUtil.error(sender,"WorldEdit is not installed on this server, so an import cannot run here.");return;}
                 new DuelMapImporter(this,svc).run(sender,m);
             }
             case"build"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap build <arena50|arena100>");return;}
+                if(m==null){duelMapUsage(sender,"build","arena50|arena100");return;}
                 int size=m.key().equals("arena100")?100:m.key().equals("arena50")?50:0;
                 if(size==0){CoreUtil.error(sender,"Only the two flat arenas are built from code; the rest are imported.");return;}
                 CoreUtil.msg(sender,"Building "+m.name()+" ("+size+"x"+size+"). This takes a few seconds.");
@@ -607,7 +626,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             }
             case"dryrun"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap dryrun <map>");return;}
+                if(m==null){duelMapUsage(sender,"dryrun","map");return;}
                 long began=System.currentTimeMillis();
                 CoreUtil.msg(sender,"Preparing "+m.name()+" exactly as a match would (async clone + sliced chunk load)...");
                 /** The result arrives a few ticks later, by which time an RCON caller has already been
@@ -633,11 +652,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             }
             case"loot"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap loot <map>");return;}
+                if(m==null){duelMapUsage(sender,"loot","map");return;}
                 org.bukkit.World probe=svc.createInstance(m);
                 if(probe==null){CoreUtil.error(sender,"Could not clone that map to count its chests.");return;}
-                int[] census=svc.chestCensus(probe);
-                CoreUtil.msg(sender,svc.lootReport(m,census[0],census[1]));
+                CoreUtil.msg(sender,svc.lootReport(m,probe));
                 svc.destroyInstance(probe,null);
             }
             case"snapshots"->{
@@ -648,13 +666,13 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             }
             case"create"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap create <map>");return;}
+                if(m==null){duelMapUsage(sender,"create","map");return;}
                 org.bukkit.World w=svc.template(m);
                 CoreUtil.msg(sender,w==null?"Could not create that template world.":"Template world "+w.getName()+" is ready.");
             }
             case"test"->{
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
-                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap test <map>");return;}
+                if(m==null){duelMapUsage(sender,"test","map");return;}
                 org.bukkit.World inst=svc.createInstance(m);
                 if(inst==null){CoreUtil.error(sender,"Could not create an instance.");return;}
                 if(sender instanceof Player p){
@@ -664,20 +682,20 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 CoreUtil.msg(sender,"Test instance "+inst.getName()+" created. /ashfall duelmap drop "+inst.getName()+" removes it.");
             }
             case"drop"->{
-                if(args.length<3){CoreUtil.error(sender,"Usage: /ashfall duelmap drop <instance-world>");return;}
+                if(args.length<3){duelMapUsage(sender,"drop","instance-world");return;}
                 org.bukkit.World w=getServer().getWorld(args[2]);
-                if(w==null||!w.getName().startsWith(DuelMapService.INSTANCE_PREFIX)){CoreUtil.error(sender,"Not a duel instance world.");return;}
+                if(w==null||!w.getName().startsWith(DuelMapService.INSTANCE_PREFIX)){duelMapUsage(sender,"drop","instance-world");return;}
                 svc.destroyInstance(w,sender instanceof Player p?duelMapReturn.remove(p.getUniqueId().toString()):null);
                 CoreUtil.msg(sender,"Instance removed.");
             }
             case"orphans"->CoreUtil.msg(sender,"Removed "+svc.cleanupOrphans()+" orphaned instance world(s).");
             case"setspawn"->{
                 if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
-                if(args.length<4){CoreUtil.error(sender,"Usage: /ashfall duelmap setspawn <map> <p1|p2|spectator>");return;}
+                if(args.length<4){duelMapUsage(sender,"setspawn","map> <p1|p2|spectator");return;}
                 DuelMapService.DuelMap m=svc.map(args[2]);
-                if(m==null){CoreUtil.error(sender,"Unknown map.");return;}
+                if(m==null){duelMapUsage(sender,"setspawn","map");return;}
                 String which=args[3].toLowerCase(Locale.ROOT);
-                if(!which.equals("p1")&&!which.equals("p2")&&!which.equals("spectator")){CoreUtil.error(sender,"Pick p1, p2 or spectator.");return;}
+                if(!which.equals("p1")&&!which.equals("p2")&&!which.equals("spectator")){duelMapUsage(sender,"setspawn","map> <p1|p2|spectator");return;}
                 org.bukkit.Location at=p.getLocation();
                 getConfig().set("duel-maps."+m.key()+"."+which,List.of(round2(at.getX()),round2(at.getY()),round2(at.getZ())));
                 saveConfig(); svc.reload();
@@ -685,10 +703,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             }
             case"reload"->{svc.reload();CoreUtil.msg(sender,"Duel map registry reloaded.");}
             default->{
-                CoreUtil.msg(sender,"DUEL MAPS - /ashfall duelmap ...");
-                CoreUtil.msg(sender,"  list | create <map> | enter <map> | exit | save <map> | test <map> | drop <world> | orphans");
-                CoreUtil.msg(sender,"  setspawn <map> <p1|p2|spectator> | reload | import <map> | build <arena50|arena100>");
-                CoreUtil.msg(sender,"  canary (template persistence proof) | verify (full pipeline) | dryrun <map> | loot <map> | snapshots");
+                if(args.length>1)CoreUtil.error(sender,"Unknown subcommand '"+args[1]+"'.");
+                CoreUtil.msg(sender,"DUEL MAPS - /ashfall duelmap <"+String.join("|",DUELMAP_SUBS)+">");
+                CoreUtil.msg(sender,"  build/import/save commit a template; test/dryrun/loot clone one; drop removes an instance.");
+                CoreUtil.msg(sender,"  canary = template persistence proof, verify = full pipeline. Maps: "+String.join(", ",duelMapKeys()));
             }
         }
     }
@@ -891,6 +909,25 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             if(args.length==3&&s0.equals("bet")){try{return filter(args[2],arena.duellistNames(Integer.parseInt(args[1])));}catch(NumberFormatException e){return List.of();}}
             return List.of();
         }
+        /** /ashfall duelmap ... completes from the LIVE registry and world list, so an admin can maintain
+         *  maps without having to remember keys or copy instance world names out of a log. The whole
+         *  /ashfall tree is already gated above (players who are not admins get nothing at all), so simply
+         *  being here means the sender is allowed to run these. */
+        if(name.equals("ashfall")&&args.length>=2&&args[0].equalsIgnoreCase("duelmap")){
+            if(duelMaps==null)return List.of();
+            if(args.length==2)return filter(args[1],DUELMAP_SUBS);
+            String sub=args[1].toLowerCase(Locale.ROOT);
+            if(args.length==3)return switch(sub){
+                case"create","enter","save","test","import","loot","dryrun","setspawn"->filter(args[2],duelMapKeys());
+                case"build"->filter(args[2],duelMaps.maps().stream().map(DuelMapService.DuelMap::key).filter(k->k.startsWith("arena")).toList());
+                case"drop"->filter(args[2],duelMaps.instanceNames());
+                default->List.of();
+            };
+            if(args.length==4&&sub.equals("setspawn"))return filter(args[3],List.of("p1","p2","spectator"));
+            return List.of();
+        }
+        if(name.equals("ashfall")&&args.length==2&&args[0].equalsIgnoreCase("hopper"))
+            return filter(args[1],List.of("verify","rig","count","create"));
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("invite"))return publicOnlineNames(sender,args[1]);
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("locate")&&sender instanceof Player p)return filter(args[1],getServer().getOnlinePlayers().stream().filter(target->!target.equals(p)&&factions.friendly(p,target)).map(nicknames::displayName).toList());
         if(name.equals("f")&&args.length==2&&Set.of("ally","truce","storage","info").contains(args[0].toLowerCase(Locale.ROOT))){
@@ -907,7 +944,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("buyhome")&&args.length==1)return filter(args[0],List.of("confirm"));
         if(name.equals("homes")&&args.length==1)return filter(args[0],List.of("locate"));
         if(name.equals("relics")&&args.length==2&&args[0].equalsIgnoreCase("trace")&&sender instanceof Player p)return filter(args[1],db.relicLifecycles().stream().filter(row->"ACTIVE".equals(row.status())&&row.owner().equals(CoreUtil.id(p))).map(Database.RelicLifecycleRow::key).toList());
-        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
+        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper","duelmap"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
         if(name.equals("shop")&&args.length==2&&(args[0].equalsIgnoreCase("buy")||args[0].equalsIgnoreCase("sell")))return shop.itemNames(args[0].equalsIgnoreCase("sell"),args[1]);
         if(name.equals("shop")&&args.length==2&&args[0].equalsIgnoreCase("sellall"))return filter(args[1],List.of("chest"));
         if(name.equals("f")&&args.length==2&&(args[0].equalsIgnoreCase("home")||args[0].equalsIgnoreCase("delhome"))&&sender instanceof Player p){Database.FactionRow faction=db.factionOf(CoreUtil.id(p));return faction==null?List.of():filter(args[1],db.homes(Long.toString(faction.id()),"FACTION").stream().map(Database.HomeRow::name).toList());}

@@ -112,9 +112,11 @@ final class DuelMapCanary {
             instances.add(first);
             missing = verify(first, token, "instance " + first.getName());
             if (missing != null) return fail(out, "7. clone", missing);
+            String loot = checkLootEligibility(first, token);
+            if (loot != null) return fail(out, "7c. loot eligibility", loot);
             int[] census = maps.chestCensus(first);
-            if (census[0] != 1 || census[1] != 1)
-                return fail(out, "7. loot census", "expected 1 single + 1 double chest, counted " + census[0]
+            if (census[0] != 2 || census[1] != 1)
+                return fail(out, "7. loot census", "expected 2 single + 1 double chest, counted " + census[0]
                         + " + " + census[1] + " - a double chest counted twice would roll twice the loot");
             World second = maps.createInstance(map);
             if (second == null) return fail(out, "7. clone twice", "the second createInstance returned null");
@@ -128,6 +130,7 @@ final class DuelMapCanary {
                 return fail(out, "7. isolation", "removing a block in one instance changed the other");
             out.add("ok  7. two independent clones, both complete, neither affected by the other");
             out.add("ok  7b. loot census sees 1 single + 1 double chest, so a double chest rolls once");
+            out.add("ok  7c. the 2 empty template chests were rolled, the pre-stocked one untouched, no reroll");
 
             // ---- 8. survive a restart ------------------------------------------------------------
             plugin.db().state(TOKEN_STATE, token + "@" + boot);
@@ -156,7 +159,7 @@ final class DuelMapCanary {
         if (!maps.hasSnapshot(map)) return "there is no committed snapshot on disk any more";
         World probe = maps.createInstance(map);
         if (probe == null) return "the committed snapshot would not clone";
-        try { return verify(probe, token, "post-restart clone"); }
+        try { return verifyToken(probe, token, "post-restart clone"); }
         finally { maps.destroyInstance(probe, null); }
     }
 
@@ -195,13 +198,8 @@ final class DuelMapCanary {
         world.getBlockAt(X, Y - 1, Z).setType(Material.STONE, false);
 
         world.getBlockAt(X, Y, Z).setType(Material.BARREL, false);
-        if (world.getBlockAt(X, Y, Z).getState(false) instanceof org.bukkit.block.Barrel barrel) {
-            ItemStack marker = new ItemStack(Material.PAPER);
-            ItemMeta meta = marker.getItemMeta();
-            meta.displayName(Component.text(token));
-            marker.setItemMeta(meta);
-            barrel.getInventory().setItem(0, marker);
-        }
+        if (world.getBlockAt(X, Y, Z).getState(false) instanceof org.bukkit.block.Barrel barrel)
+            barrel.getInventory().setItem(0, marked(Material.PAPER, token));
 
         world.getBlockAt(X, Y + 1, Z).setType(Material.OAK_SIGN, false);
         if (world.getBlockAt(X, Y + 1, Z).getState(false) instanceof Sign sign) {
@@ -212,11 +210,30 @@ final class DuelMapCanary {
         world.getBlockAt(X + 2, Y, Z).setType(Material.TRIAL_SPAWNER, false);
         world.getBlockAt(X + 4, Y, Z).setType(Material.VAULT, false);
         world.getBlockAt(X + 6, Y, Z).setType(Material.CHEST, false);
+        /** A chest the BUILDER stocked. It must come through the clone with exactly these contents and must
+         *  never be rolled over -- an admin who put something in a chest on purpose meant it. */
+        world.getBlockAt(X + 11, Y, Z).setType(Material.CHEST, false);
+        if (world.getBlockAt(X + 11, Y, Z).getState(false) instanceof Chest stocked)
+            stocked.getInventory().setItem(0, marked(Material.BRICK, token + "-STOCKED"));
         /** A double chest is not two chests next to each other: the halves have to declare each other. A
          *  chest facing north with type LEFT connects to the block east of it, so this pair really is one
          *  container -- which is the whole point of planting it. */
         world.getBlockAt(X + 8, Y, Z).setBlockData(chestHalf(org.bukkit.block.data.type.Chest.Type.LEFT), false);
         world.getBlockAt(X + 9, Y, Z).setBlockData(chestHalf(org.bukkit.block.data.type.Chest.Type.RIGHT), false);
+    }
+
+    private ItemStack marked(Material type, String name) {
+        ItemStack item = new ItemStack(type);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text(name));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private String nameOf(ItemStack item) {
+        if (item == null || !item.hasItemMeta() || item.getItemMeta().displayName() == null) return null;
+        return net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                .serialize(item.getItemMeta().displayName());
     }
 
     private org.bukkit.block.data.BlockData chestHalf(org.bukkit.block.data.type.Chest.Type half) {
@@ -226,9 +243,26 @@ final class DuelMapCanary {
         return data;
     }
 
+    /** The restart proof, and only that: did the token written before the last restart survive the JVM inside
+     *  the committed snapshot? Deliberately checks the two identity probes rather than the full fixture list,
+     *  because the snapshot being read was committed by whatever version of this canary ran last -- asserting
+     *  today's fixtures against yesterday's snapshot would report a fixture change as a persistence failure. */
+    private String verifyToken(World world, String token, String where) {
+        world.getChunkAt(X >> 4, Z >> 4).load(true);
+        if (!(world.getBlockAt(X, Y, Z).getState(false) instanceof org.bukkit.block.Barrel barrel))
+            return where + ": the barrel is not a block entity (block is " + world.getBlockAt(X, Y, Z).getType() + ")";
+        String held = nameOf(barrel.getInventory().getItem(0));
+        if (!token.equals(held)) return where + ": the barrel holds '" + held + "' instead of '" + token + "'";
+        if (!(world.getBlockAt(X, Y + 1, Z).getState(false) instanceof Sign sign))
+            return where + ": the sign is not a block entity";
+        String line = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                .serialize(sign.getSide(Side.FRONT).line(0));
+        return token.equals(line) ? null : where + ": the sign reads '" + line + "' instead of '" + token + "'";
+    }
+
     /** null when everything is present; otherwise the first thing that is missing, named. */
     private String verify(World world, String token, String where) {
-        for (int dx = 0; dx <= 9; dx++) world.getChunkAt((X + dx) >> 4, Z >> 4).load(true);
+        for (int dx = 0; dx <= 11; dx++) world.getChunkAt((X + dx) >> 4, Z >> 4).load(true);
         if (!(world.getBlockAt(X, Y, Z).getState(false) instanceof org.bukkit.block.Barrel barrel))
             return where + ": the barrel is not a block entity (block is " + world.getBlockAt(X, Y, Z).getType() + ")";
         ItemStack held = barrel.getInventory().getItem(0);
@@ -251,8 +285,33 @@ final class DuelMapCanary {
         if (!(world.getBlockAt(X + 8, Y, Z).getState(false) instanceof Chest pair)
                 || !(pair.getInventory().getHolder(false) instanceof org.bukkit.block.DoubleChest))
             return where + ": the double chest did not survive as a connected pair";
+        if (!(world.getBlockAt(X + 11, Y, Z).getState(false) instanceof Chest))
+            return where + ": the pre-stocked chest is not a block entity";
         return null;
     }
+
+    /** The loot eligibility rule, asserted against a real clone: every chest that was EMPTY in the template
+     *  gets rolled, every chest the builder STOCKED is left exactly as they left it, a double chest counts
+     *  once, and nothing can roll a second time. */
+    private String checkLootEligibility(World instance, String token) {
+        int[] fill = maps.lastFill(instance);
+        if (fill == null) return "the instance recorded no loot roll at all";
+        /** One lone chest and one connected pair were empty; the fourth was stocked. */
+        if (fill[0] != 2) return "expected 2 empty template chests to be rolled, got " + fill[0];
+        if (fill[1] != 1) return "expected 1 pre-stocked chest to be left alone, got " + fill[1];
+        if (!(instance.getBlockAt(X + 11, Y, Z).getState(false) instanceof Chest stocked))
+            return "the pre-stocked chest is missing from the instance";
+        String held = nameOf(stocked.getInventory().getItem(0));
+        if (!(token + "-STOCKED").equals(held))
+            return "the pre-stocked chest was rolled over (slot 0 now holds " + held + ")";
+        /** And it must not be possible to roll the same instance twice -- a chunk reload must not reprint
+         *  loot into a chest a duellist has already emptied. */
+        int[] again = maps.fillChests(instance, mapOf(), false);
+        if (again[0] != 0 || again[1] != 0) return "a second loot roll was allowed (" + again[0] + " chest(s) refilled)";
+        return null;
+    }
+
+    private DuelMapService.DuelMap mapOf() { return map(); }
 
     private List<String> fail(List<String> out, String stage, String why) {
         out.add("FAIL " + stage + ": " + why);
