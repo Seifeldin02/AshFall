@@ -28,9 +28,10 @@ final class NetWorthService implements Listener {
     private record Holder(long factionId,String page,int pageIndex) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private record VillagerEntry(boolean counted,String name,String detail,Location location,double value,List<String> trades){}
     private record ContainerRef(String key,Location location,Inventory inventory){}
-    private final SMPCore plugin;private final Database db;private final FactionService factions;private final ShopService shop;private final SpawnerService spawners;private final NamespacedKey relicKey;private BukkitTask task,scanTask;private final Deque<Chunk> scanQueue=new ArrayDeque<>();private volatile List<Row> rankingCache=List.of();private volatile long rankingCachedAt;
+    private final SMPCore plugin;private final Database db;private final FactionService factions;private final ShopService shop;private final SpawnerService spawners;private final NamespacedKey relicKey;
+    private final NamespacedKey eliteSigilValueKey,legendarySigilValueKey;private BukkitTask task,scanTask;private final Deque<Chunk> scanQueue=new ArrayDeque<>();private volatile List<Row> rankingCache=List.of();private volatile long rankingCachedAt;
 
-    NetWorthService(SMPCore plugin,FactionService factions,ShopService shop,SpawnerService spawners){this.plugin=plugin;this.db=plugin.db();this.factions=factions;this.shop=shop;this.spawners=spawners;this.relicKey=new NamespacedKey(plugin,"relic");long period=Math.max(1,plugin.getConfig().getLong("net-worth.recalculate-minutes",2))*1200L;task=plugin.getServer().getScheduler().runTaskTimer(plugin,this::recalculateLoaded,200L,period);}
+    NetWorthService(SMPCore plugin,FactionService factions,ShopService shop,SpawnerService spawners){this.plugin=plugin;this.db=plugin.db();this.factions=factions;this.shop=shop;this.spawners=spawners;this.relicKey=new NamespacedKey(plugin,"relic");eliteSigilValueKey=new NamespacedKey(plugin,"elite_sigil");legendarySigilValueKey=new NamespacedKey(plugin,"legendary_sigil");long period=Math.max(1,plugin.getConfig().getLong("net-worth.recalculate-minutes",2))*1200L;task=plugin.getServer().getScheduler().runTaskTimer(plugin,this::recalculateLoaded,200L,period);}
     void shutdown(){if(task!=null)task.cancel();if(scanTask!=null)scanTask.cancel();}
 
     List<Row> rankings(){long now=System.currentTimeMillis();if(now-rankingCachedAt<10_000&&!rankingCache.isEmpty())return rankingCache;List<Row> rows=new ArrayList<>();for(Database.FactionRow faction:db.factions())rows.add(new Row(faction.id(),faction.name(),value(faction.id())));rows.sort(java.util.Comparator.comparingDouble(Row::value).reversed().thenComparing(Row::name,String.CASE_INSENSITIVE_ORDER));rankingCache=List.copyOf(rows);rankingCachedAt=now;return rankingCache;}
@@ -123,6 +124,11 @@ final class NetWorthService implements Listener {
     private double itemValue(ItemStack item){
         if(plugin.graves()!=null&&plugin.graves().isCompass(item)||plugin.shards()!=null&&plugin.shards().bound(item))return 0;
         ItemMeta meta=item.getItemMeta();if(meta.getPersistentDataContainer().has(relicKey))return plugin.getConfig().getDouble("net-worth.relic-value",500000)*item.getAmount();
+        /** Sigils are the currency of boss summons, so they are valued off what a summon costs rather than
+         *  off their material. Two Legendary Sigils buy a summon outright; eight Elite Sigils buy one only
+         *  alongside a 250,000 coin payment, which is what puts a Legendary well above an Elite. */
+        if(meta.getPersistentDataContainer().has(legendarySigilValueKey))return plugin.getConfig().getDouble("net-worth.legendary-sigil-value",400000)*item.getAmount();
+        if(meta.getPersistentDataContainer().has(eliteSigilValueKey))return plugin.getConfig().getDouble("net-worth.elite-sigil-value",75000)*item.getAmount();
         double shulkerBonus=shulkerDragonEggBonus(item,meta);
         double base=marketOrBase(item.getType());
         if(base<=0)return shulkerBonus;

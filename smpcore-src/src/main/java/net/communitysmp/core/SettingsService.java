@@ -71,7 +71,8 @@ final class SettingsService implements Listener {
             new Toggle("boss_notifications","Boss Alerts",Material.BELL,true),
             new Toggle("private_messages","Private Messages",Material.WRITABLE_BOOK,true),
             new Toggle("auction_notifications","Auction Alerts",Material.CHEST,true),
-            new Toggle("sound_notifications","Sounds",Material.NOTE_BLOCK,true)
+            new Toggle("sound_notifications","Sounds",Material.NOTE_BLOCK,true),
+            new Toggle("elite_mobs","Elite Mobs",Material.WITHER_SKELETON_SKULL,true)
     );
     private final SMPCore plugin;
     private final Database db;
@@ -147,7 +148,7 @@ final class SettingsService implements Listener {
         try{
             List<ActionButton> buttons=new ArrayList<>();
             if(page==Page.MAIN){
-                for(Toggle toggle:MAIN)buttons.add(nativeToggle(player,toggle,Page.MAIN));
+                for(Toggle toggle:mainToggles(player))buttons.add(nativeToggle(player,toggle,Page.MAIN));
                 buttons.add(nativeCycle(player));
                 buttons.add(nativeButton("Purchase Confirmations","settings native confirmations"));
                 buttons.add(nativeButton("TPA Requests","settings native tpa"));
@@ -235,7 +236,7 @@ final class SettingsService implements Listener {
             GeyserConnection connection=GeyserApi.api().connectionByUuid(player.getUniqueId());if(connection==null)return false;
             SimpleForm.Builder form=SimpleForm.builder().title(pageTitle(page));
             if(page==Page.MAIN){
-                for(Toggle toggle:MAIN)form.button(toggle.title()+"\n"+(enabled(player,toggle.key(),toggle.fallback())?"§aON":"§cOFF"));
+                for(Toggle toggle:mainToggles(player))form.button(toggle.title()+"\n"+(enabled(player,toggle.key(),toggle.fallback())?"§aON":"§cOFF"));
                 form.button("Particle Intensity\n§e"+CoreUtil.pretty(particles(player)));
                 form.button("Purchase Confirmations");
                 form.button("TPA Requests");
@@ -261,15 +262,16 @@ final class SettingsService implements Listener {
             form.validResultHandler(response->plugin.getServer().getScheduler().runTask(plugin,()->{
                 if(locked(player,true))return;int clicked=response.clickedButtonId();
                 if(page==Page.MAIN){
-                    if(clicked>=0&&clicked<MAIN.size()){Toggle toggle=MAIN.get(clicked);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));openBedrock(player,Page.MAIN);}
-                    else if(clicked==MAIN.size()){cycleParticles(player);openBedrock(player,Page.MAIN);}
-                    else if(clicked==MAIN.size()+1)openBedrock(player,Page.CONFIRMATIONS);
-                    else if(clicked==MAIN.size()+2)openBedrock(player,Page.TPA);
-                    else if(clicked==MAIN.size()+3)openBedrock(player,Page.NAMETAGS);
-                    else if(clicked==MAIN.size()+4)plugin.teleports().rtp(player);
-                    else if(clicked==MAIN.size()+5){plugin.teleports().toggleRtpQueue(player);openBedrock(player,Page.MAIN);}
-                    else if(clicked==MAIN.size()+6)plugin.shards().openCosmetics(player);
-                    else if(clicked==MAIN.size()+7)plugin.account().open(player);
+                    List<Toggle> mt=mainToggles(player);int n=mt.size();
+                    if(clicked>=0&&clicked<n){Toggle toggle=mt.get(clicked);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));openBedrock(player,Page.MAIN);}
+                    else if(clicked==n){cycleParticles(player);openBedrock(player,Page.MAIN);}
+                    else if(clicked==n+1)openBedrock(player,Page.CONFIRMATIONS);
+                    else if(clicked==n+2)openBedrock(player,Page.TPA);
+                    else if(clicked==n+3)openBedrock(player,Page.NAMETAGS);
+                    else if(clicked==n+4)plugin.teleports().rtp(player);
+                    else if(clicked==n+5){plugin.teleports().toggleRtpQueue(player);openBedrock(player,Page.MAIN);}
+                    else if(clicked==n+6)plugin.shards().openCosmetics(player);
+                    else if(clicked==n+7)plugin.account().open(player);
                 }else if(page==Page.CONFIRMATIONS){
                     if(clicked==0){setAllConfirmations(player,!allConfirmations(player));openBedrock(player,Page.CONFIRMATIONS);}
                     else if(clicked>0&&clicked<=ConfirmationKind.values().length){ConfirmationKind kind=ConfirmationKind.values()[clicked-1];set(player,kind.key,!confirmationEnabled(player,kind));openBedrock(player,Page.CONFIRMATIONS);}
@@ -293,11 +295,11 @@ final class SettingsService implements Listener {
         renderChest(inv,player,page);
         player.openInventory(inv);
     }
-    private static final int[] MAIN_SLOTS={10,11,12,13,14,15,16,19,20};
+    private static final int[] MAIN_SLOTS={10,11,12,13,14,15,16,19,20,24};
     private void renderChest(Inventory inv,Player player,Page page){
         inv.clear();
         if(page==Page.MAIN){
-            for(int i=0;i<MAIN.size();i++){Toggle toggle=MAIN.get(i);inv.setItem(MAIN_SLOTS[i],toggle(toggle.icon(),toggle.title(),enabled(player,toggle.key(),toggle.fallback())));}
+            List<Toggle> mt=mainToggles(player);for(int i=0;i<mt.size();i++){Toggle toggle=mt.get(i);inv.setItem(MAIN_SLOTS[i],toggle(toggle.icon(),toggle.title(),enabled(player,toggle.key(),toggle.fallback())));}
             inv.setItem(21,button(Material.ENDER_PEARL,"TPA Requests",List.of("Configure who can send you teleport requests.")));
             inv.setItem(22,button(Material.NAME_TAG,"Nametags",List.of("Show balances or faction tags under player names.")));
             inv.setItem(23,cycle(Material.FIREWORK_STAR,"Particle Intensity",particles(player)));
@@ -329,7 +331,7 @@ final class SettingsService implements Listener {
         if(locked(player,true))return;
         int slot=event.getRawSlot();
         if(holder.page==Page.MAIN){
-            for(int i=0;i<MAIN_SLOTS.length;i++)if(slot==MAIN_SLOTS[i]){Toggle toggle=MAIN.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
+            List<Toggle> mt=mainToggles(player);for(int i=0;i<mt.size();i++)if(slot==MAIN_SLOTS[i]){Toggle toggle=mt.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
             if(slot==21)openChest(player,Page.TPA);
             else if(slot==22)openChest(player,Page.NAMETAGS);
             else if(slot==23){cycleParticles(player);renderChest(event.getInventory(),player,Page.MAIN);}
@@ -360,6 +362,25 @@ final class SettingsService implements Listener {
     private boolean allConfirmations(Player player){return Arrays.stream(ConfirmationKind.values()).allMatch(kind->confirmationEnabled(player,kind));}
     private void setAllConfirmations(Player player,boolean enabled){for(ConfirmationKind kind:ConfirmationKind.values())db.preference(CoreUtil.id(player),kind.key,Boolean.toString(enabled));CoreUtil.msg(player,"Routine Purchase Confirmations "+(enabled?"enabled":"disabled")+". Mandatory confirmations remain on.");}
     boolean naturalSpawns(Player player){return enabled(player,"natural_spawns",true);}
+    boolean eliteMobs(Player player){return enabled(player,"elite_mobs",true);}
+    /** Elite Mobs is a SUBSET of Hostile Mobs: a player "allows" elites near them only when both are on. */
+    private boolean elitesOn(Player player){return naturalSpawns(player)&&eliteMobs(player);}
+    /** The settings screens render this instead of MAIN so the Elite Mobs row is absent when Hostile Mobs is
+     *  off. Elite Mobs is the LAST entry in MAIN, so dropping it leaves every other toggle's index/slot put. */
+    private List<Toggle> mainToggles(Player player){return naturalSpawns(player)?MAIN:MAIN.stream().filter(t->!t.key().equals("elite_mobs")).toList();}
+    /** Spawn-influence test for elites, mirroring the Hostile-Mobs gate: an elite may exist at loc only if no
+     *  nearby player has elites off, unless some nearby player has them on (the on-player overrides). */
+    boolean elitesAllowedAt(Location loc){
+        if(loc==null||loc.getWorld()==null)return true;
+        double radius=plugin.getConfig().getDouble("settings.natural-spawn-influence-radius",128),radiusSq=radius*radius;
+        boolean anyOff=false;
+        for(Player player:plugin.getServer().getOnlinePlayers()){
+            if(player.getWorld()!=loc.getWorld()||player.getLocation().distanceSquared(loc)>radiusSq)continue;
+            if(elitesOn(player))return true;
+            anyOff=true;
+        }
+        return !anyOff;
+    }
     boolean graveTracking(Player player){return enabled(player,"grave_tracking",true);}
     boolean bossNotifications(Player player){return enabled(player,"boss_notifications",true);}
     boolean privateMessages(Player player){return enabled(player,"private_messages",true);}
@@ -392,6 +413,7 @@ final class SettingsService implements Listener {
         if("sidebar".equals(key)){if(enabled)plugin.ui().update(player);else plugin.ui().removeSidebar(player);}
         if("night_vision".equals(key)){if(enabled)applyNightVision(player);else removeNightVision(player);}
         if("natural_spawns".equals(key)&&!enabled)peacefulFor(player);
+        if("elite_mobs".equals(key)&&!enabled)eliteSweepNow(player);
         if(key.startsWith("nametag_"))plugin.packetNametags().viewerSettingChanged(player);
         CoreUtil.msg(player,displayKey(key)+" "+(enabled?"enabled":"disabled")+".");
     }
@@ -425,11 +447,19 @@ final class SettingsService implements Listener {
     }
     private void removeNightVision(Player player){if(appliedNightVision.remove(player.getUniqueId()))player.removePotionEffect(PotionEffectType.NIGHT_VISION);}
     private void peacefulTick(){
-        List<Player> disabled=new ArrayList<>();List<Location> enabledLocations=new ArrayList<>();
-        for(Player player:plugin.getServer().getOnlinePlayers())if(naturalSpawns(player))enabledLocations.add(player.getLocation());else disabled.add(player);
-        if(disabled.isEmpty())return;
         double radius=plugin.getConfig().getDouble("settings.natural-spawn-influence-radius",128),radiusSq=radius*radius;
+        List<Player> disabled=new ArrayList<>();List<Location> enabledLocations=new ArrayList<>();
+        List<Player> eliteDisabled=new ArrayList<>();List<Location> eliteEnabledLocations=new ArrayList<>();
+        for(Player player:plugin.getServer().getOnlinePlayers()){
+            boolean hostile=naturalSpawns(player);
+            if(hostile)enabledLocations.add(player.getLocation());else disabled.add(player);
+            /** Fully-on players protect elites; Hostile-on/Elite-off players drive an elite-only sweep.
+             *  Hostile-off players are already covered by the hostile sweep, so they skip the elite pass. */
+            if(hostile&&eliteMobs(player))eliteEnabledLocations.add(player.getLocation());
+            else if(hostile)eliteDisabled.add(player);
+        }
         for(Player player:disabled)peacefulFor(player,enabledLocations,radius,radiusSq);
+        for(Player player:eliteDisabled)eliteSweepFor(player,eliteEnabledLocations,radius,radiusSq);
     }
     private void peacefulFor(Player player){
         double radius=plugin.getConfig().getDouble("settings.natural-spawn-influence-radius",128);
@@ -450,6 +480,23 @@ final class SettingsService implements Listener {
             boolean protectedByNearbyOnPlayer=enabledLocations.stream().anyMatch(loc->loc.getWorld().equals(mobLocation.getWorld())&&loc.distanceSquared(mobLocation)<=radiusSq);
             if(!protectedByNearbyOnPlayer)enemy.remove();
         }
+    }
+    /** Elite-only despawn sweep -- identical in shape to peacefulFor above but scoped to ordinary elites, for
+     *  players who kept Hostile Mobs on but turned Elite Mobs off. An elite survives only if a nearby
+     *  Elite-on player is within range of the elite's own position. */
+    private void eliteSweepFor(Player player,List<Location> eliteEnabledLocations,double radius,double radiusSq){
+        for(org.bukkit.entity.Entity entity:player.getNearbyEntities(radius,radius,radius)){
+            if(!(entity instanceof org.bukkit.entity.LivingEntity living)||!plugin.bosses().isOrdinaryElite(living))continue;
+            Location mobLocation=entity.getLocation();
+            boolean protectedByNearbyOnPlayer=eliteEnabledLocations.stream().anyMatch(loc->loc.getWorld().equals(mobLocation.getWorld())&&loc.distanceSquared(mobLocation)<=radiusSq);
+            if(!protectedByNearbyOnPlayer)living.remove();
+        }
+    }
+    private void eliteSweepNow(Player player){
+        double radius=plugin.getConfig().getDouble("settings.natural-spawn-influence-radius",128);
+        List<Location> eliteEnabledLocations=new ArrayList<>();
+        for(Player other:plugin.getServer().getOnlinePlayers())if(!other.getUniqueId().equals(player.getUniqueId())&&elitesOn(other))eliteEnabledLocations.add(other.getLocation());
+        eliteSweepFor(player,eliteEnabledLocations,radius,radius*radius);
     }
     /** Bastion garrison mobs, judged by BOTH what they are and where they stand.
      *
@@ -516,7 +563,7 @@ final class SettingsService implements Listener {
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()==9&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
+    boolean selfTest(){return MAIN.size()==10&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 

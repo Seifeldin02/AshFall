@@ -339,10 +339,10 @@ final class WeeklyDragonService {
      *  simply don't tick (no movement, no AI), which looks identical to "frozen in place" from a player's view. */
     private CompletableFuture<Void> loadPillarArea(World world){
         List<CompletableFuture<Chunk>> loads=new ArrayList<>();
-        for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++){world.setChunkForceLoaded(cx,cz,true);loads.add(world.getChunkAtAsync(cx,cz,true));}
+        for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++){plugin.bosses().ownForceLoad(world,cx,cz,"DRAGON");loads.add(world.getChunkAtAsync(cx,cz,true));}
         return CompletableFuture.allOf(loads.toArray(new CompletableFuture[0]));
     }
-    private void releasePillarArea(World world){for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++)world.setChunkForceLoaded(cx,cz,false);}
+    private void releasePillarArea(World world){for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++)plugin.bosses().ownRelease(world,cx,cz);}
     /** Bounded safety net, not the normal release path (see attemptRespawn) — releases in 30 minutes unless a
      *  live weekly dragon is present, so a respawn nobody ever showed up for doesn't pin the arena forever. If a
      *  player arrives after this fires, tick() force-adds its own DRAGON chunk ticket the moment it sees them,

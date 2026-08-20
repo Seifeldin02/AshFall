@@ -93,6 +93,18 @@ final class ShardService implements Listener {
     }
 
     ItemStack displayItem(Stock stock){return createReward(stock);}
+    /** Every special tool the shard shop sells. A boss roll that succeeds picks uniformly from these
+     *  instead of always minting a pickaxe; the TOTAL chance to win a tool is unchanged. */
+    java.util.List<String> specialToolKeys(){
+        java.util.List<String> keys=plugin.getConfig().getStringList("special-tools.keys");
+        return keys.isEmpty()?java.util.List.of("fortune_excavator","silk_excavator","fortune_shovel","silk_shovel","feller_axe","market_axe"):keys;}
+    ItemStack randomSpecialTool(){
+        java.util.List<String> keys=specialToolKeys();
+        for(int attempt=0;attempt<keys.size();attempt++){
+            Stock pick=stock(keys.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(keys.size())));
+            if(pick!=null){ItemStack made=displayItem(pick);if(made!=null)return made;}
+        }
+        return excavatorPickaxe(Math.random()<.5);}
     ItemStack excavatorPickaxe(boolean fortune){return tool(Material.NETHERITE_PICKAXE,"EXCAVATOR",fortune?Map.of(Enchantment.EFFICIENCY,5,Enchantment.FORTUNE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1):Map.of(Enchantment.EFFICIENCY,5,Enchantment.SILK_TOUCH,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));}
     private ItemStack create(Player player,Stock stock){ItemStack item=createReward(stock);if(item!=null)bind(item,player,stock.key());return item;}
     private ItemStack createReward(Stock stock){
@@ -217,7 +229,7 @@ final class ShardService implements Listener {
         String description=switch(function){
             case"EXCAVATOR"->"Breaks a careful 3 × 3 area.";
             case"FELLER"->"Fells connected logs.";
-            case"MARKET"->"Right-click to open the Sell Basket.";
+            case"MARKET"->"Right-click a chest to instantly sell its contents.";
             default->"Drink for Haste II (24 hours).";
         };
         meta.lore(List.of(Component.text(description,NamedTextColor.GRAY)));
@@ -296,7 +308,7 @@ final class ShardService implements Listener {
     @EventHandler public void interact(PlayerInteractEvent event){
         Player player=event.getPlayer();activity(player);ItemStack item=event.getItem();if(item==null||!belongsTo(player,item))return;
         ItemMeta meta=item.getItemMeta();String function=meta.getPersistentDataContainer().get(toolKey,PersistentDataType.STRING);
-        if(event.getAction().isRightClick()&&"MARKET".equals(function)){event.setCancelled(true);plugin.marketplace().openSellBasket(player,false);return;}
+        if(event.getAction().isRightClick()&&"MARKET".equals(function)){event.setCancelled(true);plugin.shop().sellAllChest(player);return;}
         if(event.getAction().isRightClick()&&"HASTE_24H".equals(function)){event.setCancelled(true);consumeOne(player,event.getHand(),item);long expiry=Math.max(System.currentTimeMillis(),parseLong(db.state("shard_haste:"+CoreUtil.id(player))))+86400000L;db.state("shard_haste:"+CoreUtil.id(player),Long.toString(expiry));CoreUtil.msg(player,"Haste II active for 24 hours.");return;}
         String cosmetic=meta.getPersistentDataContainer().get(cosmeticTokenKey,PersistentDataType.STRING);
         if(event.getAction().isRightClick()&&cosmetic!=null){event.setCancelled(true);if(db.unlockCosmetic(CoreUtil.id(player),cosmetic)){consumeOne(player,event.getHand(),item);db.activateCosmetic(CoreUtil.id(player),cosmetic);CoreUtil.msg(player,CoreUtil.pretty(cosmetic)+" unlocked and equipped.");}else CoreUtil.msg(player,"You already own this cosmetic.");}

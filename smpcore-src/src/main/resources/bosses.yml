@@ -324,7 +324,15 @@ world-boss-enrage:
   # hand the boss free permanent damage stages.
   combat-idle-freeze-seconds: 120
 
-legendary-sigil-drop-chance: 0.08
+# Sigil drop matrix -- per elite tier, chance to drop an Elite Sigil (echo shard) and/or a Legendary Sigil
+# (nether star). Read live on /ashfall reload. Higher tiers lean legendary; lower tiers keep their elite
+# chance plus a lottery-tier legendary shot. (Elite Sigil = 8 per boss summon; Legendary Sigil = 2, no coin.)
+sigil-drops:
+  uncommon:  {elite: 0.05, legendary: 0.00001}
+  rare:      {elite: 0.15, legendary: 0.0001}
+  epic:      {elite: 0.50, legendary: 0.01}
+  miniboss:  {elite: 0.35, legendary: 0.005}
+  legendary: {elite: 0.25, legendary: 0.50}
 
 dimension-content:
   nether:

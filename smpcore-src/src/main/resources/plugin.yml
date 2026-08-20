@@ -126,9 +126,20 @@ commands:
     description: "Console-only SMPCore admin management: list | add <player> | remove <player> | simlogin <name> (test ban-enforcement listeners without a real client)"
   shout:
     description: Send a prominent server-wide announcement
+  fly:
+    description: Toggle flight for yourself or another player
+    usage: /fly [player] [on|off]
+    permission: smpcore.fly
+  flyspeed:
+    description: Set flight speed (1 = normal, up to 10)
+    usage: /flyspeed [player] <1-10>
+    permission: smpcore.fly
 permissions:
   smpcore.admin:
     description: Full SMPCore administration
+    default: op
+  smpcore.fly:
+    description: Use /fly and /flyspeed
     default: op
   smpcore.play:
     description: Normal SMPCore gameplay

@@ -5,9 +5,138 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-08-17 — Discarded Vault v2 + spawner/market/auction/admin changes — ✅ PROMOTED TO PRODUCTION
+
+**✅ MERGED TO PRODUCTION 2026-08-17 (evening).** Everything in this session is now live on prod: full build
+swapped, `enchants`+`details` migrations ran on the prod DB, `/ashfall selftest` all-green, vault v2 confirmed
+(details-aware aggregate, 13 pages). Prod config carries the clean admin-persist flags (`session-persistence:
+true` + `require-same-ip: true`); shop.yml/other config already matched (the staging-only keys were just
+explicit copies of code defaults). **Gotcha hit during promotion:** a leftover `plugins/update/SMPCore-1.7.0.jar`
+(old build) silently overwrote the swapped jar on the first boot via Paper's update-folder mechanism — caught it
+(vault showed old wording + no new columns), deleted the update folder, re-swapped, and restarted again. So it
+took **two** restarts, not one. Lesson: always clear `plugins/update/` before a jar swap.
+
+Staging DB **and** the full 21GB `world/` were cloned from production (online SQLite backup + `robocopy /MIR`;
+only `session.lock` failed to copy, which is expected and harmless) so the vault could be built and tested
+against real data.
+
+- **Page-3 crash fixed** (also shipped in the prior staging jar): block-only materials with no item form
+  (`TWISTING_VINES_PLANT`, `CAVE_VINES`, …) threw `new ItemStack "isn't an item"` at
+  `DiscardedVaultService.show` and stalled the GUI on whatever page held the first one (page 4). Guarded with
+  `!material.isItem()` → placeholder icon, real name/lore kept.
+- **Merged/stacked spawner counts are now accurate.** `explodedBlocks` recorded `1` per spawner block, so a
+  raid on 12 blocks that were each 10×-merged logged as 12, not ~120. Now reads the real stack size via
+  `SpawnerService.stackSize(spawner)`. **Applies going forward** — the historical xFPu-raid entry can't be
+  retroactively reconstructed (the merge counts were never recorded).
+- **Enchantments captured.** New `discarded_ledger.enchants` column (+ `idx_discarded_material_ench`), migrated
+  additively. `record()` stores a canonical sorted signature (`sharpness:5,unbreaking:3`, incl. book stored
+  enchants); enchanted variants aggregate as their own rows and render with an enchant glint + a readable
+  "Sharpness V, Unbreaking III" line. Plain items are unaffected (empty signature). Going forward only.
+- **Dynamic view, performance-first.** The whole aggregate is built **once per cache window (default 15s) OFF
+  THE MAIN THREAD** (`Database.discardedAggregate`, GROUP BY material,enchants), cached, and then **all**
+  search / sort / category / paging happen **in memory** on that snapshot — so the dynamic controls add zero
+  per-click DB or tick load (the #1 requirement). Controls: **Sort** (Most destroyed / Most recycled / Last
+  destroyed / Name), **Category** (All / Spawners / Enchanted / Gear / Blocks / Food / Items), **Search**
+  (click → type in chat, consumed not broadcast), **Reset**. Console/RCON path unchanged (text dump per page).
+- Config: `discarded-vault.cache-seconds` (default 15).
+
+**Follow-ups same day (staging):**
+- **Full item details captured (view-only, no withdrawal — the anti-dup design is kept).** New
+  `discarded_ledger.details` column. On destruction, `describeItem()` records a compact readable string for
+  *notable* items — **shulker box contents** (aggregated item list, incl. inner enchants), custom name,
+  custom-data/relic marker, and durability-used. Plain commodities stay empty → still aggregate. The GUI renders
+  it as lore ("Contents:" + indented list); search matches details too (find a shulker by what's inside). Going
+  forward only; no historical rows touched (owner instruction).
+- **Persistent, server-wide coordinate toggle.** New "Coordinates: ON/OFF" button (slot 52) in the vault GUI;
+  state stored in DB `state` key `vault_show_coords` so it persists across restarts and applies for everyone.
+  When off, entry lore drops the "at world x,y,z" location.
+- **Player-placed spawner break: removed the hold-to-break timer.** The `relocated-break-seconds` (~10s) mining
+  gate + `MINING_FATIGUE` are gone (they stacked annoyingly with the durability cost). The
+  `relocated-durability-cost` (512) durability hit on recovery is **kept**. `SpawnerService.damage/breaking`.
+- **Shardshop MARKET axe (`market_axe`, Netherite Axe): right-click now instantly sells the chest you're looking
+  at** (`ShopService.sellAllChest`, ray-traced 6 blocks, protection-checked) instead of opening the Sell Basket.
+  Only the `MARKET` branch changed; FELLER axe and the GUI Sell Basket button are untouched.
+- **Auction listing fee is no longer refunded on cancel** (expiry already forfeited it). Failed listings still
+  refund (the item never listed). `AuctionService.cancel`. Bounty placement fee intentionally still refundable
+  (bounty cancellation is mod-only and refunds everything).
+
+### Admin login persistence — refactor (staging) + enabled on PRODUCTION (config-only)
+
+`TrustedAdminService` refactored to a clean, self-documenting pair: `trusted-admin.session-persistence` (master
+switch — skip the /login password across restarts via AuthMe session restore) + `trusted-admin.require-same-ip`
+(default true — constrain it to connections from the SAME IP as the server: its own machine / LAN IP / loopback,
+via `isThisMachine`). Legacy `staging-session-persistence` (no IP constraint) and `same-machine-autologin` (IP
+constraint) are still honored, so nothing breaks. **The refactored jar is staging-only** (it also carries the
+rest of the unpromoted staging work, so it must NOT go to prod yet).
+
+**On production it was enabled config-only, live, no restart:** set `trusted-admin.same-machine-autologin: true`
++ `/ashfall reload` — the running prod jar already has that mechanism, so admins (MacoCT/Asserto) reconnecting
+from the server's own IP get their session restored; a different IP still requires /login. Reversible now via
+that flag; when the full staging build is eventually promoted, prod switches to `require-same-ip: false` to drop
+the constraint for external hosting.
+
+
+
+**Deployed to production this session in a single announced (30s) restart** — and that same restart finally
+promotes the entire 2026-08-14 → 2026-08-15 staged batch below (Central Bank deficit surcharge, enchanted-item
+orders, duel polish + totems-in-duels + invisible-nametags, and the **BIG net-worth lag fix**), whose jar had
+been staged on prod but never restarted. Confirmed every optimization in this log ships in this jar: NetWorth
+non-asset fast-path (`removed()`/`blockChanged()` gate — the main lag fix), `BankService.deficit()` 1s cache,
+arena wager-tax / ESC-cancel / totem-in-duel / spectator survival+hide, PacketNametag invisible-tag hook.
+
+### xFPu bounty audit — NOT a bug
+xFPu's ~200k bounty is legitimate player money, not a glitch. `bounty_contributions` shows **ofxbr** stacked
+three manual bounties (100,000 + 95,000 + 100) on top of the single **5,000** auto-bounty (`BANK_AUTO`). The
+auto-bounty formula is unchanged and correctly capped (base 5k × betrayal/victim scaling, hard cap 2% of
+treasury). No code change.
+
+### A single diamond now costs $1,000
+`shop.yml` `DIAMOND.sell` 40 → **200**; buy is derived (`sell × shop.buy-multiple` = ×5) so buy = **1,000**
+automatically. Applied to resource + staging + prod on-disk shop.yml. Pre-existing stale `shop.selfTest()` pin
+(still expected the old **Dragon Egg 50M**, failing identically on prod) aligned to the live **2M** price so the
+deploy self-test is green again — no economy change, the egg stays 2M.
+
+### Idle auto-AFK (30 min)
+`AfkService` now tracks `lastActive` per player (seeded on join, updated on block-movement and chat) and a
+once-a-minute task flags anyone idle ≥ `afk.idle-minutes` (**default 30**) as AFK. Any movement/chat clears it,
+exactly like the manual toggle. `shutdown()` cancels the task (wired in `onDisable`).
+
+### Luxury shop — less spam, quantity, bulk buying
+- **Announcements gated to big buys.** `celebrateLuxury` only broadcasts when the purchase total ≥
+  `shop.luxury-announce-threshold` (**default 500,000**); smaller luxury buys are silent. Wind-Charge keeps its
+  quiet local sound only.
+- **Quantity in the shout.** Every luxury broadcast now reads "**… has bought Nx <item> …**" (elytra, dragon
+  egg and the generic line all include the count).
+- **Shift-click bulk buying now works in the Luxury section** too (was Shop-only): shift-click = **16×**.
+  Removed the `amount=1` clamp in `ShopService.buy` for luxuries (affordability + inventory-fit still enforced;
+  the mandatory ≥2M confirmation still applies at the higher bulk cost).
+
+### Central Bank admin balance control
+New `/ashfall bank <add|remove|set> <amount>` (accepts `k`/`m` suffixes); no-arg prints the balance.
+`Database.adjustBank(delta)` does an authoritative `balance += delta` (may go negative — that's what arms the
+deficit surcharge), wrapped by `BankService.adminAdjust`. Audited via `logAudit` (`BANK_ADD/REMOVE/SET`). Added
+to admin help, section help, and tab-complete. Verified on staging: add/remove/set math exact, both guards fire.
+
+### Elite Mobs settings toggle (subset of Hostile Mobs)
+New **Elite Mobs** toggle (`elite_mobs`, default on), mirroring Hostile Mobs but scoped to elites:
+- **Spawn block:** natural elite upgrades are gated on `SettingsService.elitesAllowedAt(loc)` in
+  `BossEventService.onSpawn` — an elite won't form near a player with elites off unless a nearby player has them
+  on (same influence radius + override as hostile spawns). World-event/CUSTOM elites are unaffected, exactly as
+  world bosses are unaffected by Hostile Mobs off.
+- **Despawn sweep:** the peaceful task now also removes ordinary elites (`isOrdinaryElite`) near elite-off
+  players, with the same nearby-on-player override; toggling elites off sweeps immediately.
+- **Subset rule:** because elites are a subset of hostile mobs, a player "allows" elites only when BOTH are on,
+  and the Elite Mobs row is **hidden entirely** from the settings GUI (native/bedrock/chest all render
+  `mainToggles(player)`) whenever Hostile Mobs is off. Elite Mobs is the last MAIN entry, so hiding it never
+  shifts any other toggle's slot. `SettingsService.selfTest()` MAIN count 9 → 10.
+
+---
+
 ## Session: 2026-08-14 → 2026-08-15
 
-Branch `staging`. All work below is on staging and NOT yet deployed to production.
+Branch `staging`. **Promoted to production 2026-08-16 (evening)** alongside the 2026-08-16 batch above, in one
+announced restart — the deficit surcharge, enchanted orders, duel polish and the BIG net-worth lag fix below are
+now live on prod.
 
 ### Enchanted-item orders + duel wager confirm + kit glow (staging)
 

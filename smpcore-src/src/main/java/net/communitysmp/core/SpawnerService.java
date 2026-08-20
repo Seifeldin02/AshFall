@@ -29,7 +29,7 @@ final class SpawnerService {
     private final SMPCore plugin;
     private final Database db;
     private final FactionService factions;
-    private final NamespacedKey typeKey,placedKey,historiesKey,stackKey,identityKey,identitiesKey,spawnerMobKey,raidFactionKey,virtualKey;
+    private final NamespacedKey typeKey,placedKey,historiesKey,stackKey,identityKey,identitiesKey,spawnerMobKey,raidFactionKey,virtualKey,sourceIdsKey;
     private final Map<UUID,Long> warned=new HashMap<>();
     private final Map<String,Long> miningStarted=new HashMap<>();
     private final Map<String,Long> tntOwners=new HashMap<>();
@@ -38,8 +38,9 @@ final class SpawnerService {
 
     SpawnerService(SMPCore plugin,FactionService factions){
         this.plugin=plugin;this.db=plugin.db();this.factions=factions;
-        virtualKey=new NamespacedKey(plugin,"virtual_stack");typeKey=new NamespacedKey(plugin,"spawner_type");placedKey=new NamespacedKey(plugin,"placed_spawner");historiesKey=new NamespacedKey(plugin,"spawner_histories");stackKey=new NamespacedKey(plugin,"spawner_stack");identityKey=new NamespacedKey(plugin,"spawner_identity");identitiesKey=new NamespacedKey(plugin,"spawner_identities");spawnerMobKey=new NamespacedKey(plugin,"spawner_mob");raidFactionKey=new NamespacedKey(plugin,"raid_faction");
+        sourceIdsKey=new NamespacedKey(plugin,"spawner_source_ids");virtualKey=new NamespacedKey(plugin,"virtual_stack");typeKey=new NamespacedKey(plugin,"spawner_type");placedKey=new NamespacedKey(plugin,"placed_spawner");historiesKey=new NamespacedKey(plugin,"spawner_histories");stackKey=new NamespacedKey(plugin,"spawner_stack");identityKey=new NamespacedKey(plugin,"spawner_identity");identitiesKey=new NamespacedKey(plugin,"spawner_identities");spawnerMobKey=new NamespacedKey(plugin,"spawner_mob");raidFactionKey=new NamespacedKey(plugin,"raid_faction");
         plugin.getServer().getScheduler().runTaskLater(plugin,this::migrateLoadedFactionSpawners,100L);
+        plugin.getServer().getScheduler().runTaskTimer(plugin,this::logGolemDayRollover,1200L,6000L);
         hoverTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::hoverTick,10L,
                 Math.max(5L,plugin.getConfig().getLong("performance.spawner-hover-ticks",10)));
     }
@@ -55,15 +56,14 @@ final class SpawnerService {
     void damage(BlockDamageEvent event){
         if(event.getBlock().getType()!=Material.SPAWNER)return;if(!(event.getBlock().getState() instanceof CreatureSpawner spawner))return;
         if(!validTool(event.getItemInHand())){warn(event.getPlayer());return;}int recovery=selectedHistory(spawner);if(recovery<1)return;
-        String key=miningKey(event.getPlayer(),event.getBlock());long now=System.currentTimeMillis();miningStarted.putIfAbsent(key,now);
-        event.getPlayer().addPotionEffect(new PotionEffect(PotionEffectType.MINING_FATIGUE,300,0,false,false,false));
-        long seconds=Math.max(1,plugin.getConfig().getLong("spawner-breaking.relocated-break-seconds",10));if(now-warned.getOrDefault(event.getPlayer().getUniqueId(),0L)>1500){warned.put(event.getPlayer().getUniqueId(),now);CoreUtil.error(event.getPlayer(),"Relocated spawner: mine for about "+seconds+"s; recovery costs "+plugin.getConfig().getInt("spawner-breaking.relocated-durability-cost",512)+" durability.");}
+        /** No hold-to-break timer any more (it stacked awkwardly with the durability cost) -- just a one-off
+         *  heads-up that recovering the spawner costs tool durability. */
+        long now=System.currentTimeMillis();if(now-warned.getOrDefault(event.getPlayer().getUniqueId(),0L)>1500){warned.put(event.getPlayer().getUniqueId(),now);CoreUtil.error(event.getPlayer(),"Recovering this spawner costs "+plugin.getConfig().getInt("spawner-breaking.relocated-durability-cost",512)+" tool durability.");}
     }
 
     boolean breaking(BlockBreakEvent event){
         Block block=event.getBlock();if(block.getType()!=Material.SPAWNER)return false;Player player=event.getPlayer();if(!(block.getState() instanceof CreatureSpawner spawner)){event.setCancelled(true);return true;}
         int[] histories=histories(spawner);String[] identities=identities(spawner,histories.length);int selected=histories[histories.length-1];String selectedIdentity=identities[identities.length-1];EntityType mobType=spawner.getSpawnedType();ItemStack tool=player.getInventory().getItemInMainHand();boolean pickup=validTool(tool);
-        if(pickup&&selected>=1){long required=Math.max(1,plugin.getConfig().getLong("spawner-breaking.relocated-break-seconds",10))*1000L,started=miningStarted.getOrDefault(miningKey(player,block),0L),remaining=required-(System.currentTimeMillis()-started);if(started==0||remaining>0){event.setCancelled(true);CoreUtil.error(player,"Keep mining this relocated spawner for about "+Math.max(1,(remaining+999)/1000)+"s.");return true;}}
         event.setCancelled(true);event.setDropItems(false);event.setExpToDrop(0);
         if(histories.length>1){setHistories(spawner,Arrays.copyOf(histories,histories.length-1));setIdentities(spawner,Arrays.copyOf(identities,identities.length-1));spawner.update(true);plugin.getServer().getScheduler().runTask(plugin,()->plugin.netWorth().blockChanged(block));}
         else{plugin.netWorth().removed(block);block.setType(Material.AIR,false);}
@@ -149,13 +149,25 @@ final class SpawnerService {
          *  production from being multiplied twice. */
         int add=Math.max(1,stackSize(spawner));
         int cap=Math.max(2,plugin.getConfig().getInt("spawners.virtual-stack-cap",100));
+        /** Stamp the mob with the identities of the spawner that produced it. The payout allowance is
+         *  charged against those identities, not against the killer, so it scales with the represented
+         *  spawner count and cannot be reset by rearranging blocks. */
+        int units=Math.max(1,stackSize(spawner));
+        String[] unitIds=identities(spawner,units);
+        String source=String.join(",",unitIds);
+        /** identities() mints a fresh UUID for any slot it finds empty and does NOT store it, so without
+         *  persisting here a spawner that never went through placed() would hand out new identities every
+         *  cycle and its daily allowance would reset continuously. Written only when it actually differs. */
+        if(!source.equals(spawner.getPersistentDataContainer().get(identitiesKey,PersistentDataType.STRING))){setIdentities(spawner,unitIds);spawner.update(true);}
         LivingEntity host=findStackHost(spawned,cap);
         if(host!=null){
             setVirtualStack(host,Math.min(cap,virtualStack(host)+add));
+            host.getPersistentDataContainer().set(sourceIdsKey,PersistentDataType.STRING,source);
             event.setCancelled(true);
             return;
         }
         setVirtualStack(spawned,Math.min(cap,add));
+        spawned.getPersistentDataContainer().set(sourceIdsKey,PersistentDataType.STRING,source);
     }
     /** Nearest living representative of the same type that still has room. Deliberately a small radius:
      *  representatives should cluster at the farm, not merge across a whole chunk. */
@@ -217,6 +229,24 @@ final class SpawnerService {
         }
         return best;
     }
+    /** The spawner units that produced this mob. Empty when the mob did not come from a placed spawner. */
+    java.util.List<String> sourceIdentities(Entity entity){
+        String raw=entity==null?null:entity.getPersistentDataContainer().get(sourceIdsKey,PersistentDataType.STRING);
+        if(raw==null||raw.isBlank())return java.util.List.of();
+        java.util.List<String> out=new java.util.ArrayList<>();
+        for(String part:raw.split(","))if(!part.isBlank())out.add(part);
+        return out;}
+
+    /** Logs the previous reward day's golem-spawner totals when the 12:00 Asia/Riyadh day rolls over, so
+     *  the model can be retuned later from measured server data rather than from estimates. */
+    private String lastLoggedDay=CoreUtil.riyadhDay();
+    void logGolemDayRollover(){
+        String today=CoreUtil.riyadhDay();
+        if(today.equals(lastLoggedDay))return;
+        double[] totals=db.golemDaily(lastLoggedDay);
+        plugin.getLogger().info("[golem-spawner] "+lastLoggedDay+": represented kills="+(long)totals[0]+", payout="+CoreUtil.money(totals[1]));
+        lastLoggedDay=today;}
+
     int virtualStack(Entity entity){
         if(entity==null)return 0;
         return entity.getPersistentDataContainer().getOrDefault(virtualKey,PersistentDataType.INTEGER,0);
@@ -247,6 +277,9 @@ final class SpawnerService {
      *  than re-running any reward logic and risking a double payout. Drops are merged into full stacks so
      *  a x100 kill produces a handful of item entities instead of hundreds. */
     void stackedDeath(org.bukkit.event.entity.EntityDeathEvent event){
+        /** Custom golem-spawner golems drop XP (vanilla Iron Golems drop none) -- 2x a Blaze (20). Exclusive to
+         *  spawner-origin golems; the virtual-stack multiply below then scales it like every other spawner drop. */
+        if(event.getEntity().getType()==EntityType.IRON_GOLEM&&event.getEntity().getPersistentDataContainer().has(spawnerMobKey))event.setDroppedExp(Math.max(event.getDroppedExp(),plugin.getConfig().getInt("spawner-golem-exp",20)));
         int stack=virtualStack(event.getEntity());
         if(stack<=1)return;
         java.util.Map<org.bukkit.Material,Integer> totals=new java.util.LinkedHashMap<>();

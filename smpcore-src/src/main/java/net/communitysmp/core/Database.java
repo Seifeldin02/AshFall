@@ -191,8 +191,14 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS smp_order_stash (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, item BLOB NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_stash_owner ON smp_order_stash(owner)");
             s.execute("CREATE TABLE IF NOT EXISTS spawner_kill_counts (player TEXT NOT NULL, mob_type TEXT NOT NULL, day TEXT NOT NULL, killed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(player,mob_type,day))");
+            s.execute("CREATE TABLE IF NOT EXISTS plugin_forced_chunks (world TEXT NOT NULL, cx INTEGER NOT NULL, cz INTEGER NOT NULL, owner TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(world,cx,cz))");
+            s.execute("CREATE TABLE IF NOT EXISTS spawner_allowance (spawner_id TEXT NOT NULL, day TEXT NOT NULL, represented INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(spawner_id,day))");
+            s.execute("CREATE TABLE IF NOT EXISTS golem_spawner_daily (day TEXT PRIMARY KEY, represented_kills INTEGER NOT NULL DEFAULT 0, payout REAL NOT NULL DEFAULT 0)");
             s.execute("CREATE TABLE IF NOT EXISTS discarded_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, material TEXT NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL, recycled INTEGER NOT NULL DEFAULT 0, world TEXT NOT NULL DEFAULT '', x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0, z INTEGER NOT NULL DEFAULT 0)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material ON discarded_ledger(material)");
+            try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN enchants TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
+            s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material_ench ON discarded_ledger(material,enchants)");
+            try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN details TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
             s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS staff_notes_player ON staff_notes(player_uuid,created_at DESC)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
@@ -817,14 +823,46 @@ final class Database implements AutoCloseable {
         return before;
     }
     /** Housekeeping: reward days older than a fortnight are of no further use. */
-    synchronized void pruneSpawnerKills(String keepFrom){update("DELETE FROM spawner_kill_counts WHERE day<?",keepFrom);}
+    synchronized void pruneSpawnerKills(String keepFrom){update("DELETE FROM spawner_kill_counts WHERE day<?",keepFrom);update("DELETE FROM spawner_allowance WHERE day<?",keepFrom);}
+
+    /** Chunks this PLUGIN force-loaded. Only rows recorded here are ever released again, which is what
+     *  keeps an administrator's own /forceload rectangles untouched: they are never written here, so no
+     *  cleanup path can see them. Rows surviving a restart are stale by definition -- a live ticket never
+     *  outlives the process -- so startup reconciliation releases them. */
+    synchronized void addForcedChunk(String world,int cx,int cz,String owner){
+        update("INSERT INTO plugin_forced_chunks(world,cx,cz,owner,created_at) VALUES(?,?,?,?,?) ON CONFLICT(world,cx,cz) DO UPDATE SET owner=excluded.owner",world,cx,cz,owner,System.currentTimeMillis());}
+    synchronized void removeForcedChunk(String world,int cx,int cz){
+        update("DELETE FROM plugin_forced_chunks WHERE world=? AND cx=? AND cz=?",world,cx,cz);}
+    synchronized java.util.List<int[]> forcedChunkCoords(String world){
+        return list("SELECT cx,cz FROM plugin_forced_chunks WHERE world=?",rs->new int[]{rs.getInt("cx"),rs.getInt("cz")},world);}
+    synchronized java.util.List<String> forcedChunkWorlds(){
+        return list("SELECT DISTINCT world FROM plugin_forced_chunks",rs->rs.getString("world"));}
+
+    /** Full-rate allowance is tracked per REPRESENTED SPAWNER rather than per player, so a x10 stack gets
+     *  ten times the allowance and stacking is not punished. Every unit in a stack is debited its equal
+     *  share of each kill, which is what makes the allowance survive breaking, moving and splitting: the
+     *  identities travel with the spawner items, so a split hands each piece the consumption it already
+     *  carried instead of handing it a fresh day. */
+    synchronized int spawnerAllowanceUsed(java.util.List<String> ids,String day){
+        int total=0;for(String id:ids)total+=integer("SELECT represented FROM spawner_allowance WHERE spawner_id=? AND day=?",id,day);return total;}
+    synchronized void addSpawnerAllowance(java.util.List<String> ids,String day,int represented){
+        if(ids.isEmpty()||represented<=0)return;int n=ids.size(),each=represented/n,extra=represented%n;
+        for(int i=0;i<n;i++){int share=each+(i<extra?1:0);if(share<=0)continue;
+            update("INSERT INTO spawner_allowance(spawner_id,day,represented) VALUES(?,?,?) ON CONFLICT(spawner_id,day) DO UPDATE SET represented=represented+excluded.represented",ids.get(i),day,share);}}
+
+    /** Daily golem-spawner telemetry, kept so the model can be rebalanced from real server data. */
+    synchronized void recordGolemDaily(String day,int kills,double payout){
+        update("INSERT INTO golem_spawner_daily(day,represented_kills,payout) VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET represented_kills=represented_kills+excluded.represented_kills,payout=payout+excluded.payout",day,kills,payout);}
+    synchronized double[] golemDaily(String day){
+        return new double[]{integer("SELECT represented_kills FROM golem_spawner_daily WHERE day=?",day),
+                            scalarDouble("SELECT payout FROM golem_spawner_daily WHERE day=?",day)};}
 
     /** One statement for a whole batch of destroyed items rather than one per item. */
     synchronized void recordDiscarded(java.util.List<Object[]> rows){
         if(rows.isEmpty())return;
-        StringBuilder sql=new StringBuilder("INSERT INTO discarded_ledger(occurred_at,material,amount,reason,recycled,world,x,y,z) VALUES");
+        StringBuilder sql=new StringBuilder("INSERT INTO discarded_ledger(occurred_at,material,amount,reason,recycled,world,x,y,z,enchants,details) VALUES");
         List<Object> args=new ArrayList<>();
-        for(int i=0;i<rows.size();i++){sql.append(i==0?"":",").append("(?,?,?,?,?,?,?,?,?)");args.addAll(Arrays.asList(rows.get(i)));}
+        for(int i=0;i<rows.size();i++){sql.append(i==0?"":",").append("(?,?,?,?,?,?,?,?,?,?,?)");args.addAll(Arrays.asList(rows.get(i)));}
         update(sql.toString(),args.toArray());
     }
     /** Batched counterpart of shopStockAdd: a single upsert covering every material in the batch. */
@@ -844,6 +882,10 @@ final class Database implements AutoCloseable {
     }
     /** Per-material totals with the details of the most recent destruction. SQLite takes the bare columns
      *  from the same row that produced MAX(occurred_at), so "last reason/where" needs no second query. */
+    synchronized List<String[]> discardedAggregate(int limit){
+        return list("SELECT material,COALESCE(enchants,''),COALESCE(details,''),SUM(amount),SUM(CASE WHEN recycled=1 THEN amount ELSE 0 END),reason,world,x,y,z,MAX(occurred_at) FROM discarded_ledger GROUP BY material,COALESCE(enchants,''),COALESCE(details,'') ORDER BY SUM(amount) DESC LIMIT ?",
+                rs->new String[]{rs.getString(1),rs.getString(2)==null?"":rs.getString(2),rs.getString(3)==null?"":rs.getString(3),String.valueOf(rs.getLong(4)),String.valueOf(rs.getLong(5)),rs.getString(6),rs.getString(7),String.valueOf(rs.getInt(8)),String.valueOf(rs.getInt(9)),String.valueOf(rs.getInt(10)),String.valueOf(rs.getLong(11))},limit);
+    }
     synchronized List<String[]> discardedTotals(int limit){
         return list("SELECT material,SUM(amount),SUM(CASE WHEN recycled=1 THEN amount ELSE 0 END),reason,world,x,y,z,MAX(occurred_at) FROM discarded_ledger GROUP BY material ORDER BY SUM(amount) DESC LIMIT ?",
                 rs->new String[]{rs.getString(1),String.valueOf(rs.getLong(2)),String.valueOf(rs.getLong(3)),rs.getString(4),rs.getString(5),String.valueOf(rs.getInt(6)),String.valueOf(rs.getInt(7)),String.valueOf(rs.getInt(8)),String.valueOf(rs.getLong(9))},limit);
@@ -870,6 +912,10 @@ final class Database implements AutoCloseable {
     /** Debits the treasury directly (no player account involved) for bank-funded spend like auto-bounties.
      *  The WHERE-clause balance guard makes this atomically insolvency-safe: it simply fails if the
      *  treasury can't actually afford it, the same way issueLoan already protects loan issuance. */
+    /** Direct admin balance adjustment (delta may be negative). Unlike debitBank this does not require the
+     *  treasury to already hold the amount -- admins set the balance authoritatively, and the bank is allowed
+     *  to run negative (that negative is exactly what turns on the deficit surcharge). */
+    synchronized void adjustBank(double delta){update("UPDATE central_bank SET balance=balance+?,updated_at=? WHERE id=1",delta,System.currentTimeMillis());}
     synchronized boolean debitBank(double amount,String detail){
         amount=roundMoney(amount);if(amount<=0)return false;
         if(update("UPDATE central_bank SET balance=balance-?,updated_at=? WHERE id=1 AND balance>=?",amount,System.currentTimeMillis(),amount)!=1)return false;

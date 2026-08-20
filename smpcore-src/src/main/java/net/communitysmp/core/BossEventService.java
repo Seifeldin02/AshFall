@@ -100,7 +100,34 @@ final class BossEventService {
     private World forcedBossWorld;private int forcedBossChunkX,forcedBossChunkZ;private boolean forcedBossChunkSet;
     private BukkitTask ticker, visuals, motionTask;
 
+    /** Force-load a chunk on behalf of an event, recording ownership so it can always be found again. */
+    void ownForceLoad(World world,int cx,int cz,String owner){
+        if(world==null)return;
+        world.setChunkForceLoaded(cx,cz,true);
+        db.addForcedChunk(world.getName(),cx,cz,owner);}
+    /** Release a chunk ONLY if this plugin owns it. An admin rectangle is never recorded, so it is never
+     *  cleared here even when an event happens to run inside one. */
+    void ownRelease(World world,int cx,int cz){
+        if(world==null)return;
+        boolean owned=false;
+        for(int[] c:db.forcedChunkCoords(world.getName()))if(c[0]==cx&&c[1]==cz){owned=true;break;}
+        if(!owned)return;
+        world.setChunkForceLoaded(cx,cz,false);
+        db.removeForcedChunk(world.getName(),cx,cz);}
+    /** Startup/shutdown reconciliation: release every chunk still recorded as plugin-owned. After a clean
+     *  stop this finds nothing; after a crash it clears exactly the tickets the plugin leaked. */
+    int reconcileForcedChunks(){
+        int cleared=0;
+        for(String name:db.forcedChunkWorlds()){
+            World world=plugin.getServer().getWorld(name);
+            for(int[] c:db.forcedChunkCoords(name)){
+                if(world!=null)world.setChunkForceLoaded(c[0],c[1],false);
+                db.removeForcedChunk(name,c[0],c[1]);cleared++;}}
+        if(cleared>0)plugin.getLogger().info("[chunks] released "+cleared+" stale plugin-owned force-loaded chunk(s)");
+        return cleared;}
+
     BossEventService(SMPCore plugin, FactionService factions, RelicService relics) {
+        plugin.getServer().getScheduler().runTaskLater(plugin,this::reconcileForcedChunks,60L);
         this.plugin = plugin; this.db = plugin.db(); this.factions = factions; this.relics = relics;
         bossAddKey = new NamespacedKey(plugin, "world_boss_add");
         tierKey = new NamespacedKey(plugin, "elite_tier"); spawnerKey = new NamespacedKey(plugin, "spawner_mob"); phaseKey = new NamespacedKey(plugin, "boss_phase"); treasureKey = new NamespacedKey(plugin, "event_treasure"); abilityKey = new NamespacedKey(plugin, "elite_ability"); curerKey = new NamespacedKey(plugin, "zombie_curer"); eventEliteKey = new NamespacedKey(plugin, "event_elite"); burstKey = new NamespacedKey(plugin, "elite_burst");originKey=new NamespacedKey(plugin,"boss_origin");summonKey=new NamespacedKey(plugin,"sealed_omen");eliteSpawnedAtKey=new NamespacedKey(plugin,"elite_spawned_at");sharedBaseHealthKey=new NamespacedKey(plugin,"shared_boss_base_health");sharedActiveCountKey=new NamespacedKey(plugin,"shared_boss_active_count");legendaryLootKey=new NamespacedKey(plugin,"legendary_loot");movementScaledKey=new NamespacedKey(plugin,"elite_movement_scaled");summonKindKey=new NamespacedKey(plugin,"summon_kind");
@@ -327,7 +354,7 @@ final class BossEventService {
         double epic=bosses.getDouble("natural-elites.epic-chance",.00006)*dimension;
         double legendary=bosses.getDouble("natural-elites.legendary-chance",.0000015)*dimension;
         if(roll<legendary)tier="legendary";else if(roll<legendary+epic)tier="epic";else if(roll<legendary+epic+rare)tier="rare";else if(roll<legendary+epic+rare+uncommon)tier="uncommon";
-        if (tier != null) {makeElite(mob, tier);db.recordEliteSpawn(tier,true);}
+        if (tier != null && plugin.settings().elitesAllowedAt(mob.getLocation())) {makeElite(mob, tier);mob.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,"NATURAL");db.recordEliteSpawn(tier,true);}
     }
 
     private void makeElite(LivingEntity mob, String tier) {
@@ -360,7 +387,30 @@ final class BossEventService {
     }
     private ItemStack special(Material material, String name, Enchantment enchantment, int level) { ItemStack item = new ItemStack(material); item.addUnsafeEnchantment(enchantment, level); item.addUnsafeEnchantment(Enchantment.UNBREAKING, Math.min(3, level)); return item; }
 
-    LivingEntity spawnElite(String tier, Location preferred) { World world = preferred!=null&&preferred.getWorld()!=null?preferred.getWorld():overworld(); if (world == null) return null; Location loc = preferred == null ? randomSafe(world, 400, 2500) : preferred; if (loc == null) loc = world.getSpawnLocation(); Class<? extends LivingEntity> type=eliteType(tier,world.getEnvironment());LivingEntity mob = world.spawn(loc, type, CreatureSpawnEvent.SpawnReason.CUSTOM); makeElite(mob, tier);db.recordEliteSpawn(tier,false); return mob; }
+    /** Event path (elite hunt). Stamped EVENT_SPAWNED so event elites stay exempt from the environmental
+     *  loot rules that natural and admin-spawned ordinary elites follow. */
+    LivingEntity spawnElite(String tier, Location preferred) { LivingEntity mob = spawnElite(tier, preferred, null); if (mob != null) mob.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,"EVENT_SPAWNED"); return mob; }
+    /** Admin variant: forcedType (a spawnable Mob) overrides the tier default mob; null keeps the
+     *  environment-based default. Preferred location null = random safe spot. */
+    LivingEntity spawnElite(String tier, Location preferred, org.bukkit.entity.EntityType forcedType) { World world = preferred!=null&&preferred.getWorld()!=null?preferred.getWorld():overworld(); if (world == null) return null; Location loc = preferred == null ? randomSafe(world, 400, 2500) : preferred; if (loc == null) loc = world.getSpawnLocation(); Class<? extends LivingEntity> type; if(forcedType!=null&&forcedType.getEntityClass()!=null&&LivingEntity.class.isAssignableFrom(forcedType.getEntityClass())) type=forcedType.getEntityClass().asSubclass(LivingEntity.class); else type=eliteType(tier,world.getEnvironment()); LivingEntity mob = world.spawn(loc, type, CreatureSpawnEvent.SpawnReason.CUSTOM); makeElite(mob, tier);mob.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,"ADMIN_SPAWNED");db.recordEliteSpawn(tier,false); return mob; }
+    /** Where a PLAYER-summoned boss appears. A manual summon is never relocated through the Nether
+     *  ceiling or dumped far below the summoner: above the roof, the roof itself is valid footing
+     *  (bedrock included) as long as the mob fits, and if it does not fit we refuse instead of moving
+     *  it. Below the ceiling, and for every natural/event spawn, the stricter terrain search is kept. */
+    private Location summonSpot(Player player){
+        World world=player.getWorld();Location at=player.getLocation();
+        boolean aboveCeiling=world.getEnvironment()==World.Environment.NETHER&&at.getBlockY()>=world.getMaxHeight()-8;
+        if(aboveCeiling)return roofSpot(world,at);
+        Location found=CoreUtil.findSafeAny(world,at.getBlockX(),at.getBlockZ());
+        if(found!=null&&world.getEnvironment()==World.Environment.NETHER&&found.getBlockY()<at.getBlockY()-24)return null;
+        return found;}
+    /** Solid footing plus a clear 3x3x3 for the boss body, with bedrock accepted as floor. */
+    private Location roofSpot(World world,Location at){
+        int x=at.getBlockX(),y=at.getBlockY(),z=at.getBlockZ();
+        for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++){
+            if(!world.getBlockAt(x+dx,y-1,z+dz).getType().isSolid())return null;
+            for(int dy=0;dy<=2;dy++)if(!world.getBlockAt(x+dx,y+dy,z+dz).isPassable())return null;}
+        return new Location(world,x+.5,y,z+.5,at.getYaw(),0);}
     private Class<? extends LivingEntity> eliteType(String tier,World.Environment environment){if(environment==World.Environment.THE_END)return Enderman.class;if(environment==World.Environment.NETHER)return tier.equals("legendary")||tier.equals("miniboss")?WitherSkeleton.class:Piglin.class;return switch(tier){case"legendary"->WitherSkeleton.class;case"epic","rare"->Skeleton.class;default->Zombie.class;};}
     private LivingEntity bossVictim(Entity entity){if(entity instanceof EnderDragonPart part)return part.getParent();return entity instanceof LivingEntity living?living:null;}
     private boolean isVanillaBoss(LivingEntity entity){List<String> types=bosses.getStringList("boss-participation.vanilla-types");if(types.isEmpty())types=List.of("ENDER_DRAGON","WITHER");return types.stream().anyMatch(type->type.equalsIgnoreCase(entity.getType().name()));}
@@ -540,8 +590,9 @@ final class BossEventService {
         if(kind!=null&&!sameWorld){CoreUtil.error(player,resolved==WorldBossKind.PIGLIN_BRUTE?"The Cinder Warlord's seal only stirs within the Nether.":"This seal needs Overworld wilderness.");return false;}
         Location loc=null;
         if(sameWorld){
-            loc=CoreUtil.findSafeAny(player.getWorld(),player.getLocation().getBlockX(),player.getLocation().getBlockZ());
-            if(loc==null||protectedEventLocation(loc)){CoreUtil.error(player,"The seal needs wilderness at least "+eventProtectionRadius()+" blocks from protected land.");return false;}
+            loc=summonSpot(player);
+            if(loc==null){CoreUtil.error(player,"No clear footing here for the seal. Stand somewhere open and try again.");return false;}
+            if(protectedEventLocation(loc)){CoreUtil.error(player,"The seal needs wilderness at least "+eventProtectionRadius()+" blocks from protected land.");return false;}
         }
         /** Only another WORLD BOSS blocks a summon; an ordinary event running alongside is fine. */
         if(worldBoss()!=null||eventType==EventType.WORLD_BOSS){CoreUtil.error(player,"A world boss is already active.");return false;}
@@ -698,11 +749,38 @@ final class BossEventService {
              *  reach the step a hundred times slower than an unstacked one for identical income. A stack
              *  that straddles the boundary is split, so the step never lands mid-kill as a cliff. */
             double reducedShare=plugin.getConfig().getDouble("mob-money.spawner-reduced-share",.25);
-            int threshold=plugin.getConfig().getInt("mob-money.spawner-daily-threshold",10000);
-            int before=db.addSpawnerKills(CoreUtil.id(killer),mob.getType().name(),CoreUtil.riyadhDay(),virtual);
-            int atFull=Math.max(0,Math.min(virtual,threshold-before));
-            amount=roll*(atFull*spawnerShare+(virtual-atFull)*reducedShare);
+            String day=CoreUtil.riyadhDay();
+            if(mob.getType()==EntityType.IRON_GOLEM){
+                /** Golem spawners are the flagship 50m purchase, so they pay a flat configured rate per
+                 *  represented golem and their full-rate allowance is granted PER REPRESENTED SPAWNER --
+                 *  a x10 stack earns ten times the allowance rather than sharing one. The purchase price
+                 *  is the inflation control; the allowance only exists as a ceiling on a farm run around
+                 *  the clock. Past it, the ordinary reduced spawner payout resumes. */
+                java.util.List<String> ids=plugin.spawners().sourceIdentities(mob);
+                int units=Math.max(1,ids.size());
+                int allowance=units*plugin.getConfig().getInt("mob-money.golem-daily-allowance-per-spawner",2200);
+                /** Golems already alive from before this build carry no source stamp. They are metered
+                 *  against the killer instead so they can never draw an untracked full rate; the stamp
+                 *  arrives on the spawner's next cycle and normal per-spawner metering resumes. */
+                int used;
+                if(ids.isEmpty())used=db.addSpawnerKills(CoreUtil.id(killer),"IRON_GOLEM_UNSTAMPED",day,virtual);
+                else{used=db.spawnerAllowanceUsed(ids,day);db.addSpawnerAllowance(ids,day,virtual);}
+                int atFull=Math.max(0,Math.min(virtual,allowance-used));
+                double fullRate=plugin.getConfig().getDouble("mob-money.golem-full-rate",270);
+                amount=atFull*fullRate+(virtual-atFull)*roll*reducedShare;
+                db.recordGolemDaily(day,virtual,amount);
+            }else{
+                int threshold=plugin.getConfig().getInt("mob-money.spawner-daily-threshold",10000);
+                int before=db.addSpawnerKills(CoreUtil.id(killer),mob.getType().name(),day,virtual);
+                int atFull=Math.max(0,Math.min(virtual,threshold-before));
+                amount=roll*(atFull*spawnerShare+(virtual-atFull)*reducedShare);
+            }
         }else{
+            /** Village and player-built Iron Golem farms pay no SMPCore money at all. mob-rewards is keyed
+             *  by mob TYPE, so before this a free village farm earned the FULL rate while the 50m spawner
+             *  earned only the reduced spawner share -- the golem spawner was competing with, and losing
+             *  to, an iron farm that costs nothing. Golem income is now exclusive to purchased spawners. */
+            if(mob.getType()==EntityType.IRON_GOLEM)return;
             double factor=farmFactor(killer,mob.getType());
             if(factor<=0)return;
             amount=roll*factor*virtual;
@@ -826,6 +904,16 @@ final class BossEventService {
                 db.deleteBossState(worldBossId.toString());
                 worldBossId = null;
                 broadcastNotice(Component.text(displayName(bossKind)+" has faded without a victor.", NamedTextColor.DARK_GRAY));
+            } else if (!worldBoss && !"miniboss".equals(tier)
+                    && !mob.getPersistentDataContainer().has(eventEliteKey)
+                    && envLootOrigin(mob.getPersistentDataContainer().get(originKey, PersistentDataType.STRING))) {
+                /** A NATURALLY-spawned ordinary elite that died to the environment with no player contribution
+                 *  still drops its ITEM loot -- but every individual CHANCE-based entry is halved (100% entries
+                 *  and vanilla/enhanced drops are unchanged; no per-entry blanket roll). No money/shards/
+                 *  progression (there is no participant). Minibosses, world bosses and event/summoned elites are
+                 *  exempt (their origin is not NATURAL / tier is miniboss) and drop nothing here. */
+                lootMult = 0.5;
+                try { thematicLoot(e, tier); capsuleDrop(e, tier); } finally { lootMult = 1.0; }
             }
             return;
         }
@@ -839,32 +927,49 @@ final class BossEventService {
         if (worldBoss) rewardWorldBoss(e, credited, participants, bossKind); else { thematicLoot(e, tier);capsuleDrop(e,tier);if(tier.equals("legendary")){String victor=credited==null?"unknown hunters":plugin.nicknames().displayName(credited);broadcastNotice(Component.text("✦ The legendary "+CoreUtil.pretty(mob.getType().name())+" was defeated by "+victor+".",NamedTextColor.GOLD));for(Player player:plugin.getServer().getOnlinePlayers())if(plugin.settings().sounds(player))player.playSound(player.getLocation(),Sound.UI_TOAST_CHALLENGE_COMPLETE,.7f,.8f);} if (credited!=null&&eventType == EventType.ELITE_HUNT && mob.getPersistentDataContainer().has(eventEliteKey)) { plugin.progress().eventWon(credited, "Elite Hunt"); finishEvent(true); } }
     }
     private void splitReward(Map<String,Double> participants,double pool,String label){double eligibleDamage=participants.values().stream().mapToDouble(Double::doubleValue).sum();for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double base=pool*entry.getValue()/Math.max(1,eligibleDamage),share=Math.round(base*plugin.progress().mobIncomeMultiplier(player)*100)/100.0;plugin.creditEarned(entry.getKey(),share,label.toUpperCase(Locale.ROOT).replace(' ','_'));db.recordEconomy(entry.getKey(),label.equals("world boss")?"BOSS":"ELITE",share,label);CoreUtil.msg(player,"Your "+label+" damage earned "+CoreUtil.money(share)+".");}}
-    private void thematicLoot(EntityDeathEvent e, String tier) { LivingEntity mob = e.getEntity();if(tier.equals("legendary")){legendaryLoot(e);return;} int bonus=switch(tier){case"epic"->3;case"miniboss"->2;case"rare"->1;default->0;}; if (mob instanceof Creeper) { e.getDrops().add(new ItemStack(Material.TNT, 5 + bonus * 2)); e.getDrops().add(new ItemStack(Material.GUNPOWDER, 4 + bonus * 3)); } else if (mob instanceof Spider) { e.getDrops().add(spiderPotion()); e.getDrops().add(new ItemStack(Material.FERMENTED_SPIDER_EYE, 1 + bonus)); if (Math.random() < .35 + bonus * .1) e.getDrops().add(new ItemStack(Material.COBWEB, 1 + bonus)); } else if (mob instanceof Enderman) { if (Math.random() < .72 + bonus * .05) e.getDrops().add(new ItemStack(Material.ENDER_EYE)); e.getDrops().add(new ItemStack(Material.ENDER_PEARL, 2 + bonus * 2)); } else if (mob instanceof AbstractSkeleton) { e.getDrops().add(new ItemStack(Material.SPECTRAL_ARROW, 8 + bonus * 8)); } else if (mob instanceof Zombie) { e.getDrops().add(new ItemStack(Material.IRON_INGOT, 2 + bonus * 2)); if (Math.random() < .25 + bonus * .1) e.getDrops().add(new ItemStack(Material.GOLDEN_APPLE)); }
-        if(mob.getWorld().getEnvironment()==World.Environment.NETHER){e.getDrops().add(new ItemStack(Material.MAGMA_CREAM,1+bonus));if(Math.random()<.08+bonus*.06)e.getDrops().add(new ItemStack(Material.ANCIENT_DEBRIS));}else if(mob.getWorld().getEnvironment()==World.Environment.THE_END){e.getDrops().add(new ItemStack(Material.ENDER_PEARL,3+bonus*2));if(Math.random()<.06+bonus*.08)e.getDrops().add(new ItemStack(Material.SHULKER_SHELL));}
-        double sigilChance=tier.equals("epic")?.5:tier.equals("miniboss")?.35:tier.equals("rare")?.15:.05;if(Math.random()<sigilChance)e.getDrops().add(sigil());
-        if(tier.equals("legendary")&&Math.random()<bosses.getDouble("legendary-sigil-drop-chance",.08))e.getDrops().add(legendarySigil());
+    private void thematicLoot(EntityDeathEvent e, String tier) { LivingEntity mob = e.getEntity();if(tier.equals("legendary")){legendaryLoot(e);return;} int bonus=switch(tier){case"epic"->3;case"miniboss"->2;case"rare"->1;default->0;}; if (mob instanceof Creeper) { e.getDrops().add(new ItemStack(Material.TNT, 5 + bonus * 2)); e.getDrops().add(new ItemStack(Material.GUNPOWDER, 4 + bonus * 3)); } else if (mob instanceof Spider) { e.getDrops().add(spiderPotion()); e.getDrops().add(new ItemStack(Material.FERMENTED_SPIDER_EYE, 1 + bonus)); if (chance(.35 + bonus * .1)) e.getDrops().add(new ItemStack(Material.COBWEB, 1 + bonus)); } else if (mob instanceof Enderman) { if (chance(.72 + bonus * .05)) e.getDrops().add(new ItemStack(Material.ENDER_EYE)); e.getDrops().add(new ItemStack(Material.ENDER_PEARL, 2 + bonus * 2)); } else if (mob instanceof AbstractSkeleton) { e.getDrops().add(new ItemStack(Material.SPECTRAL_ARROW, 8 + bonus * 8)); } else if (mob instanceof Zombie) { e.getDrops().add(new ItemStack(Material.IRON_INGOT, 2 + bonus * 2)); if (chance(.25 + bonus * .1)) e.getDrops().add(new ItemStack(Material.GOLDEN_APPLE)); }
+        if(mob.getWorld().getEnvironment()==World.Environment.NETHER){e.getDrops().add(new ItemStack(Material.MAGMA_CREAM,1+bonus));if(chance(.08+bonus*.06))e.getDrops().add(new ItemStack(Material.ANCIENT_DEBRIS));}else if(mob.getWorld().getEnvironment()==World.Environment.THE_END){e.getDrops().add(new ItemStack(Material.ENDER_PEARL,3+bonus*2));if(chance(.06+bonus*.08))e.getDrops().add(new ItemStack(Material.SHULKER_SHELL));}
+        dropTierSigils(e,tier);
     }
     private ItemStack legendarySigil(){ItemStack item=CoreUtil.named(Material.NETHER_STAR,"Legendary Sigil",List.of("A rarer offering to the Keeper of Omens."));ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(new NamespacedKey(plugin,"legendary_sigil"),PersistentDataType.BYTE,(byte)1);item.setItemMeta(meta);return item;}
     private void legendaryLoot(EntityDeathEvent event){
         LivingEntity mob=event.getEntity();List<ItemStack> drops=event.getDrops();
+        dropTierSigils(event,"legendary");
         if(mob instanceof Enderman enderman){drops.add(legendaryShulkerBox(mob));drops.add(new ItemStack(Material.ENDER_PEARL,24));/** The block it was visibly carrying drops here instead of being placeable in the world — it can be
          *  looted, just never used to grief a farm (see endermanBlockChange). */
         if(enderman.getCarriedBlock()!=null&&!enderman.getCarriedBlock().getMaterial().isAir())drops.add(new ItemStack(enderman.getCarriedBlock().getMaterial()));return;}
-        if(mob instanceof Creeper){drops.add(new ItemStack(Material.TNT,32));drops.add(new ItemStack(Material.GUNPOWDER,32));drops.add(new ItemStack(Material.END_CRYSTAL,4));drops.add(strongBook());if(Math.random()<.20)drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
-        if(mob instanceof Spider){drops.add(legendarySpiderPotion());drops.add(legendarySpiderPotion());drops.add(new ItemStack(Material.COBWEB,16));drops.add(new ItemStack(Material.FERMENTED_SPIDER_EYE,8));drops.add(special(Material.DIAMOND_BOOTS,"Silkstrider Boots",Enchantment.FEATHER_FALLING,4));if(Math.random()<.35)drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
-        if(mob instanceof AbstractSkeleton){drops.add(new ItemStack(Material.SPECTRAL_ARROW,64));drops.add(strongBook());drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));if(Math.random()<.45)drops.add(new ItemStack(Material.NETHERITE_SCRAP,2));return;}
+        if(mob instanceof Creeper){drops.add(new ItemStack(Material.TNT,32));drops.add(new ItemStack(Material.GUNPOWDER,32));drops.add(new ItemStack(Material.END_CRYSTAL,4));drops.add(strongBook());if(chance(.20))drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
+        if(mob instanceof Spider){drops.add(legendarySpiderPotion());drops.add(legendarySpiderPotion());drops.add(new ItemStack(Material.COBWEB,16));drops.add(new ItemStack(Material.FERMENTED_SPIDER_EYE,8));drops.add(special(Material.DIAMOND_BOOTS,"Silkstrider Boots",Enchantment.FEATHER_FALLING,4));if(chance(.35))drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
+        if(mob instanceof AbstractSkeleton){drops.add(new ItemStack(Material.SPECTRAL_ARROW,64));drops.add(strongBook());drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));if(chance(.45))drops.add(new ItemStack(Material.NETHERITE_SCRAP,2));return;}
         if(mob instanceof Piglin||mob instanceof Hoglin){drops.add(new ItemStack(Material.GOLD_BLOCK,8));drops.add(new ItemStack(Material.NETHERITE_SCRAP,ThreadLocalRandom.current().nextInt(2,5)));drops.add(new ItemStack(Material.GOLDEN_APPLE,4));drops.add(strongBook());return;}
-        drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));drops.add(new ItemStack(Material.NETHERITE_SCRAP,ThreadLocalRandom.current().nextInt(1,4)));drops.add(new ItemStack(Material.GOLDEN_APPLE,3));drops.add(strongBook());if(Math.random()<.12)drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));
+        drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));drops.add(new ItemStack(Material.NETHERITE_SCRAP,ThreadLocalRandom.current().nextInt(1,4)));drops.add(new ItemStack(Material.GOLDEN_APPLE,3));drops.add(strongBook());if(chance(.12))drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));
     }
     private Material randomShulkerMaterial(){List<Material> boxes=List.of(Material.WHITE_SHULKER_BOX,Material.ORANGE_SHULKER_BOX,Material.MAGENTA_SHULKER_BOX,Material.LIGHT_BLUE_SHULKER_BOX,Material.YELLOW_SHULKER_BOX,Material.LIME_SHULKER_BOX,Material.PINK_SHULKER_BOX,Material.GRAY_SHULKER_BOX,Material.LIGHT_GRAY_SHULKER_BOX,Material.CYAN_SHULKER_BOX,Material.PURPLE_SHULKER_BOX,Material.BLUE_SHULKER_BOX,Material.BROWN_SHULKER_BOX,Material.GREEN_SHULKER_BOX,Material.RED_SHULKER_BOX,Material.BLACK_SHULKER_BOX);return boxes.get(ThreadLocalRandom.current().nextInt(boxes.size()));}
     private ItemStack legendaryShulkerBox(LivingEntity mob){
         String stored=mob.getPersistentDataContainer().get(legendaryLootKey,PersistentDataType.STRING);Material material=stored==null?randomShulkerMaterial():Material.matchMaterial(stored);if(material==null||!material.name().endsWith("SHULKER_BOX"))material=randomShulkerMaterial();
-        ItemStack item=new ItemStack(material);BlockStateMeta meta=(BlockStateMeta)item.getItemMeta();if(meta.getBlockState() instanceof ShulkerBox box){box.getInventory().addItem(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)),strongBook(),new ItemStack(Material.GOLDEN_APPLE,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.SHULKER_SHELL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.END_CRYSTAL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.CHORUS_FRUIT,16),new ItemStack(Material.EXPERIENCE_BOTTLE,ThreadLocalRandom.current().nextInt(16,33)));if(Math.random()<.50)box.getInventory().addItem(highQualityGear());if(Math.random()<.12)box.getInventory().addItem(new ItemStack(Material.TOTEM_OF_UNDYING));if(Math.random()<.05)box.getInventory().addItem(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));meta.setBlockState(box);}item.setItemMeta(meta);return item;
+        ItemStack item=new ItemStack(material);BlockStateMeta meta=(BlockStateMeta)item.getItemMeta();if(meta.getBlockState() instanceof ShulkerBox box){box.getInventory().addItem(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)),strongBook(),new ItemStack(Material.GOLDEN_APPLE,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.SHULKER_SHELL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.END_CRYSTAL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.CHORUS_FRUIT,16),new ItemStack(Material.EXPERIENCE_BOTTLE,ThreadLocalRandom.current().nextInt(16,33)));if(chance(.50))box.getInventory().addItem(highQualityGear());if(chance(.12))box.getInventory().addItem(new ItemStack(Material.TOTEM_OF_UNDYING));if(chance(.05))box.getInventory().addItem(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));meta.setBlockState(box);}item.setItemMeta(meta);return item;
     }
     private ItemStack strongBook(){ItemStack book=new ItemStack(Material.ENCHANTED_BOOK);EnchantmentStorageMeta meta=(EnchantmentStorageMeta)book.getItemMeta();List<Map.Entry<Enchantment,Integer>> options=List.of(Map.entry(Enchantment.MENDING,1),Map.entry(Enchantment.PROTECTION,4),Map.entry(Enchantment.SHARPNESS,5),Map.entry(Enchantment.POWER,5),Map.entry(Enchantment.UNBREAKING,3));Map.Entry<Enchantment,Integer> selected=options.get(ThreadLocalRandom.current().nextInt(options.size()));meta.addStoredEnchant(selected.getKey(),selected.getValue(),true);book.setItemMeta(meta);return book;}
     private ItemStack highQualityGear(){Material material=List.of(Material.DIAMOND_SWORD,Material.DIAMOND_PICKAXE,Material.DIAMOND_CHESTPLATE,Material.DIAMOND_BOOTS).get(ThreadLocalRandom.current().nextInt(4));Enchantment enchant=material==Material.DIAMOND_SWORD?Enchantment.SHARPNESS:material==Material.DIAMOND_PICKAXE?Enchantment.EFFICIENCY:material==Material.DIAMOND_BOOTS?Enchantment.FEATHER_FALLING:Enchantment.PROTECTION;return special(material,"",enchant,material==Material.DIAMOND_SWORD?5:4);}
     private ItemStack sigil(){ItemStack item=CoreUtil.named(Material.ECHO_SHARD,"Elite Sigil",List.of("Accepted by the Keeper of Omens."));ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(new NamespacedKey(plugin,"elite_sigil"),PersistentDataType.BYTE,(byte)1);item.setItemMeta(meta);return item;}
-    private void capsuleDrop(EntityDeathEvent event,String tier){VillagerCapsuleService service=plugin.capsules();if(service==null)return;double disposable=bosses.getDouble("capsule-drops."+tier+".disposable",isWorldBossTier(tier)?.15:tier.equals("legendary")?.08:tier.equals("miniboss")?.04:0),reusable=bosses.getDouble("capsule-drops."+tier+".reusable",isWorldBossTier(tier)?.01:tier.equals("legendary")?.006:tier.equals("miniboss")?.002:0);double roll=Math.random();if(roll<reusable)event.getDrops().add(service.empty(true));else if(roll<reusable+disposable)event.getDrops().add(service.empty(false));}
+    private double lootMult = 1.0;
+    /** Ordinary elites that follow the environmental-death loot rules: naturally spawned, and admin-spawned
+     *  via /ashfall elite (so admins can test the real behaviour). Event elites, minibosses and world bosses
+     *  are excluded by their own origin/tier checks and give nothing on a purely environmental death. */
+    private boolean envLootOrigin(String origin){ return "NATURAL".equals(origin) || "ADMIN_SPAWNED".equals(origin); }
+    /** Loot-roll multiplier: 1.0 normally; 0.5 for a naturally-spawned ordinary elite that died to the
+     *  environment with no participant -- halves each individual chance without touching 100% entries. */
+    private boolean chance(double p){ return Math.random() < p * lootMult; }
+    /** Per-tier sigil matrix: each elite independently rolls an Elite Sigil (echo shard) and a Legendary Sigil
+     *  (nether star). Config-tunable per tier (sigil-drops.<tier>.elite / .legendary), read live on reload;
+     *  higher tiers lean legendary, lower tiers keep their elite chance plus a lottery-tier legendary shot. */
+    private void dropTierSigils(EntityDeathEvent e, String tier){
+        double elite=bosses.getDouble("sigil-drops."+tier+".elite", switch(tier){case"epic"->.50;case"miniboss"->.35;case"rare"->.15;case"legendary"->.25;default->.05;});
+        double legend=bosses.getDouble("sigil-drops."+tier+".legendary", switch(tier){case"legendary"->.50;case"epic"->.01;case"miniboss"->.005;case"rare"->.0001;default->.00001;});
+        if(chance(elite))e.getDrops().add(sigil());
+        if(chance(legend))e.getDrops().add(legendarySigil());
+    }
+    private void capsuleDrop(EntityDeathEvent event,String tier){VillagerCapsuleService service=plugin.capsules();if(service==null)return;double disposable=bosses.getDouble("capsule-drops."+tier+".disposable",isWorldBossTier(tier)?.15:tier.equals("legendary")?.08:tier.equals("miniboss")?.04:0),reusable=bosses.getDouble("capsule-drops."+tier+".reusable",isWorldBossTier(tier)?.01:tier.equals("legendary")?.006:tier.equals("miniboss")?.002:0);double roll=Math.random();if(roll<reusable*lootMult)event.getDrops().add(service.empty(true));else if(roll<(reusable+disposable)*lootMult)event.getDrops().add(service.empty(false));}
     private ItemStack legendarySpiderPotion(){ItemStack potion=spiderPotion();PotionMeta meta=(PotionMeta)potion.getItemMeta();meta.addCustomEffect(new PotionEffect(PotionEffectType.RESISTANCE,2400,0),true);potion.setItemMeta(meta);return potion;}
     private ItemStack spiderPotion() { ItemStack potion = new ItemStack(Material.POTION); PotionMeta meta = (PotionMeta) potion.getItemMeta(); meta.displayName(Component.text("Silkstep Draught", NamedTextColor.LIGHT_PURPLE)); meta.addCustomEffect(new PotionEffect(PotionEffectType.SPEED, 3600, 1), true); meta.addCustomEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, 3600, 0), true); potion.setItemMeta(meta); return potion; }
     private void rewardWorldBoss(EntityDeathEvent e, Player killer, Map<String,Double> participants, WorldBossKind kind) {
@@ -882,8 +987,8 @@ final class BossEventService {
             }
             case PIGLIN_BRUTE -> {
                 e.getDrops().add(new ItemStack(Material.GOLD_BLOCK, bosses.getInt("piglin-brute-boss.reward-gold-blocks", 10))); e.getDrops().add(CoreUtil.named(Material.GOLDEN_HELMET, "Warlord's Trophy Helm", List.of("Proof of victory over the Cinder Warlord.")));capsuleDrop(e,tier);
-                double axeChance=bosses.getDouble("piglin-brute-boss.excavator-drop-chance",.18);
-                for(String participant:participants.keySet()){Player player=find(participant);if(player==null)continue;if(Math.random()<axeChance)CoreUtil.give(player,plugin.shards().excavatorPickaxe(Math.random()<.5));}
+                double axeChance=bosses.getDouble("piglin-brute-boss.excavator-drop-chance",.005);
+                for(String participant:participants.keySet()){Player player=find(participant);if(player==null)continue;if(Math.random()<axeChance)CoreUtil.give(player,plugin.shards().randomSpecialTool());}
                 mintSignatureRelic(killer,participants,"warlords_ember");
             }
         }
@@ -1918,7 +2023,7 @@ final class BossEventService {
         boss.setInvisible(true);boss.setInvulnerable(true);boss.setAI(false);boss.setSilent(true);
         Location center=boss.getLocation().clone();UUID id=boss.getUniqueId();int totalTicks=140;Particle particle=summoningParticle(kind);
         World world=center.getWorld();int chunkX=center.getBlockX()>>4,chunkZ=center.getBlockZ()>>4;
-        world.setChunkForceLoaded(chunkX,chunkZ,true);
+        ownForceLoad(world,chunkX,chunkZ,"BOSS");
         for(int tick=0;tick<=totalTicks;tick+=5){
             int t=tick;double progress=t/(double)totalTicks;
             plugin.getServer().getScheduler().runTaskLater(plugin,()->{
@@ -1952,7 +2057,7 @@ final class BossEventService {
                  *  never happening. That is exactly the phantom Cinder Warlord enrage seen with no boss active.
                  *  Tear the whole thing down instead of leaving it half-born. */
                 plugin.getLogger().warning("World boss "+id+" could not be revealed after summoning — its chunk never became resolvable; cleaning it up rather than leaving a hidden, unfightable boss and a stuck event.");
-                world.setChunkForceLoaded(chunkX,chunkZ,false);
+                ownRelease(world,chunkX,chunkZ);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
                 eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossImpulseUntil.remove(id);bossImpulseRank.remove(id);bossImpulseReason.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
@@ -2129,10 +2234,10 @@ final class BossEventService {
         World world=location.getWorld();if(world==null)return;
         int cx=location.getBlockX()>>4,cz=location.getBlockZ()>>4;
         if(forcedBossChunkSet&&forcedBossWorld==world&&cx==forcedBossChunkX&&cz==forcedBossChunkZ)return;
-        if(forcedBossChunkSet&&forcedBossWorld!=null)forcedBossWorld.setChunkForceLoaded(forcedBossChunkX,forcedBossChunkZ,false);
-        world.setChunkForceLoaded(cx,cz,true);forcedBossWorld=world;forcedBossChunkX=cx;forcedBossChunkZ=cz;forcedBossChunkSet=true;
+        if(forcedBossChunkSet&&forcedBossWorld!=null)ownRelease(forcedBossWorld,forcedBossChunkX,forcedBossChunkZ);
+        ownForceLoad(world,cx,cz,"BOSS");forcedBossWorld=world;forcedBossChunkX=cx;forcedBossChunkZ=cz;forcedBossChunkSet=true;
     }
-    private void releaseBossChunk(){if(forcedBossChunkSet&&forcedBossWorld!=null)forcedBossWorld.setChunkForceLoaded(forcedBossChunkX,forcedBossChunkZ,false);forcedBossChunkSet=false;forcedBossWorld=null;}
+    private void releaseBossChunk(){if(forcedBossChunkSet&&forcedBossWorld!=null)ownRelease(forcedBossWorld,forcedBossChunkX,forcedBossChunkZ);forcedBossChunkSet=false;forcedBossWorld=null;}
     /** An unloaded chunk makes the boss entity briefly unresolvable even though it still exists (e.g. no
      *  player has reached it yet). Only treat the event as genuinely stale when its last known chunk is
      *  loaded and still shows no boss there, so a distant, un-visited boss is never cancelled by mistake. */

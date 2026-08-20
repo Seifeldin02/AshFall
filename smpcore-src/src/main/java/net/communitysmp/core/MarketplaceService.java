@@ -186,7 +186,7 @@ final class MarketplaceService implements Listener {
     private void handleItem(Player player,Session session,ItemRef ref,boolean shift,boolean right){
         View view=session.view();
         if(session.section==Section.SHOP||session.section==Section.LUXURY){
-            ShopService.Price price=shop.price(ref.material());if(price==null)return;int amount=shift&&session.section==Section.SHOP?16:1;double multiplier=view.merchant?plugin.getConfig().getDouble("merchants.shop.buy-multiplier",.925):1;
+            ShopService.Price price=shop.price(ref.material());if(price==null)return;int amount=shift?16:1;double multiplier=view.merchant?plugin.getConfig().getDouble("merchants.shop.buy-multiplier",.925):1;
             /** Refuse the purchase up front when the shop does not hold enough. ShopService re-checks this
              *  atomically at the moment of sale -- this is only so the click gives an immediate answer
              *  rather than opening a confirmation for something that cannot happen. */

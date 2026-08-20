@@ -21,6 +21,14 @@ roles:
 
 trusted-admin:
   accounts: [MacoCT, Asserto]
+  # Keep admins logged in across restarts/reconnects (skip the /login password) via AuthMe's session restore.
+  # OFF by default so a stock server stays fully password-locked.
+  session-persistence: false
+  # When session-persistence is on, only apply it if the admin connects from the SAME IP as the server (its own
+  # machine / LAN IP / loopback). Turn OFF for external hosting where admins connect from a different IP than the
+  # server. (Legacy flags staging-session-persistence [no IP constraint] and same-machine-autologin [IP
+  # constraint] are still honored.)
+  require-same-ip: true
 
 nickname:
   random-names:
@@ -233,6 +241,30 @@ bank:
     overdue-garnish-percent: 25.0
     input-timeout-seconds: 30
 
+# One-time repair of Legendary Sigils minted before the item carried its PDC tag. Detection at the shop is
+# ALWAYS tag-based; this never adds a name/lore rule at runtime. It matches the single verified legacy
+# signature for the listed accounts only, then records a persistent flag and disables itself. Safe to
+# delete this whole block once the log reports success.
+migrations:
+  legacy-legendary-sigil:
+    enabled: true
+    uuids:
+    - 54c7d8e0-5bf7-3112-8cd0-ec69b6180904   # osjad
+    name: Legendary Sigil
+    lore: A trophy from a powered creature.
+
+# Destroyed-goods vault: every commodity that leaves the world is audited, and the ones the shop trades
+# return to its finite stock so destruction feeds supply instead of vanishing.
+discarded-vault:
+  flush-seconds: 15
+  cache-seconds: 30
+  record-destroyed-blocks: true
+  # Commodities destroyed by fire or an explosion return to shop stock, exactly like a despawned item.
+  # A burnt block never drops, so it credits directly. An exploded block credits only the portion that
+  # failed to drop -- anything that survived as an item is left alone and credits later, once, when that
+  # item despawns or burns. Set false to go back to audit-only for destroyed blocks.
+  recycle-destroyed-blocks: true
+
 mob-money:
   # Share of the equivalent natural mob's money paid for a mob from a PLAYER-PLACED spawner. Flat: the
   # anti-farm curve below applies to NATURAL mobs only, so a farm's value is predictable before it is built.
@@ -242,6 +274,15 @@ mob-money:
   # rather than being paid entirely at one rate.
   spawner-reduced-share: 0.25
   spawner-daily-threshold: 10000
+  # ---- Golem spawners (the flagship 50,000,000 purchase) ----
+  # Flat money per REPRESENTED golem at the full rate, paid only for golems from a purchased spawner.
+  # Village and player-built golem farms earn nothing, so this rate cannot leak to a free iron farm.
+  golem-full-rate: 270
+  # Full-rate allowance is granted PER REPRESENTED SPAWNER, not per player: a x1 gets this many represented
+  # kills per reward day, a x10 stack gets ten times it. Charged against the spawner identities that travel
+  # with the item, so breaking, moving or splitting a stack never resets it. Past the allowance the
+  # ordinary reduced spawner payout resumes. Resets at 12:00 Asia/Riyadh with every other daily allowance.
+  golem-daily-allowance-per-spawner: 2200
   # Neutral mobs that still count as combat income: they get the progression money multiplier and the
   # anti-farm kill accounting, exactly like hostile mobs. Iron Golems are here because they fight back and
   # are farmed deliberately, but are classed Golem rather than Enemy, so they were silently paying base
@@ -294,6 +335,11 @@ merchants:
   auction-fee-multiplier: 0.5
 
 net-worth:
+  # Sigil faction value. Priced from the summon they buy: 2 Legendary = one summon outright;
+  # 8 Elite = one summon only with 250,000 coin alongside. Consumables, so both sit below the
+  # 500,000 Golem Spawner per unit and ten Legendary Sigils are needed to match one 4m Dragon Egg.
+  elite-sigil-value: 75000
+  legendary-sigil-value: 400000
   recalculate-minutes: 2
   reconcile-chunks-per-tick: 4
   relic-value: 500000
@@ -336,7 +382,7 @@ net-worth:
     ELYTRA: 250000
     TOTEM_OF_UNDYING: 50000
     ENCHANTED_GOLDEN_APPLE: 100000
-    DRAGON_EGG: 2000000
+    DRAGON_EGG: 4000000
     NETHER_STAR: 30000
     WITHER_SKELETON_SKULL: 15000
     BEACON: 60000
@@ -349,7 +395,7 @@ net-worth:
   spawners:
     # Virtual stacking made placed spawners a genuine income engine rather than decoration, so the highest
     # earners are valued accordingly. IRON_GOLEM is the flagship spawner buy; the Dragon Egg is a 2,000,000 cosmetic.
-    IRON_GOLEM: 1000000
+    IRON_GOLEM: 500000
     default: 25000
     ZOMBIE: 30000
     SKELETON: 40000
@@ -465,6 +511,83 @@ arena:
   max-concurrent-duels: 6
   # Cooldown between challenges, like a trade request, so invites cannot be spammed.
   challenge-cooldown-seconds: 15
+
+# Duel maps. Each has a private template world (duel_tpl_<key>) that admins build in, and every match runs
+# in a disposable clone of it (duel_inst_<key>_...). Spawns are stored in template-world coordinates; the
+# imported maps keep their original source coordinates so a build is never shifted underfoot. Yaw is derived
+# from the spawn pair at runtime so the two duellists always face each other. `spectator` is optional --
+# when unset, spectators appear above the midpoint of the two spawns.
+duel-maps:
+  arena100:
+    name: "Flat 100x100"
+    break-rule: placed-only
+    p1: [0.5, 65.0, -45.5]
+    p2: [0.5, 65.0, 45.5]
+  arena50:
+    name: "Flat 50x50"
+    break-rule: placed-only
+    p1: [0.5, 65.0, -20.5]
+    p2: [0.5, 65.0, 20.5]
+  temple_of_tides:
+    name: "Temple of Tides"
+    break-rule: full
+    p1: [8930.5, 232.0, 11153.5]
+    p2: [8930.5, 232.0, 11276.5]
+  cinder_crucible:
+    name: "Cinder Crucible"
+    break-rule: full
+    p1: [9153.5, 232.0, 11260.5]
+    p2: [9153.5, 232.0, 11157.5]
+  deepstone_mines:
+    name: "Deepstone Mines"
+    break-rule: full
+    p1: [8924.5, 248.0, 11018.5]
+    p2: [8924.5, 248.0, 11007.5]
+  skyroot_village:
+    name: "Skyroot Village"
+    break-rule: full
+    p1: [9186.5, 232.0, 11022.5]
+    p2: [9186.5, 232.0, 10980.5]
+
+# Where spectators sit above the spawn midpoint when a map has no explicit spectator point.
+duel-spectator-fallback-height: 10
+
+# Duel chest loot. Rolled per INSTANCE, so templates stay untouched and every match gets fresh contents.
+# Entries are MATERIAL:min-max:chance. A connected double chest counts as one container, not two.
+duel-loot:
+  single:
+    rolls: 3
+    entries:
+    - "GOLDEN_APPLE:1-2:0.8"
+    - "COOKED_BEEF:6-12:0.9"
+    - "ARROW:8-16:0.6"
+    - "ENDER_PEARL:1-2:0.45"
+    - "OBSIDIAN:1-4:0.4"
+    - "WIND_CHARGE:2-6:0.4"
+    - "IRON_INGOT:2-5:0.5"
+    - "COBWEB:1-3:0.3"
+  double:
+    rolls: 6
+    entries:
+    - "GOLDEN_APPLE:1-3:0.9"
+    - "ENDER_PEARL:1-4:0.7"
+    - "COOKED_BEEF:8-16:0.9"
+    - "ARROW:16-32:0.6"
+    - "OBSIDIAN:2-6:0.5"
+    - "WIND_CHARGE:4-12:0.5"
+    - "DIAMOND:1-3:0.4"
+    - "IRON_BLOCK:1-2:0.35"
+    - "ENCHANTED_GOLDEN_APPLE:1-1:0.10"
+    - "TOTEM_OF_UNDYING:1-1:0.07"
+  # Only these maps may roll trial keys at all; ominous is the rarer of the two.
+  trial-key-maps:
+  - cinder_crucible
+  - deepstone_mines
+  trial-key-chance: 0.10
+  ominous-key-chance: 0.03
+  # Chunk radius around the spawn midpoint loaded when an instance is created, so its chests are found.
+  load-radius-chunks: 12
+
 
 orders:
   # Native buy orders. Escrow is taken from the buyer at creation and released per delivered unit; every

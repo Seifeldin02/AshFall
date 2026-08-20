@@ -79,13 +79,23 @@ final class TrustedAdminService implements Listener {
          *  same-machine-autologin, so the narrow same-machine behaviour stays available on its own.
          *  Deliberately absent from the shipped config resource and never copied by a deploy script, so
          *  production admins still authenticate with a real password every time. */
-        boolean stagingPersistence=plugin.getConfig().getBoolean("trusted-admin.staging-session-persistence",false);
-        boolean sameMachine=plugin.getConfig().getBoolean("trusted-admin.same-machine-autologin",false)&&isThisMachine(player);
-        if(stagingPersistence||sameMachine){
+        /** Admin login persistence: skip the /login password across restarts/reconnects via AuthMe's session
+         *  restore. session-persistence is the master switch; require-same-ip (default true) constrains it to
+         *  connections from the SAME IP as the server (its own machine / LAN IP / loopback) -- turn that off only
+         *  when the server moves to external hosting and admins connect from a different IP. Legacy flags are
+         *  still honored: staging-session-persistence = persistence with no IP constraint, same-machine-autologin
+         *  = persistence constrained to this machine. Everything defaults off, so a stock config stays locked. */
+        boolean persist=plugin.getConfig().getBoolean("trusted-admin.session-persistence",false);
+        boolean requireSameIp=plugin.getConfig().getBoolean("trusted-admin.require-same-ip",true);
+        if(!persist){
+            if(plugin.getConfig().getBoolean("trusted-admin.staging-session-persistence",false)){persist=true;requireSameIp=false;}
+            else if(plugin.getConfig().getBoolean("trusted-admin.same-machine-autologin",false)){persist=true;requireSameIp=true;}
+        }
+        if(persist&&(!requireSameIp||isThisMachine(player))){
             authenticated.add(player.getUniqueId());
             player.setOp(true);
             grantGamemode(player);
-            plugin.getLogger().info("Administrator session restored ("+(sameMachine?"same-machine":"staging-persistence")+"): "+player.getName()+".");
+            plugin.getLogger().info("Administrator session restored ("+(requireSameIp?"same-ip":"any-ip")+"): "+player.getName()+".");
             player.updateCommands();
             return;
         }

@@ -19,7 +19,7 @@ import java.time.Instant;
 import java.util.*;
 
 public final class SMPCore extends JavaPlugin implements CommandExecutor,TabCompleter {
-    private Database db;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private DiscardedVaultService vault;private ArenaService arena;private PacketNametagService packetNametags;
+    private Database db;private DuelMapService duelMaps;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private DiscardedVaultService vault;private ArenaService arena;private PacketNametagService packetNametags;
     private final Map<UUID,Long> feedbackCooldowns=new HashMap<>();
     Database db(){return db;} UIService ui(){return ui;} ProgressService progress(){return progress;} TeleportService teleports(){return teleports;} SpawnClaimService spawnClaims(){return spawnClaims;}EnderChestService enderChests(){return enderChests;}NetWorthService netWorth(){return netWorth;}BankService bank(){return bank;}VillagerCapsuleService capsules(){return capsules;}FactionService factions(){return factions;}BossEventService bosses(){return bosses;}MessagingService messaging(){return messaging;}GraveService graves(){return graves;}BulletinService bulletin(){return bulletin;}SettingsService settings(){return settings;}AccountService account(){return account;}RegistrationService registration(){return registration;}ConfirmationService confirmations(){return confirmations;}ShardService shards(){return shards;}MarketplaceService marketplace(){return marketplace;}WeeklyDragonService weeklyDragon(){return weeklyDragon;}VillagerDiscountService villagerDiscounts(){return villagerDiscounts;}SpawnerService spawners(){return spawners;}NicknameService nicknames(){return nicknames;}TabIntegration tab(){return tabIntegration;}AfkService afk(){return afk;}RelicService relics(){return relics;}AdminToolsService adminTools(){return adminTools;}PunishmentService punishments(){return punishments;}ReplayIntegration replay(){return replay;}TrustedAdminService trustedAdmins(){return trustedAdmins;}IpBanService ipBans(){return ipBans;}ModerationService moderation(){return moderation;}PacketNametagService packetNametags(){return packetNametags;}
     OrdersService orders(){return ordersService;}
@@ -27,6 +27,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     IndustrialHopperService industrialHoppers(){return industrialHoppers;}
     DiscardedVaultService vault(){return vault;}
     ArenaService arena(){return arena;}
+    DuelMapService duelMaps(){return duelMaps;}
     ShopService shop(){return shop;}
     double creditEarned(String player,double amount,String detail){if(amount<=0)return 0;if(bank==null){db.changeBalance(player,amount);return amount;}return bank.creditEarned(player,amount,detail);}
     boolean isAdmin(Player p){return trustedAdmins!=null&&trustedAdmins.isAdmin(p);}
@@ -62,7 +63,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         bounties=new BountyService(this,factions);spawners=new SpawnerService(this,factions);netWorth=new NetWorthService(this,factions,shop,spawners);
         merchants=new MerchantService(this,shop,auctions,bosses,bank);capsules=new VillagerCapsuleService(this,factions,spawnClaims,merchants);
         settings=new SettingsService(this);account=new AccountService(this);registration=new RegistrationService(this);confirmations=new ConfirmationService(this);shards=new ShardService(this);marketplace=new MarketplaceService(this,shop,auctions,shards);
-        tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);arena=new ArenaService(this);getServer().getPluginManager().registerEvents(arena,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
+        tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);duelMaps=new DuelMapService(this);getServer().getPluginManager().registerEvents(duelMaps,this);arena=new ArenaService(this);getServer().getPluginManager().registerEvents(arena,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
         villagerDiscounts=new VillagerDiscountService(this);
         worldBorders=new WorldBorderService(this);
         for(World world:getServer().getWorlds())try{world.setGameRule(GameRule.LOCATOR_BAR,false);}catch(Throwable ignored){}
@@ -89,9 +90,9 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         }
         getLogger().info("SMPCore 1.7.0 enabled: marketplace, accessibility settings, shards, faction relations and weekly Dragon are ready.");
     }
-    @Override public void onDisable(){if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
+    @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
 
-    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"duel"->duel(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
+    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("fly"))return flyCommand(sender,args);if(name.equals("flyspeed"))return flySpeedCommand(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"duel"->duel(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
                 if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /kit.");yield true;}
                 if(args.length<1||!args[0].equalsIgnoreCase("test")){CoreUtil.error(p,"Usage: /kit test [player]");yield true;}
                 /** Admin-only in both forms; the optional target lets staff outfit someone else for a
@@ -346,12 +347,14 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"vault"->{int page=1;if(args.length>1)try{page=Math.max(1,Integer.parseInt(args[1]));}catch(NumberFormatException ignored){}CoreUtil.msg(sender,vault.summaryLine());vault.show(sender,page);}
                 case"balance"->adminBalance(sender,args);
                 case"boss"->adminBoss(sender,args);
+                case"duelmap"->adminDuelMap(sender,args);
                 case"elite"->adminElite(sender,args);
                 case"event"->adminEvent(sender,args);
                 case"merchant"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run merchant commands in game.");return true;}merchants.command(p,args);}
                 case"bulletin"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run bulletin commands in game.");return true;}bulletin.command(p,args);}
                 case"feedback"->adminFeedback(sender,args);
                 case"economy"->economyReport(sender,args);
+                case"bank"->adminBank(sender,args);
                 case"spawnclaim"->spawnClaims.command(sender,args);
                 case"setspawn"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run this in game.");return true;}teleports.setSpawn(p.getLocation());CoreUtil.msg(sender,"Central spawn set.");}
                 case"relic"->adminRelic(sender,args);
@@ -395,7 +398,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
 
     private void adminHelp(CommandSender s){
         s.sendMessage(ChatColor.GOLD+""+ChatColor.BOLD+"ASHFALL ADMIN");
-        adminCategory(s,"Economy","/ashfall balance, /ashfall economy report, /ashfall shard");
+        adminCategory(s,"Economy","/ashfall balance, /ashfall bank, /ashfall economy report, /ashfall shard");
         adminCategory(s,"Events & Bosses","/ashfall event, /ashfall boss, /ashfall elite");
         adminCategory(s,"Factions & Spawn","/ashfall faction, /ashfall spawnclaim");
         adminCategory(s,"Merchants","/ashfall merchant");
@@ -413,7 +416,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     private void adminCommands(CommandSender s,String title,String... commands){s.sendMessage(ChatColor.GOLD+""+ChatColor.BOLD+title+":");for(String command:commands)s.sendMessage(ChatColor.GRAY+"  "+ChatColor.WHITE+command);}
     private void adminSectionHelp(CommandSender s,String section){
         switch(section.toLowerCase(Locale.ROOT)){
-            case"economy","balance"->adminCommands(s,"Economy","/ashfall economy report","/ashfall balance set <player> <amount>","/ashfall balance add <player> <amount>","/ashfall balance take <player> <amount>","/ashfall shard <give|remove|set> <player> <amount>");
+            case"economy","balance","bank"->adminCommands(s,"Economy","/ashfall economy report","/ashfall balance set <player> <amount>","/ashfall balance add <player> <amount>","/ashfall balance take <player> <amount>","/ashfall bank <add|remove|set> <amount>","/ashfall shard <give|remove|set> <player> <amount>");
             case"moderation"->adminCommands(s,"Moderation","/ashfall vanish","/ashfall spectate <player>","/ashfall unspectate","/ashfall audit [count]","/ashfall ipban ban|unban|duration|list","/ashfall monument ...","/warn <player> (time) <reason> (PunisherX)","/ban, /mute, /kick, /history, /check (PunisherX)","/openinv <player> (OpenInv, live)","/openender <player> (OpenInv, live)");
             case"repair"->adminCommands(s,"Player Repair","/ashfall progressrepair <player>","/ashfall cooldowns <player> <rtp|teleport>");
             case"events"->{adminCommands(s,"Events & Bosses","/ashfall event","/ashfall boss","/ashfall elite");}
@@ -433,7 +436,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     }
     private void eventHelp(CommandSender s){adminCommands(s,"Events","/ashfall event resource","/ashfall event elitehunt","/ashfall event taskmaster","/ashfall event worldboss","/ashfall event stop");}
     private void bossHelp(CommandSender s){adminCommands(s,"World Boss","/ashfall boss spawn [ashen|iron|piglin]","/ashfall boss here [ashen|iron|piglin]","/ashfall boss despawn");}
-    private void eliteHelp(CommandSender s){adminCommands(s,"Powered Mobs","/ashfall elite stats","/ashfall elite uncommon","/ashfall elite rare","/ashfall elite epic","/ashfall elite legendary","/ashfall elite miniboss", "Add 'here' to spawn at your location.");}
+    private void eliteHelp(CommandSender s){adminCommands(s,"Powered Mobs","/ashfall elite <uncommon|rare|epic|legendary|miniboss> [mob] [here | <x> <y> <z>]","  mob optional (e.g. wither_skeleton, blaze); location optional -> random if omitted","/ashfall elite legendary blaze here","/ashfall elite epic 100 64 -200","/ashfall elite stats");}
     private void feedbackHelp(CommandSender s){adminCommands(s,"Feedback","/ashfall feedback notify <on|off>","/ashfall feedback list [open|done|all]","/ashfall feedback view <id>","/ashfall feedback done <id>","/ashfall feedback reopen <id>","/ashfall feedback delete <id>");}
     private void factionHelp(CommandSender s){adminCommands(s,"Factions","/ashfall faction inspect <name>","/ashfall faction resize <name> <tier>","/ashfall faction resetclaim <name>","/ashfall faction recalc");}
     private void merchantHelp(CommandSender s){adminCommands(s,"Spawn Merchants","/ashfall merchant spawn <boss|event|shop|auction|banker>","/ashfall merchant remove <nearest|id>");}
@@ -459,6 +462,23 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     }
     private void adminBalance(CommandSender s,String[] args){if(args.length<2){adminSectionHelp(s,"balance");return;}if(args.length<4){CoreUtil.error(s,"Usage: /smp balance "+args[1]+" <player> <amount>");return;}String id=CoreUtil.id(args[2]);db.ensurePlayer(id,args[2],getConfig().getDouble("starting-balance",250));double amount=CoreUtil.parseMoney(args[3]);if(amount<0){CoreUtil.error(s,"Invalid amount.");return;}if(args[1].equalsIgnoreCase("set"))db.setBalance(id,amount);else if(args[1].equalsIgnoreCase("add"))db.changeBalance(id,amount);else if(args[1].equalsIgnoreCase("take"))db.takeUpTo(id,amount);else{CoreUtil.error(s,"Unknown balance action. Use /smp balance for options.");return;}db.logAudit(adminName(s),"BALANCE_"+args[1].toUpperCase(Locale.ROOT),"player="+args[2]+" amount="+CoreUtil.money(amount));CoreUtil.msg(s,args[2]+" balance: "+CoreUtil.money(db.player(id).balance()));}
     private String adminName(CommandSender s){return s instanceof Player p?p.getName():"CONSOLE";}
+    private void adminBank(CommandSender s,String[] args){
+        double balance=bank.treasury().balance();
+        if(args.length<2){CoreUtil.msg(s,"Central Bank balance: "+CoreUtil.money(balance));CoreUtil.msg(s,ChatColor.GRAY+"Manage it with /ashfall bank <add|remove|set> <amount>.");return;}
+        String action=args[1].toLowerCase(Locale.ROOT);
+        if(!Set.of("add","remove","take","set").contains(action)){CoreUtil.error(s,"Unknown bank action. Use add, remove, or set.");return;}
+        if(args.length<3){CoreUtil.error(s,"Usage: /ashfall bank "+action+" <amount>");return;}
+        double amount=CoreUtil.parseMoney(args[2]);
+        if(amount<=0){CoreUtil.error(s,"Amount must be a positive number (e.g. 500000 or 1m).");return;}
+        switch(action){
+            case"add"->bank.adminAdjust(amount);
+            case"remove","take"->bank.adminAdjust(-amount);
+            default->bank.adminAdjust(amount-balance);
+        }
+        double now=bank.treasury().balance();
+        db.logAudit(adminName(s),"BANK_"+action.toUpperCase(Locale.ROOT),"amount="+amount+" balance="+now);
+        CoreUtil.msg(s,"Central Bank "+(action.equals("set")?"set to "+CoreUtil.money(now):(action.equals("add")?"increased by "+CoreUtil.money(amount):"decreased by "+CoreUtil.money(amount)))+". New balance: "+CoreUtil.money(now)+".");
+    }
     private void adminShard(CommandSender s,String[] args){
         if(args.length<3){CoreUtil.error(s,"Usage: /ashfall shard <give|remove|set> <player> <amount>");return;}
         String action=args[1].toLowerCase(Locale.ROOT);if(!Set.of("give","remove","set").contains(action)){CoreUtil.error(s,"Unknown shard action. Use give, remove, or set.");return;}
@@ -511,7 +531,114 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             error->{getLogger().warning("[ReplayDebug] search failed: "+error);CoreUtil.error(s,"Replay search failed: "+error.getMessage());}
         );
     }
-    private void adminElite(CommandSender s,String[] args){if(args.length<2){eliteHelp(s);return;}String tier=args[1].toLowerCase(Locale.ROOT);if(tier.equals("stats")||tier.equals("report")){bosses.rarityReport(s);return;}if(!List.of("uncommon","rare","epic","legendary","miniboss").contains(tier)){CoreUtil.error(s,"Unknown tier. Use /smp elite for options.");return;}boolean here=args.length>2&&args[2].equalsIgnoreCase("here");if(here&&!(s instanceof Player)){CoreUtil.error(s,"The 'here' option must be used in game.");return;}Location loc=here?((Player)s).getLocation():null;LivingEntity elite=bosses.spawnElite(tier,loc);if(elite!=null)CoreUtil.msg(s,CoreUtil.pretty(tier)+" mob spawned.");else CoreUtil.error(s,"No safe elite spawn was found.");}
+    private static final List<String> ELITE_MOBS=List.of("here","zombie","husk","skeleton","stray","bogged","wither_skeleton","spider","cave_spider","creeper","enderman","witch","piglin","piglin_brute","zombified_piglin","blaze","drowned","vindicator","pillager","evoker","ravager","hoglin","zoglin","slime","phantom","vex","breeze","warden");
+    private static org.bukkit.entity.EntityType parseMobType(String value){try{org.bukkit.entity.EntityType type=org.bukkit.entity.EntityType.valueOf(value.toUpperCase(Locale.ROOT));Class<?> cls=type.getEntityClass();if(cls!=null&&org.bukkit.entity.Mob.class.isAssignableFrom(cls)&&type.isSpawnable())return type;}catch(IllegalArgumentException ignored){}return null;}
+    private static Double parseCoord(String value){try{return Double.parseDouble(value);}catch(NumberFormatException e){return null;}}
+
+    // ------------------------------------------------------------------ duel map templates
+    private final Map<String,org.bukkit.Location> duelMapReturn=new java.util.concurrent.ConcurrentHashMap<>();
+    private static double round2(double v){return Math.round(v*100)/100.0;}
+    /** /ashfall duelmap ... -- template maintenance without touching the filesystem. Templates are private
+     *  build worlds; instances are the disposable clones matches actually run in. */
+    private void adminDuelMap(CommandSender sender,String[] args){
+        DuelMapService svc=duelMaps;
+        if(svc==null){CoreUtil.error(sender,"Duel maps are unavailable.");return;}
+        String sub=args.length>1?args[1].toLowerCase(Locale.ROOT):"list";
+        switch(sub){
+            case"list"->{
+                CoreUtil.msg(sender,"Duel templates:");
+                for(DuelMapService.DuelMap m:svc.maps())
+                    CoreUtil.msg(sender,"  "+m.key()+" - "+m.name()+" ["+m.rule()+"] world="+m.templateWorld()
+                        +(getServer().getWorld(m.templateWorld())!=null?" (loaded)":" (not loaded)"));
+                List<String> live=svc.instanceNames();
+                CoreUtil.msg(sender,"Live instances: "+(live.isEmpty()?"none":String.join(", ",live)));
+            }
+            case"enter"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap enter <map>");return;}
+                org.bukkit.World w=svc.template(m);
+                if(w==null){CoreUtil.error(sender,"Could not load that template world.");return;}
+                duelMapReturn.put(p.getUniqueId().toString(),p.getLocation());
+                p.teleport(new org.bukkit.Location(w,m.p1x(),m.p1y(),m.p1z(),m.yawP1(),0));
+                p.setGameMode(org.bukkit.GameMode.CREATIVE);
+                CoreUtil.msg(p,"Editing template "+m.name()+". /ashfall duelmap exit when done.");
+            }
+            case"exit"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                org.bukkit.Location back=duelMapReturn.remove(p.getUniqueId().toString());
+                p.teleport(back!=null?back:getServer().getWorlds().get(0).getSpawnLocation());
+                CoreUtil.msg(p,"Left the template.");
+            }
+            case"save"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap save <map>");return;}
+                CoreUtil.msg(sender,svc.saveTemplate(m)?"Committed "+m.name()+"; future matches use it. Running matches keep the copy they started with."
+                        :"That template is not loaded.");
+            }
+            case"create"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap create <map>");return;}
+                org.bukkit.World w=svc.template(m);
+                CoreUtil.msg(sender,w==null?"Could not create that template world.":"Template world "+w.getName()+" is ready.");
+            }
+            case"test"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){CoreUtil.error(sender,"Usage: /ashfall duelmap test <map>");return;}
+                org.bukkit.World inst=svc.createInstance(m);
+                if(inst==null){CoreUtil.error(sender,"Could not create an instance.");return;}
+                if(sender instanceof Player p){
+                    duelMapReturn.putIfAbsent(p.getUniqueId().toString(),p.getLocation());
+                    p.teleport(new org.bukkit.Location(inst,m.p1x(),m.p1y(),m.p1z(),m.yawP1(),0));
+                }
+                CoreUtil.msg(sender,"Test instance "+inst.getName()+" created. /ashfall duelmap drop "+inst.getName()+" removes it.");
+            }
+            case"drop"->{
+                if(args.length<3){CoreUtil.error(sender,"Usage: /ashfall duelmap drop <instance-world>");return;}
+                org.bukkit.World w=getServer().getWorld(args[2]);
+                if(w==null||!w.getName().startsWith(DuelMapService.INSTANCE_PREFIX)){CoreUtil.error(sender,"Not a duel instance world.");return;}
+                svc.destroyInstance(w,sender instanceof Player p?duelMapReturn.remove(p.getUniqueId().toString()):null);
+                CoreUtil.msg(sender,"Instance removed.");
+            }
+            case"orphans"->CoreUtil.msg(sender,"Removed "+svc.cleanupOrphans()+" orphaned instance world(s).");
+            case"setspawn"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                if(args.length<4){CoreUtil.error(sender,"Usage: /ashfall duelmap setspawn <map> <p1|p2|spectator>");return;}
+                DuelMapService.DuelMap m=svc.map(args[2]);
+                if(m==null){CoreUtil.error(sender,"Unknown map.");return;}
+                String which=args[3].toLowerCase(Locale.ROOT);
+                if(!which.equals("p1")&&!which.equals("p2")&&!which.equals("spectator")){CoreUtil.error(sender,"Pick p1, p2 or spectator.");return;}
+                org.bukkit.Location at=p.getLocation();
+                getConfig().set("duel-maps."+m.key()+"."+which,List.of(round2(at.getX()),round2(at.getY()),round2(at.getZ())));
+                saveConfig(); svc.reload();
+                CoreUtil.msg(p,"Set "+which+" for "+m.name()+" to "+round2(at.getX())+", "+round2(at.getY())+", "+round2(at.getZ())+".");
+            }
+            case"reload"->{svc.reload();CoreUtil.msg(sender,"Duel map registry reloaded.");}
+            default->{
+                CoreUtil.msg(sender,"DUEL MAPS - /ashfall duelmap ...");
+                CoreUtil.msg(sender,"  list | create <map> | enter <map> | exit | save <map> | test <map> | drop <world> | orphans | setspawn <map> <p1|p2|spectator> | reload");
+            }
+        }
+    }
+
+    private void adminElite(CommandSender s,String[] args){
+        if(args.length<2){eliteHelp(s);return;}
+        String tier=args[1].toLowerCase(Locale.ROOT);
+        if(tier.equals("stats")||tier.equals("report")){bosses.rarityReport(s);return;}
+        if(!List.of("uncommon","rare","epic","legendary","miniboss").contains(tier)){CoreUtil.error(s,"Unknown rarity. Use uncommon, rare, epic, legendary, or miniboss.");return;}
+        int idx=2;org.bukkit.entity.EntityType mobType=null;
+        if(args.length>idx){org.bukkit.entity.EntityType parsed=parseMobType(args[idx]);if(parsed!=null){mobType=parsed;idx++;}}
+        org.bukkit.Location loc=null;
+        if(args.length>idx){
+            if(args[idx].equalsIgnoreCase("here")){if(!(s instanceof Player p)){CoreUtil.error(s,"The 'here' option must be used in game.");return;}loc=p.getLocation();}
+            else if(args.length>=idx+3){Double x=parseCoord(args[idx]),y=parseCoord(args[idx+1]),z=parseCoord(args[idx+2]);if(x==null||y==null||z==null){CoreUtil.error(s,"Coordinates must be numbers. Usage: /ashfall elite <rarity> [mob] [here | <x> <y> <z>]");return;}org.bukkit.World w=s instanceof Player p?p.getWorld():getServer().getWorlds().get(0);loc=new org.bukkit.Location(w,x,y,z);}
+            else{CoreUtil.error(s,"Unrecognized '"+args[idx]+"'. Usage: /ashfall elite <rarity> [mob] [here | <x> <y> <z>]");return;}
+        }
+        LivingEntity elite=bosses.spawnElite(tier,loc,mobType);
+        if(elite==null){CoreUtil.error(s,"Could not spawn -- invalid mob for this world, or no safe location found.");return;}
+        db.logAudit(adminName(s),"ELITE_SPAWN",tier+" "+elite.getType().name()+(loc!=null?" @"+loc.getBlockX()+","+loc.getBlockY()+","+loc.getBlockZ():" random"));
+        CoreUtil.msg(s,CoreUtil.pretty(tier)+" "+CoreUtil.pretty(elite.getType().name())+" spawned"+(loc!=null?" at "+loc.getBlockX()+", "+loc.getBlockY()+", "+loc.getBlockZ():" at a random location")+".");
+    }
     private void adminEvent(CommandSender s,String[] args){if(args.length<2){eventHelp(s);return;}if(args[1].equalsIgnoreCase("stop")){boolean stopped=bosses.forceStopEvent();db.logAudit(adminName(s),"EVENT_STOP",stopped?"stopped active event":"nothing was active");CoreUtil.msg(s,stopped?"Active event stopped and cleaned up.":"No event was active.");return;}BossEventService.EventType type=switch(args[1].toLowerCase(Locale.ROOT)){case"resource"->BossEventService.EventType.RESOURCE_RUSH;case"elitehunt"->BossEventService.EventType.ELITE_HUNT;case"taskmaster","task"->BossEventService.EventType.TASK_MASTER;case"worldboss","hunt"->BossEventService.EventType.WORLD_BOSS;default->{CoreUtil.error(s,"Unknown event. Use /smp event for options.");yield null;}};if(type==null)return;if(bosses.startEvent(type,null,BossEventService.Origin.ADMIN_SUMMONED))CoreUtil.msg(s,"Event started.");else CoreUtil.error(s,"A conflicting event is already active.");}
     private void adminFeedback(CommandSender s,String[] args){if(args.length<2){feedbackHelp(s);return;}String action=args[1].toLowerCase(Locale.ROOT);if(action.equals("notify")){if(!(s instanceof Player p)||args.length<3||!List.of("on","off").contains(args[2].toLowerCase(Locale.ROOT))){CoreUtil.error(s,"Usage: /smp feedback notify <on|off>");return;}boolean enabled=args[2].equalsIgnoreCase("on");db.preference(CoreUtil.id(p),"feedback_notify",Boolean.toString(enabled));CoreUtil.msg(s,"Feedback notifications "+(enabled?"enabled":"disabled")+".");return;}if(action.equals("list")){String status=args.length>2&&!args[2].equalsIgnoreCase("all")?args[2].toUpperCase(Locale.ROOT):"";for(Database.FeedbackRow row:db.feedback(status,20))CoreUtil.msg(s,"#"+row.id()+" ["+row.status()+"] "+row.playerName()+" • "+trim(row.message(),70));return;}if(!List.of("view","done","reopen","delete").contains(action)){CoreUtil.error(s,"Unknown feedback action. Use /smp feedback for options.");return;}if(args.length<3){CoreUtil.error(s,"Feedback ID required for '"+action+"'.");return;}long id=Long.parseLong(args[2]);Database.FeedbackRow row=db.feedback(id);if(row==null){CoreUtil.error(s,"Feedback not found.");return;}switch(action){case"view"->{CoreUtil.msg(s,"#"+row.id()+" ["+row.status()+"] "+row.playerName()+" • "+Instant.ofEpochMilli(row.createdAt()));s.sendMessage(row.message());}case"done"->{db.feedbackStatus(id,"DONE");CoreUtil.msg(s,"Feedback #"+id+" marked DONE.");}case"reopen"->{db.feedbackStatus(id,"OPEN");CoreUtil.msg(s,"Feedback #"+id+" reopened.");}case"delete"->{db.deleteFeedback(id);CoreUtil.msg(s,"Feedback #"+id+" permanently deleted.");}}}
 
@@ -613,8 +740,58 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         };
     }
     private String plugin_kitNotice(Player from){return from.getName()+" gave you the staff test kit.";}
+
+    // ------------------------------------------------------------------ admin flight
+    private static final String FLY_PERM="smpcore.fly";
+    private boolean mayFly(CommandSender sender){return !(sender instanceof Player p)||p.hasPermission(FLY_PERM)||isAdmin(p);}
+    /** Resolves the target: an explicit name, otherwise the sender when they are a player. Console MUST name
+     *  somebody, since there is nobody to default to. */
+    private Player flyTarget(CommandSender sender,String named){
+        if(named!=null){Player found=getServer().getPlayerExact(named);if(found==null)CoreUtil.error(sender,"No player named "+named+" is online.");return found;}
+        if(sender instanceof Player self)return self;
+        CoreUtil.error(sender,"From console you must name a player.");return null;}
+
+    /** /fly [player] [on|off] -- omitting on/off toggles. */
+    private boolean flyCommand(CommandSender sender,String[] args){
+        if(!mayFly(sender)){CoreUtil.error(sender,"You may not use /fly.");return true;}
+        String named=null,state=null;
+        for(String arg:args){
+            String low=arg.toLowerCase(Locale.ROOT);
+            if(low.equals("on")||low.equals("off")||low.equals("true")||low.equals("false")||low.equals("toggle"))state=low;else named=arg;}
+        Player target=flyTarget(sender,named);
+        if(target==null)return true;
+        boolean on=state==null||state.equals("toggle")?!target.getAllowFlight():state.equals("on")||state.equals("true");
+        target.setAllowFlight(on);
+        if(!on)target.setFlying(false);
+        CoreUtil.msg(sender,"Flight "+(on?"enabled":"disabled")+" for "+target.getName()+".");
+        if(!target.equals(sender))CoreUtil.msg(target,"Flight "+(on?"enabled":"disabled")+" by staff.");
+        return true;}
+
+    /** /flyspeed [player] <1-10> -- 1 is vanilla flight speed, mapped onto Bukkit's 0-1 scale. */
+    private boolean flySpeedCommand(CommandSender sender,String[] args){
+        if(!mayFly(sender)){CoreUtil.error(sender,"You may not use /flyspeed.");return true;}
+        if(args.length==0){CoreUtil.error(sender,"Usage: /flyspeed [player] <1-10>");return true;}
+        String named=args.length>1?args[0]:null,raw=args[args.length-1];
+        double scale;
+        try{scale=Double.parseDouble(raw);}catch(NumberFormatException e){CoreUtil.error(sender,"'"+raw+"' is not a number. Usage: /flyspeed [player] <1-10>");return true;}
+        if(scale<0.1||scale>10){CoreUtil.error(sender,"Speed must be between 0.1 and 10 (1 = normal).");return true;}
+        Player target=flyTarget(sender,named);
+        if(target==null)return true;
+        float speed=(float)Math.max(0.01,Math.min(1.0,scale/10.0));
+        target.setFlySpeed(speed);
+        CoreUtil.msg(sender,"Fly speed for "+target.getName()+" set to "+scale+" ("+String.format(Locale.ROOT,"%.2f",speed)+").");
+        if(!target.equals(sender))CoreUtil.msg(target,"Your fly speed was set to "+scale+" by staff.");
+        return true;}
+
     @Override public List<String> onTabComplete(CommandSender sender,Command command,String alias,String[] args){
         String name=command.getName().toLowerCase(Locale.ROOT);
+        if(name.equals("fly")||name.equals("flyspeed")){
+            if(!mayFly(sender))return List.of();
+            List<String> names=getServer().getOnlinePlayers().stream().map(Player::getName).collect(java.util.stream.Collectors.toList());
+            if(args.length==1){List<String> out=new ArrayList<>(names);out.addAll(name.equals("fly")?List.of("on","off"):List.of("1","2","5","10"));
+                return out.stream().filter(s->s.toLowerCase(Locale.ROOT).startsWith(args[0].toLowerCase(Locale.ROOT))).collect(java.util.stream.Collectors.toList());}
+            if(args.length==2)return (name.equals("fly")?List.of("on","off"):List.of("1","2","5","10")).stream().filter(s->s.startsWith(args[1].toLowerCase(Locale.ROOT))).collect(java.util.stream.Collectors.toList());
+            return List.of();}
         if(name.equals("ashfall")&&sender instanceof Player player&&!isAdmin(player))return List.of();
         if(name.equals("admin")&&!(sender instanceof ConsoleCommandSender)&&!(sender instanceof RemoteConsoleCommandSender))return List.of();
         /** /kit is staff-only, so it offers no suggestions at all to normal players -- the command's
@@ -656,7 +833,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("buyhome")&&args.length==1)return filter(args[0],List.of("confirm"));
         if(name.equals("homes")&&args.length==1)return filter(args[0],List.of("locate"));
         if(name.equals("relics")&&args.length==2&&args[0].equalsIgnoreCase("trace")&&sender instanceof Player p)return filter(args[1],db.relicLifecycles().stream().filter(row->"ACTIVE".equals(row.status())&&row.owner().equals(CoreUtil.id(p))).map(Database.RelicLifecycleRow::key).toList());
-        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
+        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
         if(name.equals("shop")&&args.length==2&&(args[0].equalsIgnoreCase("buy")||args[0].equalsIgnoreCase("sell")))return shop.itemNames(args[0].equalsIgnoreCase("sell"),args[1]);
         if(name.equals("shop")&&args.length==2&&args[0].equalsIgnoreCase("sellall"))return filter(args[1],List.of("chest"));
         if(name.equals("f")&&args.length==2&&(args[0].equalsIgnoreCase("home")||args[0].equalsIgnoreCase("delhome"))&&sender instanceof Player p){Database.FactionRow faction=db.factionOf(CoreUtil.id(p));return faction==null?List.of():filter(args[1],db.homes(Long.toString(faction.id()),"FACTION").stream().map(Database.HomeRow::name).toList());}
@@ -670,6 +847,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             return switch(args[0].toLowerCase(Locale.ROOT)){
                 case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","maintenance"));
                 case"balance"->filter(args[1],List.of("set","add","take"));
+                case"bank"->filter(args[1],List.of("add","remove","set"));
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));
                 case"elite"->filter(args[1],List.of("stats","uncommon","rare","epic","legendary","miniboss"));
                 case"event"->filter(args[1],List.of("resource","elitehunt","taskmaster","worldboss","stop"));
@@ -708,7 +886,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("replay"))return onlineNames(sender,args[2]);
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("merchant")){if(args[1].equalsIgnoreCase("spawn"))return filter(args[2],List.of("boss","event","shop","auction","banker"));if(args[1].equalsIgnoreCase("remove"))return filter(args[2],List.of("nearest"));}
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("boss")&&Set.of("spawn","here").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],List.of("ashen","iron","piglin"));
-        if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("elite")&&List.of("uncommon","rare","epic","legendary","miniboss").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],List.of("here"));
+        if(name.equals("ashfall")&&args[0].equalsIgnoreCase("elite")&&List.of("uncommon","rare","epic","legendary","miniboss").contains(args[1].toLowerCase(Locale.ROOT))){if(args.length==3)return filter(args[2],ELITE_MOBS);if(args.length==4&&parseMobType(args[2])!=null)return filter(args[3],List.of("here"));}
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("relic")&&args[1].equalsIgnoreCase("give"))return filter(args[3],new ArrayList<>(relics.keys()));
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("relic")&&args[1].equalsIgnoreCase("remove"))return filter(args[2],new ArrayList<>(relics.keys()));
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("relic")&&args[1].equalsIgnoreCase("forcerespawn"))return filter(args[2],new ArrayList<>(relics.keys()));

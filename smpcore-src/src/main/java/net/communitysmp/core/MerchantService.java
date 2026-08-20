@@ -128,6 +128,38 @@ final class MerchantService {
     private void purchaseWithLegendarySigils(Player player,ItemStack scroll,int required){if(!ShopService.canFit(player,scroll)){CoreUtil.error(player,"Make enough inventory space first.");return;}if(countLegendarySigils(player)<required){CoreUtil.error(player,"You need "+required+" Legendary Sigils.");return;}removeLegendarySigils(player,required);CoreUtil.give(player,scroll);announceScrollPurchase(player,plugin.bosses().summonScrollKind(scroll),"with Legendary Sigils");player.playSound(player.getLocation(),Sound.BLOCK_AMETHYST_BLOCK_CHIME,.8f,.55f);CoreUtil.msg(player,"The Keeper accepted "+required+" legendary sigils.");}
     private int countLegendarySigils(Player player){int count=0;for(ItemStack item:player.getInventory().getStorageContents())if(isLegendarySigil(item))count+=item.getAmount();return count;}
     private void removeLegendarySigils(Player player,int amount){for(ItemStack item:player.getInventory().getStorageContents()){if(amount<=0)break;if(!isLegendarySigil(item))continue;int take=Math.min(amount,item.getAmount());item.setAmount(item.getAmount()-take);amount-=take;}}
+    /** One-time repair for Legendary Sigils minted before the item carried its PDC tag. It is deliberately
+     *  NOT a runtime name/lore rule: detection stays strictly tag-based, because a name and lore pair can
+     *  be reproduced on any item by an admin. This runs for the configured account(s) only, matches the
+     *  one verified legacy signature (Echo Shard + exact name + the plugin-only lore line), and records a
+     *  persistent flag so it never runs a second time. Delete the migrations block from config.yml to
+     *  remove it entirely once it has reported success. */
+    void migrateLegacySigils(Player player){
+        if(!plugin.getConfig().getBoolean("migrations.legacy-legendary-sigil.enabled",false))return;
+        java.util.List<String> targets=plugin.getConfig().getStringList("migrations.legacy-legendary-sigil.uuids");
+        if(!targets.contains(player.getUniqueId().toString()))return;
+        if("done".equals(db.preference(CoreUtil.id(player),"legacy_sigil_migrated")))return;
+        String wantName=plugin.getConfig().getString("migrations.legacy-legendary-sigil.name","Legendary Sigil");
+        String wantLore=plugin.getConfig().getString("migrations.legacy-legendary-sigil.lore","A trophy from a powered creature.");
+        int fixed=0;
+        java.util.List<ItemStack[]> pools=java.util.List.of(player.getInventory().getContents(),player.getEnderChest().getContents());
+        for(ItemStack[] pool:pools)for(ItemStack item:pool){
+            if(item==null||item.getType()!=Material.ECHO_SHARD||!item.hasItemMeta())continue;
+            ItemMeta meta=item.getItemMeta();
+            if(meta.getPersistentDataContainer().has(legendarySigilKey))continue;
+            if(!meta.hasDisplayName()||!net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(meta.displayName()).equals(wantName))continue;
+            boolean lore=false;
+            if(meta.hasLore())for(net.kyori.adventure.text.Component line:meta.lore())
+                if(net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(line).equals(wantLore))lore=true;
+            if(!lore)continue;
+            meta.getPersistentDataContainer().set(legendarySigilKey,PersistentDataType.BYTE,(byte)1);
+            item.setItemMeta(meta);fixed++;
+        }
+        db.preference(CoreUtil.id(player),"legacy_sigil_migrated","done");
+        plugin.getLogger().info("[sigil-migration] "+player.getName()+": retagged "+fixed+" legacy Legendary Sigil(s); migration now disabled for this account.");
+        if(fixed>0)CoreUtil.msg(player,"A legacy Legendary Sigil in your possession has been repaired and is now accepted by the Keeper of Omens.");
+    }
+
     private boolean isLegendarySigil(ItemStack item){return item!=null&&!item.getType().isAir()&&item.hasItemMeta()&&item.getItemMeta().getPersistentDataContainer().has(legendarySigilKey);}
     private void consume(Player player,org.bukkit.inventory.EquipmentSlot hand){ItemStack held=player.getInventory().getItem(hand);held.setAmount(held.getAmount()-1);}
 

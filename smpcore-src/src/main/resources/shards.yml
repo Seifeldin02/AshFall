@@ -1,4 +1,5 @@
 earning:
+
   # Non-playtime shards a single player may earn per day. Passive playtime shards are completely
   # outside this cap. A reward that would exceed the remainder is trimmed rather than dropped.
   daily-cap: 10

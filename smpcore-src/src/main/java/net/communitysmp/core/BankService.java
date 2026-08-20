@@ -197,6 +197,9 @@ final class BankService implements Listener {
 
     boolean overdue(String player){Database.LoanRow loan=accrue(player);return loan!=null&&loan.overdue();}
     Database.BankRow treasury(){return db.bank();}
+    /** Admin-only Central Bank balance control (add/remove/set). Delta may push the balance negative, which
+     *  is intentional -- a negative treasury is what turns on the deficit surcharge. */
+    void adminAdjust(double delta){db.adjustBank(delta);}
     /** The Central Bank deficit surcharge. While the treasury sits at or below zero, every player->bank payment
      *  is charged at 2x and every shop payout is paid at 0.5x, until buys/fees/sinks pull the treasury back
      *  above zero. This is the SINGLE source of truth so no price is ever hand-doubled at a call site.

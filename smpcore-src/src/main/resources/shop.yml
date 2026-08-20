@@ -66,8 +66,36 @@ items:
   IRON_INGOT: {buy: 55, sell: 11, daily-full: 8192, category: MINING}  # Iron golem farm; premium infrastructure
   OBSIDIAN: {buy: 70, sell: 14, daily-full: 1024, category: MINING}  # Diamond pickaxe and nine seconds a block
   EMERALD: {buy: 80, sell: 16, daily-full: 1536, category: MINING}  # Villager trading hall or raid farm; the trading economy
-  DIAMOND: {buy: 200, sell: 40, daily-full: 512, category: MINING}  # Still mined by hand; the benchmark of a survival economy
+  # INTENTIONAL (owner-set): 1000/200 is deliberate and must not be "restored" to the older 200/40.
+  DIAMOND: {buy: 1000, sell: 200, daily-full: 512, category: MINING}  # Still mined by hand; the benchmark of a survival economy
 
+  # ---- MINERAL BLOCKS (exactly 9x the base item) ----
+  COAL_BLOCK: {buy: 142.65, sell: 28.53, daily-full: 341, category: MINING}
+  COPPER_BLOCK: {buy: 72, sell: 14.4, daily-full: 455, category: MINING}
+  REDSTONE_BLOCK: {buy: 117, sell: 23.4, daily-full: 341, category: MINING}
+  LAPIS_BLOCK: {buy: 142.65, sell: 28.53, daily-full: 341, category: MINING}
+  GOLD_BLOCK: {buy: 160.65, sell: 32.13, daily-full: 341, category: MINING}
+  IRON_BLOCK: {buy: 495, sell: 99, daily-full: 910, category: MINING}
+  EMERALD_BLOCK: {buy: 720, sell: 144, daily-full: 171, category: MINING}
+  DIAMOND_BLOCK: {buy: 9000, sell: 1800, daily-full: 57, category: MINING}
+  # ---- CRAFTED UTILITY (priced from their own ingredients already sold here) ----
+  # TNT = (5 x gunpowder buy 130 + 4 x sand buy 10.55) x 1.05 = 726.81 ; sell = buy/5
+  TNT: {buy: 726.81, sell: 145.362, daily-full: 512, category: MINING}
+  # Glass bottle = 3 glass (15.4) /3 per craft -> 15.4 each
+  GLASS_BOTTLE: {buy: 15.4, sell: 3.08, daily-full: 2048, category: MINING}
+  # Torch = 1 coal (15.85) + 1 stick, 4 per craft -> ~4.25
+  TORCH: {buy: 4.25, sell: 0.85, daily-full: 4096, category: MINING}
+  # Ladder = 7 sticks / 3 per craft
+  LADDER: {buy: 3.5, sell: 0.7, daily-full: 4096, category: MINING}
+  # Paper = 3 sugar cane / 3 per craft ; book = 3 paper + 1 leather
+  PAPER: {buy: 4.5, sell: 0.9, daily-full: 4096, category: FARMING}
+  BOOK: {buy: 21.5, sell: 4.3, daily-full: 2048, category: FARMING}
+  # Stick = 2 planks / 4 per craft
+  STICK: {buy: 1.2, sell: 0.24, daily-full: 8192, category: WOOD}
+  # Bucket = 3 iron (55) -> 165
+  BUCKET: {buy: 165, sell: 33, daily-full: 512, category: MINING}
+  # Rail = 6 iron + 1 stick, 16 per craft
+  RAIL: {buy: 20.7, sell: 4.14, daily-full: 2048, category: MINING}
   # ---- FARMING ----
   WHEAT_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct of every wheat harvest
   BEETROOT_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
@@ -106,6 +134,23 @@ items:
   NETHER_WART: {buy: 55.1, sell: 11.02, daily-full: 1536, category: FARMING}  # Fortress/bastion gated; the whole brewing tree needs it
   APPLE: {buy: 65, sell: 13, daily-full: 1024, category: FARMING}  # Leaf decay only; no efficient apple farm exists
 
+  # ---- FLOWERS ----
+  POPPY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  DANDELION: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  BLUE_ORCHID: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  ALLIUM: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  AZURE_BLUET: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  RED_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  ORANGE_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  WHITE_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  PINK_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  OXEYE_DAISY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  CORNFLOWER: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  LILY_OF_THE_VALLEY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  SUNFLOWER: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  LILAC: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  ROSE_BUSH: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  PEONY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
   # ---- ANIMALS ----
   EGG: {buy: 1.4, sell: 0.28, daily-full: 4096, category: ANIMALS}  # Chicken farm, fully automatic
   FEATHER: {buy: 1.6, sell: 0.32, daily-full: 4096, category: ANIMALS}  # Chicken farm byproduct
@@ -164,7 +209,7 @@ luxuries:
     buy: 150000
     display: Ancient Upgrade Pattern
   DRAGON_EGG:
-    buy: 2000000
+    buy: 50000000
     display: Dragon Egg
   IRON_GOLEM_SPAWN_EGG:
     buy: 50000000

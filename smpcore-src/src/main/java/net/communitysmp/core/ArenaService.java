@@ -311,7 +311,7 @@ final class ArenaService implements Listener {
     private List<ItemStack> kitHotbar(Kit kit) {
         return switch (kit) {
             case MACE -> List.of(
-                enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.WIND_BURST, 3, Enchantment.SHARPNESS, 5, Enchantment.UNBREAKING, 3)),
+                enchanted(Material.MACE, Map.of(Enchantment.DENSITY, 5, Enchantment.WIND_BURST, 3, Enchantment.SHARPNESS, 5, Enchantment.BREACH, 4, Enchantment.UNBREAKING, 3)),
                 new ItemStack(Material.WIND_CHARGE, 64), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.ENDER_PEARL, 16),
                 splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
                 splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
@@ -341,13 +341,23 @@ final class ArenaService implements Listener {
     /** Inventory rows (slots 9+): backups. */
     private List<ItemStack> kitExtra(Kit kit) {
         return switch (kit) {
-            case MACE -> List.of(new ItemStack(Material.WIND_CHARGE, 64), new ItemStack(Material.GOLDEN_APPLE, 16), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 8));
-            case SWORD -> List.of(new ItemStack(Material.ARROW, 64), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4),
+            case MACE -> List.of(new ItemStack(Material.WIND_CHARGE, 64), new ItemStack(Material.GOLDEN_APPLE, 16), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 8),
+                new ItemStack(Material.ELYTRA), rockets(64), splash(org.bukkit.potion.PotionType.SLOW_FALLING, 1), new ItemStack(Material.COOKED_BEEF, 16));
+            case SWORD -> List.of(new ItemStack(Material.COOKED_BEEF, 16), new ItemStack(Material.ARROW, 64), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4),
                 enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)), enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)));
             case AXE -> List.of(enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)), enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)),
                 enchanted(Material.SHIELD, Map.of(Enchantment.UNBREAKING, 3)), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4), new ItemStack(Material.ARROW, 32));
-            case SPEAR -> List.of(new ItemStack(Material.FIREWORK_ROCKET, 64), new ItemStack(Material.TOTEM_OF_UNDYING, 2), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4));
+            case SPEAR -> List.of(new ItemStack(Material.COOKED_BEEF, 16), rockets(64), new ItemStack(Material.TOTEM_OF_UNDYING, 2), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 4));
         };
+    }
+
+    /** Flight-duration-1 rockets: short bursts that suit duelling far better than the default 1-3 spread. */
+    private ItemStack rockets(int count) {
+        ItemStack item = new ItemStack(Material.FIREWORK_ROCKET, count);
+        org.bukkit.inventory.meta.FireworkMeta meta = (org.bukkit.inventory.meta.FireworkMeta) item.getItemMeta();
+        meta.setPower(1);
+        item.setItemMeta(meta);
+        return item;
     }
 
     private ItemStack splash(org.bukkit.potion.PotionType type, int count) {
