@@ -107,15 +107,29 @@ final class IndustrialHopperService implements Listener {
      *  back -- there is no lookup that could resolve to the wrong block or invent a second store. */
     private final class Bay implements InventoryHolder {
         private final Location at;
+        /** The world's NAME and this bay's map key, both captured at construction.
+         *
+         *  A Location holds only a WEAK reference to its World, and once that world is unloaded
+         *  Location.getWorld() THROWS ("World unloaded") rather than returning null -- so the obvious
+         *  null guard never fires, and the sweep threw on every tick for the rest of the session, taking
+         *  every other hopper's turn down with it. Nothing here may dereference the Location's world;
+         *  everything goes through worldOf() and id instead. */
+        private final String worldName;
+        private final String id;
         private final Inventory inv;
         private boolean dirty;
         private Bay(Location at) {
             this.at = at;
+            this.worldName = at.getWorld() == null ? "?" : at.getWorld().getName();
+            this.id = key(at);
             this.inv = Bukkit.createInventory(this, SLOTS,
                     Component.text("Industrial Hopper", NamedTextColor.DARK_AQUA));
         }
         @Override public Inventory getInventory() { return inv; }
     }
+
+    /** The Bay's world, or null once it has been unloaded. Resolved BY NAME, never through the Location. */
+    private World worldOf(Bay bay) { return Bukkit.getWorld(bay.worldName); }
 
     private final SMPCore plugin;
     private final NamespacedKey blockKey, itemKey, dataKey, signalKey;
@@ -225,7 +239,7 @@ final class IndustrialHopperService implements Listener {
 
     /** Viewers are always closed when a Bay stops being owned: an open screen is a live handle on the
      *  inventory, and leaving one open would let a player put items into a store nothing will ever save. */
-    private void forget(Bay bay) { closeViewers(bay); bays.remove(key(bay.at)); }
+    private void forget(Bay bay) { closeViewers(bay); bays.remove(bay.id); }
 
     private void closeViewers(Bay bay) {
         for (HumanEntity viewer : new ArrayList<>(bay.inv.getViewers())) viewer.closeInventory();
@@ -247,7 +261,7 @@ final class IndustrialHopperService implements Listener {
         if (bays.isEmpty()) return;
         for (Bay bay : bays.values()) {
             if (!bay.dirty) continue;
-            World world = bay.at.getWorld();
+            World world = worldOf(bay);
             if (world == null || !world.isChunkLoaded(bay.at.getBlockX() >> 4, bay.at.getBlockZ() >> 4)) continue;
             flush(bay);
         }
@@ -272,7 +286,7 @@ final class IndustrialHopperService implements Listener {
         for (Iterator<Bay> it = bays.values().iterator(); it.hasNext(); ) {
             Bay bay = it.next();
             if (bay.at.getBlockX() >> 4 != chunk.getX() || bay.at.getBlockZ() >> 4 != chunk.getZ()) continue;
-            if (!chunk.getWorld().equals(bay.at.getWorld())) continue;
+            if (!chunk.getWorld().getName().equals(bay.worldName)) continue;
             flush(bay);
             closeViewers(bay);
             it.remove();
@@ -363,16 +377,16 @@ final class IndustrialHopperService implements Listener {
                 if (item != null && !item.getType().isAir() && !isSignalMarker(item)) world.dropItemNaturally(at, item);
             container.getInventory().clear();
         }
-        bays.remove(key(bay.at));
+        bays.remove(bay.id);
     }
 
     /** Returns the contents to the world when the block went away without an event we could see. Logged,
      *  because it means something outside this plugin removed a populated hopper and an admin should be
      *  able to see how much came back and where. */
     private void spill(Bay bay) {
-        World world = bay.at.getWorld();
+        World world = worldOf(bay);
         if (world == null) {
-            plugin.getLogger().warning("[IndustrialHopper] " + key(bay.at)
+            plugin.getLogger().warning("[IndustrialHopper] " + bay.id
                     + " lost its world reference; contents could not be returned.");
             return;
         }
@@ -387,7 +401,7 @@ final class IndustrialHopperService implements Listener {
         }
         bay.inv.clear();
         if (returned > 0)
-            plugin.getLogger().warning("[IndustrialHopper] " + key(bay.at)
+            plugin.getLogger().warning("[IndustrialHopper] " + bay.id
                     + " disappeared without a break event; returned " + returned + " item(s) in "
                     + stacks + " stack(s) to the world.");
     }
@@ -439,7 +453,7 @@ final class IndustrialHopperService implements Listener {
         if (destination == null) return;
         event.setCancelled(true);
         Location from = event.getSource().getLocation();
-        if (from != null && from.getWorld() != null && from.getWorld().equals(destination.at.getWorld())
+        if (from != null && from.getWorld() != null && from.getWorld().getName().equals(destination.worldName)
                 && from.getBlockX() == destination.at.getBlockX()
                 && from.getBlockY() == destination.at.getBlockY() + 1
                 && from.getBlockZ() == destination.at.getBlockZ()) return;
@@ -551,8 +565,11 @@ final class IndustrialHopperService implements Listener {
         int budget = Math.max(1, plugin.getConfig().getInt("industrial-hopper.items-per-tick", 9));
         for (Iterator<Bay> it = bays.values().iterator(); it.hasNext(); ) {
             Bay bay = it.next();
-            World world = bay.at.getWorld();
-            if (world == null) { spill(bay); it.remove(); continue; }
+            /** Resolved by NAME: an unloaded world makes the Location's own accessor throw, not return
+             *  null, so this guard has to avoid it entirely. There is nowhere to drop the contents of a
+             *  hopper whose world is gone, so the bay is simply released. */
+            World world = worldOf(bay);
+            if (world == null) { closeViewers(bay); it.remove(); continue; }
             if (!world.isChunkLoaded(bay.at.getBlockX() >> 4, bay.at.getBlockZ() >> 4)) continue;
             Block block = bay.at.getBlock();
             if (block.getType() != Material.HOPPER || !(block.getState(false) instanceof TileState tile)
@@ -909,8 +926,14 @@ final class IndustrialHopperService implements Listener {
     }
 
     private static void dropAt(Location at, ItemStack item) {
-        if (at == null || at.getWorld() == null || item == null || item.getType().isAir()) return;
-        at.getWorld().dropItemNaturally(at.clone().add(.5, .5, .5), item);
+        if (at == null || item == null || item.getType().isAir()) return;
+        /** Location.getWorld() throws rather than returning null once its world has been unloaded, and this
+         *  is reached from refund paths that can run in the same tick a world goes away. There is nowhere to
+         *  drop an item in a world that no longer exists, so the only correct answer is to do nothing. */
+        World world;
+        try { world = at.getWorld(); } catch (IllegalArgumentException unloaded) { return; }
+        if (world == null) return;
+        world.dropItemNaturally(at.clone().add(.5, .5, .5), item);
     }
 
     // ------------------------------------------------------------------ diagnostics
@@ -1000,7 +1023,7 @@ final class IndustrialHopperService implements Listener {
             int stored = 0;
             for (ItemStack item : bay.inv.getContents())
                 if (item != null && !item.getType().isAir()) stored += item.getAmount();
-            out.add(key(bay.at) + " stored=" + stored + " dirty=" + bay.dirty);
+            out.add(bay.id + " stored=" + stored + " dirty=" + bay.dirty);
         }
         return out;
     }

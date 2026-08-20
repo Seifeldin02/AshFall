@@ -181,6 +181,13 @@ slot**. Verified, and three real deviations fixed:
   by face too (ingredient from above; fuel and bottles from the side), so blaze powder can no longer land in a
   potion slot.
 - **Container minecarts work in both directions** — unloading a chest minecart above and loading one it faces.
+- **A world unloading no longer breaks every hopper on the server.** A `Location` holds only a *weak*
+  reference to its `World`, and once that world is unloaded `Location.getWorld()` **throws** rather than
+  returning null — so the sweep's `if (world == null)` guard never fired, and the task threw on every tick
+  for the rest of the session, taking every other hopper's turn down with it. Bays now carry their world
+  name and map key from construction and resolve by name; nothing dereferences the Location's world any
+  more. Duel instances unload constantly now, so this was not a test-only situation. Found by the new rig
+  cleaning up after itself, and now asserted by it.
 - **Dropped-item collection is done directly** rather than relying on vanilla's pickup into the block's five
   slots, so collection depends on whether there is actually room, not on the calibration weight. A full hopper
   leaves the item on the floor rather than deleting it.
@@ -234,8 +241,13 @@ Cinder's 36 chests that is ~3.5 normal and ~1.1 ominous keys per match.
   had stopped, and the next JVM died on `session.lock` (*"another process has locked a portion of the file"*).
   The scratchpad RCON client no longer uses that trick, and the redeploy script now waits on the **java
   process actually exiting**, not on the listening ports (which close early, while the JVM is still saving).
-- Several dead `cmd` console windows accumulate on staging, one per restart cycle, each parked at `pause`.
-  Harmless, but worth closing by hand.
+- **Do not tidy up staging console windows by matching on window title.** One dead `cmd` window accumulates
+  per restart cycle, each parked at `pause`. Closing the stale ones by `MainWindowTitle` (excluding the live
+  java's *parent* PID) took the running server down anyway: the window-owning `cmd` is not the java process's
+  direct parent, so the "live" console was not actually excluded. Staging was down for about ten minutes and
+  was relaunched cleanly; production was never involved. If they need clearing, do it from the desktop, or
+  `stop` the server first. This is the same class of mistake as the standing "never taskkill a console PID"
+  rule, reached from a different direction.
 
 ### Promotion checklist — what a push to production carries
 

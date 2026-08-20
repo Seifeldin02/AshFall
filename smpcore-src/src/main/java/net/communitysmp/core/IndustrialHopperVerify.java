@@ -390,7 +390,21 @@ final class IndustrialHopperVerify {
         if (world != null) {
             for (org.bukkit.entity.Entity entity : world.getEntities()) entity.remove();
             File folder = world.getWorldFolder();
-            if (Bukkit.unloadWorld(world, false)) delete(folder);
+            String name = world.getName();
+            if (Bukkit.unloadWorld(world, false)) {
+                /** Regression guard for a bug this rig found the hard way: a Location holds only a WEAK
+                 *  reference to its World, and once that world is unloaded getWorld() THROWS rather than
+                 *  returning null -- so the sweep's null check never fired and it threw on every tick
+                 *  afterwards, taking every other hopper on the server down with it. Duel instances unload
+                 *  constantly now, so this is not a test-only situation. */
+                section("after the world unloads");
+                boolean threw = false;
+                try { hoppers.sweepOnce(); } catch (Throwable error) { threw = true; out.add("   threw: " + error); }
+                check("a sweep after a world unloads does not throw", !threw);
+                check("the unloaded world's hoppers are released",
+                        hoppers.describeAll().stream().noneMatch(line -> line.startsWith(name + " ")));
+                delete(folder);
+            }
         }
         out.add("");
         out.add(failures == 0 ? "INDUSTRIAL HOPPER PARITY VERIFIED - no failures"
