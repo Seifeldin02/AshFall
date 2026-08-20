@@ -29,8 +29,28 @@ def read(p: Path) -> str:
     return p.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
 
 
+def snapshot_shape(d: Path) -> dict:
+    """A duel-map snapshot directory's shape: which maps it holds and how big each one's region set is.
+
+    Deliberately not a byte comparison. A snapshot is world data -- tens of megabytes of .mca -- and the two
+    servers legitimately differ in mtimes and in region padding. What must match is that production has the
+    same set of committed maps, each with the same number of non-empty region files; anything else means a
+    map was missed or a copy was truncated. `__canary` is a test artefact and is ignored on both sides.
+    """
+    out = {}
+    for child in sorted(d.iterdir()):
+        if not child.is_dir() or child.name.startswith("__") or child.suffix in (".tmp", ".old"):
+            continue
+        region = child / "region"
+        files = [f for f in region.glob("*.mca") if f.stat().st_size > 0] if region.is_dir() else []
+        out[child.name] = len(files)
+    return out
+
+
 def same(a: Path, b: Path) -> bool:
     """YAML by parsed value where possible; otherwise text, ignoring line endings."""
+    if a.is_dir() or b.is_dir():
+        return a.is_dir() and b.is_dir() and snapshot_shape(a) == snapshot_shape(b)
     if a.suffix in (".yml", ".yaml"):
         try:
             return yaml.safe_load(read(a)) == yaml.safe_load(read(b))
@@ -46,6 +66,20 @@ def props(p: Path) -> dict[str, str]:
             k, _, v = line.partition("=")
             out[k.strip()] = v.strip()
     return out
+
+
+def copy_entry(s: Path, p: Path) -> None:
+    """Copy a manifest entry, which may be a file or a whole snapshot directory."""
+    if s.is_dir():
+        for child in s.iterdir():
+            if not child.is_dir() or child.name.startswith("__") or child.suffix in (".tmp", ".old"):
+                continue
+            target = p / child.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(child, target)
+    else:
+        shutil.copyfile(s, p)
 
 
 def main() -> int:
@@ -70,12 +104,15 @@ def main() -> int:
             rows.append((MISSING, rel, "absent on PRODUCTION" + note))
             if args.fix:
                 p.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(s, p)
+                copy_entry(s, p)
                 rows[-1] = (INFO, rel, "COPIED to production" + note)
         elif not same(s, p):
-            rows.append((DIFF, rel, "differs from staging" + note))
+            detail = "differs from staging"
+            if s.is_dir():
+                detail += f" (staging {snapshot_shape(s)} vs production {snapshot_shape(p)})"
+            rows.append((DIFF, rel, detail + note))
             if args.fix:
-                shutil.copyfile(s, p)
+                copy_entry(s, p)
                 rows[-1] = (INFO, rel, "COPIED to production" + note)
         else:
             rows.append((OK, rel, "matches staging"))
