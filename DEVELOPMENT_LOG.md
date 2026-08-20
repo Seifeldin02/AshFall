@@ -5,12 +5,24 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
-## Session: 2026-08-20 — duel arena rebuild (maps, instances, three-stage setup) + Industrial Hopper parity — 🟡 STAGING ONLY
+## Session: 2026-08-20 — duel arena rebuild (maps, instances, three-stage setup) + Industrial Hopper parity — ✅ PROMOTED TO PRODUCTION
 
-**NOTHING IN THIS SESSION IS ON PRODUCTION.** Everything below is built, deployed and tested on staging
-(`C:\MinecraftServer-Staging`, port 25566 / RCON 25576) only. Production was not restarted, deployed to, or
-touched in any way. See the **promotion checklist** at the end of this section for exactly what a push to
-production would and would not carry.
+**✅ PROMOTED TO PRODUCTION 2026-08-20 (evening), in one restart.** Only Asserto was online, so per the
+standing rule the restart was **silent** — no announcement, no countdown. Promoted: `SMPCore-1.7.0.jar`,
+`config.yml` (rebuilt from staging with production's own `session-persistence`/`require-same-ip` block
+restored and the staging-only auth keys and MacoCT test-whitelist entry stripped; backup at
+`config.yml.bak-preduelmaps`), `bosses.yml`, `shop.yml`, `shards.yml`, `relics.yml`, `events.yml`, and the
+five map snapshot folders under `plugins/SMPCore/duel-templates/` (`__canary` deliberately excluded).
+`plugins/update/` was cleared first.
+
+Post-restart verification on production: `/ashfall selftest` all green including the two new duel lines and
+`snapshots committed: 6/6 (all playable)`; all six maps registered and `[committed]`; a `dryrun` of Skyroot
+Village cloned, filled 26 chests, resolved both spawns facing each other and dropped cleanly in 517 ms; zero
+orphan instances on disk or loaded; zero SMPCore errors in the boot log (the 17 WARN/ERROR lines are all
+pre-existing third-party noise — GrimAC's SLF4J, ReplayCore, AuthMe/Vault, the offline-mode banner).
+
+Everything below was built and tested on staging (`C:\MinecraftServer-Staging`, port 25566 / RCON 25576)
+first. The **promotion checklist** at the end of this section records what was carried and why.
 
 ### The blocking defect: duel template blocks never reached their clones
 
@@ -214,6 +226,33 @@ The legacy 46-check selftest covered none of this work. Three new suites, all ru
 
 Current staging results: **`/ashfall selftest` all green**, **CANARY PASSED**, **DUEL PIPELINE VERIFIED — no
 failures**, **INDUSTRIAL HOPPER PARITY VERIFIED — no failures**.
+
+### Three late fixes (same session, promoted together)
+
+- **Live admin autocomplete.** `/ashfall duelmap` now completes its subcommands and their arguments from the
+  live registry and world list: registered map ids, the two flat arenas for `build`, loaded instance world
+  names for `drop`, and `p1|p2|spectator` for `setspawn`. `/ashfall hopper` completes too. One `DUELMAP_SUBS`
+  list feeds the help text, the completion and the unknown-subcommand reply so they cannot drift, and a wrong
+  or missing argument now returns a one-line usage **plus the values that would have worked** rather than a
+  bare error. The `/ashfall` tree is already admin-gated, so suggestions are permission-aware by construction.
+- **Closing any duel GUI cancels.** Closing Kit, Map or Final Options by hand goes through exactly the same
+  path as `/duel cancel`, at every stage, with no "already confirmed" exemption. The subtlety: Bukkit fires
+  `InventoryCloseEvent` for the old screen when the plugin opens the next one, identically to ESC — so
+  advancing a stage, and `startMatch` closing both screens while the duel is still `STAKING`, would have
+  cancelled the duel they were starting. Plugin-driven swaps are now marked by an explicit `screenTransition`
+  guard, set and cleared synchronously around every open/close; `selfTest` asserts it suppresses, nests, and
+  clears even when the swap throws (a stuck flag would silently stop manual closes cancelling for the rest of
+  the session). The wager box and wager viewer are sub-screens, not stages: closing one returns the duellist
+  to their stage, which keeps the invariant the cancel rule depends on.
+- **Template chest eligibility.** Loot now rolls into every chest that was **empty in the committed template**
+  and only those; a chest the builder stocked is left exactly as they left it instead of being cleared and
+  re-rolled. No registry, no coordinates, no config — place a chest in the template, save, and it works, which
+  is exactly what Deepstone Mines needs once its chests are added. A chest a duellist places mid-match can
+  never qualify because the roll happens once at instance creation, before either player is teleported in, and
+  a `looted` set makes that literal so a chunk reload cannot reprint loot into a chest somebody has already
+  emptied. One roll per physical container and double-chest de-duplication are unchanged; the key chances now
+  apply per **eligible** chest and are reported that way. The canary gained a pre-stocked chest and asserts all
+  three properties (2 empty rolled / 1 stocked untouched / second roll is a no-op).
 
 ### Two things needing the owner's decision (staging warnings, not code faults)
 
