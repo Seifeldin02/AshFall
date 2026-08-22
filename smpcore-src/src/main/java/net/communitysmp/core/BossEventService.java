@@ -543,7 +543,14 @@ final class BossEventService {
      *  blocks that timer, and vice versa; they are genuinely separate cooldowns. */
     private String summonReadyLine(){
         if(worldBoss()==null&&eventType==null)return"Ready to summon.";
-        long remaining=Math.max(0,eventEnds-System.currentTimeMillis());
+        long remaining=eventEnds-System.currentTimeMillis();
+        /** An encounter whose window has expired with no boss left alive is OVER, whatever the eventType
+         *  field still says. Without this the scroll advertised a cooldown indefinitely off a stale field --
+         *  reported live as "it says an event is ongoing when there isn't one" -- and the number it counted
+         *  down was already negative. The summon guard itself is unaffected; this is the label agreeing with
+         *  reality rather than with leftover state. */
+        if(remaining<=0&&worldBoss()==null)return"Ready to summon.";
+        if(worldBoss()!=null&&remaining<=0)return"On cooldown — an encounter is still active.";
         long minutes=remaining/60000,seconds=(remaining%60000)/1000;
         return"On cooldown — an encounter is already active (~"+minutes+"m "+seconds+"s remaining).";
     }
@@ -933,13 +940,22 @@ final class BossEventService {
     private void splitReward(Map<String,Double> participants,double pool,String label){double eligibleDamage=participants.values().stream().mapToDouble(Double::doubleValue).sum();for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double base=pool*entry.getValue()/Math.max(1,eligibleDamage),share=Math.round(base*plugin.progress().mobIncomeMultiplier(player)*100)/100.0;plugin.creditEarned(entry.getKey(),share,label.toUpperCase(Locale.ROOT).replace(' ','_'));db.recordEconomy(entry.getKey(),label.equals("world boss")?"BOSS":"ELITE",share,label);CoreUtil.msg(player,"Your "+label+" damage earned "+CoreUtil.money(share)+".");}}
     private void thematicLoot(EntityDeathEvent e, String tier) { LivingEntity mob = e.getEntity();if(tier.equals("legendary")){legendaryLoot(e);return;} int bonus=switch(tier){case"epic"->3;case"miniboss"->2;case"rare"->1;default->0;}; if (mob instanceof Creeper) { e.getDrops().add(new ItemStack(Material.TNT, 5 + bonus * 2)); e.getDrops().add(new ItemStack(Material.GUNPOWDER, 4 + bonus * 3)); } else if (mob instanceof Spider) { e.getDrops().add(spiderPotion()); e.getDrops().add(new ItemStack(Material.FERMENTED_SPIDER_EYE, 1 + bonus)); if (chance(.35 + bonus * .1)) e.getDrops().add(new ItemStack(Material.COBWEB, 1 + bonus)); } else if (mob instanceof Enderman) { if (chance(.72 + bonus * .05)) e.getDrops().add(new ItemStack(Material.ENDER_EYE)); e.getDrops().add(new ItemStack(Material.ENDER_PEARL, 2 + bonus * 2)); } else if (mob instanceof AbstractSkeleton) { e.getDrops().add(new ItemStack(Material.SPECTRAL_ARROW, 8 + bonus * 8)); } else if (mob instanceof Zombie) { e.getDrops().add(new ItemStack(Material.IRON_INGOT, 2 + bonus * 2)); if (chance(.25 + bonus * .1)) e.getDrops().add(new ItemStack(Material.GOLDEN_APPLE)); }
         if(mob.getWorld().getEnvironment()==World.Environment.NETHER){e.getDrops().add(new ItemStack(Material.MAGMA_CREAM,1+bonus));if(chance(.08+bonus*.06))e.getDrops().add(new ItemStack(Material.ANCIENT_DEBRIS));}else if(mob.getWorld().getEnvironment()==World.Environment.THE_END){e.getDrops().add(new ItemStack(Material.ENDER_PEARL,3+bonus*2));if(chance(.06+bonus*.08))e.getDrops().add(new ItemStack(Material.SHULKER_SHELL));}
+        /** Elite Endermen carry the End with them: an Eye of Ender on every elite kill, scaling with tier, and
+         *  an End Crystal on the higher tiers -- uncommon enough to feel like a find, common enough that
+         *  hunting elite Endermen is a real way to get one. Epic ~6%, miniboss ~12%; rare tiers get neither
+         *  crystal nor a second eye. */
+        if(mob instanceof Enderman){
+            e.getDrops().add(new ItemStack(Material.ENDER_EYE,1+bonus));
+            double crystal=switch(tier){case"miniboss"->.12;case"epic"->.06;default->0;};
+            if(crystal>0&&chance(crystal*lootMult))e.getDrops().add(new ItemStack(Material.END_CRYSTAL));
+        }
         dropTierSigils(e,tier);
     }
     private ItemStack legendarySigil(){ItemStack item=CoreUtil.named(Material.NETHER_STAR,"Legendary Sigil",List.of("A rarer offering to the Keeper of Omens."));ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(new NamespacedKey(plugin,"legendary_sigil"),PersistentDataType.BYTE,(byte)1);item.setItemMeta(meta);return item;}
     private void legendaryLoot(EntityDeathEvent event){
         LivingEntity mob=event.getEntity();List<ItemStack> drops=event.getDrops();
         dropTierSigils(event,"legendary");
-        if(mob instanceof Enderman enderman){drops.add(legendaryShulkerBox(mob));drops.add(new ItemStack(Material.ENDER_PEARL,24));/** The block it was visibly carrying drops here instead of being placeable in the world — it can be
+        if(mob instanceof Enderman enderman){drops.add(legendaryShulkerBox(mob));drops.add(new ItemStack(Material.ENDER_PEARL,24));drops.add(new ItemStack(Material.ENDER_EYE,6));/** Top tier: the crystal is a certainty rather than a roll. */drops.add(new ItemStack(Material.END_CRYSTAL));/** The block it was visibly carrying drops here instead of being placeable in the world — it can be
          *  looted, just never used to grief a farm (see endermanBlockChange). */
         if(enderman.getCarriedBlock()!=null&&!enderman.getCarriedBlock().getMaterial().isAir())drops.add(new ItemStack(enderman.getCarriedBlock().getMaterial()));return;}
         if(mob instanceof Creeper){drops.add(new ItemStack(Material.TNT,32));drops.add(new ItemStack(Material.GUNPOWDER,32));drops.add(new ItemStack(Material.END_CRYSTAL,4));drops.add(strongBook());if(chance(.20))drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}

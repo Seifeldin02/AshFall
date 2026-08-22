@@ -161,6 +161,33 @@ and it takes the Central Bank deficit surcharge like every other shop.
 Live-verified on staging: a blaze spawner destroyed by TNT was recovered and listed at $1,150,000
 (`[spawner-shop] +1 BLAZE (EXPLODED)`), and `/ashfall spawnershop` reports stock for admins.
 
+
+### Bug-fix pass (same session)
+
+- **The Keeper of Omens now doubles its SIGIL cost too, not just its coin cost.** Sigils are the Keeper's
+  other currency; leaving them at face value while doubling the coin half would have made sigils the cheap
+  way round a deficit. Rounded up, since half a sigil is not a thing. Applied at every display, confirmation
+  and charge site.
+- **Summoning scrolls no longer claim a cooldown that is not there.** The label read "an encounter is already
+  active" off a stale `eventType`/`worldBoss` field and counted down a negative number. An encounter whose
+  window has expired with no boss alive is now reported as Ready, whatever the leftover state says. The
+  summon guard itself was always correct - this was the label disagreeing with reality.
+- **Elite Endermen drop the End.** An Eye of Ender on every elite kill scaling with tier, plus an End Crystal
+  at ~6% on epic and ~12% on miniboss. Legendary Endermen get 6 eyes and a crystal outright.
+- **Spectating no longer reopens the betting window on top of you.** Choosing to enter the arena closed the
+  menu and then immediately reopened it, leaving a draggable betting screen over a live fight. Entering now
+  closes it; only a REFUSED entry keeps the menu up to say why.
+- **Progression really is excluded in duels now.** It was only partly true: `blockMined` and `acquired`
+  checked, but `hostileKill`, `majorKill` and `grantAdvancement` did not, so duel kits could still push
+  milestones. All three now check.
+- **Vanilla advancements are disabled in duels too.** A duel hands out netherite, an elytra and a mace, so
+  without this a player could collect gear advancements from equipment they never earned and do not keep.
+  `PlayerAdvancementDoneEvent` is not cancellable, so the grant is revoked on the same tick - it was earned a
+  moment earlier in the arena, so undoing it takes nothing the player had before. Recipe advancements are
+  left alone, since revoking those would strip recipe-book entries.
+
+**Not a bug:** the blaze spawner that showed stock 0 was bought on staging by the owner. Nothing was wrong.
+
 ### Outstanding
 
 - ~~`/spawnershop`~~ - done, see above. Prices are audited below, but no code was written. The blocker is design,

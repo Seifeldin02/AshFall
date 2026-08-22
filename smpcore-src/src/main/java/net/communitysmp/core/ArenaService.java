@@ -1284,6 +1284,23 @@ final class ArenaService implements Listener {
     }
 
     // ------------------------------------------------------------------ disconnect / lifecycle
+    /** Vanilla advancements do not count inside a duel either.
+     *
+     *  A duel hands out a full kit -- netherite, an elytra, a mace -- so without this a player could collect
+     *  "Cover Me With Diamonds", "Sky's the Limit" and friends from gear they never earned and do not keep.
+     *  PlayerAdvancementDoneEvent is not cancellable, so the grant is revoked on the same tick instead: the
+     *  advancement was earned a moment ago in the arena, so undoing it takes nothing the player had before.
+     *  Recipe advancements are left alone -- revoking those would strip recipe-book entries. */
+    @EventHandler public void advancement(org.bukkit.event.player.PlayerAdvancementDoneEvent event) {
+        Player player = event.getPlayer();
+        if (!inArena(player)) return;
+        org.bukkit.advancement.Advancement advancement = event.getAdvancement();
+        if (advancement.getKey().getKey().startsWith("recipes/")) return;
+        org.bukkit.advancement.AdvancementProgress progress = player.getAdvancementProgress(advancement);
+        for (String criterion : new ArrayList<>(progress.getAwardedCriteria())) progress.revokeCriteria(criterion);
+        event.message(null);
+    }
+
     @EventHandler public void quit(PlayerQuitEvent event) {
         String id = CoreUtil.id(event.getPlayer());
         Duel duel = byPlayer.get(id);
@@ -1736,7 +1753,14 @@ final class ArenaService implements Listener {
                                  else sound(player, placeWager(player, duel, target, st[1], scope) ? "confirm" : "error");
                                  openSpectate(player, menu.duelId); }
                     case 42 -> { if (spectators.containsKey(id)) leaveSpectator(player); else player.closeInventory(); }
-                    case 44 -> { if (duel.phase == Phase.LIVE && !duel.gating) enterSpectator(player, duel); openSpectate(player, menu.duelId); }
+                    /** Entering the arena CLOSES the menu. Reopening it here put the betting screen back
+                     *  on top of a player who had just been teleported in to watch -- a window they could
+                     *  drag around mid-fight, which is the "GUI bugs out after I start spectating" report.
+                     *  Only a failed entry (wrong phase, still gated) leaves the menu up to explain itself. */
+                    case 44 -> {
+                        if (duel.phase == Phase.LIVE && !duel.gating) { enterSpectator(player, duel); transition(player, player::closeInventory); }
+                        else { sound(player, "error"); openSpectate(player, menu.duelId); }
+                    }
                     default -> { }
                 }
             }
