@@ -264,6 +264,13 @@ pay similarly. Left alone pending that call, since these are owner-set economy n
   locating the bedrock ceiling itself rather than assuming a height, so a non-standard world height still
   resolves. **Automatic spawning is deliberately untouched** - it uses its own location picker, and automatic
   Cinder Warlords still never go to the roof.
+- **End Crystal added to the Luxury Shop at 150,000** (`Bound End Crystal`). Priced from what it does rather
+  than what it costs to craft - the raw inputs come to roughly 470, which says nothing useful. It sits just
+  above a Totem of Undying (100,000) because its ceiling use is bigger than one totem pop, and well below a
+  Nether Star (500,000) because it is craftable from farmable inputs rather than gated behind the Wither.
+  Four are needed to respawn a dragon, putting a respawn at 600,000: a real cost that does not wall it off,
+  and one that does not undercut the weekly Dragon, which pays rewards a player-respawned one never does.
+  Elite Endermen now drop crystals too, so the shop price also sets a sensible ceiling on that supply.
 - **Spawner Shop controls moved onto the family's own slots** - switch at 49 and sort at 51, matching every
   other shop screen. They were the wrong way round.
 - **Selling now goes through a sale basket** rather than selling the item in hand: drop spawners into the top

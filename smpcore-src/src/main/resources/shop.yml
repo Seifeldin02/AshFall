@@ -250,3 +250,12 @@ luxuries:
   TOTEM_OF_UNDYING:
     buy: 100000
     display: Totem of Undying
+  # Priced from what it DOES, not what it costs to craft -- the raw inputs come to about 470, which says
+  # nothing useful. Anchors: a Totem is 100,000 and a Nether Star 500,000. A crystal sits just above the
+  # Totem because its ceiling use is bigger than one totem pop, and well below the Nether Star because it is
+  # craftable from farmable inputs rather than gated behind the Wither. Four are needed to respawn a dragon,
+  # so this puts a dragon respawn at 600,000 -- a real cost that does not wall it off, and one that does not
+  # undercut the weekly Dragon, which pays rewards a player-respawned one never does.
+  END_CRYSTAL:
+    buy: 150000
+    display: Bound End Crystal
