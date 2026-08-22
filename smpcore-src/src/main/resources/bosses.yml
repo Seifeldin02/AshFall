@@ -56,20 +56,20 @@ elite-despawn:
   abandoned-minutes: 30
 
 capsule-drops:
-  # `reusable` is the PERMANENT Villager Mover, and it was far too common: 1.0% on every world boss kill
-  # meant one roughly every hundred kills, which is how a Warded Colossus dropped one. It is a permanent,
-  # tradeable, infinitely-reusable tool -- it should be a story, not a drop rate. Cut 10x to 0.1%, with the
-  # lower tiers scaled by the same factor. `disposable` (single-use) is unchanged: that one is meant to be
-  # a normal reward.
+  # `reusable` is the PERMANENT Villager Mover. It was 1.0% on every world boss kill -- one roughly every
+  # hundred kills for a permanent, tradeable, infinitely-reusable tool, which is how a Warded Colossus
+  # dropped one. Owner-set to 0.5% (2x rarer, not 10x): still a genuine prize rather than a routine drop.
+  # Lower tiers scaled by the same factor. `disposable` (single-use) is unchanged -- that one is a normal
+  # reward and should stay common.
   legendary:
     disposable: 0.08
-    reusable: 0.0006
+    reusable: 0.003
   miniboss:
     disposable: 0.04
-    reusable: 0.0002
+    reusable: 0.001
   worldboss:
     disposable: 0.15
-    reusable: 0.001
+    reusable: 0.005
 
 abilities:
   bulwark-damage-multiplier: 0.65

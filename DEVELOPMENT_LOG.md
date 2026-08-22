@@ -44,8 +44,8 @@ Fixed three ways, so the reward cannot be lost to how long somebody takes to rea
 ### Warded Colossus and the permanent Villager Mover
 
 Not luck. `capsule-drops.worldboss.reusable` was **1.0%** - one permanent, tradeable, infinitely-reusable
-Villager Mover roughly every hundred world-boss kills. Cut 10x to **0.1%**, with legendary 0.006 -> 0.0006
-and miniboss 0.002 -> 0.0002. Single-use (`disposable`) capsules are unchanged; those are meant to be normal
+Villager Mover roughly every hundred world-boss kills. **Owner-set to 0.5%** (2x rarer, not the 10x I first
+applied - 0.1% was judged too harsh), with legendary 0.006 -> 0.003 and miniboss 0.002 -> 0.001. Single-use (`disposable`) capsules are unchanged; those are meant to be normal
 rewards. The code fallbacks were updated to match the config so a missing key cannot restore the old rate.
 
 ### Treasury: the deficit now actually closes itself
@@ -58,9 +58,23 @@ homes, ender-chest upgrades, faction expansions and faction home slots all corre
   1,000,000 and then took 2,000,000. The display now goes through the same factor and says why.
 - **Taxes and fees were not scaled at all.** Added `bank.feeFactor()` = **3x during a deficit**, deliberately
   harsher than the 2x on prices so the treasury recovers faster the more the economy moves, rather than a
-  deficit becoming a permanent background state. Applied to `/pay` tax, AxTrade direct-trade tax, the orders
-  marketplace tax, the auction listing fee and the duel pot / spectator-pool tax (still clamped so a deficit
-  can never eat a whole pot).
+  deficit becoming a permanent background state.
+
+  **Correction to an earlier claim in this section:** `/pay` and AxTrade direct trades are **untaxed** on
+  production - `pay.tax-percent: 0.0` and `trade-tax.percent: 0.0`. The factor is wired at those sites too,
+  but 3 x 0 is still 0, so nothing changes for them unless the owner ever sets a rate. The taxes that are
+  actually live, and that this genuinely triples during a deficit, are:
+
+  | Path | Rate | In deficit |
+  |---|---|---|
+  | Orders marketplace | 2.5% | 7.5% |
+  | Auction listing fee | 3% | 9% |
+  | Duel pot / spectator pool | 5% (code default) | 15%, clamped at 50% |
+
+- **Checked, not regressed: taxes are never refunded on a cancelled or expired listing.** Auctions say so
+  explicitly on cancel ("The listing fee is not refunded"). Orders never charge tax at creation at all - the
+  tax comes out of the **seller's payout at delivery**, so a cancel refunds `escrow` only and there is no tax
+  to give back. Both paths verified in code this session.
 
 ### Graves: a punch always breaks one now
 
@@ -97,12 +111,24 @@ rather than having to be deleted and retyped.
 - **Ghast tears** are now exactly double gunpowder both ways (buy 260 / sell 52) - ghasts cannot be farmed at
   anything like a creeper farm's scale.
 - **`/shop` sell basket** returns to the shop after selling instead of closing the window.
-- **Iron ingots were already in the shop** (`IRON_INGOT: buy 55 / sell 11`, MINING category) - no change
-  needed.
+- **Iron ingots and deepslate are both already in the shop, on production**, at identical prices to the
+  repo: `IRON_INGOT` buy 55 / sell 11 and `DEEPSLATE` buy 1.75 / sell 0.35, both MINING. Checked the live
+  `plugins/SMPCore/shop.yml`, not just the repo copy. Both also land on **page 1** of the MINING category
+  (alphabetical index 32 and 12 against a 43-item page), so they are not hidden by paging either. If they
+  are not showing in-game the cause is in the GUI rather than the data, and I have not reproduced that -
+  worth a look together at what filter/sort is active when they disappear.
 
 ### Outstanding
 
-- **`/spawnershop` is NOT built.** Prices are audited below, but no code was written.
+- **`/spawnershop` is NOT built.** Prices are audited below, but no code was written. The blocker is design,
+  not effort: the requirement is that it joins the shop family and its filtering, and `MarketplaceService` is
+  built end to end around `Map.Entry<Material, ShopService.Price>` rows - render, sort, filter, click and
+  purchase all assume one price per Material. Spawners are all `Material.SPAWNER` distinguished by
+  `EntityType`, so they cannot be a row in that model without generifying the whole section pipeline. That
+  refactor touches `/shop`, `/luxuryshop` and `/shardshop`, all of which are live and working, so it needs to
+  be done deliberately and verified rather than squeezed in at the end of a session. Capture hooks
+  (`ItemDespawnEvent`, item destroyed by lava/fire/void, spawner blocks in an explosion blast list) and the
+  stock table are straightforward once the row model is settled.
 - The Bedrock (Geyser) form has no Auto-TPA entry yet; Bedrock players reach it through the chest GUI.
 - The admin login-persistence restriction on production (`require-same-ip`) is not yet removed.
 
