@@ -626,6 +626,32 @@ orders:
   tax-percent: 2.5
   expiry-check-seconds: 60
 
+# ---- Spawner Shop --------------------------------------------------------------------------------------
+# Spawners that leave the world WITHOUT reaching a player's inventory -- blown up, burnt, or left on the
+# ground until they despawned -- become stock here instead of being lost, and can be bought back with
+# /spawnershop. A spawner somebody picks up never comes near this.
+#
+# Prices are derived from what a spawner actually EARNS, not picked by feel. For each mob:
+#   money per kill = mob-rewards midpoint x mob-money.spawner-share (0.5)
+#   drop value per kill = average vanilla drop count x that item's shop SELL price
+# Totals, and the resulting ratio against a zombie spawner:
+#   Blaze        5.75 + 6.00 (0.5 rod x 12)            = 11.75   3.83x
+#   Cave Spider  2.00 + 3.35                           =  5.35   1.74x
+#   Spider       1.50 + 3.35 (1 string x 3.2 + eye)    =  4.85   1.58x
+#   Skeleton     1.50 + 2.14 (bone 1.61 + arrow 0.53)  =  3.64   1.19x
+#   Zombie       1.50 + 1.57 (rotten flesh)            =  3.07   1.00x
+# Anchored on a 300,000 zombie spawner and rounded to the nearest 50,000.
+# Like every other shop, these are DOUBLED while the Central Bank treasury is in deficit.
+spawner-shop:
+  enabled: true
+  default-price: 250000
+  prices:
+    BLAZE: 1150000
+    CAVE_SPIDER: 500000
+    SPIDER: 450000
+    SKELETON: 350000
+    ZOMBIE: 300000
+
 industrial-hopper:
   # Keep the block's own five (otherwise unused) slots loaded with a calibration weight so an adjacent
   # comparator reads the fill level of the real 27 slots. Turn this off only if some other plugin objects

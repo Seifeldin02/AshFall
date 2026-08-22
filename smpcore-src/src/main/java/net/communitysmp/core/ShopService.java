@@ -79,6 +79,8 @@ final class ShopService {
     }
 
     void open(Player p){plugin.marketplace().open(p,MarketplaceService.Section.SHOP);}
+    /** The Spawner Shop is its own screen but the same family, so /shop links straight across to it. */
+    void openSpawners(Player p){plugin.spawnerShop().open(p);}
     void open(Player p,boolean luxury){plugin.marketplace().open(p,luxury?MarketplaceService.Section.LUXURY:MarketplaceService.Section.SHOP);}
     void openPremium(Player p){plugin.marketplace().openPremium(p);}
 

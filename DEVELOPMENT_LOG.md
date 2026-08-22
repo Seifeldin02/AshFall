@@ -118,9 +118,36 @@ rather than having to be deleted and retyped.
   are not showing in-game the cause is in the GUI rather than the data, and I have not reproduced that -
   worth a look together at what filter/sort is active when they disappear.
 
+### /spawnershop - built
+
+Spawners that leave the world **without reaching a player's inventory** become stock that can be bought back,
+exactly the principle the Discarded Vault runs on. Capture paths, all of which mean nobody got it:
+
+- `ItemDespawnEvent` - a spawner item that ticked out on the ground.
+- `EntityDamageEvent` on a spawner item, re-checked on the FOLLOWING tick, so an item that survived the lava
+  is never recorded as lost.
+- `EntityExplodeEvent` / `BlockExplodeEvent` for PLACED spawners caught in a blast. Vanilla drops nothing for
+  an exploded spawner, so this is the biggest single source of the loss the shop exists to recover. Stacked
+  spawners contribute their whole stack size.
+
+Stock is per mob type, held in a new `spawner_shop` table as a count rather than a ledger, because every
+spawner of a type is interchangeable; the audit trail lives in `history`. Buying takes stock with a
+compare-and-swap (`stock>0` in the WHERE clause) **before** money moves and before the item exists, so two
+players clicking the last one cannot both get it, and a failed payment puts the stock straight back.
+
+It is **its own screen rather than a section of /shop**, and that is a deliberate design call: the
+marketplace is built end to end around one price per `Material`, and every spawner is `Material.SPAWNER`
+with the `EntityType` as the entire product. Expressing that as a marketplace row would mean rewriting the
+row model underneath `/shop`, `/luxuryshop` and `/shardshop`, all of which are live. Instead the GUI follows
+the same grammar - same page size, same sort cycle, same filler and controls - `/shop` links across to it,
+and it takes the Central Bank deficit surcharge like every other shop.
+
+Live-verified on staging: a blaze spawner destroyed by TNT was recovered and listed at $1,150,000
+(`[spawner-shop] +1 BLAZE (EXPLODED)`), and `/ashfall spawnershop` reports stock for admins.
+
 ### Outstanding
 
-- **`/spawnershop` is NOT built.** Prices are audited below, but no code was written. The blocker is design,
+- ~~`/spawnershop`~~ - done, see above. Prices are audited below, but no code was written. The blocker is design,
   not effort: the requirement is that it joins the shop family and its filtering, and `MarketplaceService` is
   built end to end around `Map.Entry<Material, ShopService.Price>` rows - render, sort, filter, click and
   purchase all assume one price per Material. Spawners are all `Material.SPAWNER` distinguished by
@@ -130,6 +157,23 @@ rather than having to be deleted and retyped.
   (`ItemDespawnEvent`, item destroyed by lava/fire/void, spawner blocks in an explosion blast list) and the
   stock table are straightforward once the row model is settled.
 - The Bedrock (Geyser) form has no Auto-TPA entry yet; Bedrock players reach it through the chest GUI.
+
+### Auto-TPA, second pass
+
+- **Native `/settings` now has a real text field.** Paper's `TextDialogInput` replaces the chat prompt there,
+  and returns to the native allowlist dialog rather than dumping the player into the chest GUI. Chat capture
+  is now exclusive to `/settings`, which is the only surface that cannot offer a text field.
+- **Player heads render in the native dialog** as `ItemDialogBody` entries beside each name.
+- **Clicking a name only toggles it.** The "(click to turn off)" text is gone, and removal moved to its own
+  page in both UIs - native gets a "Remove a player..." dialog, the chest menu gets a Remove submenu where
+  clicking a head removes it. Shift-click on the main chest list still removes, noted quietly in the lore.
+- **Auto-TPA bypasses the general TPA Requests switch.** Somebody who turns requests off to stop strangers
+  asking still wants the three friends they named to come straight through, so the allowlist is checked
+  before that gate. Still `/tpa` only, never `/tpahere`.
+- "Other Players' TPA Requests" renamed to **"TPA Requests"**.
+- **Kelp added** (`buy 3.9 / sell 0.78`, FARMING) - priced just under bamboo since raw kelp still has to be
+  smelted before it does anything, which is where `DRIED_KELP` (sell 1.43) already sits. Sea pickles were
+  already stocked at 21.3 / 4.26.
 - The admin login-persistence restriction on production (`require-same-ip`) is not yet removed.
 
 **Audited spawner prices.** Money per kill is the `mob-rewards` midpoint x `spawner-share` (0.5), plus drop

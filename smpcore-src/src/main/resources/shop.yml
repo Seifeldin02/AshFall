@@ -102,6 +102,7 @@ items:
   MELON_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
   PUMPKIN_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
   BAMBOO: {buy: 4.4, sell: 0.88, daily-full: 8192, category: FARMING}  # Bamboo farm; fastest-growing plant, fully AFK
+  KELP: {buy: 3.9, sell: 0.78, daily-full: 8192, category: FARMING}  # AFK kelp farm; raw, still needs smelting to be worth anything
   MELON_SLICE: {buy: 4.95, sell: 0.99, daily-full: 8192, category: FARMING}  # Melon farm; many slices per melon
   DRIED_KELP: {buy: 7.15, sell: 1.43, daily-full: 8192, category: FARMING}  # AFK kelp farm plus a smelter array
   VINE: {buy: 7.8, sell: 1.56, daily-full: 4096, category: FARMING}  # Jungle harvesting; no real farm

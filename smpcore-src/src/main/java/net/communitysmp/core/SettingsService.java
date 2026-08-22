@@ -2,6 +2,8 @@ package net.communitysmp.core;
 
 import io.papermc.paper.dialog.Dialog;
 import io.papermc.paper.registry.data.dialog.ActionButton;
+import io.papermc.paper.registry.data.dialog.body.DialogBody;
+import io.papermc.paper.registry.data.dialog.input.DialogInput;
 import io.papermc.paper.registry.data.dialog.DialogBase;
 import io.papermc.paper.registry.data.dialog.action.DialogAction;
 import io.papermc.paper.registry.data.dialog.type.DialogType;
@@ -58,7 +60,7 @@ final class SettingsService implements Listener {
         final String key;final boolean fallback;
         NametagKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
-    private enum Page { MAIN, CONFIRMATIONS, TPA, NAMETAGS, AUTOTPA }
+    private enum Page { MAIN, CONFIRMATIONS, TPA, NAMETAGS, AUTOTPA, AUTOTPA_REMOVE }
 
     // ------------------------------------------------------------------ Auto-TPA allowlist
     /** A per-player allowlist: named players may /tpa straight to you with no request to accept.
@@ -142,6 +144,8 @@ final class SettingsService implements Listener {
     /** Players waiting to type a name into chat for their Auto-TPA list. */
     private final java.util.Map<java.util.UUID,Long> awaitingAutoTpaName=new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** Chat capture is the CHEST menu's way of taking a name -- a chest inventory has nowhere to type.
+     *  The native dialog has a real text field, so it never comes through here. */
     void promptAutoTpaName(Player player){
         awaitingAutoTpaName.put(player.getUniqueId(),System.currentTimeMillis()+60000L);
         player.closeInventory();
@@ -163,7 +167,9 @@ final class SettingsService implements Listener {
         plugin.getServer().getScheduler().runTask(plugin,()->{
             CoreUtil.msg(player,autoTpaAdd(player,typed));
             uiSound(player,"confirm");
-            open(player,Page.AUTOTPA);
+            /** Chat capture is only ever started from the chest menu, so it returns there -- never to the
+             *  native dialog, which has its own text field and never uses this path. */
+            openChest(player,Page.AUTOTPA);
         });
     }
 
@@ -255,6 +261,7 @@ final class SettingsService implements Listener {
     private void openNative(Player player,Page page){
         try{
             List<ActionButton> buttons=new ArrayList<>();
+            List<DialogBody> body=new ArrayList<>();
             if(page==Page.MAIN){
                 for(Toggle toggle:mainToggles(player))buttons.add(nativeToggle(player,toggle,Page.MAIN));
                 buttons.add(nativeCycle(player));
@@ -272,28 +279,55 @@ final class SettingsService implements Listener {
                 for(NametagKind kind:NametagKind.values())buttons.add(nativeNametagToggle(player,kind));
                 buttons.add(nativeButton("Back","settings native"));
             }else if(page==Page.AUTOTPA){
-                /** Master switch, then one button per allowed player: clicking cycles ON -> OFF -> removed,
-                 *  which is the only way to offer toggle AND remove per entry in a dialog that has a single
-                 *  click action per button. The chest GUI offers the same two actions as click/shift-click. */
+                /** Clicking a player toggles them ON/OFF and nothing else -- removal lives in its own page,
+                 *  so a click can never destroy an entry by surprise. Each player's head is shown as an item
+                 *  beside their name via the dialog's item body. */
                 buttons.add(ActionButton.create(stateLabel("Auto-TPA",autoTpaMaster(player)),Component.empty(),150,
                         DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
                             Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null)return;
                             set(online,AUTO_TPA_MASTER,!autoTpaMaster(online));openNative(online,Page.AUTOTPA);
                         }),ClickCallback.Options.builder().uses(100).build())));
                 for(var entry:autoTpaEntries(player).entrySet()){
-                    String name=entry.getKey();boolean on=entry.getValue();
-                    buttons.add(ActionButton.create(Component.text(name+(on?" §aON":" §cOFF")+" §7(click to "+(on?"turn off":"remove")+")"),Component.empty(),150,
+                    String name=entry.getKey();
+                    body.add(DialogBody.item(autoTpaHead(name,entry.getValue(),autoTpaMaster(player)))
+                            .description(DialogBody.plainMessage(Component.text(name+(entry.getValue()?" - ON":" - OFF"),
+                                    entry.getValue()?NamedTextColor.GREEN:NamedTextColor.RED))).build());
+                    buttons.add(ActionButton.create(stateLabel(name,entry.getValue()),Component.empty(),150,
                             DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
                                 Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null)return;
-                                if(on)autoTpaToggleEntry(online,name);else autoTpaRemove(online,name);
-                                openNative(online,Page.AUTOTPA);
+                                autoTpaToggleEntry(online,name);openNative(online,Page.AUTOTPA);
                             }),ClickCallback.Options.builder().uses(100).build())));
                 }
-                buttons.add(ActionButton.create(Component.text("Add player"),Component.empty(),150,
+                if(autoTpaEntries(player).isEmpty())
+                    body.add(DialogBody.plainMessage(Component.text("Nobody added yet. Anybody you add can /tpa straight to you.",NamedTextColor.GRAY)));
+                buttons.add(ActionButton.create(Component.text("Add player..."),Component.empty(),150,
                         DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
-                            Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online!=null)promptAutoTpaName(online);
+                            Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online!=null)openNativeAutoTpaAdd(online);
                         }),ClickCallback.Options.builder().uses(100).build())));
+                if(!autoTpaEntries(player).isEmpty())
+                    buttons.add(ActionButton.create(Component.text("Remove a player..."),Component.empty(),150,
+                            DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                                Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online!=null)openNative(online,Page.AUTOTPA_REMOVE);
+                            }),ClickCallback.Options.builder().uses(100).build())));
                 buttons.add(nativeButton("Back","settings native tpa"));
+            }else if(page==Page.AUTOTPA_REMOVE){
+                /** A dedicated page whose ONLY action is removal, so nothing here is ambiguous. */
+                body.add(DialogBody.plainMessage(Component.text("Click a player to remove them from Auto-TPA.",NamedTextColor.GRAY)));
+                for(var entry:autoTpaEntries(player).entrySet()){
+                    String name=entry.getKey();
+                    body.add(DialogBody.item(autoTpaHead(name,entry.getValue(),autoTpaMaster(player)))
+                            .description(DialogBody.plainMessage(Component.text(name,NamedTextColor.WHITE))).build());
+                    buttons.add(ActionButton.create(Component.text("Remove "+name,NamedTextColor.RED),Component.empty(),150,
+                            DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                                Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null)return;
+                                autoTpaRemove(online,name);CoreUtil.msg(online,name+" removed from Auto-TPA.");
+                                openNative(online,autoTpaEntries(online).isEmpty()?Page.AUTOTPA:Page.AUTOTPA_REMOVE);
+                            }),ClickCallback.Options.builder().uses(100).build())));
+                }
+                buttons.add(ActionButton.create(Component.text("Back"),Component.empty(),150,
+                        DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                            Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online!=null)openNative(online,Page.AUTOTPA);
+                        }),ClickCallback.Options.builder().uses(100).build())));
             }else{
                 buttons.add(nativeTpaToggle(player,TpaKind.OTHER));
                 buttons.add(nativeTpaToggle(player,TpaKind.FACTION));
@@ -309,7 +343,7 @@ final class SettingsService implements Listener {
                 buttons.add(nativeButton("Back","settings native"));
             }
             Dialog dialog=Dialog.create(builder->builder.empty()
-                    .base(DialogBase.builder(Component.text(pageTitle(page),NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).build())
+                    .base(DialogBase.builder(Component.text(pageTitle(page),NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE).body(body).build())
                     .type(DialogType.multiAction(buttons,null,2)));
             player.showDialog(dialog);
         }catch(Throwable error){
@@ -342,6 +376,41 @@ final class SettingsService implements Listener {
                     openNative(online,Page.CONFIRMATIONS);
                 }),ClickCallback.Options.builder().uses(100).build()));
     }
+    /** The native way to add a name: a real text field, returning straight to the allowlist dialog.
+     *
+     *  The chest menu cannot do this -- a chest inventory has nowhere to type -- so that one captures the
+     *  name from chat instead. The two never share a path, which is why adding from the native dialog no
+     *  longer dumps the player into the chest GUI afterwards. */
+    private void openNativeAutoTpaAdd(Player player){
+        try{
+            Dialog dialog=Dialog.create(builder->builder.empty()
+                    .base(DialogBase.builder(Component.text("ADD TO AUTO-TPA",NamedTextColor.GOLD))
+                            .canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE)
+                            .body(List.of(DialogBody.plainMessage(Component.text("They will be able to /tpa straight to you, with no request to accept.",NamedTextColor.GRAY))))
+                            .inputs(List.of(DialogInput.text("name",Component.text("Player name")).maxLength(16).width(200).build()))
+                            .build())
+                    .type(DialogType.multiAction(List.of(
+                            ActionButton.create(Component.text("Add"),Component.empty(),150,
+                                    DialogAction.customClick((response,audience)->{
+                                        String typed=response.getText("name");
+                                        plugin.getServer().getScheduler().runTask(plugin,()->{
+                                            Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null)return;
+                                            CoreUtil.msg(online,autoTpaAdd(online,typed==null?"":typed));
+                                            uiSound(online,"confirm");
+                                            openNative(online,Page.AUTOTPA);
+                                        });
+                                    },ClickCallback.Options.builder().uses(1).build())),
+                            ActionButton.create(Component.text("Cancel"),Component.empty(),150,
+                                    DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                                        Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online!=null)openNative(online,Page.AUTOTPA);
+                                    }),ClickCallback.Options.builder().uses(1).build()))),null,2)));
+            player.showDialog(dialog);
+        }catch(Throwable error){
+            plugin.getLogger().warning("Native Auto-TPA add dialog unavailable for "+player.getName()+": "+error.getClass().getSimpleName());
+            promptAutoTpaName(player);
+        }
+    }
+
     private ActionButton nativeTpaToggle(Player player,TpaKind kind){
         boolean current=enabled(player,kind.key,kind.fallback);
         return ActionButton.create(stateLabel(prettyTpa(kind),current),Component.empty(),150,DialogAction.customClick((response,audience)->
@@ -465,6 +534,7 @@ final class SettingsService implements Listener {
             inv.setItem(49,button(Material.ARROW,"Back",List.of()));
         }
         if(page==Page.AUTOTPA)renderAutoTpa(inv,player);
+        if(page==Page.AUTOTPA_REMOVE)renderAutoTpaRemove(inv,player);
     }
 
     /** The Auto-TPA submenu: a master switch, one head per allowed player, and a way to add more.
@@ -487,6 +557,27 @@ final class SettingsService implements Listener {
                 List.of("Add somebody with the button below.","They will be able to /tpa to you instantly.")));
         inv.setItem(48,button(Material.NAME_TAG,"Add player",List.of("Type their name in chat.","Up to 20 players.")));
         inv.setItem(49,button(Material.ARROW,"Back",List.of("Return to TPA Requests.")));
+        if(!entries.isEmpty())inv.setItem(50,button(Material.CAULDRON,"Remove a player",
+                List.of("Opens a list where clicking","a head removes that player.","(Shift-click a head above also works.)")));
+    }
+
+    /** Removal gets its own screen so a stray click on the main list can only ever toggle somebody, never
+     *  delete them. Shift-click on the main list still works for anybody who prefers it, and the main list
+     *  says so quietly rather than shouting it. */
+    private void renderAutoTpaRemove(Inventory inv,Player player){
+        for(int slot=0;slot<inv.getSize();slot++)inv.setItem(slot,null);
+        inv.setItem(4,button(Material.CAULDRON,"Remove from Auto-TPA",List.of("Click a player to remove them.","This cannot be undone without re-adding.")));
+        int slot=19;
+        for(var entry:autoTpaEntries(player).entrySet()){
+            if(slot>43)break;
+            if(slot%9==8)slot+=2;
+            ItemStack head=autoTpaHead(entry.getKey(),entry.getValue(),autoTpaMaster(player));
+            org.bukkit.inventory.meta.ItemMeta meta=head.getItemMeta();
+            meta.lore(List.of(Component.text("Click to REMOVE",NamedTextColor.RED).decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC,false)));
+            head.setItemMeta(meta);
+            inv.setItem(slot++,head);
+        }
+        inv.setItem(49,button(Material.ARROW,"Back",List.of("Return to the allowlist.")));
     }
 
     private ItemStack autoTpaHead(String name,boolean on,boolean master){
@@ -509,6 +600,7 @@ final class SettingsService implements Listener {
         if(locked(player,true))return;
         int slot=event.getRawSlot();
         if(holder.page==Page.AUTOTPA){autoTpaClick(event,player,slot);return;}
+        if(holder.page==Page.AUTOTPA_REMOVE){autoTpaRemoveClick(event,player,slot);return;}
         if(holder.page==Page.MAIN){
             List<Toggle> mt=mainToggles(player);for(int i=0;i<mt.size();i++)if(slot==MAIN_SLOTS[i]){Toggle toggle=mt.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
             if(slot==21)openChest(player,Page.TPA);
@@ -638,12 +730,13 @@ final class SettingsService implements Listener {
     private String state(Player player,String key,boolean fallback){return enabled(player,key,fallback)?"ON":"OFF";}
     private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
     private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";};}
-    private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"Other Players' TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
+    private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
     /** Auto-TPA submenu clicks. Kept out of the TPA branch above so the two pages cannot collide on a slot. */
     private void autoTpaClick(InventoryClickEvent event,Player player,int slot){
         if(slot==4){set(player,AUTO_TPA_MASTER,!autoTpaMaster(player));uiSound(player,"toggle");renderChest(event.getInventory(),player,Page.AUTOTPA);return;}
         if(slot==48){uiSound(player,"select");promptAutoTpaName(player);return;}
         if(slot==49){uiSound(player,"back");openChest(player,Page.TPA);return;}
+        if(slot==50){uiSound(player,"select");openChest(player,Page.AUTOTPA_REMOVE);return;}
         ItemStack clicked=event.getCurrentItem();
         if(clicked==null||clicked.getType()!=Material.PLAYER_HEAD||!clicked.hasItemMeta())return;
         String name=net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(clicked.getItemMeta().displayName());
@@ -652,9 +745,21 @@ final class SettingsService implements Listener {
         renderChest(event.getInventory(),player,Page.AUTOTPA);
     }
 
+    private void autoTpaRemoveClick(InventoryClickEvent event,Player player,int slot){
+        if(slot==49){uiSound(player,"back");openChest(player,Page.AUTOTPA);return;}
+        ItemStack clicked=event.getCurrentItem();
+        if(clicked==null||clicked.getType()!=Material.PLAYER_HEAD||!clicked.hasItemMeta())return;
+        String name=net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(clicked.getItemMeta().displayName());
+        autoTpaRemove(player,name);
+        uiSound(player,"cancel");
+        CoreUtil.msg(player,name+" removed from Auto-TPA.");
+        if(autoTpaEntries(player).isEmpty())openChest(player,Page.AUTOTPA);
+        else renderChest(event.getInventory(),player,Page.AUTOTPA_REMOVE);
+    }
+
     private String prettyNametag(NametagKind kind){return switch(kind){case BALANCES->"Show Balances";case FACTIONS->"Show Faction Tags";case HEARTS->"Show Hearts";};}
     private String nametagHint(NametagKind kind){return switch(kind){case BALANCES->"Show each player's balance under their name.";case FACTIONS->"Show each player's faction tag beside their name.";case HEARTS->"Show the health line. Always shown when every option here is off.";};}
-    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";case AUTOTPA->"AUTO-TPA ALLOWLIST";};}
+    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";case AUTOTPA->"AUTO-TPA ALLOWLIST";case AUTOTPA_REMOVE->"REMOVE FROM AUTO-TPA";};}
 
     private void nightVisionTick(){
         for(Player player:plugin.getServer().getOnlinePlayers()){

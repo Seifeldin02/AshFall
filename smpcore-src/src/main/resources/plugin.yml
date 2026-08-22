@@ -61,6 +61,9 @@ commands:
   reply:
     description: Reply to your most recent private conversation
     aliases: [r]
+  spawnershop:
+    description: Buy back spawners recovered from explosions, lava and despawning.
+    usage: /spawnershop
   shop:
     description: Open the server shop
   luxuryshop:

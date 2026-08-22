@@ -290,6 +290,16 @@ final class TeleportService {
          *  split. Both still apply to /tpa AND /tpahere identically; only auto-accept below distinguishes
          *  between the two. */
         boolean sameFaction=plugin.factions().sameFaction(from,target);
+        /** The Auto-TPA allowlist is an explicit, per-person invitation, so it BYPASSES the general TPA
+         *  Requests switch entirely: somebody who turns requests off to stop strangers asking still wants the
+         *  three friends they named to come straight through. Checked before the gate for that reason, and
+         *  still /tpa only -- never /tpahere. */
+        if(!here&&plugin.settings().autoTpaAllows(target,from)){
+            CoreUtil.msg(from,"Teleport request to "+plugin.nicknames().displayName(target)+" was auto-accepted (Auto-TPA).");
+            CoreUtil.msg(target,plugin.nicknames().displayName(from)+"'s teleport request was auto-accepted (Auto-TPA).");
+            warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
+            return true;
+        }
         if(!(sameFaction?plugin.settings().factionTpaRequests(target):plugin.settings().tpaRequests(target))){CoreUtil.error(from,plugin.nicknames().displayName(target)+" is not accepting teleport requests.");return true;}
         /** Auto-Accept only ever fires for /tpa (never /tpahere) from an actual faction-mate, and
          *  tpaAutoAcceptFaction() itself re-checks factionTpaRequests() — so this can't fire in a state the
@@ -298,16 +308,6 @@ final class TeleportService {
         if(!here&&sameFaction&&plugin.settings().tpaAutoAcceptFaction(target)){
             CoreUtil.msg(from,"Teleport request to "+plugin.nicknames().displayName(target)+" was auto-accepted (Faction Auto-Accept).");
             CoreUtil.msg(target,plugin.nicknames().displayName(from)+"'s teleport request was auto-accepted (Faction Auto-Accept).");
-            warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
-            return true;
-        }
-        /** The player's own Auto-TPA allowlist. Entirely separate from Faction Auto-Accept above -- different
-         *  preference keys, checked independently -- so somebody can allow a specific friend without allowing
-         *  their whole faction, or both, or neither. /tpa only, never /tpahere: this grants the right to come
-         *  to you, not the right to pull you somewhere. */
-        if(!here&&plugin.settings().autoTpaAllows(target,from)){
-            CoreUtil.msg(from,"Teleport request to "+plugin.nicknames().displayName(target)+" was auto-accepted (Auto-TPA).");
-            CoreUtil.msg(target,plugin.nicknames().displayName(from)+"'s teleport request was auto-accepted (Auto-TPA).");
             warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
             return true;
         }

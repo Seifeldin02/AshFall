@@ -196,6 +196,10 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS golem_spawner_daily (day TEXT PRIMARY KEY, represented_kills INTEGER NOT NULL DEFAULT 0, payout REAL NOT NULL DEFAULT 0)");
             s.execute("CREATE TABLE IF NOT EXISTS discarded_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, material TEXT NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL, recycled INTEGER NOT NULL DEFAULT 0, world TEXT NOT NULL DEFAULT '', x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0, z INTEGER NOT NULL DEFAULT 0)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material ON discarded_ledger(material)");
+            /** Spawner Shop stock: one row per mob type, holding how many recovered spawners of that type are
+             *  available to buy back. Deliberately a COUNT rather than a ledger of individual spawners --
+             *  every spawner of a type is interchangeable, and the audit trail lives in `history`. */
+            s.execute("CREATE TABLE IF NOT EXISTS spawner_shop(entity_type TEXT PRIMARY KEY, stock INTEGER NOT NULL DEFAULT 0)");
             try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN enchants TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
             s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material_ench ON discarded_ledger(material,enchants)");
             try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN details TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
@@ -890,6 +894,28 @@ final class Database implements AutoCloseable {
         return list("SELECT material,SUM(amount),SUM(CASE WHEN recycled=1 THEN amount ELSE 0 END),reason,world,x,y,z,MAX(occurred_at) FROM discarded_ledger GROUP BY material ORDER BY SUM(amount) DESC LIMIT ?",
                 rs->new String[]{rs.getString(1),String.valueOf(rs.getLong(2)),String.valueOf(rs.getLong(3)),rs.getString(4),rs.getString(5),String.valueOf(rs.getInt(6)),String.valueOf(rs.getInt(7)),String.valueOf(rs.getInt(8)),String.valueOf(rs.getLong(9))},limit);
     }
+    /** Adds recovered spawners to the shop's stock. */
+    synchronized void spawnerShopAdd(String entityType,int amount){
+        if(amount<=0)return;
+        update("INSERT INTO spawner_shop(entity_type,stock) VALUES(?,?) ON CONFLICT(entity_type) DO UPDATE SET stock=stock+?",entityType,amount,amount);
+    }
+
+    /** Takes exactly one spawner out of stock, and reports whether it actually got one.
+     *
+     *  The `stock>0` in the WHERE clause is what makes this safe: two players clicking the last spawner at
+     *  the same moment both run this, and only the one whose UPDATE matches a row walks away with it. */
+    synchronized boolean spawnerShopTake(String entityType){
+        return update("UPDATE spawner_shop SET stock=stock-1 WHERE entity_type=? AND stock>0",entityType)>0;
+    }
+
+    synchronized java.util.LinkedHashMap<String,Integer> spawnerShopStock(){
+        java.util.LinkedHashMap<String,Integer> out=new java.util.LinkedHashMap<>();
+        for(String[] row:list("SELECT entity_type,stock FROM spawner_shop WHERE stock>0 ORDER BY entity_type",
+                rs->new String[]{rs.getString(1),String.valueOf(rs.getInt(2))}))
+            out.put(row[0],Integer.parseInt(row[1]));
+        return out;
+    }
+
     synchronized void recordEconomy(String player,String category,double amount,String detail){if(!Double.isFinite(amount)||Math.abs(amount)<.0001)return;update("INSERT INTO economy_ledger(occurred_at,player,category,amount,detail) VALUES(?,?,?,?,?)",System.currentTimeMillis(),player,category,amount,detail);}
     synchronized List<EconomyTotal> economyTotals(long since){return list("SELECT category,SUM(amount) amount FROM economy_ledger WHERE occurred_at>=? GROUP BY category ORDER BY category",rs->new EconomyTotal(rs.getString("category"),rs.getDouble("amount")),since);}
     synchronized ProgressMetrics progressMetrics(String player){
