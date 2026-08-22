@@ -399,11 +399,30 @@ final class BossEventService {
      *  it. Below the ceiling, and for every natural/event spawn, the stricter terrain search is kept. */
     private Location summonSpot(Player player){
         World world=player.getWorld();Location at=player.getLocation();
-        boolean aboveCeiling=world.getEnvironment()==World.Environment.NETHER&&at.getBlockY()>=world.getMaxHeight()-8;
+        /** "On the nether roof" means standing ON the bedrock ceiling, which is y=128 upward -- NOT within
+         *  eight blocks of the world's build limit. The old test (maxHeight-8, i.e. y>=248) was never true
+         *  for a player on the roof, so a manually-used seal there fell through to findSafeAny, which either
+         *  found nothing or found the real floor a hundred blocks below and was rejected by the depth guard
+         *  on the next line -- reported as "No clear footing here for the seal".
+         *
+         *  This is the MANUAL seal path only (it takes a Player). Automatic world-boss placement uses its own
+         *  location picker and is deliberately untouched: automatic Cinder Warlords still never go to the
+         *  roof. */
+        boolean aboveCeiling=world.getEnvironment()==World.Environment.NETHER
+                &&(at.getBlockY()>=netherRoofY(world)||at.getBlockY()>=world.getMaxHeight()-8);
         if(aboveCeiling)return roofSpot(world,at);
         Location found=CoreUtil.findSafeAny(world,at.getBlockX(),at.getBlockZ());
         if(found!=null&&world.getEnvironment()==World.Environment.NETHER&&found.getBlockY()<at.getBlockY()-24)return null;
         return found;}
+    /** The first y ABOVE the Nether's bedrock ceiling. Found by looking for the ceiling rather than assuming
+     *  128, so a world with a non-standard height still resolves correctly. */
+    private int netherRoofY(World world){
+        int max=Math.min(world.getMaxHeight()-1,world.getMinHeight()+127);
+        for(int y=max;y>world.getMinHeight();y--)
+            if(world.getBlockAt(0,y,0).getType()==org.bukkit.Material.BEDROCK)return y+1;
+        return world.getMinHeight()+128;
+    }
+
     /** Solid footing plus a clear 3x3x3 for the boss body, with bedrock accepted as floor. */
     private Location roofSpot(World world,Location at){
         int x=at.getBlockX(),y=at.getBlockY(),z=at.getBlockZ();

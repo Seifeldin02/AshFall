@@ -253,6 +253,25 @@ reward for a fight of identical effort is wide enough to feel arbitrary. Narrowi
 `reward-max` (e.g. 170,000-225,000, a 1.32x spread) would keep the average while making two identical kills
 pay similarly. Left alone pending that call, since these are owner-set economy numbers.
 
+
+### Follow-up patch (post-promotion, same day)
+
+- **Cinder Warlord's seal now works on the nether roof.** The manual-seal placement test asked whether the
+  player was within eight blocks of the world's BUILD LIMIT (`maxHeight - 8`, i.e. y >= 248). The nether roof
+  is the top of the bedrock ceiling at y=128, so that was never true for somebody standing on it: the check
+  fell through to the ordinary ground search, which found the real floor a hundred blocks below and was
+  rejected by the depth guard - surfacing as "No clear footing here for the seal". The roof is now found by
+  locating the bedrock ceiling itself rather than assuming a height, so a non-standard world height still
+  resolves. **Automatic spawning is deliberately untouched** - it uses its own location picker, and automatic
+  Cinder Warlords still never go to the roof.
+- **Spawner Shop controls moved onto the family's own slots** - switch at 49 and sort at 51, matching every
+  other shop screen. They were the wrong way round.
+- **Selling now goes through a sale basket** rather than selling the item in hand: drop spawners into the top
+  rows, watch a running total, Confirm or Cancel. Same flow as the normal shop's basket (its own basket, not
+  the shared one, since spawners cannot be priced from shop.yml). Money is paid FIRST and only then are the
+  items taken, so a treasury that cannot cover the sale can never eat somebody's spawners; anything that is
+  not a spawner is handed straight back, and closing the window returns everything.
+
 ### Outstanding
 
 - ~~`/spawnershop`~~ - done, see above. Prices are audited below, but no code was written. The blocker is design,

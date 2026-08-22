@@ -189,13 +189,14 @@ final class SpawnerShopService implements Listener {
                         "Nothing has been recovered yet.")));
         inv.setItem(45, CoreUtil.named(Material.ARROW, shown > 0 ? "Previous page" : " ",
                 shown > 0 ? List.of("Page " + shown + " of " + pages) : List.of()));
-        inv.setItem(49, CoreUtil.named(Material.HOPPER, "Sort: " + sort.label(), List.of("Click to change the order.")));
-        inv.setItem(43, CoreUtil.named(Material.HOPPER, "Sell held spawner", List.of(
-                "Hold a spawner and click to sell it.",
-                "Pays a fifth of the buy price, the same",
-                "ratio the normal shop uses.")));
-        Sort ignored = sort;
-        inv.setItem(48, CoreUtil.named(Material.EMERALD, "Switch to Normal Shop", List.of("Cycle on through the shops.")));
+        inv.setItem(49, CoreUtil.named(Material.EMERALD, "Switch to Normal Shop", List.of("Cycle on through the shops.")));
+        /** Same slots the rest of the shop family uses: 43 sell basket, 49 switch, 51 sort, 45/53 paging.
+         *  The switch and the sort were the wrong way round against every other shop screen. */
+        inv.setItem(43, CoreUtil.named(Material.HOPPER, "Sell Spawners", List.of(
+                "Opens a sale basket, the same as /shop.",
+                "Drop spawners in and confirm.",
+                "Pays a fifth of the buy price.")));
+        inv.setItem(51, CoreUtil.named(Material.HOPPER, "Sort: " + sort.label(), List.of("Click to change the order.")));
         inv.setItem(53, CoreUtil.named(Material.ARROW, shown < pages - 1 ? "Next page" : " ",
                 shown < pages - 1 ? List.of("Page " + (shown + 2) + " of " + pages) : List.of()));
         player.openInventory(inv);
@@ -257,9 +258,9 @@ final class SpawnerShopService implements Listener {
         int slot = event.getRawSlot();
         if (slot == 45) { if (holder.page() > 0) { plugin.settings().uiSound(player, "page"); open(player, holder.page() - 1, holder.sort()); } return; }
         if (slot == 53) { plugin.settings().uiSound(player, "page"); open(player, holder.page() + 1, holder.sort()); return; }
-        if (slot == 49) { plugin.settings().uiSound(player, "select"); open(player, 0, holder.sort().next()); return; }
-        if (slot == 48) { plugin.settings().uiSound(player, "back"); plugin.shop().open(player); return; }
-        if (slot == 43) { sell(player, holder); return; }
+        if (slot == 51) { plugin.settings().uiSound(player, "select"); open(player, 0, holder.sort().next()); return; }
+        if (slot == 49) { plugin.settings().uiSound(player, "back"); plugin.shop().open(player); return; }
+        if (slot == 43) { plugin.settings().uiSound(player, "select"); openSellBasket(player); return; }
         if (slot < 0 || slot >= PAGE_SIZE) return;
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || clicked.getType() != Material.SPAWNER) return;
@@ -301,32 +302,132 @@ final class SpawnerShopService implements Listener {
         open(player, holder.page(), holder.sort());
     }
 
-    /** Sells the spawner the player is holding. The spawner goes back into stock, so selling and buying are
-     *  the two halves of one pool rather than a money faucet. */
-    private void sell(Player player, Holder holder) {
-        ItemStack held = player.getInventory().getItemInMainHand();
-        EntityType type = plugin.spawners() == null ? null : plugin.spawners().typeOf(held);
-        if (held == null || held.getType() != Material.SPAWNER || type == null) {
-            CoreUtil.error(player, "Hold the spawner you want to sell.");
+    // ------------------------------------------------------------------ the sale basket
+
+    /** The basket is deliberately the same shape as the normal shop's: drop the stacks in the top rows, see a
+     *  running total, Confirm or Cancel. Spawners cannot be priced from shop.yml -- they are all
+     *  Material.SPAWNER -- so this quotes them from the audited per-type price instead, but the flow a player
+     *  sees is identical. */
+    private static final int BASKET_INPUT_END = 45;
+
+    private record BasketHolder(boolean dummy) implements InventoryHolder {
+        @Override public Inventory getInventory() { return null; }
+    }
+
+    void openSellBasket(Player player) {
+        Inventory inv = plugin.getServer().createInventory(new BasketHolder(true), 54,
+                Component.text("Spawner Sale Basket", NamedTextColor.DARK_GREEN));
+        inv.setItem(47, CoreUtil.named(Material.BARRIER, "Cancel", List.of("Return every spawner.")));
+        inv.setItem(49, basketTotal(0, 0));
+        inv.setItem(51, CoreUtil.named(Material.LIME_CONCRETE, "Confirm Sale",
+                List.of("Sells every spawner in the basket.", "Anything else is handed back.")));
+        player.openInventory(inv);
+    }
+
+    private ItemStack basketTotal(int count, double value) {
+        return CoreUtil.named(Material.GOLD_INGOT, "Total: " + CoreUtil.money(value),
+                List.of(count + " spawner(s) in the basket",
+                        "Each pays a fifth of its buy price.",
+                        plugin.bank().deficit() ? "Central Bank deficit: payouts are halved." : "Drop spawners into the top rows."));
+    }
+
+    /** What the basket is currently worth, and how many sellable spawners are in it. */
+    private double[] quoteBasket(Inventory inv) {
+        int count = 0;
+        double value = 0;
+        for (int slot = 0; slot < BASKET_INPUT_END; slot++) {
+            ItemStack item = inv.getItem(slot);
+            if (item == null || item.getType() != Material.SPAWNER) continue;
+            EntityType type = plugin.spawners() == null ? null : plugin.spawners().typeOf(item);
+            if (type == null) continue;
+            count += item.getAmount();
+            value += sellPrice(type) * item.getAmount();
+        }
+        return new double[]{count, Math.round(value * 100) / 100.0};
+    }
+
+    @EventHandler public void basketClick(InventoryClickEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof BasketHolder)) return;
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        int raw = event.getRawSlot();
+        /** The top five rows and the player's own inventory stay freely usable -- that is the whole point of
+         *  a basket. Only the control bar is locked. */
+        if (raw >= BASKET_INPUT_END && raw < 54) {
+            event.setCancelled(true);
+            if (raw == 47) { plugin.settings().uiSound(player, "cancel"); player.closeInventory(); }
+            else if (raw == 51) confirmBasket(player, event.getInventory());
+            return;
+        }
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof BasketHolder) {
+                double[] quote = quoteBasket(player.getOpenInventory().getTopInventory());
+                player.getOpenInventory().getTopInventory().setItem(49, basketTotal((int) quote[0], quote[1]));
+            }
+        });
+    }
+
+    @EventHandler public void basketDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof BasketHolder)) return;
+        if (event.getRawSlots().stream().anyMatch(slot -> slot >= BASKET_INPUT_END && slot < 54)) { event.setCancelled(true); return; }
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof BasketHolder) {
+                double[] quote = quoteBasket(player.getOpenInventory().getTopInventory());
+                player.getOpenInventory().getTopInventory().setItem(49, basketTotal((int) quote[0], quote[1]));
+            }
+        });
+    }
+
+    /** Closing the basket hands everything back. Nothing is ever kept without being paid for. */
+    @EventHandler public void basketClose(org.bukkit.event.inventory.InventoryCloseEvent event) {
+        if (!(event.getInventory().getHolder(false) instanceof BasketHolder)) return;
+        if (!(event.getPlayer() instanceof Player player)) return;
+        returnBasket(player, event.getInventory());
+    }
+
+    private void returnBasket(Player player, Inventory inv) {
+        for (int slot = 0; slot < BASKET_INPUT_END; slot++) {
+            ItemStack item = inv.getItem(slot);
+            if (item == null || item.getType().isAir()) continue;
+            inv.setItem(slot, null);
+            CoreUtil.give(player, item);
+        }
+    }
+
+    /** Pays for every spawner in the basket, returns anything that is not one, and puts what was sold back
+     *  into stock so buying and selling remain two halves of one pool. The money is paid FIRST; only then are
+     *  the items taken, so a treasury that cannot cover the sale can never eat somebody's spawners. */
+    private void confirmBasket(Player player, Inventory inv) {
+        double[] quote = quoteBasket(inv);
+        int count = (int) quote[0];
+        double value = quote[1];
+        if (count <= 0) {
+            CoreUtil.error(player, "Put spawners in the basket first.");
             plugin.settings().uiSound(player, "error");
             return;
         }
-        double paid = sellPrice(type);
-        if (!plugin.bank().payShopSeller(player, paid, "SPAWNER_SHOP")) {
+        if (!plugin.bank().payShopSeller(player, value, "SPAWNER_SHOP")) {
             CoreUtil.error(player, "The Central Bank treasury cannot cover this sale yet.");
             plugin.settings().uiSound(player, "error");
             return;
         }
-        /** Remove the item only once the money is actually paid, so a failed payout cannot eat the spawner. */
-        if (held.getAmount() <= 1) player.getInventory().setItemInMainHand(null);
-        else held.setAmount(held.getAmount() - 1);
-        db.spawnerShopAdd(type.name(), 1);
-        db.recordEconomy(CoreUtil.id(player), "SPAWNER_SHOP_SALE", paid, type.name());
+        for (int slot = 0; slot < BASKET_INPUT_END; slot++) {
+            ItemStack item = inv.getItem(slot);
+            if (item == null || item.getType() != Material.SPAWNER) continue;
+            EntityType type = plugin.spawners() == null ? null : plugin.spawners().typeOf(item);
+            if (type == null) continue;
+            db.spawnerShopAdd(type.name(), item.getAmount());
+            inv.setItem(slot, null);
+        }
+        db.recordEconomy(CoreUtil.id(player), "SPAWNER_SHOP_SALE", value, count + " spawner(s)");
         db.history(CoreUtil.id(player), null, "SPAWNER_SHOP",
-                player.getName() + " sold a " + CoreUtil.pretty(type.name()) + " Spawner for " + CoreUtil.money(paid) + ".");
-        CoreUtil.msg(player, "Sold a " + CoreUtil.pretty(type.name()) + " Spawner for " + CoreUtil.money(paid) + ".");
+                player.getName() + " sold " + count + " spawner(s) for " + CoreUtil.money(value) + ".");
+        CoreUtil.msg(player, "Sold " + count + " spawner" + (count == 1 ? "" : "s") + " for " + CoreUtil.money(value) + ".");
         plugin.settings().uiSound(player, "success");
-        open(player, holder.page(), holder.sort());
+        /** Anything that was not a spawner goes back, then straight to the shop -- the same return-to-shop
+         *  flow the normal sell basket uses. */
+        returnBasket(player, inv);
+        plugin.getServer().getScheduler().runTask(plugin, () -> { if (player.isOnline()) open(player); });
     }
 
     // ------------------------------------------------------------------ admin / diagnostics
