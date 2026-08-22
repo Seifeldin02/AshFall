@@ -5,11 +5,30 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
-## Session: 2026-08-22 - economy surcharge audit, graves, weekly dragon, Auto-TPA, editable templates - STAGING ONLY
+## Session: 2026-08-22 - economy surcharge audit, graves, weekly dragon, Auto-TPA, editable templates - PROMOTED TO PRODUCTION
 
-**Not yet on production.** Everything below is built, deployed and verified on staging. Production was
-restarted once this session, but only to bring it back up after it died with the machine - no new code
-reached it.
+**PROMOTED TO PRODUCTION 2026-08-22.** One restart, silent (only Asserto and MacoCT were online, which is
+the standing rule). Promoted: `SMPCore-1.7.0.jar` built from `5274704`, plus `config.yml` (spawner-shop
+prices, `betting-window-seconds`, `setup-timeout-seconds`, duel-map bounds, hopper comparator flag),
+`shop.yml`, `bosses.yml`, `shards.yml`, `relics.yml`, `events.yml`. `plugins/update/` cleared first; jar
+MD5 verified identical to the artefact tested on staging.
+
+Post-restart: booted in 31s, `/ashfall duelmap snapshots` 6/6 committed, `/spawnershop` and the new
+`duelmap` completions live, zero orphan instances, **zero SMPCore errors** (the 4 ERROR lines are GrimAC's
+SLF4J and the known ReplayCore cloud-registration rejection).
+
+**One selftest line fails on production and it is not a code fault:** `FAILED: central bank issue`. That
+check credits the treasury 1,000 and then requires `issueLoan` to succeed - and `issueLoan` refuses when the
+bank cannot cover the amount. The Central Bank is at **-26,589,721** (181.0M in, 209.3M out), so no loan of
+any size can be issued and the assertion cannot pass. Nothing in this session touches `issueLoan` or the
+balance; the tax changes only ever pay INTO the bank, and the Spawner Shop had made no sales at that point.
+The selftest is asserting a solvent treasury, which is an environment state, not an invariant.
+
+**Consequence worth knowing:** the deficit surcharge is therefore LIVE right now. Prices and sinks at 2x was
+already the case before this deploy; what is new today is **taxes at 3x** (orders 7.5%, auction listing 9%,
+duel pot 15%) and **Keeper of Omens sigil costs at 2x**. That is a real, immediate change in what players
+pay, and it stays until the treasury climbs back above zero. If it bites harder than intended, `feeFactor()`
+in BankService is the single place to soften it.
 
 **Production outage, 08:02:54.** Production and staging both died within four seconds of each other, mid-
 gameplay and mid-boot respectively, with **no shutdown sequence in either log** and no crash report - a
