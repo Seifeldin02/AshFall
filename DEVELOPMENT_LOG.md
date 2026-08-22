@@ -264,13 +264,32 @@ pay similarly. Left alone pending that call, since these are owner-set economy n
   locating the bedrock ceiling itself rather than assuming a height, so a non-standard world height still
   resolves. **Automatic spawning is deliberately untouched** - it uses its own location picker, and automatic
   Cinder Warlords still never go to the roof.
-- **End Crystal added to the Luxury Shop at 150,000** (`Bound End Crystal`). Priced from what it does rather
-  than what it costs to craft - the raw inputs come to roughly 470, which says nothing useful. It sits just
-  above a Totem of Undying (100,000) because its ceiling use is bigger than one totem pop, and well below a
-  Nether Star (500,000) because it is craftable from farmable inputs rather than gated behind the Wither.
-  Four are needed to respawn a dragon, putting a respawn at 600,000: a real cost that does not wall it off,
-  and one that does not undercut the weekly Dragon, which pays rewards a player-respawned one never does.
-  Elite Endermen now drop crystals too, so the shop price also sets a sensible ceiling on that supply.
+- **End Crystal added to the Luxury Shop at 2,350** (`Bound End Crystal`). My first attempt priced it at
+  150,000 by reasoning about what a crystal can be used for; the owner corrected that, and rightly. It is a
+  CONSUMABLE bought repeatedly for crystal PvP and the easiest thing in the shop to craft, so it belongs on
+  the Wind Charge's shelf (5,000), not the Nether Star's. Priced at **five times its shop material cost**,
+  the multiple chosen because shop stock is finite and ghast tears are slow to come by:
+
+  | Input | Cost |
+  |---|---|
+  | 7 x glass @ 15.4 | 107.80 |
+  | eye of ender (pearl 70 + powder 30, half a 60 blaze rod) | 100.00 |
+  | ghast tear | 260.00 |
+  | **materials** | **467.80** |
+  | **x5, rounded** | **2,350** |
+
+- **A player-respawned dragon no longer pays the weekly Dragon's money.** There was no money distinction at
+  all: `weeklyKill` gated the egg and the bonus XP, but both kinds drew from the same
+  `mob-rewards.ENDER_DRAGON`. Since a respawn costs four end crystals and can be repeated indefinitely, that
+  made the weekly event's headline reward into a farmable loop. Added
+  `mob-rewards.ENDER_DRAGON_RESPAWNED: [45000, 60000]` against the weekly's `[75000, 100000]`, selected on
+  `weeklyKill`, falling back to the shared range if the key is removed.
+
+  **Unresolved:** the ledger shows a 2026-08-21 dragon paying MacoCT **455,480**, and I cannot reconcile that
+  with the code. The pool is `random(75000, 100000) x (1 + 0.25 x sqrt(participants - 1))`, which caps at
+  ~100,000 for a solo kill; `creditEarned` only garnishes overdue loans and applies no multiplier, and
+  `mobIncomeMultiplier` is not on this path at all. Either the config differed on the build that was running
+  then, or there is a credit path I have not found. Flagged rather than guessed at.
 - **Spawner Shop controls moved onto the family's own slots** - switch at 49 and sort at 51, matching every
   other shop screen. They were the wrong way round.
 - **Selling now goes through a sale basket** rather than selling the item in hand: drop spawners into the top

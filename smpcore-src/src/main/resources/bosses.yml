@@ -394,7 +394,11 @@ mob-rewards:
   DONKEY: [0.10, 0.50]
   DROWNED: [3.0, 5.0]
   ELDER_GUARDIAN: [150.0, 250.0]
+  # The WEEKLY Dragon. A scheduled, once-a-week event worth turning up for.
   ENDER_DRAGON: [75000.0, 100000.0]
+  # A dragon somebody respawned themselves with four end crystals. Infinitely repeatable, so it pays a
+  # fraction of the weekly one -- otherwise the weekly event's headline reward becomes a farmable loop.
+  ENDER_DRAGON_RESPAWNED: [45000.0, 60000.0]
   ENDERMAN: [8.0, 12.0]
   ENDERMITE: [3.0, 5.0]
   EVOKER: [10.0, 16.0]

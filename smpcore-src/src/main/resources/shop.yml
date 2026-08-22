@@ -250,12 +250,16 @@ luxuries:
   TOTEM_OF_UNDYING:
     buy: 100000
     display: Totem of Undying
-  # Priced from what it DOES, not what it costs to craft -- the raw inputs come to about 470, which says
-  # nothing useful. Anchors: a Totem is 100,000 and a Nether Star 500,000. A crystal sits just above the
-  # Totem because its ceiling use is bigger than one totem pop, and well below the Nether Star because it is
-  # craftable from farmable inputs rather than gated behind the Wither. Four are needed to respawn a dragon,
-  # so this puts a dragon respawn at 600,000 -- a real cost that does not wall it off, and one that does not
-  # undercut the weekly Dragon, which pays rewards a player-respawned one never does.
+  # A CONSUMABLE, bought over and over for crystal PvP, and the easiest thing in this shop to craft -- so it
+  # is priced off its craft cost with a convenience margin, exactly like the Wind Charge it sits beside, not
+  # off what it can be used for.
+  #   7 glass @ 15.4      = 107.80
+  #   eye of ender         = 100.00  (ender pearl 70 + blaze powder 30, i.e. half a 60 blaze rod)
+  #   ghast tear           = 260.00
+  #   materials            = 467.80   ->  x5 = 2,339, rounded to 2,350
+  # Five times materials, because the inputs are not infinite -- shop stock is finite and ghast tears in
+  # particular are slow to come by, so buying the crystal outright should cost meaningfully more than
+  # sourcing the parts.
   END_CRYSTAL:
-    buy: 150000
+    buy: 2350
     display: Bound End Crystal

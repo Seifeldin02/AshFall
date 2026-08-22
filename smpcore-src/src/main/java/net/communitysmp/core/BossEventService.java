@@ -886,7 +886,16 @@ final class BossEventService {
             }
             plugin.weeklyDragon().defeated(dragon);
         }
-        if(participants.isEmpty())return;List<Double> range=bosses.getDoubleList("mob-rewards."+boss.getType().name());if(range.size()<2)return;
+        if(participants.isEmpty())return;
+        /** A player-respawned dragon pays its OWN, much smaller range. The weekly Dragon is a scheduled event
+         *  that happens once and is worth turning up for; a respawned one costs four end crystals and can be
+         *  done as many times as somebody feels like, so paying both the same made the weekly event's headline
+         *  reward into a farmable loop. Falls back to the shared range if the key is absent, so removing it
+         *  from config restores the old single-rate behaviour. */
+        String rewardKey=boss.getType().name();
+        if(boss.getType()==EntityType.ENDER_DRAGON&&!weeklyKill
+                &&bosses.getDoubleList("mob-rewards.ENDER_DRAGON_RESPAWNED").size()>=2)rewardKey="ENDER_DRAGON_RESPAWNED";
+        List<Double> range=bosses.getDoubleList("mob-rewards."+rewardKey);if(range.size()<2)return;
         double pool=random(range.get(0),range.get(1))*participantRewardMultiplier(participants.size());double total=participants.values().stream().mapToDouble(Double::doubleValue).sum();
         for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double share=pool*entry.getValue()/Math.max(1,total);boolean firstDragonKiller=boss.getType()==EntityType.ENDER_DRAGON&&killer!=null&&killer.getUniqueId().equals(player.getUniqueId())&&weeklyKill&&!db.hasMilestone(entry.getKey(),"DEFEAT_DRAGON");boolean full=majorRewardAvailable(entry.getKey(),boss.getType());if(!full)share*=bosses.getDouble("major-rewards."+boss.getType().name()+".repeat-multiplier",.1);if(firstDragonKiller)share=Math.max(share,bosses.getDouble("major-rewards.ENDER_DRAGON.first-killer-reward",100000));share*=plugin.progress().mobIncomeMultiplier(player);share=Math.round(share*100)/100.0;
             if(share>0){plugin.creditEarned(entry.getKey(),share,"BOSS_"+boss.getType().name());db.recordEconomy(entry.getKey(),"BOSS",share,boss.getType().name());CoreUtil.msg(player,"Your boss participation earned "+CoreUtil.money(share)+".");}
