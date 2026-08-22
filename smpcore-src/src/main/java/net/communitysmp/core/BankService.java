@@ -181,7 +181,14 @@ final class BankService implements Listener {
 
     void creditFee(double amount,String player,String detail){db.creditBankRevenue(amount,"FEE",player,detail);}
     void creditSink(double amount,String player,String detail){db.creditBankRevenue(amount,"SINK",player,detail);}
-    boolean payServer(Player player,double amount,String category,String detail){return db.serverPayment(CoreUtil.id(player),amount,category,detail);}
+    /** Single choke point for money paid TO the server: every shop, the Keeper of Omens, the spawner
+     *  shop, home and ender-chest upgrades and the auction listing fee all come through here, which is why
+     *  the big-spend celebration hangs off it rather than off each shop separately. */
+    boolean payServer(Player player,double amount,String category,String detail){
+        if(!db.serverPayment(CoreUtil.id(player),amount,category,detail))return false;
+        if(plugin.spectacle()!=null)plugin.spectacle().bigSpend(player,amount,detail);
+        return true;
+    }
     boolean refundServerPayment(Player player,double amount,String category,String detail){return db.refundServerPayment(CoreUtil.id(player),amount,category,detail);}
     boolean payFaction(long faction,double amount,String player,String detail){return db.factionServerPayment(faction,amount,player,detail);}
     boolean payShopSeller(Player player,double amount,String detail){

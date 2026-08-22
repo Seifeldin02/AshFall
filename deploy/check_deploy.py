@@ -144,7 +144,11 @@ def main() -> int:
 
     # --- values production must hold, independent of the staging comparison -----
     for entry in man.get("yaml_asserts", []):
-        rel, keypath, want = entry["path"], entry["key"], entry["contains"]
+        # `contains` is a membership test (a list entry, a substring); `equals` pins the whole value, which
+        # is what a plain boolean flag needs -- "contains True" is meaningless against a bool.
+        rel, keypath = entry["path"], entry["key"]
+        exact = "equals" in entry
+        want = entry["equals"] if exact else entry["contains"]
         p_file = prod / rel
         if not p_file.exists():
             rows.append((MISSING, rel, "absent on PRODUCTION"))
@@ -152,9 +156,9 @@ def main() -> int:
         node = yaml.safe_load(read(p_file))
         for part in keypath.split("."):
             node = (node or {}).get(part) if isinstance(node, dict) else None
-        present = (want in node) if isinstance(node, (list, str)) else (node == want)
-        rows.append((OK, f"{rel}:{keypath}", f"contains {want!r}") if present
-                    else (DIFF, f"{rel}:{keypath}", f"MISSING {want!r} - got {node!r}"))
+        present = (node == want) if exact else ((want in node) if isinstance(node, (list, str)) else (node == want))
+        rows.append((OK, f"{rel}:{keypath}", f"{'is' if exact else 'contains'} {want!r}") if present
+                    else (DIFF, f"{rel}:{keypath}", f"expected {want!r} - got {node!r}"))
 
     # --- jars whose version lives inside the file, not in its name --------------
     import zipfile

@@ -554,24 +554,32 @@ final class BossEventService {
         lore.add(summonReadyLine());
         return lore;
     }
-    /** "Cooldown" here is simply whether an encounter is currently active — a Summoning Paper, like a
-     *  natural random world-boss event, can never start a second encounter while one is already running
-     *  (see the worldBoss()!=null||eventType!=null guard below). This is unrelated to the natural event
-     *  system's own RARE-tier interval timer (activeTierNextDelay/eventRemaining in startEvent()), which
-     *  is set ONLY when origin==Origin.NATURAL — a player-summoned encounter never starts, resets, or
-     *  blocks that timer, and vice versa; they are genuinely separate cooldowns. */
+    /** Exactly one thing stops a Sealed Omen being used: another WORLD BOSS. Nothing else does.
+     *
+     *  This line must mirror useSummonScroll's guard (worldBoss()!=null || eventType==WORLD_BOSS) and
+     *  nothing else, because it is the only thing a player can see before spending the scroll. It used to
+     *  refuse on `eventType != null`, i.e. on ANY event at all -- so a Resource Rush, an Elite Hunt or a
+     *  Task Master ticking away somewhere made every Sealed Omen on the server advertise a cooldown that
+     *  did not exist. Right-clicking would have worked the whole time: startEvent's standaloneBoss branch
+     *  exists precisely so a paid summon runs ALONGSIDE an ordinary event. Reported twice from live as
+     *  "the scrolls say an event is ongoing when there isn't one"; the earlier fix only handled the stale-
+     *  field case and left the real one, which is this.
+     *
+     *  Still unrelated to the natural event system's own per-tier interval timer (activeTierNextDelay /
+     *  eventRemaining), which is set ONLY when origin==Origin.NATURAL: a player summon never starts,
+     *  reads, resets or is blocked by it. */
     private String summonReadyLine(){
-        if(worldBoss()==null&&eventType==null)return"Ready to summon.";
-        long remaining=eventEnds-System.currentTimeMillis();
-        /** An encounter whose window has expired with no boss left alive is OVER, whatever the eventType
-         *  field still says. Without this the scroll advertised a cooldown indefinitely off a stale field --
-         *  reported live as "it says an event is ongoing when there isn't one" -- and the number it counted
-         *  down was already negative. The summon guard itself is unaffected; this is the label agreeing with
-         *  reality rather than with leftover state. */
-        if(remaining<=0&&worldBoss()==null)return"Ready to summon.";
-        if(worldBoss()!=null&&remaining<=0)return"On cooldown — an encounter is still active.";
+        LivingEntity active=worldBoss();
+        if(active==null&&eventType!=EventType.WORLD_BOSS)return"Ready to summon.";
+        /** A boss summoned alongside another event carries its OWN end time; eventEnds in that case
+         *  belongs to whatever else is running and would be the wrong number to count down. */
+        long ends=eventType==EventType.WORLD_BOSS?eventEnds:standaloneBossEnds;
+        long remaining=ends-System.currentTimeMillis();
+        /** A window that has expired with nothing left alive is over, whatever the field still says. */
+        if(remaining<=0&&active==null)return"Ready to summon.";
+        if(remaining<=0)return"Unavailable — a world boss is still active.";
         long minutes=remaining/60000,seconds=(remaining%60000)/1000;
-        return"On cooldown — an encounter is already active (~"+minutes+"m "+seconds+"s remaining).";
+        return"Unavailable — a world boss is already active (~"+minutes+"m "+seconds+"s remaining).";
     }
     /** Keeps any Sealed Omen already sitting in an online player's inventory showing live state, without
      *  needing to reopen the shop or attempt a summon to find out. getContents() returns live references

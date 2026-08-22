@@ -709,6 +709,12 @@ final class ArenaService implements Listener {
         if (sa > 0 && !db.changeBalance(duel.a, -sa)) { both(duel, "Challenger could not cover their stake; duel cancelled."); dispose(duel); return true; }
         if (sb > 0 && !db.changeBalance(duel.b, -sb)) { if (sa > 0) db.changeBalance(duel.a, sa); both(duel, "Opponent could not cover their stake; duel cancelled."); dispose(duel); return true; }
         db.arenaEscrowSet(duel.a, sa); db.arenaEscrowSet(duel.b, sb);
+        /** A stake this size is a bet like any other, so it gets the same celebration a spectator wager does. */
+        if (plugin.spectacle() != null) {
+            Player one = a(duel), two = b(duel);
+            if (one != null) plugin.spectacle().bigBet(one, sa, "a duel against " + duel.bName);
+            if (two != null) plugin.spectacle().bigBet(two, sb, "a duel against " + duel.aName);
+        }
         duel.map = map;
         startMatch(duel);
         return true;
@@ -1159,6 +1165,10 @@ final class ArenaService implements Listener {
         if (amount > 0 && !db.changeBalance(id, -amount)) { CoreUtil.error(player, "You cannot cover that."); if (existing != null) { duel.wagers.add(existing); syncWagerDb(duel); } return true; }
         if (amount > 0) { duel.wagers.add(new Wager(id, target, amount, round)); syncWagerDb(duel); }
         actionbar(player, "Wager set: " + CoreUtil.money(amount) + " on " + name(target) + (round == 0 ? " (whole match)." : " (round " + round + ")."));
+        /** Only the increase counts as a big bet: raising 9m to 11m is a 2m move, and re-confirming the
+         *  same wager should not fire the show a second time. */
+        if (plugin.spectacle() != null && amount > (existing == null ? 0 : existing.amount()))
+            plugin.spectacle().bigBet(player, amount - (existing == null ? 0 : existing.amount()), "a wager on " + name(target));
         refreshSpectate(duel);
         return true;
     }

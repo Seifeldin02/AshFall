@@ -5,6 +5,117 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-22 (part 2) - golem spawner root cause, big-spend spectacle, scroll cooldown lie
+
+**Ships as:** `SMPCore-1.7.0.jar`, `plugins/SMPCore/config.yml` (new `celebrations` block),
+`plugins/SMPCore/shop.yml` (End Crystal 2,350 -> 6,000), and - the important one - **`config/paper-world-defaults.yml`**.
+
+> A jar swap carries NONE of the three config files. The Paper one in particular is invisible to a
+> `git diff`, lives outside `plugins/`, and is the entire fix for the golem spawner. `deploy/manifest.yml`
+> now pins it with a `yaml_asserts` entry so it cannot be silently lost again.
+
+### The 50m Iron Golem Spawner produced nothing, for a reason no log would ever show
+
+Bought 2026-08-22 16:44 for 50,000,000, placed in the Blacklist claim at `world 6744 -49 -112391`. Between
+purchase and audit it produced **one** golem. Not a slow rate - one.
+
+What the live server said before any change:
+
+| Probe | Reading |
+|---|---|
+| `data get block ... Delay` | **0**, constantly |
+| tuning (`MinSpawnDelay`/`SpawnCount`/`SpawnRange`/`MaxNearbyEntities`) | 160 / 1 / 4 / 2048 - all correct |
+| geometry: positions in range where a 1.4x2.7 golem physically fits | **77** |
+| iron golems in the world | **0** |
+| `golem_spawner_daily` | 2026-08-21: 2 kills, 2026-08-22: 1 kill |
+
+`Delay: 0` is the tell. Vanilla only resets a spawner's delay after a spawn **succeeds**, so a spawner that
+can never place its mob does not idle - it retries every single tick, for ever, silently.
+
+**Root cause, read out of the running `paper-26.2.jar` rather than guessed at.** Iron Golem is the only
+purchasable spawner type that still demands solid ground under a SPAWNER spawn:
+
+- `SpawnPlacements`' predicate for `IRON_GOLEM` is `Mob::checkMobSpawnRules`, which opens with
+  `EntitySpawnReason.isSpawner(reason) ||` - so the ground test **there** is already waived for spawners.
+  This is why Blaze, Zombie and every other spawner works perfectly over an open drop.
+- `IronGolem#checkSpawnObstruction` re-imposes it with no spawner exemption: `entityCanStandOn(below)`,
+  plus two clear blocks above, plus unobstructed.
+- `BaseSpawner` evaluates that one **unconditionally**:
+  `if (customRules.isEmpty() && !mob.checkSpawnRules(..) || !mob.checkSpawnObstruction(..)) continue;`
+
+MacoCT's chamber is open air for five layers with nothing beneath the spawner, which is the correct shape
+for every other farm on this server and the one shape a golem spawner cannot use.
+
+**Fix: `entities.spawning.iron-golems-can-spawn-in-air: true`** in `config/paper-world-defaults.yml`. That
+flag is Paper's own escape hatch and sits inside the exact branch that was failing
+(`!entityCanStandOn(below) && !ironGolemsCanSpawnInAir -> return false`). No per-dimension `paper-world.yml`
+overrides it, so one edit covers every world. Everything else still applies - the golem must physically fit
+and have three clear blocks - which is precisely the rule every other placed spawner already obeys.
+
+**Verified live, not assumed.** A throwaway rig in empty sky above the base (spawner at y 250 with nothing
+under the spawn point, a barrier catch-tray six blocks lower, `RequiredPlayerRange: -1` so it ticks with the
+players 112k blocks away) produced **27 golems in 40 seconds**, with `Delay` cycling normally (24 -> 11 -> 0
+-> 19 -> 5) instead of pinned at 0. Rig fully removed afterwards: spawner and barriers back to air, 33
+golems / 54 items / 66 orbs killed, forceload released, volume re-probed with the chunk loaded to confirm
+clean sky. (First probe reported dozens of "leftover blocks" purely because it ran after the forceload was
+released - `execute if block` fails on an unloaded chunk. Re-load before verifying, always.)
+
+**A wrong turn worth recording.** The first attempt attached vanilla `custom_spawn_rules` (via
+`SpawnerEntry`/`SpawnRule`) to golem spawners to skip the rule, with a chunk-load repair sweep to fix
+existing ones. It was written, compiled and **reverted** once the bytecode showed `checkSpawnObstruction` is
+called unconditionally - custom spawn rules only skip the left-hand side of that `||`. It would have
+rewritten every golem spawner's NBT and fixed nothing. `SpawnerService` keeps a short pointer comment saying
+where the real fix lives, because that is where the next person will look.
+
+*Economy note:* this is not an income change. `BossEventService` already restricts golem money to purchased
+spawners - village and player-built iron farms pay nothing - so an easier village golem is still worth zero.
+
+### Sealed Omen: the "an event is already in progress" cooldown that was not real
+
+Reported twice. The lore line refused on `eventType != null` - i.e. on **any** event - while the actual
+guard in `useSummonScroll` is `worldBoss() != null || eventType == WORLD_BOSS` and nothing else. So a
+Resource Rush, Elite Hunt or Task Master ticking away anywhere made every Sealed Omen on the server
+advertise a cooldown that did not exist; right-clicking would have worked the whole time, because
+`startEvent`'s `standaloneBoss` branch exists precisely so a paid summon runs alongside an ordinary event.
+The earlier fix only covered the stale-`eventEnds` case and left the real one.
+
+`summonReadyLine()` now mirrors the guard exactly, counts down from `standaloneBossEnds` when the boss is a
+standalone summon (`eventEnds` there belongs to the other event), and says "Unavailable - a world boss is
+already active" rather than "on cooldown", which was never the right word.
+
+### Big-spend spectacle (`SpectacleService`)
+
+New. Two configurable tiers, fired from one choke point each:
+
+| Tier | Default | What happens |
+|---|---|---|
+| GRAND | 10,000,000+ | Title, twin gold helix, expanding `TOTEM_OF_UNDYING` rings, firework bursts, layered sounds |
+| LEGENDARY | 50,000,000+ | Triple violet helix, wider `SOUL_FIRE_FLAME` shockwaves, a 14-block column of light, `FLASH` + `DRAGON_BREATH` bursts, dragon-growl/wither/raid-horn stack, and a server-wide announcement |
+
+Hooks: `BankService.payServer` (every shop, the Keeper of Omens, the spawner shop, home and ender-chest
+upgrades, auction listing fees), `AuctionService.buy` (player-to-player, which does not go through
+`payServer`), duel stakes at escrow time, and spectator wagers - the last on the **increase** only, so
+raising 9m to 11m celebrates 2m and re-confirming the same wager fires nothing.
+
+Deliberately drawn with particles and hand-played sounds rather than real `Firework` entities: a detonating
+firework deals explosion damage to whoever is standing next to it, which is a poor reward for spending fifty
+million. Sounds are played per listener so each player's own sound toggle is honoured (`world.playSound`
+would ignore it), and particle density follows the **spender's** particle-intensity setting.
+
+### End Crystal: 2,350 -> 6,000
+
+Owner-set. Materials are 467.80, so this is roughly 13x rather than the earlier 5x - the convenience of
+skipping the ghast-tear hunt is worth more than the parts, and at stack-buying volumes 2,350 was a rounding
+error rather than a sink. Applied to the repo resource and both servers' `shop.yml`, live on production
+immediately via `/ashfall reload` (no restart needed for a shop price).
+
+### Still open
+
+- The 2026-08-21 dragon that paid MacoCT **455,480**, which the code still cannot produce. Unchanged.
+- `FAILED: central bank issue` on production remains an assertion about treasury solvency, not a fault.
+
+---
+
 ## Session: 2026-08-22 - economy surcharge audit, graves, weekly dragon, Auto-TPA, editable templates - PROMOTED TO PRODUCTION
 
 **PROMOTED TO PRODUCTION 2026-08-22.** One restart, silent (only Asserto and MacoCT were online, which is

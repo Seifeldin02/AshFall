@@ -92,7 +92,15 @@ final class SpawnerService {
         try{EntityType entityType=EntityType.valueOf(type);String identity=item.getItemMeta().getPersistentDataContainer().getOrDefault(identityKey,PersistentDataType.STRING,UUID.randomUUID().toString());spawner.setSpawnedType(entityType);spawner.getPersistentDataContainer().set(placedKey,PersistentDataType.BYTE,(byte)1);setHistories(spawner,new int[]{item.getItemMeta().getPersistentDataContainer().getOrDefault(historiesKey,PersistentDataType.INTEGER,1)});setIdentities(spawner,new String[]{identity});tunePlacedSpawner(spawner);spawner.update(true);FactionService.Claim claim=factions.claimAt(event.getBlockPlaced().getLocation());if(claim!=null)plugin.progress().factionSpawnerPlaced(claim.faction(),identity,entityType,System.currentTimeMillis(),event.getBlockPlaced().getLocation());CoreUtil.msg(event.getPlayer(),"Placed "+CoreUtil.pretty(type)+" Spawner ×1.");}catch(IllegalArgumentException ex){event.setCancelled(true);CoreUtil.error(event.getPlayer(),"That spawner type is invalid.");}
     }
 
-    /** Placed spawners are the server's farming investment, so they get a genuinely upgraded cycle that
+    /** NOTE for anyone chasing "my Iron Golem spawner produces nothing": the cause is not in this class.
+     *  IronGolem#checkSpawnObstruction demands a block it can stand on directly beneath, and BaseSpawner
+     *  calls it unconditionally, so a golem spawner hung over an open drop -- the shape every farm here is
+     *  built to -- spawns absolutely nothing and reports nothing. Paper's own switch for that is
+     *  `entities.spawning.iron-golems-can-spawn-in-air` in config/paper-world-defaults.yml, which this
+     *  server sets to true. Every other mob is unaffected either way: Mob.checkMobSpawnRules already
+     *  waives the ground test for spawner spawns.
+     *
+     *  Placed spawners are the server's farming investment, so they get a genuinely upgraded cycle that
      *  natural world spawners never receive: a short 5-10s delay, vanilla's nearby-mob suppression lifted
      *  so a full farm does not throttle itself, and a generous activation range. Applied only to blocks
      *  carrying placedKey, so untouched world spawners stay exactly vanilla.

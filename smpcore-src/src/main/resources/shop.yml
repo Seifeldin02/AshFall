@@ -256,10 +256,10 @@ luxuries:
   #   7 glass @ 15.4      = 107.80
   #   eye of ender         = 100.00  (ender pearl 70 + blaze powder 30, i.e. half a 60 blaze rod)
   #   ghast tear           = 260.00
-  #   materials            = 467.80   ->  x5 = 2,339, rounded to 2,350
-  # Five times materials, because the inputs are not infinite -- shop stock is finite and ghast tears in
-  # particular are slow to come by, so buying the crystal outright should cost meaningfully more than
-  # sourcing the parts.
+  #   materials            = 467.80
+  # Owner-set to 6,000 -- roughly 13x materials. The earlier 5x (2,350) was judged too cheap for something
+  # bought by the stack for crystal PvP: the convenience of skipping the ghast-tear hunt entirely is worth
+  # more than the parts, and this keeps it a real money sink rather than a rounding error.
   END_CRYSTAL:
-    buy: 2350
+    buy: 6000
     display: Bound End Crystal

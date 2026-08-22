@@ -133,6 +133,17 @@ spawners:
   # How often stacked representatives are consolidated, in ticks.
   consolidate-interval-ticks: 40
 
+# Big-spend celebration. Purely cosmetic: particles, per-listener sounds, a title, and (legendary only) a
+# server announcement. No fireworks entities, so nothing here can damage or knock anybody about.
+celebrations:
+  enabled: true
+  # Local show: helix, expanding rings, firework bursts.
+  grand-threshold: 10000000
+  # Everything above, taken much further, plus a column of light visible across the base.
+  legendary-threshold: 50000000
+  broadcast-legendary: true
+  broadcast-grand: false
+
 graves:
   lifetime-hours: 48
 
