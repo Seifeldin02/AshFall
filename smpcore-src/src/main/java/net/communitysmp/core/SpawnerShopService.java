@@ -126,6 +126,10 @@ final class SpawnerShopService implements Listener {
         add(type, Math.max(1, stack.getAmount()), reason, at);
     }
 
+    /** Capture entry point for other services -- notably a spawner MINED without a recovery tool, which is
+     *  destroyed for XP and never reaches an inventory, vanilla and plugin spawners alike. */
+    void recover(EntityType type, int amount, Location at, String reason) { add(type, amount, reason, at); }
+
     private void add(EntityType type, int amount, String reason, Location at) {
         if (!plugin.getConfig().getBoolean("spawner-shop.enabled", true)) return;
         db.spawnerShopAdd(type.name(), amount);
@@ -157,6 +161,13 @@ final class SpawnerShopService implements Listener {
         return Math.round(price(type) * plugin.bank().buyFactor() * 100) / 100.0;
     }
 
+    /** A fifth of the buy price, which is exactly the buy:sell ratio every entry in the normal shop uses --
+     *  so a spawner's value is stated the same way as everything else on the server rather than being its own
+     *  special case. Takes the deficit sell factor for the same reason buying takes the buy factor. */
+    double sellPrice(EntityType type) {
+        return Math.round(price(type) / 5.0 * plugin.bank().sellFactor() * 100) / 100.0;
+    }
+
     // ------------------------------------------------------------------ the shop
 
     void open(Player player) { open(player, 0, Sort.STOCK); }
@@ -179,7 +190,12 @@ final class SpawnerShopService implements Listener {
         inv.setItem(45, CoreUtil.named(Material.ARROW, shown > 0 ? "Previous page" : " ",
                 shown > 0 ? List.of("Page " + shown + " of " + pages) : List.of()));
         inv.setItem(49, CoreUtil.named(Material.HOPPER, "Sort: " + sort.label(), List.of("Click to change the order.")));
-        inv.setItem(48, CoreUtil.named(Material.CHEST, "Back to /shop", List.of("Return to the main shop.")));
+        inv.setItem(43, CoreUtil.named(Material.HOPPER, "Sell held spawner", List.of(
+                "Hold a spawner and click to sell it.",
+                "Pays a fifth of the buy price, the same",
+                "ratio the normal shop uses.")));
+        Sort ignored = sort;
+        inv.setItem(48, CoreUtil.named(Material.EMERALD, "Switch to Normal Shop", List.of("Cycle on through the shops.")));
         inv.setItem(53, CoreUtil.named(Material.ARROW, shown < pages - 1 ? "Next page" : " ",
                 shown < pages - 1 ? List.of("Page " + (shown + 2) + " of " + pages) : List.of()));
         player.openInventory(inv);
@@ -243,6 +259,7 @@ final class SpawnerShopService implements Listener {
         if (slot == 53) { plugin.settings().uiSound(player, "page"); open(player, holder.page() + 1, holder.sort()); return; }
         if (slot == 49) { plugin.settings().uiSound(player, "select"); open(player, 0, holder.sort().next()); return; }
         if (slot == 48) { plugin.settings().uiSound(player, "back"); plugin.shop().open(player); return; }
+        if (slot == 43) { sell(player, holder); return; }
         if (slot < 0 || slot >= PAGE_SIZE) return;
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || clicked.getType() != Material.SPAWNER) return;
@@ -284,6 +301,34 @@ final class SpawnerShopService implements Listener {
         open(player, holder.page(), holder.sort());
     }
 
+    /** Sells the spawner the player is holding. The spawner goes back into stock, so selling and buying are
+     *  the two halves of one pool rather than a money faucet. */
+    private void sell(Player player, Holder holder) {
+        ItemStack held = player.getInventory().getItemInMainHand();
+        EntityType type = plugin.spawners() == null ? null : plugin.spawners().typeOf(held);
+        if (held == null || held.getType() != Material.SPAWNER || type == null) {
+            CoreUtil.error(player, "Hold the spawner you want to sell.");
+            plugin.settings().uiSound(player, "error");
+            return;
+        }
+        double paid = sellPrice(type);
+        if (!plugin.bank().payShopSeller(player, paid, "SPAWNER_SHOP")) {
+            CoreUtil.error(player, "The Central Bank treasury cannot cover this sale yet.");
+            plugin.settings().uiSound(player, "error");
+            return;
+        }
+        /** Remove the item only once the money is actually paid, so a failed payout cannot eat the spawner. */
+        if (held.getAmount() <= 1) player.getInventory().setItemInMainHand(null);
+        else held.setAmount(held.getAmount() - 1);
+        db.spawnerShopAdd(type.name(), 1);
+        db.recordEconomy(CoreUtil.id(player), "SPAWNER_SHOP_SALE", paid, type.name());
+        db.history(CoreUtil.id(player), null, "SPAWNER_SHOP",
+                player.getName() + " sold a " + CoreUtil.pretty(type.name()) + " Spawner for " + CoreUtil.money(paid) + ".");
+        CoreUtil.msg(player, "Sold a " + CoreUtil.pretty(type.name()) + " Spawner for " + CoreUtil.money(paid) + ".");
+        plugin.settings().uiSound(player, "success");
+        open(player, holder.page(), holder.sort());
+    }
+
     // ------------------------------------------------------------------ admin / diagnostics
 
     String describeStock() {
@@ -306,6 +351,8 @@ final class SpawnerShopService implements Listener {
                 plugin.getConfig().getDouble("spawner-shop.default-price", 250_000)})
             if (value <= 0 || value % 50_000 != 0) return false;
         /** The deficit surcharge must reach this shop exactly as it reaches every other one. */
-        return buyPrice(EntityType.ZOMBIE) == Math.round(zombie * plugin.bank().buyFactor() * 100) / 100.0;
+        if (buyPrice(EntityType.ZOMBIE) != Math.round(zombie * plugin.bank().buyFactor() * 100) / 100.0) return false;
+        /** Selling pays exactly a fifth of the base price, the same ratio the normal shop uses. */
+        return sellPrice(EntityType.ZOMBIE) == Math.round(zombie / 5.0 * plugin.bank().sellFactor() * 100) / 100.0;
     }
 }

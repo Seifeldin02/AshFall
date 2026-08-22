@@ -28,6 +28,12 @@ items:
   DIORITE: {buy: 1.5, sell: 0.3, daily-full: 8192, category: MINING}  # Cave mining byproduct
   GRANITE: {buy: 1.5, sell: 0.3, daily-full: 8192, category: MINING}  # Cave mining byproduct
   GOLD_NUGGET: {buy: 1.65, sell: 0.33, daily-full: 8192, category: MINING}  # Gold farm byproduct; nine to an ingot
+  # Nine nuggets to an ingot, so exactly a ninth of the ingot both ways -- crafting one into the other can
+  # never be an arbitrage. Sell stays buy/5 like every other entry.
+  IRON_NUGGET: {buy: 6.1, sell: 1.22, daily-full: 8192, category: MINING}  # Iron golem farm byproduct; nine to an ingot
+  # Deepslate mined at depth; the cobbled form is what a pickaxe without silk touch actually yields, so it
+  # is the one players have in bulk. Priced with plain deepslate rather than above it.
+  COBBLED_DEEPSLATE: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining; the no-silk-touch yield
   DEEPSLATE: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining byproduct
   TUFF: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining byproduct
   BASALT: {buy: 1.85, sell: 0.37, daily-full: 8192, category: MINING}  # Basalt generator, fully AFK

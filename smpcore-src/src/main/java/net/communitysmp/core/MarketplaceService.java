@@ -35,7 +35,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 final class MarketplaceService implements Listener {
-    enum Section { SHOP, AUCTION, LUXURY, SHARDS }
+    enum Section { SHOP, AUCTION, LUXURY, SHARDS, SPAWNERS }
     /** IN_STOCK filters the shop down to what it can actually sell right now, which only means anything
      *  since the shop became finite. It is a filter as well as an order: browsing a wall of out-of-stock
      *  entries is the main annoyance of a player-supplied shop. */
@@ -78,9 +78,11 @@ final class MarketplaceService implements Listener {
 
     private void render(Player player,Session session){
         View view=session.view();Holder holder=new Holder(player.getUniqueId(),session.section);
-        String title=switch(session.section){case SHOP->view.merchant?"Merchant Market":"Marketplace • Shop";case AUCTION->view.merchant?"Auctioneer":"Marketplace • Auction";case LUXURY->"Marketplace • Luxury";case SHARDS->"Marketplace • Shards";};
+        String title=switch(session.section){case SHOP->view.merchant?"Merchant Market":"Marketplace • Shop";case AUCTION->view.merchant?"Auctioneer":"Marketplace • Auction";case SPAWNERS->"Marketplace • Spawners";case LUXURY->"Marketplace • Luxury";case SHARDS->"Marketplace • Shards";};
         Inventory inv=plugin.getServer().createInventory(holder,54,Component.text(title,session.section==Section.SHARDS?NamedTextColor.DARK_AQUA:NamedTextColor.DARK_GREEN));
-        int total=switch(session.section){case SHOP,LUXURY->renderShop(player,inv,holder,view,session.section==Section.LUXURY);case AUCTION->renderAuctions(player,inv,holder,view);case SHARDS->renderShards(player,inv,holder,view);};
+        int total=switch(session.section){/** SPAWNERS is handed off by switchSection and never rendered here; the branch exists only so the
+         *  switch stays exhaustive if anything ever routes one in. */
+        case SPAWNERS->0;case SHOP,LUXURY->renderShop(player,inv,holder,view,session.section==Section.LUXURY);case AUCTION->renderAuctions(player,inv,holder,view);case SHARDS->renderShards(player,inv,holder,view);};
         int pages=Math.max(1,(total+PAGE_SIZE-1)/PAGE_SIZE),requestedPage=view.page;view.page=Math.max(0,Math.min(view.page,pages-1));
         if(requestedPage!=view.page){render(player,session);return;}
         if(session.section==Section.SHOP){inv.setItem(43,button(Material.HOPPER,"Sell Basket",List.of("Place items, review, and confirm.")));inv.setItem(44,button(Material.PAPER,"Selling",List.of("Right-click an item to sell.","Full value becomes 50% after its daily threshold.")));inv.setItem(46,button(Material.GOLD_INGOT,"Quick Sell",List.of("Sell every supported ordinary item","in your inventory.")));}
@@ -208,7 +210,12 @@ final class MarketplaceService implements Listener {
         }
     }
 
-    private void switchSection(Player player,Session session,Section section,boolean merchant){session.section=section;resetSearch(session.view());session.view().merchant=merchant;render(player,session);}
+    private void switchSection(Player player,Session session,Section section,boolean merchant){
+        /** The Spawner Shop is the one section that is not a Material-priced row list, so it hands off to its
+         *  own screen instead of rendering here. It carries the same switcher onward, which is what keeps all
+         *  five shops one cycle rather than four plus an outlier. */
+        if(section==Section.SPAWNERS){plugin.spawnerShop().open(player);return;}
+        session.section=section;resetSearch(session.view());session.view().merchant=merchant;render(player,session);}
     private void openFilters(Player player,Session session){
         Inventory inv=plugin.getServer().createInventory(new FilterHolder(player.getUniqueId(),session.section),45,Component.text("Marketplace Filters",NamedTextColor.DARK_GRAY));
         inv.setItem(10,button(Material.BARRIER,"All Categories",List.of()));
@@ -336,11 +343,11 @@ final class MarketplaceService implements Listener {
     private void savePreference(Player player,Section section,String field,String value){
         plugin.db().preference(CoreUtil.id(player),prefKey(section,field),value);
     }
-    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==4&&Sort.values().length==6&&new View().sort==Sort.STOCK&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
+    boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==5&&Sort.values().length==6&&new View().sort==Sort.STOCK&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
     private void resetSearch(View view){view.query="";view.seller="";view.page=0;}
-    private Section nextSection(Section section){return switch(section){case SHOP->Section.LUXURY;case LUXURY->Section.SHARDS;case SHARDS->Section.AUCTION;case AUCTION->Section.SHOP;};}
-    private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";};}
-    private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;};}
+    private Section nextSection(Section section){return switch(section){case SHOP->Section.LUXURY;case LUXURY->Section.SHARDS;case SHARDS->Section.AUCTION;case AUCTION->Section.SPAWNERS;case SPAWNERS->Section.SHOP;};}
+    private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";case SPAWNERS->"Spawner Shop";};}
+    private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;case SPAWNERS->Material.SPAWNER;};}
     private String sortName(Sort sort){return switch(sort){case STOCK->"In Stock First";case CATEGORY->"Category";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
     private List<String> filterLore(View view){List<String> lore=new ArrayList<>();lore.add("Category: "+CoreUtil.pretty(view.category));if(!view.query.isBlank())lore.add("Item: "+view.query);if(!view.seller.isBlank())lore.add("Seller: "+view.seller);return lore;}
     private ItemStack nav(Material material,String name,boolean selected){return button(selected?Material.LIME_STAINED_GLASS_PANE:material,name,List.of(selected?"Current section":"Open section"));}

@@ -74,6 +74,11 @@ final class SpawnerService {
              *  destroyed physical spawner: a stack that loses one member records one, because this branch
              *  runs once per break and the rest of the stack is still standing. */
             if(plugin.vault()!=null)plugin.vault().deliverSpawner(mobType,1,block.getLocation(),"DESTROYED");
+            /** ...and to the Spawner Shop, so it can be bought back. This is the path a VANILLA spawner takes
+             *  too: mined without a netherite silk-touch pickaxe it is destroyed for XP and nobody gets the
+             *  block, which is exactly "left the world without reaching an inventory". Treated identically to
+             *  a placed spawner for that reason. */
+            if(plugin.spawnerShop()!=null)plugin.spawnerShop().recover(mobType,1,block.getLocation(),"MINED_WITHOUT_RECOVERY");
             warn(player);int min=Math.max(0,plugin.getConfig().getInt("spawner-breaking.exp-min",15)),max=Math.max(min,plugin.getConfig().getInt("spawner-breaking.exp-max",43));if(player.getGameMode()!=GameMode.CREATIVE)player.giveExp(ThreadLocalRandom.current().nextInt(min,max+1));
             if(player.getGameMode()!=GameMode.CREATIVE){double reward=Math.max(0,plugin.getConfig().getDouble("spawner-breaking.money-reward",25));if(reward>0){plugin.creditEarned(CoreUtil.id(player),reward,"SPAWNER_BREAK");db.recordEconomy(CoreUtil.id(player),"EXPLORATION",reward,"SPAWNER_BREAK");player.sendActionBar(Component.text("+"+CoreUtil.money(reward)+" for destroying a spawner",NamedTextColor.GREEN));}}
             return true;

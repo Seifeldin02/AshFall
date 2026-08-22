@@ -135,7 +135,23 @@ spawner of a type is interchangeable; the audit trail lives in `history`. Buying
 compare-and-swap (`stock>0` in the WHERE clause) **before** money moves and before the item exists, so two
 players clicking the last one cannot both get it, and a failed payment puts the stock straight back.
 
-It is **its own screen rather than a section of /shop**, and that is a deliberate design call: the
+**It is a full member of the shop family.** `Section.SPAWNERS` joins the switcher cycle, so the middle button
+walks Normal Shop -> Luxury -> Shard -> Auction House -> **Spawner Shop** -> Normal Shop and back round, from
+any of them. `switchSection` hands off to the Spawner Shop's own screen instead of rendering a row list, and
+that screen carries the same switcher onward, which is what makes it one cycle rather than four shops plus an
+outlier. Its controls sit on the same slots as the rest of the family.
+
+**Selling.** A spawner can be sold back for **a fifth of the buy price** -- exactly the buy:sell ratio every
+entry in the normal shop uses, so a spawner's value is stated the same way as everything else rather than
+being its own special case. The sold spawner goes back into stock, so buying and selling are two halves of
+one pool rather than a money faucet, and the item is only removed once the payout has actually succeeded.
+
+**Vanilla spawners count too.** A spawner mined WITHOUT a netherite silk-touch pickaxe is destroyed for XP and
+nobody gets the block -- that is "left the world without reaching an inventory" just as much as an explosion
+is, so it now goes to the vault *and* the Spawner Shop. Placed and naturally-generated spawners are treated
+identically here, which is the point: the shop tracks spawners the world lost, not spawners the plugin owns.
+
+The screen itself is separate rather than a marketplace row list, and that is a deliberate design call: the
 marketplace is built end to end around one price per `Material`, and every spawner is `Material.SPAWNER`
 with the `EntityType` as the entire product. Expressing that as a marketplace row would mean rewriting the
 row model underneath `/shop`, `/luxuryshop` and `/shardshop`, all of which are live. Instead the GUI follows
@@ -174,6 +190,10 @@ Live-verified on staging: a blaze spawner destroyed by TNT was recovered and lis
 - **Kelp added** (`buy 3.9 / sell 0.78`, FARMING) - priced just under bamboo since raw kelp still has to be
   smelted before it does anything, which is where `DRIED_KELP` (sell 1.43) already sits. Sea pickles were
   already stocked at 21.3 / 4.26.
+- **Cobbled deepslate** (`1.75 / 0.35`) and **iron nuggets** (`6.1 / 1.22`) added - the nugget priced at
+  exactly a ninth of the ingot both ways so crafting between them can never be an arbitrage. (My earlier note
+  about iron ingots and plain deepslate was answering the wrong question; both of those were already stocked,
+  these two were the ones actually missing.)
 - The admin login-persistence restriction on production (`require-same-ip`) is not yet removed.
 
 **Audited spawner prices.** Money per kill is the `mob-rewards` midpoint x `spawner-share` (0.5), plus drop
