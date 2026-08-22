@@ -685,6 +685,17 @@ final class BossEventService {
             if(raw instanceof Projectile shot&&shot.getShooter() instanceof LivingEntity shooter)raw=shooter;
             if(raw instanceof LivingEntity attacker&&!attacker.equals(victim))noteMobAttacker(victim,attacker);
         }
+        /** Indirect damage (crystals, TNT) is credited here and only here: the block below is the combat
+         *  path and deliberately still requires a direct damager. */
+        if (damager == null) {
+            Player responsible = responsibleFor(e);
+            if (responsible != null) {
+                String indirectId = CoreUtil.id(responsible);
+                double indirect = Math.min(victim.getHealth(), Math.max(0, e.getFinalDamage()));
+                damage.computeIfAbsent(victim.getUniqueId(), x -> new HashMap<>()).merge(indirectId, indirect, Double::sum);
+                lastContribution.computeIfAbsent(victim.getUniqueId(), x -> new HashMap<>()).put(indirectId, System.currentTimeMillis());
+            }
+        }
         if (damager != null) {
             double toughness=toughnessFor(victim,tier);if(exposedUntil.getOrDefault(victim.getUniqueId(),0L)>System.currentTimeMillis())toughness/=1.5;if(toughness>1)e.setDamage(e.getDamage()/toughness);
             if(tier!=null){double relicMultiplier=relics.eliteOutgoingMultiplier(damager);if(relicMultiplier!=1)e.setDamage(e.getDamage()*relicMultiplier);}
@@ -750,6 +761,25 @@ final class BossEventService {
         }
     }
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
+
+    /** The player ULTIMATELY behind a hit, which is not always the entity that landed it.
+     *
+     *  playerDamager() understands direct hits, projectiles and pets. End Crystal (and TNT) damage arrives
+     *  with the crystal as the damager, so crystal PvE was credited for the KILL -- the death message names
+     *  the player -- while contributing precisely nothing to the damage table the reward split is built on.
+     *  Solo that was hidden by the "no participants" fallback; in a group it meant the person doing the
+     *  damage got none of the pool. DamageSource#getCausingEntity is Bukkit's own answer to "who is behind
+     *  this".
+     *
+     *  Used for ACCOUNTING ONLY. Toughness scaling, relic multipliers and boss targeting all still key off a
+     *  direct damager, so this changes who gets PAID and never how hard the fight is. */
+    private Player responsibleFor(EntityDamageByEntityEvent e) {
+        Player direct = playerDamager(e.getDamager());
+        if (direct != null) return direct;
+        org.bukkit.damage.DamageSource source = e.getDamageSource();
+        Entity cause = source == null ? null : source.getCausingEntity();
+        return cause instanceof Player player ? player : null;
+    }
 
     void onDeath(EntityDeathEvent e) {
         LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossMobAttackers.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());bossSlamAt.remove(mob.getUniqueId());bossLavaLungeAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
@@ -973,7 +1003,42 @@ final class BossEventService {
         for(String participant:participants.keySet()){Player player=find(participant);if(player==null)continue;if(tier.equals("epic")||tier.equals("legendary"))plugin.progress().eliteParticipation(player,tier);plugin.shards().rewardElite(player,tier);if(worldBoss||tier.equals("miniboss")){db.incrementStat(participant,"boss_kills");plugin.progress().bossKill(player,worldBoss?displayName(bossKind):CoreUtil.pretty(mob.getType().name())+" Miniboss",worldBoss,!worldBoss);giveParticipationLoot(player,worldBoss?tier:"miniboss");}}
         if (worldBoss) rewardWorldBoss(e, credited, participants, bossKind); else { thematicLoot(e, tier);capsuleDrop(e,tier);if(tier.equals("legendary")){String victor=credited==null?"unknown hunters":plugin.nicknames().displayName(credited);broadcastNotice(Component.text("✦ The legendary "+CoreUtil.pretty(mob.getType().name())+" was defeated by "+victor+".",NamedTextColor.GOLD));for(Player player:plugin.getServer().getOnlinePlayers())if(plugin.settings().sounds(player))player.playSound(player.getLocation(),Sound.UI_TOAST_CHALLENGE_COMPLETE,.7f,.8f);} if (credited!=null&&eventType == EventType.ELITE_HUNT && mob.getPersistentDataContainer().has(eventEliteKey)) { plugin.progress().eventWon(credited, "Elite Hunt"); finishEvent(true); } }
     }
-    private void splitReward(Map<String,Double> participants,double pool,String label){double eligibleDamage=participants.values().stream().mapToDouble(Double::doubleValue).sum();for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double base=pool*entry.getValue()/Math.max(1,eligibleDamage),share=Math.round(base*plugin.progress().mobIncomeMultiplier(player)*100)/100.0;plugin.creditEarned(entry.getKey(),share,label.toUpperCase(Locale.ROOT).replace(' ','_'));db.recordEconomy(entry.getKey(),label.equals("world boss")?"BOSS":"ELITE",share,label);CoreUtil.msg(player,"Your "+label+" damage earned "+CoreUtil.money(share)+".");}}
+    /** Splits a boss/elite pool by damage share.
+     *
+     *  The divisor used to be Math.max(1, totalDamage), meant as a divide-by-zero guard. It is not one: it
+     *  is a silent MULTIPLIER whenever the recorded total falls below 1.0. A sole participant credited with
+     *  0.07 damage got pool * 0.07 / 1 instead of the whole pool -- a 45,710 payout on a Warded Colossus
+     *  whose floor is 664,453. Observed live twice in one evening (45,710 and 204,913 against a normal
+     *  700k-1.27M), and it is also what produced the 455,480 weekly dragon flagged earlier.
+     *
+     *  Sub-1.0 totals are not exotic. Damage is recorded as min(remainingHealth, finalDamage), so ANY hit
+     *  that lands on a nearly-dead boss is credited as a fraction -- and with End Crystals doing the real
+     *  damage untracked (see below), that sliver could be the only thing in the table.
+     *
+     *  Shares are now a true proportion of whatever was actually recorded, so one participant always
+     *  receives 100% of the pool no matter how the absolute numbers happen to fall, and a genuinely empty
+     *  table splits evenly rather than paying nothing. */
+    private void splitReward(Map<String,Double> participants,double pool,String label){double eligibleDamage=participants.values().stream().mapToDouble(value->Math.max(0,value)).sum();for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double base=pool*rewardFraction(entry.getValue(),eligibleDamage,participants.size()),share=Math.round(base*plugin.progress().mobIncomeMultiplier(player)*100)/100.0;plugin.creditEarned(entry.getKey(),share,label.toUpperCase(Locale.ROOT).replace(' ','_'));db.recordEconomy(entry.getKey(),label.equals("world boss")?"BOSS":"ELITE",share,label);CoreUtil.msg(player,"Your "+label+" damage earned "+CoreUtil.money(share)+".");}}
+    /** One participant's share of a pool. Pure arithmetic, extracted from splitReward so the self-test can
+     *  pin it -- this is the exact expression that was wrong, and it is worth a test rather than a comment. */
+    static double rewardFraction(double own,double total,int participants){
+        if(total>0)return Math.max(0,own)/total;
+        /** Nothing recorded at all: split evenly rather than paying nobody. */
+        return 1.0/Math.max(1,participants);
+    }
+
+    /** Pins the property that actually broke: a single participant receives the WHOLE pool regardless of how
+     *  large or small the recorded damage number happens to be. The old divisor, Math.max(1, total), quietly
+     *  paid pool * 0.07 for a solo kill credited with 0.07 damage. */
+    boolean rewardSplitSelfTest(){
+        double solo=rewardFraction(0.0688,0.0688,1),soloBig=rewardFraction(6300,6300,1);
+        double a=rewardFraction(30,100,2),b=rewardFraction(70,100,2);
+        double empty=rewardFraction(0,0,4),negative=rewardFraction(-5,100,2);
+        return Math.abs(solo-1)<1e-9&&Math.abs(soloBig-1)<1e-9
+                &&Math.abs(a-.3)<1e-9&&Math.abs(b-.7)<1e-9&&Math.abs(a+b-1)<1e-9
+                &&Math.abs(empty-.25)<1e-9&&negative==0;
+    }
+
     private void thematicLoot(EntityDeathEvent e, String tier) { LivingEntity mob = e.getEntity();if(tier.equals("legendary")){legendaryLoot(e);return;} int bonus=switch(tier){case"epic"->3;case"miniboss"->2;case"rare"->1;default->0;}; if (mob instanceof Creeper) { e.getDrops().add(new ItemStack(Material.TNT, 5 + bonus * 2)); e.getDrops().add(new ItemStack(Material.GUNPOWDER, 4 + bonus * 3)); } else if (mob instanceof Spider) { e.getDrops().add(spiderPotion()); e.getDrops().add(new ItemStack(Material.FERMENTED_SPIDER_EYE, 1 + bonus)); if (chance(.35 + bonus * .1)) e.getDrops().add(new ItemStack(Material.COBWEB, 1 + bonus)); } else if (mob instanceof Enderman) { if (chance(.72 + bonus * .05)) e.getDrops().add(new ItemStack(Material.ENDER_EYE)); e.getDrops().add(new ItemStack(Material.ENDER_PEARL, 2 + bonus * 2)); } else if (mob instanceof AbstractSkeleton) { e.getDrops().add(new ItemStack(Material.SPECTRAL_ARROW, 8 + bonus * 8)); } else if (mob instanceof Zombie) { e.getDrops().add(new ItemStack(Material.IRON_INGOT, 2 + bonus * 2)); if (chance(.25 + bonus * .1)) e.getDrops().add(new ItemStack(Material.GOLDEN_APPLE)); }
         if(mob.getWorld().getEnvironment()==World.Environment.NETHER){e.getDrops().add(new ItemStack(Material.MAGMA_CREAM,1+bonus));if(chance(.08+bonus*.06))e.getDrops().add(new ItemStack(Material.ANCIENT_DEBRIS));}else if(mob.getWorld().getEnvironment()==World.Environment.THE_END){e.getDrops().add(new ItemStack(Material.ENDER_PEARL,3+bonus*2));if(chance(.06+bonus*.08))e.getDrops().add(new ItemStack(Material.SHULKER_SHELL));}
         /** Elite Endermen carry the End with them: an Eye of Ender on every elite kill, scaling with tier, and

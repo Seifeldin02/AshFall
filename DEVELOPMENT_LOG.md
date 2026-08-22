@@ -5,6 +5,72 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-08-22 (part 3) - the boss payout that was multiplied by a rounding error
+
+**Ships as:** `SMPCore-1.7.0.jar` only. No config changes.
+
+### 45,710 from a Warded Colossus whose floor is 664,453
+
+Reported live. The ledger showed it was not a one-off - two outliers in one evening against ~20 normal kills:
+
+| Time | Payout |
+|---|---|
+| 21:32 - 22:10 (18 kills) | 684,829 … 1,265,954 |
+| 22:01:45 | **204,913** |
+| 22:11:41 | **45,710** |
+
+`iron-golem-boss` pays `random(126,562.5 … 253,125)`, and MacoCT's progression multiplier is exactly 5.25
+(pinned independently: a 12-golem spawner stack paid 17,010 = 12 x 270 x 5.25). So the solo floor is
+**664,453** and 45,710 is not a number this code should be able to produce.
+
+**The divisor was never a divisor.** `splitReward` computed
+
+```java
+double base = pool * entry.getValue() / Math.max(1, eligibleDamage);
+```
+
+`Math.max(1, ...)` was written as a divide-by-zero guard. It is not one - below 1.0 it stops normalising and
+becomes a **multiplier**. A sole participant credited with 0.0688 damage receives `pool * 0.0688 / 1`.
+Working backwards from the two outliers gives recorded totals of 0.034-0.069 and 0.15-0.31 damage. Both
+under 1. That is the whole bug.
+
+**Why a boss fight ends up with a sub-1.0 damage total,** which is the part that makes this reachable rather
+than theoretical:
+
+1. Damage is recorded as `Math.min(remainingHealth, finalDamage)`, so any hit landing on a nearly-dead boss
+   is credited as a fraction of a heart.
+2. **End Crystal damage was never recorded at all.** `playerDamager()` understands direct hits, projectiles
+   and pets; a crystal explosion arrives with the *crystal* as the damager. Bukkit still credits the player
+   with the KILL - the death message reads "was blown up by MacoCT using [Bound End Crystal]" - so the fight
+   looked completely normal while the damage table stayed empty.
+
+Crystal-only kills therefore fell through the "no participants" fallback (`Map.of(killer, 1.0)`) and paid
+correctly, which is why this looked random rather than broken. It only misfired when a stray chip of
+attributed damage existed *and* was under 1.0 - then that sliver became the entire reward scale.
+
+**Two fixes:**
+
+- `rewardFraction(own, total, participants)`, extracted from `splitReward` so it can be tested: a true
+  proportion when anything was recorded, an even split when nothing was. One participant now takes 100% of
+  the pool regardless of the absolute numbers.
+- Indirect damage is credited to `DamageSource#getCausingEntity()`, so crystal and TNT damage counts as
+  participation. **Accounting only** - toughness scaling, relic multipliers and boss targeting still require
+  a direct damager, so this changes who gets paid and never how hard the fight is. Previously a crystal user
+  fighting alongside someone meleeing would have received *nothing*, since the table was non-empty and they
+  were not in it.
+
+New self-test line, `Boss reward split (single participant takes the whole pool)`, pins the exact expression
+that was wrong - including the 0.0688 solo case.
+
+### Correction: the 455,480 dragon is explained, and my earlier claim was wrong
+
+Flagged in an earlier session as "a payout the code cannot produce". It can. The weekly dragon pool is
+75,000-100,000 and MacoCT's multiplier is 5.25, giving a solo range of **393,750-525,000**. 455,480 sits in
+the middle of it. I asserted the cap was ~100,000 after forgetting to apply the progression multiplier -
+an arithmetic error on my part, not an unexplained payout. Closed.
+
+---
+
 ## Session: 2026-08-22 (part 2) - golem spawner root cause, big-spend spectacle, scroll cooldown lie
 
 **Ships as:** `SMPCore-1.7.0.jar`, `plugins/SMPCore/config.yml` (new `celebrations` block),
