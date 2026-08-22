@@ -648,7 +648,7 @@ final class OrdersService implements Listener {
         int needed = row.amount() - row.filled();
         int deliverable = Math.min(inserted, needed);
         double gross = Math.round(deliverable * row.unit() * 100) / 100.0;
-        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) * plugin.bank().feeFactor() / 100.0;
         double net = Math.round(gross * (1 - tax) * 100) / 100.0;
         for (int slot = 27; slot < 54; slot++) inv.setItem(slot, filler());
         inv.setItem(31, CoreUtil.named(Material.PAPER, "Order #" + row.id(),
@@ -720,7 +720,7 @@ final class OrdersService implements Listener {
             remaining -= take;
         }
         if (remaining > 0) { db.orderUnreserve(holder.orderId, qty, cost); CoreUtil.error(seller, "Delivery came up short; nothing was charged."); return; }
-        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) * plugin.bank().feeFactor() / 100.0;
         double fee = Math.round(cost * tax * 100) / 100.0, net = cost - fee;
         db.changeBalance(CoreUtil.id(seller), net);
         if (fee > 0) plugin.bank().creditFee(fee, CoreUtil.id(seller), "ORDER_TAX");
@@ -746,10 +746,22 @@ final class OrdersService implements Listener {
     }
 
     // ------------------------------------------------------------------ clicks
+    /** A slot worth making a noise for: something is there, and it is not the grey filler furniture. */
+    private static boolean isButton(org.bukkit.inventory.ItemStack clicked) {
+        return clicked != null && !clicked.getType().isAir()
+                && clicked.getType() != Material.GRAY_STAINED_GLASS_PANE
+                && clicked.getType() != Material.BLACK_STAINED_GLASS_PANE;
+    }
+
     @EventHandler
     public void click(InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Holder holder)) return;
         if (!(event.getWhoClicked() instanceof Player player)) return;
+        /** Button feedback, on the same shared vocabulary the duel screens use. Only real buttons make a
+         *  noise: filler glass and empty slots are furniture, and the deliver screen's own item area is a
+         *  container the player is meant to move items in and out of freely. */
+        if (holder.screen != Screen.DELIVER && isButton(event.getCurrentItem()) && event.getRawSlot() < event.getInventory().getSize())
+            plugin.settings().uiSound(player, "select");
         if (holder.screen == Screen.DELIVER) {
             int raw = event.getRawSlot();
             /** The top three rows and the player's own inventory stay fully interactive -- that is the whole
@@ -984,7 +996,7 @@ final class OrdersService implements Listener {
             CoreUtil.error(seller, "Delivery came up short and nothing was charged.");
             return;
         }
-        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) * plugin.bank().feeFactor() / 100.0;
         double fee = Math.round(cost * tax * 100) / 100.0, net = cost - fee;
         db.changeBalance(CoreUtil.id(seller), net);
         if (fee > 0) plugin.bank().creditFee(fee, CoreUtil.id(seller), "ORDER_TAX");

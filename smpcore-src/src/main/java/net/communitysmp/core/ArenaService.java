@@ -646,7 +646,8 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING) { CoreUtil.error(player, "Not in a duel setup."); return true; }
         if (duel.stage != Stage.KIT || duel.starting) { CoreUtil.error(player, "The kit is already locked in for this duel."); return true; }
-        try { duel.kit = Kit.valueOf(name.toUpperCase(Locale.ROOT)); } catch (IllegalArgumentException e) { CoreUtil.error(player, "Kits: mace, sword, axe, spear."); return true; }
+        sound(player, "select");
+        try { duel.kit = Kit.valueOf(name.toUpperCase(Locale.ROOT)); } catch (IllegalArgumentException e) { CoreUtil.error(player, "Kits: mace, sword, axe, spear."); sound(player, "error"); return true; }
         changed(duel);
         return true;
     }
@@ -655,7 +656,8 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING) { CoreUtil.error(player, "Not in a duel setup."); return true; }
         if (duel.stage != Stage.KIT || duel.starting) { CoreUtil.error(player, "The series length is already locked in."); return true; }
-        if (best != 1 && best != 3) { CoreUtil.error(player, "Best of 1 or 3."); return true; }
+        if (best != 1 && best != 3) { CoreUtil.error(player, "Best of 1 or 3."); return true; } sound(player, "error");
+        sound(player, "select");
         duel.bestOf = best;
         changed(duel);
         return true;
@@ -676,14 +678,15 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         String id = CoreUtil.id(player);
         if (duel == null || duel.phase != Phase.STAKING) { CoreUtil.error(player, "Not in a duel setup."); return true; }
-        if (duel.starting) { actionbar(player, "The arena is already being prepared."); return true; }
+        if (duel.starting) { actionbar(player, "The arena is already being prepared."); sound(player, "error"); return true; }
         /** A stage cannot be confirmed past unless its own choice is actually valid -- the map stage in
          *  particular, since a map with no committed snapshot is not something a match can be sent to. */
         if (duel.stage == Stage.MAP && selectedMap(duel) == null) {
-            CoreUtil.error(player, "Pick a map first.");
+            CoreUtil.error(player, "Pick a map first."); sound(player, "error");
             return true;
         }
         duel.confirmed.add(id);
+        sound(player, "confirm");
         actionbar(player, "Confirmed. Waiting for the other duellist.");
         refreshStage(duel);
         if (!duel.confirmed.contains(duel.a) || !duel.confirmed.contains(duel.b)) return true;
@@ -707,6 +710,9 @@ final class ArenaService implements Listener {
 
     /** Moves the pair to a stage, clearing both confirmations and resetting the stage's own timeout. */
     private void advance(Duel duel, Stage to) {
+        /** One sound per stage change, for both duellists, fired here rather than in the screen
+         *  openers -- those re-render on every refresh and would chatter. */
+        sound(duel, to.ordinal() > duel.stage.ordinal() ? "stage" : "back");
         duel.stage = to;
         duel.stageSince = System.currentTimeMillis();
         duel.confirmed.clear();
@@ -795,7 +801,8 @@ final class ArenaService implements Listener {
         if (duel == null || duel.phase != Phase.STAKING || duel.stage != Stage.MAP || duel.starting) return true;
         DuelMapService maps = plugin.duelMaps();
         DuelMapService.DuelMap map = maps == null ? null : maps.map(key);
-        if (map == null || !maps.hasSnapshot(map)) { CoreUtil.error(player, "That map is not available."); return true; }
+        if (map == null || !maps.hasSnapshot(map)) { CoreUtil.error(player, "That map is not available."); sound(player, "error"); return true; }
+        sound(player, "select");
         duel.mapKey = map.key();
         changed(duel);
         return true;
@@ -804,6 +811,7 @@ final class ArenaService implements Listener {
     private void toggleVisibility(Player player) {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING || duel.stage != Stage.OPTIONS || duel.starting) return;
+        sound(player, "toggle");
         duel.visibility = !duel.visibility;
         changed(duel);
     }
@@ -842,6 +850,7 @@ final class ArenaService implements Listener {
             if (p1 == null || p2 == null) { maps.destroyInstance(instance, null); abortAndRefund(duel, "a duellist went offline"); return; }
             duel.instance = instance;
             duel.phase = Phase.LIVE;
+            sound(duel, "start");
             plugin.getServer().broadcast(Component.text("⚔ " + p1.getName() + " vs " + p2.getName() + " — "
                     + duel.kit.label() + " on " + duel.map.name() + ", best of " + duel.bestOf
                     + ". /duel watch " + duel.id + " to spectate; bet before it starts.", NamedTextColor.GOLD));
@@ -900,6 +909,7 @@ final class ArenaService implements Listener {
         if (!duel.gating) return;
         Player one = a(duel), two = b(duel);
         if (one == null || two == null) { abortAndRefund(duel, "a duellist went offline"); return; }
+        sound(duel, "start");
         duel.gating = false;
         one.closeInventory(); two.closeInventory();
         int round = duel.rounds.get(duel.a) + duel.rounds.get(duel.b) + 1;
@@ -1035,7 +1045,8 @@ final class ArenaService implements Listener {
      *  their own stake back; if nobody backed the winner the losing pool is sunk. Settled wagers are removed and
      *  the DB mirror is resynced so the remaining (still-open) wagers stay crash-safe. */
     /** Slight Central Bank cut taken from duel winnings (the money pot and the spectator betting pool). */
-    private double wagerTax() { return Math.max(0, Math.min(50, plugin.getConfig().getDouble("arena.wager-tax-percent", 5))) / 100.0; }
+    /** Tripled while the Central Bank is in deficit, clamped so a deficit can never eat a whole pot. */
+    private double wagerTax() { return Math.max(0, Math.min(50, plugin.getConfig().getDouble("arena.wager-tax-percent", 5) * plugin.bank().feeFactor())) / 100.0; }
     private void settleWagerScope(Duel duel, int round, String winner, String label) {
         List<Wager> scope = new ArrayList<>();
         for (Wager w : duel.wagers) if (w.round() == round) scope.add(w);
@@ -1330,6 +1341,7 @@ final class ArenaService implements Listener {
         }
         for (Wager w : duel.wagers) if (w.amount() > 0) db.changeBalance(w.player(), w.amount());
         db.arenaWagersClearFor(duel.a, duel.b);
+        sound(duel, "cancel");
         both(duel, "Duel cancelled — " + why + ". All stakes, money bets and wagered items refunded.");
         resetArena(duel);
         returnPlayers(duel);
@@ -1386,6 +1398,13 @@ final class ArenaService implements Listener {
         if (one != null) CoreUtil.msg(one, message);
         if (two != null) CoreUtil.msg(two, message);
     }
+
+    /** Shorthand for the shared GUI sound vocabulary, so every call site reads as the action it is. */
+    private void sound(Player player, String action) {
+        if (player != null && plugin.settings() != null) plugin.settings().uiSound(player, action);
+    }
+
+    private void sound(Duel duel, String action) { sound(a(duel), action); sound(b(duel), action); }
 
     private void actionbar(Player player, String message) {
         player.sendActionBar(Component.text(message, NamedTextColor.AQUA));
@@ -1607,6 +1626,7 @@ final class ArenaService implements Listener {
     }
 
     private void setStakeSilent(Player player, double amount) {
+    if (duelOf(player) != null) sound(player, "adjust");
         Duel duel = duelOf(player);
         if (duel == null) return;
         duel.stakes.put(CoreUtil.id(player), amount);
@@ -1712,7 +1732,8 @@ final class ArenaService implements Listener {
                     case 33 -> { st[1] = Math.min(balance, st[1] + 1000); openSpectate(player, menu.duelId); }
                     case 38 -> { String target = st[0] == 0 ? duel.a : st[0] == 1 ? duel.b : null;
                                  int scope = (duel.bestOf > 1 && st[2] != 0) ? currentRound(duel) : 0;
-                                 if (target == null) actionbar(player, "Pick a fighter to back first."); else placeWager(player, duel, target, st[1], scope);
+                                 if (target == null) { actionbar(player, "Pick a fighter to back first."); sound(player, "error"); }
+                                 else sound(player, placeWager(player, duel, target, st[1], scope) ? "confirm" : "error");
                                  openSpectate(player, menu.duelId); }
                     case 42 -> { if (spectators.containsKey(id)) leaveSpectator(player); else player.closeInventory(); }
                     case 44 -> { if (duel.phase == Phase.LIVE && !duel.gating) enterSpectator(player, duel); openSpectate(player, menu.duelId); }
@@ -1725,6 +1746,7 @@ final class ArenaService implements Listener {
                 if (duel == null || !duel.gating) { player.closeInventory(); return; }
                 if (slot == 13 && duel.has(CoreUtil.id(player))) {
                     duel.roundReady.add(CoreUtil.id(player));
+                    sound(player, "ready");
                     if (duel.roundReady.contains(duel.a) && duel.roundReady.contains(duel.b)) startFight(duel);
                     else { refreshReady(duel); actionbar(player, "Ready — waiting for your opponent."); }
                 }
@@ -1785,11 +1807,12 @@ final class ArenaService implements Listener {
         List<ItemStack> staged = new ArrayList<>();
         for (int i = 0; i < 45; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) staged.add(it); }
         if (duel == null || duel.phase != Phase.STAKING) { giveOrStash(id, staged, "Your items were returned \u2014 the match was no longer accepting wagers."); player.closeInventory(); return; }
-        if (staged.isEmpty()) { actionbar(player, "Put items in the box first, then Confirm."); return; }
+        if (staged.isEmpty()) { actionbar(player, "Put items in the box first, then Confirm."); sound(player, "error"); return; }
         List<ItemStack> full = new ArrayList<>(loadWager(duel, id));
         full.addAll(staged);
         db.arenaItemWagerSave(duel.id, id, ItemStack.serializeItemsAsBytes(full.toArray(new ItemStack[0])));
         for (int i = 0; i < 45; i++) box.setItem(i, null);
+        sound(player, "confirm");
         actionbar(player, "Wager confirmed \u2014 " + full.size() + " stack(s) staked.");
         player.closeInventory();
         Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); });
@@ -1803,6 +1826,7 @@ final class ArenaService implements Listener {
         List<ItemStack> back = new ArrayList<>();
         for (int i = 0; i < 45; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) { back.add(it); box.setItem(i, null); } }
         if (duel != null) { back.addAll(loadWager(duel, id)); db.arenaItemWagerClear(duel.id, id); }
+        sound(player, "cancel");
         giveOrStash(id, back, "Wager cleared \u2014 items returned.");
         player.closeInventory();
         if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); });

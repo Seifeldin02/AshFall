@@ -301,6 +301,16 @@ final class TeleportService {
             warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
             return true;
         }
+        /** The player's own Auto-TPA allowlist. Entirely separate from Faction Auto-Accept above -- different
+         *  preference keys, checked independently -- so somebody can allow a specific friend without allowing
+         *  their whole faction, or both, or neither. /tpa only, never /tpahere: this grants the right to come
+         *  to you, not the right to pull you somewhere. */
+        if(!here&&plugin.settings().autoTpaAllows(target,from)){
+            CoreUtil.msg(from,"Teleport request to "+plugin.nicknames().displayName(target)+" was auto-accepted (Auto-TPA).");
+            CoreUtil.msg(target,plugin.nicknames().displayName(from)+"'s teleport request was auto-accepted (Auto-TPA).");
+            warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
+            return true;
+        }
         plugin.afk().notifyIfAfk(from,target);
         long seconds=Math.max(1,plugin.getConfig().getLong("teleport.request-seconds",60)),expiry=System.currentTimeMillis()+seconds*1000L;
         String targetId=CoreUtil.id(target);Request request=new Request(CoreUtil.id(from),expiry,here);requests.put(targetId,request);

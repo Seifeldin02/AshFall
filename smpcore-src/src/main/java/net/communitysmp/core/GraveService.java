@@ -143,8 +143,14 @@ final class GraveService implements Listener {
         Long id=event.getRightClicked().getPersistentDataContainer().get(graveKey,PersistentDataType.LONG);if(id==null)return;event.setCancelled(true);openContents(event.getPlayer(),id);
     }
 
+    /** A grave is broken by BEING PUNCHED, by any player, and by nothing else.
+     *
+     *  The visual marker carries the same graveKey as the real stand, so a hit that lands on it is treated as
+     *  a hit on the grave rather than swallowed -- previously it returned early and the punch did nothing,
+     *  which is the "sometimes punching a grave doesn't break it" report. Everything that is not a player
+     *  (explosions, lava, fire, mobs, projectiles with no shooter) is still cancelled outright: a grave must
+     *  never be destroyed by the world, only by somebody choosing to open it. */
     @EventHandler public void damage(EntityDamageByEntityEvent event){
-        if(event.getEntity().getPersistentDataContainer().has(visualKey,PersistentDataType.BYTE)){event.setCancelled(true);return;}
         Long id=event.getEntity().getPersistentDataContainer().get(graveKey,PersistentDataType.LONG);if(id==null)return;event.setCancelled(true);Player player=damager(event.getDamager());if(player==null)return;
         if(isBeingLooted(id)){CoreUtil.error(player,"This grave is currently being looted.");return;}
         Database.GraveRow grave=db.grave(id);if(grave!=null&&!owns(player,grave))notifyOwner(grave,"Your grave #"+id+" was broken open by "+plugin.nicknames().displayName(player)+".");
@@ -244,7 +250,7 @@ final class GraveService implements Listener {
 
     private void ensureVisual(Player owner,Database.GraveRow grave){
         UUID old=ownerVisuals.get(owner.getUniqueId());Entity existing=old==null?null:plugin.getServer().getEntity(old);Long existingGrave=existing==null?null:existing.getPersistentDataContainer().get(graveKey,PersistentDataType.LONG);if(existing!=null&&Objects.equals(existingGrave,grave.id()))return;if(existing!=null)existing.remove();
-        Location location=grave.location();if(location==null)return;ArmorStand visual=location.getWorld().spawn(location.clone().add(0,.1,0),ArmorStand.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,stand->{stand.setInvisible(true);stand.setSmall(true);stand.setGravity(false);stand.setBasePlate(false);stand.setPersistent(false);stand.setInvulnerable(true);stand.setGlowing(true);stand.getPersistentDataContainer().set(visualKey,PersistentDataType.BYTE,(byte)1);stand.getPersistentDataContainer().set(graveKey,PersistentDataType.LONG,grave.id());stand.getEquipment().setHelmet(head(grave));});
+        Location location=grave.location();if(location==null)return;ArmorStand visual=location.getWorld().spawn(location.clone().add(0,.1,0),ArmorStand.class,org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM,stand->{stand.setInvisible(true);stand.setSmall(true);stand.setGravity(false);stand.setBasePlate(false);stand.setPersistent(false);stand.setInvulnerable(true);stand.setGlowing(true);/** No hitbox: the marker exists to be SEEN, and a hitbox here intercepted punches meant for the grave *  itself, which is why a grave sometimes refused to break. Equipment still renders on a marker. */stand.setMarker(true);stand.getPersistentDataContainer().set(visualKey,PersistentDataType.BYTE,(byte)1);stand.getPersistentDataContainer().set(graveKey,PersistentDataType.LONG,grave.id());stand.getEquipment().setHelmet(head(grave));});
         for(Player online:plugin.getServer().getOnlinePlayers())if(!online.getUniqueId().equals(owner.getUniqueId()))online.hideEntity(plugin,visual);owner.showEntity(plugin,visual);ownerVisuals.put(owner.getUniqueId(),visual.getUniqueId());
     }
     private void removeVisual(Player owner){UUID id=ownerVisuals.remove(owner.getUniqueId());Entity entity=id==null?null:plugin.getServer().getEntity(id);if(entity!=null)entity.remove();}
@@ -309,6 +315,16 @@ final class GraveService implements Listener {
         }else meta.setOwningPlayer(Bukkit.getOfflinePlayer(grave.ownerName()));
         head.setItemMeta(meta);return head;
     }
+    /** Non-entity damage -- lava, fire, an exploding bed, suffocation, the void -- can never break a grave.
+     *  EntityDamageByEntityEvent does not cover these, so without this a grave standing in lava would burn
+     *  away with everything inside it. */
+    @EventHandler public void environmentalDamage(org.bukkit.event.entity.EntityDamageEvent event){
+        if(event instanceof EntityDamageByEntityEvent)return;
+        if(event.getEntity().getPersistentDataContainer().has(graveKey,PersistentDataType.LONG)
+                ||event.getEntity().getPersistentDataContainer().has(visualKey,PersistentDataType.BYTE))
+            event.setCancelled(true);
+    }
+
     private Player damager(Entity entity){if(entity instanceof Player player)return player;if(entity instanceof Projectile projectile&&projectile.getShooter() instanceof Player player)return player;return null;}
     private boolean isBeingLooted(long graveId){
         UUID viewerId=viewers.get(graveId);if(viewerId==null)return false;

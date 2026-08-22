@@ -215,6 +215,13 @@ final class BankService implements Listener {
     }
     double buyFactor(){ return deficit()?2.0:1.0; }
     double sellFactor(){ return deficit()?0.5:1.0; }
+    /** Taxes and fees are the treasury's own recovery lever, so they bite HARDER than prices do: while the
+     *  Central Bank is in deficit every player->bank tax or fee is charged at 3x, against 2x for purchases
+     *  and sinks. The point is that the deficit closes itself -- the more the economy moves while the
+     *  treasury is under water, the faster it comes back up -- rather than the deficit becoming a permanent
+     *  background state nobody can shift. Same single source of truth as the other two factors: no call site
+     *  ever hand-multiplies. */
+    double feeFactor(){ return deficit()?3.0:1.0; }
 
     private Database.LoanRow accrue(Player player){return accrue(CoreUtil.id(player));}
     private Database.LoanRow accrue(String player){return db.accrueLoan(player,plugin.getConfig().getDouble("bank.loans.maximum-interest-percent",25));}

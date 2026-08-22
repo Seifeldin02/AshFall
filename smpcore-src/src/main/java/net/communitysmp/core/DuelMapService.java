@@ -256,21 +256,126 @@ class DuelMapService implements org.bukkit.event.Listener {
 
     /** Loads (creating if absent) the private template world for a map. Templates are void worlds with mob
      *  spawning off; they are kept loaded only while an admin is editing or a snapshot is being committed. */
-    World template(DuelMap map) {
-        World world = Bukkit.getWorld(map.templateWorld());
-        if (world != null) { loadPlayArea(world, map); return world; }
-        world = new WorldCreator(map.templateWorld())
+    World template(DuelMap map) { return workspace(map, line -> { }); }
+
+    /** Opens the persistent EDITABLE workspace for a map -- the world an admin builds in -- and guarantees it
+     *  actually contains the arena.
+     *
+     *  The workspace and the committed snapshot are two different things, and only the snapshot is a deploy
+     *  artefact. Promotion therefore carries the snapshot and not the workspace, which is how production
+     *  ended up with five `duel_tpl_*` folders that were empty void: the old code asked Paper for the world,
+     *  Paper did not have one, and a brand-new empty world was silently generated and handed back as if it
+     *  were the template. An admin then teleported into the right coordinates of the right world and found
+     *  nothing there.
+     *
+     *  So a missing or arena-less workspace is now MATERIALISED from the committed snapshot, using the same
+     *  copy and identity-metadata handling instances use. What is never touched is a workspace that already
+     *  holds the arena, on disk or in memory -- an admin's unsaved building is not something to overwrite.
+     *  {@code feedback} receives short progress lines, because materialising a large map takes a few seconds
+     *  and silence there is what made the original failure confusing. */
+    World workspace(DuelMap map, java.util.function.Consumer<String> feedback) {
+        World live = Bukkit.getWorld(map.templateWorld());
+        if (live != null) {
+            if (holdsArena(live, map)) { loadPlayArea(live, map); return live; }
+            if (!hasSnapshot(map)) { loadPlayArea(live, map); return live; }
+            /** An empty shell that was silently generated earlier. It holds nothing anybody can lose, so it
+             *  is closed and rebuilt from the snapshot. */
+            feedback.accept("The open workspace for " + map.name() + " is empty; rebuilding it from the committed snapshot.");
+            plugin.getLogger().warning("[duel-maps] workspace " + map.templateWorld() + " had no arena; rebuilding from snapshot");
+            for (Player inside : new ArrayList<>(live.getPlayers())) inside.teleport(Bukkit.getWorlds().get(0).getSpawnLocation());
+            if (!Bukkit.unloadWorld(live, false)) {
+                plugin.getLogger().warning("[duel-maps] could not unload the empty workspace " + map.templateWorld());
+                return live;
+            }
+            deleteQuietly(live.getWorldFolder());
+        }
+        File folder = new File(customWorldDir(), map.templateWorld());
+        if (!hasArenaRegion(folder, map)) {
+            if (!hasSnapshot(map)) {
+                feedback.accept("There is no committed snapshot for " + map.name() + " yet, so a new empty workspace is being created.");
+            } else {
+                feedback.accept("Materialising the " + map.name() + " workspace from its committed snapshot (" + describeSnapshot(snapshotOf(map)) + ")...");
+                if (!materialise(map, folder)) {
+                    plugin.getLogger().warning("[duel-maps] could not materialise the workspace for " + map.key());
+                    return null;
+                }
+            }
+        }
+        World world = new WorldCreator(map.templateWorld())
                 .generator(new ArenaService.VoidGenerator())
                 .type(WorldType.FLAT)
                 .environment(World.Environment.NORMAL)
                 .createWorld();
-        if (world != null) {
-            if (customWorldDir == null && world.getWorldFolder() != null && world.getWorldFolder().getParentFile() != null)
-                customWorldDir = world.getWorldFolder().getParentFile();
-            applyWorldRules(world, true);
-            loadPlayArea(world, map);
+        if (world == null) return null;
+        File opened = world.getWorldFolder();
+        if (opened != null && opened.getParentFile() != null && !opened.getParentFile().equals(customWorldDir())) {
+            /** Same self-heal as instances: if Paper opened a different directory from the one written to,
+             *  the layout assumption was wrong and the workspace would be empty again. */
+            plugin.getLogger().warning("[duel-maps] expected workspace at " + customWorldDir().getAbsolutePath()
+                    + " but Paper opened " + opened.getAbsolutePath() + "; correcting and rebuilding.");
+            customWorldDir = opened.getParentFile();
+            Bukkit.unloadWorld(world, false);
+            deleteQuietly(opened);
+            deleteQuietly(folder);
+            if (hasSnapshot(map) && !materialise(map, new File(customWorldDir(), map.templateWorld()))) return null;
+            world = new WorldCreator(map.templateWorld()).generator(new ArenaService.VoidGenerator())
+                    .type(WorldType.FLAT).environment(World.Environment.NORMAL).createWorld();
+            if (world == null) return null;
         }
+        applyWorldRules(world, true);
+        loadPlayArea(world, map);
         return world;
+    }
+
+    /** Where /ashfall duelmap enter puts an admin: the P1 spawn, lifted clear of the floor like a duellist's,
+     *  so entering a map never drops somebody inside a block. */
+    Location workspaceSpawn(World world, DuelMap map) { return map.p1(world); }
+
+    /** Copies a committed snapshot into a workspace folder. Identity files are excluded by the copier, and
+     *  removed again here for a snapshot written by an older build -- Paper refuses a world whose stored
+     *  UUID it already knows. */
+    private boolean materialise(DuelMap map, File target) {
+        deleteQuietly(target);
+        try { copyWorldFolder(snapshotOf(map).toPath(), target.toPath()); }
+        catch (IOException e) {
+            plugin.getLogger().warning("[duel-maps] workspace copy failed for " + map.key() + ": " + e.getMessage());
+            deleteQuietly(target);
+            return false;
+        }
+        new File(target, "uid.dat").delete();
+        new File(target, "session.lock").delete();
+        new File(new File(target, "data" + File.separator + "paper"), "metadata.dat").delete();
+        plugin.getLogger().info("[duel-maps] materialised workspace " + map.templateWorld() + " from its committed snapshot");
+        return true;
+    }
+
+    /** True when a world FOLDER contains the region file the arena lives in. This is the same test the
+     *  snapshot validator applies, and it is what "validate the arena's expected region" means here. */
+    boolean hasArenaRegion(File folder, DuelMap map) {
+        if (folder == null || !folder.isDirectory()) return false;
+        File region = new File(new File(folder, "region"), arenaRegionName(map));
+        return region.isFile() && region.length() > 0;
+    }
+
+    String arenaRegionName(DuelMap map) {
+        int cx = (int) Math.floor((map.p1x() + map.p2x()) / 2.0) >> 4, cz = (int) Math.floor((map.p1z() + map.p2z()) / 2.0) >> 4;
+        return "r." + (cx >> 5) + "." + (cz >> 5) + ".mca";
+    }
+
+    /** True when a LOADED world really has the arena: on disk, or standing in memory because an admin has
+     *  been building and has not saved yet. The in-memory half is what stops a rebuild from destroying
+     *  unsaved work in a workspace that has never been committed. */
+    boolean holdsArena(World world, DuelMap map) {
+        if (world == null) return false;
+        if (hasArenaRegion(world.getWorldFolder(), map)) return true;
+        int x = (int) Math.floor(map.p1x()), y = (int) Math.floor(map.p1y()), z = (int) Math.floor(map.p1z());
+        world.getChunkAt(x >> 4, z >> 4).load(true);
+        int floor = Math.max(world.getMinHeight(), y - 12), ceiling = Math.min(world.getMaxHeight() - 1, y + 12);
+        for (int dx = -3; dx <= 3; dx++)
+            for (int dz = -3; dz <= 3; dz++)
+                for (int at = floor; at <= ceiling; at++)
+                    if (!world.getBlockAt(x + dx, at, z + dz).getType().isAir()) return true;
+        return false;
     }
 
     /** The chunks that make up the arena. A void template has nothing loaded by default, so without this an

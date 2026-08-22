@@ -58,7 +58,115 @@ final class SettingsService implements Listener {
         final String key;final boolean fallback;
         NametagKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
-    private enum Page { MAIN, CONFIRMATIONS, TPA, NAMETAGS }
+    private enum Page { MAIN, CONFIRMATIONS, TPA, NAMETAGS, AUTOTPA }
+
+    // ------------------------------------------------------------------ Auto-TPA allowlist
+    /** A per-player allowlist: named players may /tpa straight to you with no request to accept.
+     *
+     *  Completely separate from Faction Auto-Accept ({@link TpaKind#AUTO_ACCEPT}) -- different preference
+     *  keys, different gate, neither reads the other. Somebody can run one, both or neither, and turning the
+     *  faction one off does not disturb this list.
+     *
+     *  Stored as one preference string, `name:1` entries joined by commas, so a name can sit in the list
+     *  while switched OFF rather than having to be removed and re-typed. Names are matched
+     *  case-insensitively against the REAL account name, never a nickname -- a nickname can be changed, and
+     *  an allowlist that could be impersonated by renaming would be a teleport-into-your-base exploit.
+     *
+     *  /tpa only, never /tpahere: this grants somebody the right to come to you, not the right to pull you
+     *  to them. Same rule Faction Auto-Accept already follows. */
+    private static final String AUTO_TPA_MASTER="tpa_auto_allow", AUTO_TPA_LIST="tpa_auto_allow_list";
+    private static final int AUTO_TPA_MAX=20;
+
+    boolean autoTpaMaster(Player player){return enabled(player,AUTO_TPA_MASTER,false);}
+
+    /** Ordered name -> enabled. LinkedHashMap so the GUI shows them in the order they were added. */
+    java.util.LinkedHashMap<String,Boolean> autoTpaEntries(Player player){
+        java.util.LinkedHashMap<String,Boolean> out=new java.util.LinkedHashMap<>();
+        String raw=db.preference(CoreUtil.id(player),AUTO_TPA_LIST);
+        if(raw==null||raw.isBlank())return out;
+        for(String part:raw.split(",")){
+            String entry=part.trim();
+            if(entry.isEmpty())continue;
+            int at=entry.lastIndexOf(':');
+            if(at<0){out.put(entry,true);continue;}
+            out.put(entry.substring(0,at),!"0".equals(entry.substring(at+1)));
+        }
+        return out;
+    }
+
+    private void saveAutoTpa(Player player,java.util.LinkedHashMap<String,Boolean> entries){
+        StringBuilder sb=new StringBuilder();
+        for(var e:entries.entrySet()){if(sb.length()>0)sb.append(',');sb.append(e.getKey()).append(':').append(e.getValue()?'1':'0');}
+        db.preference(CoreUtil.id(player),AUTO_TPA_LIST,sb.toString());
+    }
+
+    /** @return a message describing what happened, for the caller to show. */
+    String autoTpaAdd(Player player,String name){
+        String clean=name==null?"":name.trim();
+        if(!clean.matches("[A-Za-z0-9_]{3,16}"))return "'"+clean+"' is not a valid player name.";
+        java.util.LinkedHashMap<String,Boolean> entries=autoTpaEntries(player);
+        if(entries.size()>=AUTO_TPA_MAX&&!containsIgnoreCase(entries,clean))return "Your Auto-TPA list is full ("+AUTO_TPA_MAX+" players).";
+        if(clean.equalsIgnoreCase(player.getName()))return "You do not need to allow yourself.";
+        String existing=keyIgnoreCase(entries,clean);
+        if(existing!=null){entries.put(existing,true);saveAutoTpa(player,entries);return existing+" is already on your Auto-TPA list; switched ON.";}
+        entries.put(clean,true);
+        saveAutoTpa(player,entries);
+        return clean+" can now teleport straight to you.";
+    }
+
+    void autoTpaRemove(Player player,String name){
+        java.util.LinkedHashMap<String,Boolean> entries=autoTpaEntries(player);
+        String key=keyIgnoreCase(entries,name);
+        if(key!=null){entries.remove(key);saveAutoTpa(player,entries);}
+    }
+
+    void autoTpaToggleEntry(Player player,String name){
+        java.util.LinkedHashMap<String,Boolean> entries=autoTpaEntries(player);
+        String key=keyIgnoreCase(entries,name);
+        if(key!=null){entries.put(key,!entries.get(key));saveAutoTpa(player,entries);}
+    }
+
+    private static boolean containsIgnoreCase(java.util.Map<String,Boolean> entries,String name){return keyIgnoreCase(entries,name)!=null;}
+    private static String keyIgnoreCase(java.util.Map<String,Boolean> entries,String name){
+        for(String key:entries.keySet())if(key.equalsIgnoreCase(name))return key;
+        return null;
+    }
+
+    /** THE decision: may `requester` teleport straight to `target` with no request? */
+    boolean autoTpaAllows(Player target,Player requester){
+        if(target==null||requester==null||!autoTpaMaster(target))return false;
+        Boolean state=autoTpaEntries(target).get(keyIgnoreCase(autoTpaEntries(target),requester.getName()));
+        return Boolean.TRUE.equals(state);
+    }
+
+    /** Players waiting to type a name into chat for their Auto-TPA list. */
+    private final java.util.Map<java.util.UUID,Long> awaitingAutoTpaName=new java.util.concurrent.ConcurrentHashMap<>();
+
+    void promptAutoTpaName(Player player){
+        awaitingAutoTpaName.put(player.getUniqueId(),System.currentTimeMillis()+60000L);
+        player.closeInventory();
+        CoreUtil.msg(player,"Type the player's name in chat to add them to Auto-TPA, or type cancel.");
+    }
+
+    /** The name is captured from chat rather than shown to the server. Runs at LOWEST and cancels the event
+     *  so the name never appears in public chat as a stray message. */
+    @EventHandler(priority=org.bukkit.event.EventPriority.LOWEST)
+    public void autoTpaNameCapture(org.bukkit.event.player.AsyncPlayerChatEvent event){
+        Player player=event.getPlayer();
+        Long deadline=awaitingAutoTpaName.get(player.getUniqueId());
+        if(deadline==null)return;
+        awaitingAutoTpaName.remove(player.getUniqueId());
+        event.setCancelled(true);
+        if(System.currentTimeMillis()>deadline){CoreUtil.error(player,"Auto-TPA name entry timed out.");return;}
+        String typed=event.getMessage().trim();
+        if(typed.equalsIgnoreCase("cancel")){CoreUtil.msg(player,"Cancelled.");return;}
+        plugin.getServer().getScheduler().runTask(plugin,()->{
+            CoreUtil.msg(player,autoTpaAdd(player,typed));
+            uiSound(player,"confirm");
+            open(player,Page.AUTOTPA);
+        });
+    }
+
     private record Holder(Page page) implements InventoryHolder {@Override public Inventory getInventory(){return null;}}
     private record Toggle(String key,String title,Material icon,boolean fallback) {}
 
@@ -163,6 +271,29 @@ final class SettingsService implements Listener {
             }else if(page==Page.NAMETAGS){
                 for(NametagKind kind:NametagKind.values())buttons.add(nativeNametagToggle(player,kind));
                 buttons.add(nativeButton("Back","settings native"));
+            }else if(page==Page.AUTOTPA){
+                /** Master switch, then one button per allowed player: clicking cycles ON -> OFF -> removed,
+                 *  which is the only way to offer toggle AND remove per entry in a dialog that has a single
+                 *  click action per button. The chest GUI offers the same two actions as click/shift-click. */
+                buttons.add(ActionButton.create(stateLabel("Auto-TPA",autoTpaMaster(player)),Component.empty(),150,
+                        DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                            Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null)return;
+                            set(online,AUTO_TPA_MASTER,!autoTpaMaster(online));openNative(online,Page.AUTOTPA);
+                        }),ClickCallback.Options.builder().uses(100).build())));
+                for(var entry:autoTpaEntries(player).entrySet()){
+                    String name=entry.getKey();boolean on=entry.getValue();
+                    buttons.add(ActionButton.create(Component.text(name+(on?" §aON":" §cOFF")+" §7(click to "+(on?"turn off":"remove")+")"),Component.empty(),150,
+                            DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                                Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online==null)return;
+                                if(on)autoTpaToggleEntry(online,name);else autoTpaRemove(online,name);
+                                openNative(online,Page.AUTOTPA);
+                            }),ClickCallback.Options.builder().uses(100).build())));
+                }
+                buttons.add(ActionButton.create(Component.text("Add player"),Component.empty(),150,
+                        DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                            Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online!=null)promptAutoTpaName(online);
+                        }),ClickCallback.Options.builder().uses(100).build())));
+                buttons.add(nativeButton("Back","settings native tpa"));
             }else{
                 buttons.add(nativeTpaToggle(player,TpaKind.OTHER));
                 buttons.add(nativeTpaToggle(player,TpaKind.FACTION));
@@ -171,6 +302,10 @@ final class SettingsService implements Listener {
                  *  this is the one surface where the dependency can be hidden outright rather than shown
                  *  disabled-with-explanation. */
                 if(enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback))buttons.add(nativeTpaToggle(player,TpaKind.AUTO_ACCEPT));
+                buttons.add(ActionButton.create(Component.text("Auto-TPA Allowlist ("+autoTpaEntries(player).size()+") "+(autoTpaMaster(player)?"§aON":"§cOFF")),Component.empty(),150,
+                        DialogAction.customClick((response,audience)->plugin.getServer().getScheduler().runTask(plugin,()->{
+                            Player online=plugin.getServer().getPlayer(player.getUniqueId());if(online!=null)openNative(online,Page.AUTOTPA);
+                        }),ClickCallback.Options.builder().uses(100).build())));
                 buttons.add(nativeButton("Back","settings native"));
             }
             Dialog dialog=Dialog.create(builder->builder.empty()
@@ -321,15 +456,59 @@ final class SettingsService implements Listener {
             boolean factionOn=enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback);
             inv.setItem(20,tpaChestItem(prettyTpa(TpaKind.OTHER),"Requests from outside your faction.",enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback)));
             inv.setItem(21,tpaChestItem(prettyTpa(TpaKind.FACTION),"/tpa and /tpahere from faction members.",factionOn));
+            inv.setItem(24,button(Material.ENDER_PEARL,"Auto-TPA Allowlist",List.of(
+                    "Named players teleport straight to you,",
+                    "with no request to accept.",
+                    "Master: "+(autoTpaMaster(player)?"ON":"OFF")+"  |  Players: "+autoTpaEntries(player).size(),
+                    "Separate from Faction Auto-Accept.")));
             inv.setItem(22,factionOn?tpaChestItem(prettyTpa(TpaKind.AUTO_ACCEPT),"Auto-accepts only /tpa (never /tpahere)\nfrom faction members.",enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback)):tpaDisabledChestItem());
             inv.setItem(49,button(Material.ARROW,"Back",List.of()));
         }
+        if(page==Page.AUTOTPA)renderAutoTpa(inv,player);
+    }
+
+    /** The Auto-TPA submenu: a master switch, one head per allowed player, and a way to add more.
+     *
+     *  Left-click a head to switch that player on or off without losing their place in the list;
+     *  shift-click to remove them entirely. */
+    private void renderAutoTpa(Inventory inv,Player player){
+        for(int slot=0;slot<inv.getSize();slot++)inv.setItem(slot,null);
+        boolean master=autoTpaMaster(player);
+        inv.setItem(4,tpaChestItem("Auto-TPA",
+                "Let the players below teleport to you\ninstantly, with no request to accept.\nDoes not affect Faction Auto-Accept.",master));
+        java.util.LinkedHashMap<String,Boolean> entries=autoTpaEntries(player);
+        int slot=19;
+        for(var entry:entries.entrySet()){
+            if(slot>43)break;
+            if(slot%9==8)slot+=2;
+            inv.setItem(slot++,autoTpaHead(entry.getKey(),entry.getValue(),master));
+        }
+        if(entries.isEmpty())inv.setItem(22,button(Material.BARRIER,"No players yet",
+                List.of("Add somebody with the button below.","They will be able to /tpa to you instantly.")));
+        inv.setItem(48,button(Material.NAME_TAG,"Add player",List.of("Type their name in chat.","Up to 20 players.")));
+        inv.setItem(49,button(Material.ARROW,"Back",List.of("Return to TPA Requests.")));
+    }
+
+    private ItemStack autoTpaHead(String name,boolean on,boolean master){
+        ItemStack head=new ItemStack(Material.PLAYER_HEAD);
+        org.bukkit.inventory.meta.SkullMeta meta=(org.bukkit.inventory.meta.SkullMeta)head.getItemMeta();
+        try{meta.setOwningPlayer(plugin.getServer().getOfflinePlayer(name));}catch(Exception ignored){}
+        meta.displayName(Component.text(name,on?NamedTextColor.GREEN:NamedTextColor.RED).decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC,false));
+        java.util.List<Component> lore=new java.util.ArrayList<>();
+        lore.add(Component.text(on?"ON - can teleport to you instantly":"OFF - listed but inactive",on?NamedTextColor.GREEN:NamedTextColor.GRAY));
+        if(on&&!master)lore.add(Component.text("Auto-TPA master switch is OFF.",NamedTextColor.YELLOW));
+        lore.add(Component.text("Click to turn "+(on?"OFF":"ON"),NamedTextColor.GRAY));
+        lore.add(Component.text("Shift-click to remove",NamedTextColor.DARK_GRAY));
+        meta.lore(lore);
+        head.setItemMeta(meta);
+        return head;
     }
 
     @EventHandler public void click(InventoryClickEvent event){
         if(!(event.getInventory().getHolder(false) instanceof Holder holder))return;event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;
         if(locked(player,true))return;
         int slot=event.getRawSlot();
+        if(holder.page==Page.AUTOTPA){autoTpaClick(event,player,slot);return;}
         if(holder.page==Page.MAIN){
             List<Toggle> mt=mainToggles(player);for(int i=0;i<mt.size();i++)if(slot==MAIN_SLOTS[i]){Toggle toggle=mt.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
             if(slot==21)openChest(player,Page.TPA);
@@ -351,6 +530,7 @@ final class SettingsService implements Listener {
             if(slot==20){set(player,TpaKind.OTHER.key,!enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback));renderChest(event.getInventory(),player,Page.TPA);}
             else if(slot==21){set(player,TpaKind.FACTION.key,!enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback));renderChest(event.getInventory(),player,Page.TPA);}
             else if(slot==22){set(player,TpaKind.AUTO_ACCEPT.key,!enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback));renderChest(event.getInventory(),player,Page.TPA);}
+            else if(slot==24){uiSound(player,"select");openChest(player,Page.AUTOTPA);}
             else if(slot==49)openChest(player,Page.MAIN);
         }
     }
@@ -400,6 +580,38 @@ final class SettingsService implements Listener {
         return Math.max(pve,pvp)<=0?0:Math.max(1,(Math.max(pve,pvp)+999)/1000);
     }
     private boolean locked(Player player,boolean message){if(plugin.privileged(player))return false;long remaining=settingsLockRemaining(player);if(remaining<=0)return false;if(message)CoreUtil.error(player,"Settings are locked during combat. "+remaining+"s remaining.");return true;}
+    /** The one place a GUI makes a noise.
+     *
+     *  Every interactive duel/GUI action routes through here so the vocabulary stays small and each action
+     *  is distinguishable by EAR, not just by volume: a selection, a value nudge, a toggle, one side
+     *  confirming, a stage advancing, going back, a cancel, a start, and a refusal all sound different.
+     *  Obeys the player's own sound_notifications preference exactly as {@link #marketSound} does, and is
+     *  deliberately never called from a GUI's open/render path -- those run again on every refresh and for
+     *  both duellists, so a sound there would fire two or three times per click.
+     *
+     *  Anything unrecognised falls through to a plain button click rather than going silent, so a new call
+     *  site can never be quietly soundless. */
+    void uiSound(Player player,String action){
+        if(player==null||action==null||!sounds(player))return;
+        Sound sound;float volume=.55f,pitch;
+        switch(action){
+            case"select"->{sound=Sound.UI_BUTTON_CLICK;pitch=1.25f;}
+            case"adjust"->{sound=Sound.BLOCK_NOTE_BLOCK_HAT;pitch=1.4f;}
+            case"toggle"->{sound=Sound.BLOCK_LEVER_CLICK;pitch=1.1f;}
+            case"page"->{sound=Sound.ITEM_BOOK_PAGE_TURN;pitch=1.1f;volume=.5f;}
+            case"confirm"->{sound=Sound.BLOCK_NOTE_BLOCK_PLING;pitch=1.5f;}
+            case"ready"->{sound=Sound.BLOCK_NOTE_BLOCK_PLING;pitch=1.9f;}
+            case"stage"->{sound=Sound.BLOCK_NOTE_BLOCK_BELL;pitch=1.2f;volume=.6f;}
+            case"start"->{sound=Sound.UI_TOAST_CHALLENGE_COMPLETE;pitch=1f;volume=.7f;}
+            case"back"->{sound=Sound.BLOCK_NOTE_BLOCK_BASS;pitch=1.3f;}
+            case"cancel"->{sound=Sound.BLOCK_NOTE_BLOCK_BASS;pitch=.8f;volume=.6f;}
+            case"error"->{sound=Sound.BLOCK_NOTE_BLOCK_BASS;pitch=.6f;volume=.6f;}
+            case"success"->{sound=Sound.ENTITY_EXPERIENCE_ORB_PICKUP;pitch=1.2f;}
+            default->{sound=Sound.UI_BUTTON_CLICK;pitch=1f;}
+        }
+        player.playSound(player.getLocation(),sound,volume,pitch);
+    }
+
     void marketSound(Player player,String action){
         if(player==null||!sounds(player))return;String path="marketplace.sounds."+action;String fallback=switch(action){case"purchase"->"ENTITY_EXPERIENCE_ORB_PICKUP";case"sale"->"BLOCK_NOTE_BLOCK_CHIME";case"failed"->"BLOCK_NOTE_BLOCK_BASS";case"confirm"->"UI_BUTTON_CLICK";case"cancel"->"UI_BUTTON_CLICK";case"shard"->"BLOCK_AMETHYST_BLOCK_RESONATE";default->"UI_BUTTON_CLICK";};
         try{Sound sound=Sound.valueOf(plugin.getConfig().getString(path,fallback).toUpperCase(Locale.ROOT));float pitch=action.equals("failed")?.65f:action.equals("cancel")?.85f:action.equals("sale")?1.2f:1.05f;player.playSound(player.getLocation(),sound,.55f,pitch);}catch(IllegalArgumentException ignored){}
@@ -427,9 +639,22 @@ final class SettingsService implements Listener {
     private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
     private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";};}
     private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"Other Players' TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
+    /** Auto-TPA submenu clicks. Kept out of the TPA branch above so the two pages cannot collide on a slot. */
+    private void autoTpaClick(InventoryClickEvent event,Player player,int slot){
+        if(slot==4){set(player,AUTO_TPA_MASTER,!autoTpaMaster(player));uiSound(player,"toggle");renderChest(event.getInventory(),player,Page.AUTOTPA);return;}
+        if(slot==48){uiSound(player,"select");promptAutoTpaName(player);return;}
+        if(slot==49){uiSound(player,"back");openChest(player,Page.TPA);return;}
+        ItemStack clicked=event.getCurrentItem();
+        if(clicked==null||clicked.getType()!=Material.PLAYER_HEAD||!clicked.hasItemMeta())return;
+        String name=net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(clicked.getItemMeta().displayName());
+        if(event.isShiftClick()){autoTpaRemove(player,name);uiSound(player,"cancel");CoreUtil.msg(player,name+" removed from Auto-TPA.");}
+        else{autoTpaToggleEntry(player,name);uiSound(player,"toggle");}
+        renderChest(event.getInventory(),player,Page.AUTOTPA);
+    }
+
     private String prettyNametag(NametagKind kind){return switch(kind){case BALANCES->"Show Balances";case FACTIONS->"Show Faction Tags";case HEARTS->"Show Hearts";};}
     private String nametagHint(NametagKind kind){return switch(kind){case BALANCES->"Show each player's balance under their name.";case FACTIONS->"Show each player's faction tag beside their name.";case HEARTS->"Show the health line. Always shown when every option here is off.";};}
-    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";};}
+    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";case AUTOTPA->"AUTO-TPA ALLOWLIST";};}
 
     private void nightVisionTick(){
         for(Player player:plugin.getServer().getOnlinePlayers()){

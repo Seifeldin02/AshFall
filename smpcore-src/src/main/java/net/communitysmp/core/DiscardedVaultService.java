@@ -572,6 +572,13 @@ final class DiscardedVaultService implements Listener {
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player viewer)) return;
         Session s = sessions.computeIfAbsent(viewer.getUniqueId(), k -> new Session());
+        /** Paging sounds different from pressing a button, so a page turn is recognisable without looking. */
+        int at = event.getRawSlot();
+        if (at == 45 || at == 53) plugin.settings().uiSound(viewer, "page");
+        else if (at >= 0 && at < event.getInventory().getSize() && event.getCurrentItem() != null
+                && !event.getCurrentItem().getType().isAir()
+                && event.getCurrentItem().getType() != Material.GRAY_STAINED_GLASS_PANE)
+            plugin.settings().uiSound(viewer, "select");
         switch (event.getRawSlot()) {
             case 45 -> { if (s.page > 1) { s.page--; render(viewer); } }
             case 53 -> { s.page++; render(viewer); }

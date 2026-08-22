@@ -269,7 +269,13 @@ final class ShopService {
         for(var entry:remaining.entrySet()){Price price=prices.get(entry.getKey());int already=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day),amount=entry.getValue();int full=Math.min(amount,Math.max(0,price.dailyFull()-already)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*holder.multiplier*plugin.bank().sellFactor()*100)/100.0;soldAmounts.put(entry.getKey(),amount);earnings.put(entry.getKey(),earned);}
         if(!plugin.bank().payShopSeller(p,quote.earned(),"BASKET")){CoreUtil.error(p,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(p,"failed");refreshBasket(inv,p);return;}
         for(var entry:soldAmounts.entrySet()){int remove=entry.getValue();for(int slot=0;slot<INPUT_END&&remove>0;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType()!=entry.getKey()||!item.isSimilar(new ItemStack(entry.getKey())))continue;int take=Math.min(remove,item.getAmount());item.setAmount(item.getAmount()-take);remove-=take;}creditStock(p,entry.getKey(),entry.getValue()-remove,entry.getValue());double earned=earnings.get(entry.getKey());db.recordSale(CoreUtil.id(p),entry.getKey().name(),day,entry.getValue(),earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,entry.getKey().name());}
-        holder.finalized=true;returnItems(p,inv);p.closeInventory();CoreUtil.msg(p,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(p,"sale");
+        holder.finalized=true;returnItems(p,inv);
+        CoreUtil.msg(p,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(p,"sale");
+        /** Selling a basket used to drop the player out of the shop entirely, which is the wrong end of the
+         *  flow: they came from /shop, they will almost always want to sell another basket or go on buying.
+         *  Reopening the shop one tick later (rather than in this handler) keeps Bukkit's inventory close and
+         *  open from re-entering each other. */
+        plugin.getServer().getScheduler().runTask(plugin,()->{if(p.isOnline())open(p);});
     }
 
     private void returnItems(Player p,Inventory inv){for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir())continue;inv.setItem(slot,null);CoreUtil.give(p,item);}}

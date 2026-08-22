@@ -5,6 +5,124 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-08-22 - economy surcharge audit, graves, weekly dragon, Auto-TPA, editable templates - STAGING ONLY
+
+**Not yet on production.** Everything below is built, deployed and verified on staging. Production was
+restarted once this session, but only to bring it back up after it died with the machine - no new code
+reached it.
+
+**Production outage, 08:02:54.** Production and staging both died within four seconds of each other, mid-
+gameplay and mid-boot respectively, with **no shutdown sequence in either log** and no crash report - a
+machine-level event (reboot / sleep / power / console closed), not a plugin fault and not a deploy.
+Production was relaunched and came back in 48s with all three players reconnecting. Because the kill was
+abrupt, anything since the last autosave was lost; nothing has been reported missing.
+
+### Weekly Ender Dragon: why 2026-08-21 paid no egg and no bonus XP
+
+Read straight out of the production log:
+
+```
+16:03:19 WARN  respawn did not stabilise on a dragon entity after 3 minutes of polling
+16:40:22 INFO  [WeeklyDragon] death: weeklyKill=false participants=1 killer=MacoCT
+```
+
+Vanilla's `EnderDragonFight.tick()` does nothing at all while no player is in the End, so the dragon does not
+appear until somebody arrives. Nobody arrived within three minutes, the tag poll gave up, and when the dragon
+finally spawned **37 minutes later** there was nothing listening to tag it - so the kill was never recognised
+as the weekly one. Not a chunk-loading problem and not the old UUID race; purely a timeout that assumed a
+player would be present.
+
+Fixed three ways, so the reward cannot be lost to how long somebody takes to reach the End:
+
+- The occurrence is **armed** in the database instead of polled for three minutes, and stays armed until a
+  dragon is actually tagged. It survives restarts.
+- A watcher checks every five seconds and **adopts any untagged live dragon in the End** - it no longer
+  depends on `battle.getEnderDragon()`, which is precisely the thing that was never set. The two-second
+  stability confirmation is kept.
+- A death backstop: a dragon dying untagged while an occurrence is armed is credited as the weekly kill.
+
+### Warded Colossus and the permanent Villager Mover
+
+Not luck. `capsule-drops.worldboss.reusable` was **1.0%** - one permanent, tradeable, infinitely-reusable
+Villager Mover roughly every hundred world-boss kills. Cut 10x to **0.1%**, with legendary 0.006 -> 0.0006
+and miniboss 0.002 -> 0.0002. Single-use (`disposable`) capsules are unchanged; those are meant to be normal
+rewards. The code fallbacks were updated to match the config so a missing key cannot restore the old rate.
+
+### Treasury: the deficit now actually closes itself
+
+Audited every player -> bank path. Purchases and sinks were already doubled through `bank.buyFactor()` -
+homes, ender-chest upgrades, faction expansions and faction home slots all correctly included. Two real gaps:
+
+- **The Keeper of Omens advertised half what it charged.** `purchase()` applied `buyFactor()` at the till but
+  the GUI and every confirmation dialog showed the raw config price, so during a deficit it displayed
+  1,000,000 and then took 2,000,000. The display now goes through the same factor and says why.
+- **Taxes and fees were not scaled at all.** Added `bank.feeFactor()` = **3x during a deficit**, deliberately
+  harsher than the 2x on prices so the treasury recovers faster the more the economy moves, rather than a
+  deficit becoming a permanent background state. Applied to `/pay` tax, AxTrade direct-trade tax, the orders
+  marketplace tax, the auction listing fee and the duel pot / spectator-pool tax (still clamped so a deficit
+  can never eat a whole pot).
+
+### Graves: a punch always breaks one now
+
+Every grave has **two** armour stands at the same position - the glowing visual marker and the real
+interactive stand. The marker had a hitbox and the damage handler returned early when hit, so a punch that
+landed on the marker did nothing. That is both the "sometimes punching a grave doesn't break it" report and
+the visual glitching. The marker is now a true marker (no hitbox), and a hit on one resolves back to its
+grave for markers already in the world from older builds. Added an `EntityDamageEvent` guard as well: lava,
+fire, explosions and suffocation can never break a grave - only a player punching it.
+
+### Auto-TPA allowlist
+
+A per-player allowlist in TPA Requests: named players `/tpa` straight to you with no request to accept.
+Completely separate from Faction Auto-Accept - different preference keys, checked independently, neither
+reads the other. `/tpa` only, never `/tpahere`: it grants the right to come to you, not the right to pull you
+somewhere. Names match the **real account name**, never a nickname, since a nickname can be changed and an
+impersonatable allowlist would be a teleport-into-your-base exploit. The chest GUI shows a head per player
+(click = on/off, shift-click = remove) plus a master switch and an "Add player" chat prompt; the native
+dialog offers the same actions. Up to 20 names, stored as one preference string so a name can sit inactive
+rather than having to be deleted and retyped.
+
+### Also
+
+- **Editable duel templates.** `/ashfall duelmap enter` opened an empty void world on production, because
+  promotion carries the committed *snapshots* and not the *workspaces*. A missing or arena-less workspace is
+  now materialised from its committed snapshot using the same path and identity-metadata handling instances
+  use, the arena region is validated before the admin is teleported, and a workspace that already holds the
+  arena - on disk or as unsaved in-memory building - is never overwritten. Verified by deleting all six
+  staging workspaces and watching all six rebuild from their snapshots.
+- **GUI sound feedback.** One `uiSound` vocabulary (select / adjust / toggle / page / confirm / ready /
+  stage / start / back / cancel / error / success), 19 hooks across the duel flow, plus Orders and the
+  Discarded Vault which were entirely silent. Never called from a render path, so a refresh cannot
+  double-fire.
+- **Ghast tears** are now exactly double gunpowder both ways (buy 260 / sell 52) - ghasts cannot be farmed at
+  anything like a creeper farm's scale.
+- **`/shop` sell basket** returns to the shop after selling instead of closing the window.
+- **Iron ingots were already in the shop** (`IRON_INGOT: buy 55 / sell 11`, MINING category) - no change
+  needed.
+
+### Outstanding
+
+- **`/spawnershop` is NOT built.** Prices are audited below, but no code was written.
+- The Bedrock (Geyser) form has no Auto-TPA entry yet; Bedrock players reach it through the chest GUI.
+- The admin login-persistence restriction on production (`require-same-ip`) is not yet removed.
+
+**Audited spawner prices.** Money per kill is the `mob-rewards` midpoint x `spawner-share` (0.5), plus drop
+value at shop sell prices and vanilla average drop counts.
+
+| Spawner | $/kill | Drop value/kill | Total | vs Zombie | Price |
+|---|---|---|---|---|---|
+| Blaze | 5.75 | 6.00 (0.5 rod x 12) | 11.75 | 3.83x | **1,150,000** |
+| Cave Spider | 2.00 | 3.35 | 5.35 | 1.74x | **500,000** |
+| Spider | 1.50 | 3.35 (1 string x 3.2 + eye) | 4.85 | 1.58x | **450,000** |
+| Skeleton | 1.50 | 2.14 (bone 1.61 + arrow 0.53) | 3.64 | 1.19x | **350,000** |
+| Zombie | 1.50 | 1.57 (rotten flesh) | 3.07 | 1.00x | **300,000** |
+
+Anchored on the owner's zombie floor of 300k and rounded to 50k. The owner's draft had the right ordering but
+compressed spacing - spider and skeleton were overpriced against zombie (2.00x / 1.67x versus a true 1.58x /
+1.19x) and blaze was underpriced (3.33x versus 3.83x).
+
+---
+
 ## Session: 2026-08-20 — duel arena rebuild (maps, instances, three-stage setup) + Industrial Hopper parity — ✅ PROMOTED TO PRODUCTION
 
 **✅ PROMOTED TO PRODUCTION 2026-08-20 (evening), in one restart.** Only Asserto was online, so per the

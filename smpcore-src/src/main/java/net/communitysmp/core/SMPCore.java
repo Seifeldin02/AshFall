@@ -116,7 +116,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
          *  Bank. Taking the tax from the amount is what makes it impossible for the sum to drift -- net and
          *  tax are defined so that they add back to the amount already withdrawn, so no rounding remainder
          *  can be created or lost. Same Math.round(amount*percent)/100 shape the bounty fee already uses. */
-        double taxPercent=Math.max(0,getConfig().getDouble("pay.tax-percent",1.0));
+        /** Tripled while the Central Bank is in deficit -- see BankService.feeFactor(). */
+        double taxPercent=Math.max(0,getConfig().getDouble("pay.tax-percent",1.0))*bank.feeFactor();
         double tax=Math.round(amount*taxPercent)/100.0,net=Math.round((amount-tax)*100)/100.0;
         tax=Math.round((amount-net)*100)/100.0;
         db.ensurePlayer(CoreUtil.id(target),target.getName(),getConfig().getDouble("starting-balance",250));
@@ -588,12 +589,21 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
                 DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
                 if(m==null){duelMapUsage(sender,"enter","map");return;}
-                org.bukkit.World w=svc.template(m);
-                if(w==null){CoreUtil.error(sender,"Could not load that template world.");return;}
+                CoreUtil.msg(p,"Opening the "+m.name()+" workspace - this can take a few seconds on a big map...");
+                org.bukkit.World w=svc.workspace(m,line->CoreUtil.msg(p,"  "+line));
+                if(w==null){CoreUtil.error(sender,"Could not open that workspace. Check /ashfall duelmap snapshots.");return;}
+                /** Never drop an admin into an empty void and call it a template: if the arena is not there
+                 *  after the workspace has been opened (and, if needed, rebuilt from the snapshot), say so
+                 *  instead of teleporting them somewhere that looks broken. */
+                if(!svc.holdsArena(w,m)){
+                    CoreUtil.error(sender,m.name()+" has no arena in its workspace and no committed snapshot to rebuild it from.");
+                    CoreUtil.msg(sender,"Build it (/ashfall duelmap build "+m.key()+") or import it, then /ashfall duelmap save "+m.key()+".");
+                    return;
+                }
                 duelMapReturn.put(p.getUniqueId().toString(),p.getLocation());
-                p.teleport(new org.bukkit.Location(w,m.p1x(),m.p1y(),m.p1z(),m.yawP1(),0));
+                p.teleport(svc.workspaceSpawn(w,m));
                 p.setGameMode(org.bukkit.GameMode.CREATIVE);
-                CoreUtil.msg(p,"Editing template "+m.name()+". /ashfall duelmap exit when done.");
+                CoreUtil.msg(p,"Editing "+m.name()+" ("+svc.arenaRegionName(m)+" present). /ashfall duelmap save "+m.key()+" commits it; /ashfall duelmap exit returns you.");
             }
             case"exit"->{
                 if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}

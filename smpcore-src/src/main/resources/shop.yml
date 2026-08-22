@@ -184,7 +184,9 @@ items:
   PHANTOM_MEMBRANE: {buy: 90, sell: 18, daily-full: 512, category: MOB_DROPS}  # Cannot be farmed conventionally; elytra repair
   NAUTILUS_SHELL: {buy: 90, sell: 18, daily-full: 384, category: MOB_DROPS}  # Drowned drops and fishing; no reliable farm
   GUNPOWDER: {buy: 130, sell: 26, daily-full: 1024, category: MOB_DROPS}  # Creeper farm; no spawner exists, large dedicated build
-  GHAST_TEAR: {buy: 145, sell: 29, daily-full: 256, category: MOB_DROPS}  # Ghasts are awkward to farm and drop one at a time
+  # Owner-fixed 2026-08-22: exactly double gunpowder, both ways. Ghasts cannot be farmed on anything
+  # like a creeper farm's scale, so the tear is priced as the strictly rarer of the two.
+  GHAST_TEAR: {buy: 260, sell: 52, daily-full: 256, category: MOB_DROPS}
 
 luxuries:
   NAME_TAG:

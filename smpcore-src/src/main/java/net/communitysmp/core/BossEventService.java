@@ -834,6 +834,10 @@ final class BossEventService {
          *  happens to be nearest, handing them the entire encounter's XP alone (confirmed: one player jumped
          *  50 levels from it) instead of letting every nearby participant collect a fair share. */
         if(boss instanceof EnderDragon dragon){
+            /** If the fight never got tagged (nobody reached the End before the spawn poll gave up, which is
+             *  how 2026-08-21 lost its egg and XP), adopt this kill for the armed occurrence rather than
+             *  paying nothing. */
+            if(!weeklyKill&&plugin.weeklyDragon().adoptUntaggedKill(dragon))weeklyKill=true;
             plugin.getLogger().info("[WeeklyDragon] death: weeklyKill="+weeklyKill+" participants="+participants.size()+" killer="+(killer==null?"null":killer.getName()));
             if(weeklyKill){
                 World endWorld=dragon.getWorld();
@@ -969,7 +973,7 @@ final class BossEventService {
         if(chance(elite))e.getDrops().add(sigil());
         if(chance(legend))e.getDrops().add(legendarySigil());
     }
-    private void capsuleDrop(EntityDeathEvent event,String tier){VillagerCapsuleService service=plugin.capsules();if(service==null)return;double disposable=bosses.getDouble("capsule-drops."+tier+".disposable",isWorldBossTier(tier)?.15:tier.equals("legendary")?.08:tier.equals("miniboss")?.04:0),reusable=bosses.getDouble("capsule-drops."+tier+".reusable",isWorldBossTier(tier)?.01:tier.equals("legendary")?.006:tier.equals("miniboss")?.002:0);double roll=Math.random();if(roll<reusable*lootMult)event.getDrops().add(service.empty(true));else if(roll<(reusable+disposable)*lootMult)event.getDrops().add(service.empty(false));}
+    private void capsuleDrop(EntityDeathEvent event,String tier){VillagerCapsuleService service=plugin.capsules();if(service==null)return;double disposable=bosses.getDouble("capsule-drops."+tier+".disposable",isWorldBossTier(tier)?.15:tier.equals("legendary")?.08:tier.equals("miniboss")?.04:0),reusable=bosses.getDouble("capsule-drops."+tier+".reusable",isWorldBossTier(tier)?.001:tier.equals("legendary")?.0006:tier.equals("miniboss")?.0002:0);double roll=Math.random();if(roll<reusable*lootMult)event.getDrops().add(service.empty(true));else if(roll<(reusable+disposable)*lootMult)event.getDrops().add(service.empty(false));}
     private ItemStack legendarySpiderPotion(){ItemStack potion=spiderPotion();PotionMeta meta=(PotionMeta)potion.getItemMeta();meta.addCustomEffect(new PotionEffect(PotionEffectType.RESISTANCE,2400,0),true);potion.setItemMeta(meta);return potion;}
     private ItemStack spiderPotion() { ItemStack potion = new ItemStack(Material.POTION); PotionMeta meta = (PotionMeta) potion.getItemMeta(); meta.displayName(Component.text("Silkstep Draught", NamedTextColor.LIGHT_PURPLE)); meta.addCustomEffect(new PotionEffect(PotionEffectType.SPEED, 3600, 1), true); meta.addCustomEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, 3600, 0), true); potion.setItemMeta(meta); return potion; }
     private void rewardWorldBoss(EntityDeathEvent e, Player killer, Map<String,Double> participants, WorldBossKind kind) {
