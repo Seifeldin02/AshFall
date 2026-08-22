@@ -511,6 +511,10 @@ arena:
   max-concurrent-duels: 6
   # Cooldown between challenges, like a trade request, so invites cannot be spammed.
   challenge-cooldown-seconds: 15
+  # How long spectators may bet after a round starts. Betting is also open before the match and during any
+  # ready-gate; this is the window that guarantees a bet is possible even when both duellists ready instantly.
+  # A spectator who arrives mid-round gets their own window of the same length from when they arrived.
+  betting-window-seconds: 10
   # How long one setup stage (Kit, Map, Final Options) may sit untouched before the duel is called off.
   # The clock resets whenever the pair move between stages, so a slow but active setup is never cut short.
   setup-timeout-seconds: 180

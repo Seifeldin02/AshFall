@@ -160,6 +160,14 @@ final class ArenaService implements Listener {
         boolean gating = false;
         /** Ids that have clicked Ready for the current round; cleared when each round's gate opens. */
         final Set<String> roundReady = new HashSet<>();
+        /** When betting closes for the round that is running. Set the moment a round actually starts, so a
+         *  pair who both ready up instantly no longer leave spectators with no window at all -- the old rule
+         *  only allowed bets while the ready-gate was open, which could be under a second. */
+        long roundBettingUntil = 0L;
+        /** Spectator id -> their own personal deadline. Somebody who walks in mid-round gets the same ten
+         *  seconds from when they arrived, rather than being told they are too late for a fight they have
+         *  only just started watching. */
+        final Map<String, Long> spectatorBettingUntil = new java.util.concurrent.ConcurrentHashMap<>();
         Duel(int id, int slot, String a, String b) { this.id = id; this.slot = slot; this.a = a; this.b = b; }
         boolean has(String id) { return id.equals(a) || id.equals(b); }
         String other(String id) { return id.equals(a) ? b : a; }
@@ -911,6 +919,11 @@ final class ArenaService implements Listener {
         if (one == null || two == null) { abortAndRefund(duel, "a duellist went offline"); return; }
         sound(duel, "start");
         duel.gating = false;
+        /** The round's own betting window opens here, at the instant the fight actually begins. Personal
+         *  windows from the previous round are dropped: a spectator who has been watching since round one
+         *  gets the round window like everybody else, and nobody carries a stale deadline forward. */
+        duel.roundBettingUntil = System.currentTimeMillis() + bettingWindowMillis();
+        duel.spectatorBettingUntil.clear();
         one.closeInventory(); two.closeInventory();
         int round = duel.rounds.get(duel.a) + duel.rounds.get(duel.b) + 1;
         actionbar(one, "Round " + round + " — fight!"); actionbar(two, "Round " + round + " — fight!");
@@ -1086,8 +1099,45 @@ final class ArenaService implements Listener {
 
     /** True while spectators may place or change bets: before the match (pending/staking) and during every
      *  round's ready-gate. It is closed only while a round is actively being fought. */
-    private boolean bettingOpen(Duel duel) {
-        return duel.phase == Phase.PENDING || duel.phase == Phase.STAKING || (duel.phase == Phase.LIVE && duel.gating);
+    private long bettingWindowMillis() {
+        return Math.max(0, plugin.getConfig().getLong("arena.betting-window-seconds", 10)) * 1000L;
+    }
+
+    /** Betting is open before the match, during any ready-gate, and for the first ten seconds of each round.
+     *
+     *  The gate-only rule was the whole problem: two duellists who both hit Ready at once gave spectators a
+     *  window measured in tenths of a second. Rounds now carry their own deadline, which is what lets the
+     *  gate stay as short as the duellists want without costing anybody their bet. */
+    private boolean bettingOpen(Duel duel) { return bettingOpen(duel, null); }
+
+    private boolean bettingOpen(Duel duel, String spectatorId) {
+        if (duel.phase == Phase.PENDING || duel.phase == Phase.STAKING) return true;
+        /** ENDING means the match is over and the pools are being paid out -- nothing may be staked against a
+         *  result that already exists, whatever anybody's personal window says. Same for the moment a round
+         *  is being resolved. */
+        if (duel.phase != Phase.LIVE || duel.resolving) return false;
+        if (duel.gating) return true;
+        long now = System.currentTimeMillis();
+        if (now < duel.roundBettingUntil) return true;
+        /** A late arrival's own ten seconds, which can never outlive the round it was granted in. */
+        Long personal = spectatorId == null ? null : duel.spectatorBettingUntil.get(spectatorId);
+        return personal != null && now < personal;
+    }
+
+    /** One line telling a spectator exactly how long they have. -1 means an open-ended window (before the
+     *  match, or during a ready-gate), which needs no countdown. */
+    private String bettingHint(long secondsLeft) {
+        if (secondsLeft < 0) return "Betting is open.";
+        return secondsLeft == 0 ? "Betting for this round has closed." : "Betting closes in " + secondsLeft + "s.";
+    }
+
+    /** Seconds left for this viewer, for the GUI to show. 0 when betting is shut. */
+    private long bettingSecondsLeft(Duel duel, String spectatorId) {
+        if (duel.phase == Phase.PENDING || duel.phase == Phase.STAKING || (duel.phase == Phase.LIVE && duel.gating)) return -1;
+        if (!bettingOpen(duel, spectatorId)) return 0;
+        long now = System.currentTimeMillis();
+        long deadline = Math.max(duel.roundBettingUntil, duel.spectatorBettingUntil.getOrDefault(spectatorId, 0L));
+        return Math.max(0, (deadline - now + 999) / 1000);
     }
 
     /** The round a "this round" bet applies to: the one about to be fought (or round 1 before the match). */
@@ -1098,7 +1148,7 @@ final class ArenaService implements Listener {
      *  money is always conserved. */
     private boolean placeWager(Player player, Duel duel, String target, double amount, int round) {
         if (duel == null) { CoreUtil.error(player, "No such match."); return true; }
-        if (!bettingOpen(duel)) { CoreUtil.error(player, "Betting is only open before the match and between rounds."); return true; }
+        if (!bettingOpen(duel, CoreUtil.id(player))) { CoreUtil.error(player, "Betting for this round has closed."); return true; }
         String id = CoreUtil.id(player);
         if (duel.has(id)) { CoreUtil.error(player, "You cannot bet on your own match."); return true; }
         if (target == null) { CoreUtil.error(player, "Choose " + duel.aName + " or " + duel.bName + "."); return true; }
@@ -1119,6 +1169,12 @@ final class ArenaService implements Listener {
         Duel duel = duels.stream().filter(d -> d.id == duelId).findFirst().orElse(null);
         if (duel == null) { CoreUtil.error(player, "No such match."); return true; }
         if (duel.has(CoreUtil.id(player))) { CoreUtil.error(player, "You are in this duel."); return true; }
+        /** Opening the match screen is arriving, whether or not they go on to enter the arena -- otherwise a
+         *  spectator who prefers to watch from the list would never get a window at all. Granted once per
+         *  round: reopening the screen cannot roll the clock forward again. */
+        String viewer = CoreUtil.id(player);
+        if (duel.phase == Phase.LIVE && !duel.gating && !duel.spectatorBettingUntil.containsKey(viewer))
+            duel.spectatorBettingUntil.put(viewer, System.currentTimeMillis() + bettingWindowMillis());
         openSpectate(player, duelId);
         return true;
     }
@@ -1143,6 +1199,10 @@ final class ArenaService implements Listener {
         player.setInvulnerable(true);
         for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
         spectators.put(id, duel.id);
+        /** Their own ten seconds, but never past the end of the round they walked into -- a window granted
+         *  during a fight that ends two seconds later dies with it, because bettingOpen re-checks the phase. */
+        if (duel.phase == Phase.LIVE && !duel.gating)
+            duel.spectatorBettingUntil.put(id, System.currentTimeMillis() + bettingWindowMillis());
         player.teleport(gallery(duel));
         /** Hide the spectator ENTIRELY (body AND nametag) from the two duellists, so no name floats over the
          *  fight -- all while staying in survival, so the admin-only Spectator gamemode is never touched. Other
@@ -1949,7 +2009,8 @@ final class ArenaService implements Listener {
         Duel duel = find(duelId);
         if (duel == null) { CoreUtil.error(player, "That match has ended."); player.closeInventory(); return; }
         String id = CoreUtil.id(player);
-        boolean bettingOpen = bettingOpen(duel);
+        boolean bettingOpen = bettingOpen(duel, CoreUtil.id(player));
+        long bettingLeft = bettingSecondsLeft(duel, CoreUtil.id(player));
         double[] st = stagedBet.computeIfAbsent(id, k -> new double[]{-1, 0, 0});
         if (st.length < 3) { double[] grown = new double[]{st[0], st[1], 0}; stagedBet.put(id, grown); st = grown; }
         Menu menu = new Menu("spectate", duelId);
@@ -1969,9 +2030,9 @@ final class ArenaService implements Listener {
                 "Status: " + (duel.gating ? "READY-GATE (betting open)" : duel.phase.toString()))));
         boolean backA = st[0] == 0, backB = st[0] == 1;
         menu.inv.setItem(20, icon(backA ? Material.LIME_CONCRETE : Material.WHITE_CONCRETE, (backA ? "✔ " : "") + "Back " + duel.aName,
-                List.of(scopeLabel + " pool on " + duel.aName + ": " + CoreUtil.money(poolA), bettingOpen ? "Click to back " + duel.aName : "Betting closed")));
+                List.of(scopeLabel + " pool on " + duel.aName + ": " + CoreUtil.money(poolA), bettingOpen ? "Click to back " + duel.aName : "Betting closed", bettingHint(bettingLeft))));
         menu.inv.setItem(24, icon(backB ? Material.RED_CONCRETE : Material.WHITE_CONCRETE, (backB ? "✔ " : "") + "Back " + duel.bName,
-                List.of(scopeLabel + " pool on " + duel.bName + ": " + CoreUtil.money(poolB), bettingOpen ? "Click to back " + duel.bName : "Betting closed")));
+                List.of(scopeLabel + " pool on " + duel.bName + ": " + CoreUtil.money(poolB), bettingOpen ? "Click to back " + duel.bName : "Betting closed", bettingHint(bettingLeft))));
         if (bettingOpen) {
             if (duel.bestOf > 1)
                 menu.inv.setItem(22, icon(perRound ? Material.CLOCK : Material.NETHER_STAR, "Betting on: " + scopeLabel, List.of(

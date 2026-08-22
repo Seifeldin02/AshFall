@@ -188,6 +188,52 @@ Live-verified on staging: a blaze spawner destroyed by TNT was recovered and lis
 
 **Not a bug:** the blaze spawner that showed stock 0 was bought on staging by the owner. Nothing was wrong.
 
+
+### Betting window rework
+
+Betting used to be open only while a ready-gate was up, so two duellists who both hit Ready at once left
+spectators a window measured in tenths of a second. Now:
+
+- **Each round opens a ten-second window** the instant the fight actually starts (`arena.betting-window-
+  seconds`, default 10). The gate can stay as short as the duellists want without costing anybody a bet.
+- **A spectator who arrives mid-round gets their own ten seconds** from when they arrived, so somebody who
+  walks into a fight is not told they are too late for something they have only just started watching.
+  Granted on entering the arena *or* on opening the match screen, whichever comes first, and only once per
+  round - reopening the screen cannot roll the clock forward.
+- **Edge cases.** A personal window can never outlive its round: `bettingOpen` re-checks the phase every
+  time, so `ENDING` (pools being paid out) and `resolving` (a round being decided this tick) both shut
+  betting immediately regardless of anybody's deadline. Personal windows are cleared at the start of each
+  round so nothing stale carries forward, and a spectator who has been watching since round one gets the
+  round window like everybody else rather than an expired personal one. The spectate screen shows the live
+  countdown.
+
+### Audit: Warded Colossus payout variance (1.6M vs 700k)
+
+Working as configured, and the arithmetic accounts for all of it. The payout is:
+
+```
+pool  = random(reward-min, reward-max) x (1 + 0.35 x sqrt(participants - 1))
+share = pool x (your damage / total damage) x mobIncomeMultiplier(you)
+```
+
+With `iron-golem-boss.reward-min: 126,562.5` and `reward-max: 253,125`, the **base roll alone is a 2.0x
+spread** before anything else applies. Observed range across ten kills in the ledger was 734,626 to
+1,614,981 - a ratio of **2.20x**, which the base roll plus damage share covers entirely.
+
+The three sources, in order of size:
+
+1. **Base roll: 2.0x.** Configured, per kill, nothing to do with performance.
+2. **Damage share.** Solo kills pay the whole pool; the 1,614,981 fight had AccelRip on 112,573 alongside,
+   about a 14:1 split, while the 734,626 one was solo against a smaller roll.
+3. **Progression multiplier.** `mobIncomeMultiplier` is a per-player product of completed requirements, so it
+   moves slowly and is not the session-to-session variance - but it is what makes the absolute numbers large:
+   the totals paid out are roughly 4-5x the maximum pool, so the multiplier is doing most of the scaling.
+
+**No bug found, nothing changed.** The one thing worth an owner decision: a 2x random spread on the headline
+reward for a fight of identical effort is wide enough to feel arbitrary. Narrowing `reward-min` toward
+`reward-max` (e.g. 170,000-225,000, a 1.32x spread) would keep the average while making two identical kills
+pay similarly. Left alone pending that call, since these are owner-set economy numbers.
+
 ### Outstanding
 
 - ~~`/spawnershop`~~ - done, see above. Prices are audited below, but no code was written. The blocker is design,
