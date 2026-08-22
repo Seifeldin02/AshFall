@@ -5,10 +5,12 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
-## Session: 2026-08-23 (part 2) - celebration rebuilt as acts - STAGING ONLY, NOT PROMOTED
+## Session: 2026-08-23 (part 2) - celebration rebuilt as acts - PROMOTED TO PRODUCTION
 
-**On staging only, at the owner's instruction.** Production is still running the previous build; jar MD5s
-deliberately differ.
+**PROMOTED 2026-08-23** after the owner reviewed it on staging ("PERFECT"). One silent restart (only Asserto
+online, which is the standing rule), booted in 31s, self-test ok, zero SMPCore errors, jar MD5 identical to
+the artefact tested on staging. Staging stopped afterwards and its console closed itself - the first clean
+proof of the `if errorlevel 1 pause` fix, which left **zero** leftover windows for the first time.
 
 ### Why the loop had to go
 
