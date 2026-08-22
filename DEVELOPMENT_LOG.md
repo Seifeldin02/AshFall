@@ -5,6 +5,46 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-23 (part 2) - celebration rebuilt as acts - STAGING ONLY, NOT PROMOTED
+
+**On staging only, at the owner's instruction.** Production is still running the previous build; jar MD5s
+deliberately differ.
+
+### Why the loop had to go
+
+The owner's read was exactly right: "the beginning feels and looks really strong, its just the cycling of
+the same exact sound effects and effects is whats throwing me off". The first version drew the same helix
+every tick, the same ring every 7, the same burst every 9, and replayed the same two firework sounds every
+12 ticks -- **forty-odd repeats across a 25 second show**. Repetition reads as low quality however good the
+individual effect is.
+
+Rebuilt as ACTS. Each has its own visual language and hands over to the next; every sound cue fires on
+exactly ONE tick (never a `t % n` timer, which is what produced the machine-gun effect); and both tiers end
+on a **silent** confetti fall that thins to nothing rather than stopping dead.
+
+| Tier | Act | Share | What it does |
+|---|---|---|---|
+| LEGENDARY | IMPACT | 0-8% | flash, shockwave rings racing outward, brief column of light |
+| | ASCENT | 8-32% | violet helix climbing and widening once, embers rising through it |
+| | BLOOM | 32-56% | a dome opening overhead like a firework shell, palette shifting |
+| | DRIFT | 56-100% | silent falling confetti, thinning to nothing |
+| GRAND | POP | 0-18% | one gold burst and a single fast ring |
+| | SPIRAL | 18-56% | gold twin helix, rising once |
+| | DRIFT | 56-100% | silent falling gold confetti |
+
+Sound count went from ~45 plays (mostly two repeated cues) to **7 distinct cues** on legendary and **4** on
+grand. Nothing repeats.
+
+Act boundaries are FRACTIONS of the configured duration, so changing `celebrations.legendary-seconds`
+restretches the whole show instead of just lengthening the last act. The self-test now also asserts the
+boundaries stay in order, so a silly duration cannot skip a phase.
+
+Confetti and embers use a particle **count of 0**, which makes vanilla treat the offsets as a velocity
+vector -- the only way to make a particle actually travel rather than hang in the air. `particle()` passes
+count through untouched for exactly that reason.
+
+---
+
 ## Session: 2026-08-23 - the celebration that would not stop
 
 **Ships as:** `SMPCore-1.7.0.jar` + `plugins/SMPCore/config.yml` (`celebrations.grand-seconds`,

@@ -121,7 +121,7 @@ final class SpectacleService {
                 if (self == null || !self.isOnline() || frame > duration || System.currentTimeMillis() > deadline) {
                     running.remove(id); cancel(); return;
                 }
-                try { frame(self, legendary, frame, density); }
+                try { frame(self, legendary, frame, duration, density); }
                 catch (RuntimeException ex) {
                     running.remove(id); cancel();
                     plugin.getLogger().warning("Celebration stopped after an error: " + ex);
@@ -146,54 +146,181 @@ final class SpectacleService {
 
     // ------------------------------------------------------------------ the animation
 
-    private void frame(Player player, boolean legendary, int t, double density) {
+    /*  Built as ACTS, not as a loop.
+     *
+     *  The first version drew the same helix every tick, the same ring every 7, the same burst every 9 and
+     *  replayed the same two firework sounds every 12 -- forty-odd times over a 25 second show. The opening
+     *  landed; everything after it was the opening again, which is what made it feel cheap. Repetition reads
+     *  as low quality however good the individual effect is.
+     *
+     *  So each act has its OWN visual language and hands over to the next, every sound cue fires on exactly
+     *  ONE tick (never on a `t % n` timer, which is what produced the machine-gun effect), and the show ends
+     *  on a long silent confetti fall that thins out to nothing rather than stopping dead.
+     *
+     *    LEGENDARY   IMPACT  0-8%    flash and outward shockwaves
+     *                ASCENT  8-32%   a rising violet helix with embers climbing it
+     *                BLOOM  32-56%   a dome of colour opening overhead, palette shifting as it goes
+     *                DRIFT  56-100%  silent falling confetti, thinning to nothing
+     *
+     *    GRAND       POP     0-18%   one gold burst and a single fast ring
+     *                SPIRAL 18-56%   gold twin helix
+     *                DRIFT  56-100%  silent falling gold confetti
+     *
+     *  Act boundaries are FRACTIONS of the configured duration, so changing celebrations.legendary-seconds
+     *  restretches the whole show instead of just making the last act longer.
+     */
+
+    private static final Color[] LEGENDARY_PALETTE = {
+            Color.fromRGB(214, 96, 255), Color.fromRGB(150, 110, 255), Color.fromRGB(120, 210, 255),
+            Color.fromRGB(255, 150, 240), Color.fromRGB(245, 235, 255)};
+    private static final Color[] GRAND_PALETTE = {
+            Color.fromRGB(255, 205, 60), Color.fromRGB(255, 170, 40), Color.fromRGB(255, 235, 150)};
+
+    private Color palette(boolean legendary, double progress) {
+        Color[] colours = legendary ? LEGENDARY_PALETTE : GRAND_PALETTE;
+        int index = (int) Math.floor(Math.max(0, Math.min(.9999, progress)) * colours.length);
+        return colours[Math.min(colours.length - 1, index)];
+    }
+
+    private void frame(Player player, boolean legendary, int t, int duration, double density) {
         Location base = player.getLocation();
         World world = base.getWorld();
         if (world == null) return;
+        int span = Math.max(1, duration);
 
-        /** A helix climbing the player: three strands and a taller sweep for legendary, two for grand. */
-        int strands = legendary ? 3 : 2;
-        double sweep = legendary ? 55.0 : 40.0;
-        double climb = (t % sweep) / sweep * (legendary ? 3.4 : 2.6);
-        double radius = legendary ? 1.5 : 1.15;
-        for (int strand = 0; strand < strands; strand++) {
-            double angle = t * .38 + strand * (Math.PI * 2 / strands);
-            Location point = base.clone().add(Math.cos(angle) * radius, climb, Math.sin(angle) * radius);
+        if (legendary) {
+            int impact = (int) (span * .08), ascent = (int) (span * .32), bloom = (int) (span * .56);
+            if (t <= impact) impact(world, base, t / (double) Math.max(1, impact), density);
+            else if (t <= ascent) ascent(world, base, t - impact, ascent - impact, density);
+            else if (t <= bloom) bloom(world, base, t - ascent, bloom - ascent, density);
+            else drift(world, base, (t - bloom) / (double) Math.max(1, span - bloom), true, density);
+
+            /** One tick, one cue, never repeated. */
+            if (t == 0) {
+                play(base, Sound.ENTITY_ENDER_DRAGON_GROWL, .55f, 1.55f);
+                play(base, Sound.BLOCK_END_PORTAL_SPAWN, .7f, 1.4f);
+                play(base, Sound.EVENT_RAID_HORN, .35f, 1.9f);
+            } else if (t == 6) play(base, Sound.ENTITY_WITHER_SPAWN, .45f, 1.6f);
+            else if (t == impact + 1) play(base, Sound.BLOCK_CONDUIT_ACTIVATE, .8f, 1.5f);
+            else if (t == ascent + 1) play(base, Sound.ENTITY_FIREWORK_ROCKET_LARGE_BLAST, 1f, .9f);
+            else if (t == ascent + 12) play(base, Sound.ENTITY_FIREWORK_ROCKET_TWINKLE, .8f, 1.2f);
+            else if (t == bloom) play(base, Sound.ITEM_TOTEM_USE, .5f, 1.35f);
+            /** DRIFT is deliberately silent -- the confetti outlasts the noise on purpose. */
+        } else {
+            int pop = (int) (span * .18), spiral = (int) (span * .56);
+            if (t <= pop) impactGrand(world, base, t / (double) Math.max(1, pop), density);
+            else if (t <= spiral) spiral(world, base, t - pop, spiral - pop, density);
+            else drift(world, base, (t - spiral) / (double) Math.max(1, span - spiral), false, density);
+
+            if (t == 0) {
+                play(base, Sound.ENTITY_PLAYER_LEVELUP, .9f, 1.5f);
+                play(base, Sound.BLOCK_BEACON_ACTIVATE, .8f, 1.7f);
+            } else if (t == pop + 1) play(base, Sound.BLOCK_AMETHYST_BLOCK_CHIME, .9f, 1.6f);
+            else if (t == spiral) play(base, Sound.ENTITY_FIREWORK_ROCKET_TWINKLE, .7f, 1.35f);
+        }
+    }
+
+    /** ACT 1 (legendary): a single flash, then shockwave rings racing outward along the ground. */
+    private void impact(World world, Location base, double p, double density) {
+        if (p <= 0) {
+            particle(world, Particle.FLASH, base.clone().add(0, 1.2, 0), 1, 0, 0, 0, 0, LEGENDARY_PALETTE[0]);
+            particle(world, Particle.FIREWORK, base.clone().add(0, 1.2, 0), scaled(120, density), 1.2, 1.2, 1.2, .22);
+        }
+        ring(world, base, .8 + p * 9, palette(true, p), density, true);
+        /** The column only exists during the impact, so it reads as a strike rather than a permanent beam. */
+        for (double y = 0; y < 16; y += .6)
+            particle(world, Particle.ELECTRIC_SPARK, base.clone().add(0, y, 0), scaled(1, density), .16, 0, .16, 0);
+    }
+
+    /** ACT 1 (grand): one warm burst and a single quick ring. Short and punchy. */
+    private void impactGrand(World world, Location base, double p, double density) {
+        if (p <= 0) particle(world, Particle.FIREWORK, base.clone().add(0, 1.3, 0), scaled(60, density), .9, .9, .9, .18);
+        ring(world, base, .8 + p * 4.5, palette(false, p), density, false);
+    }
+
+    /** ACT 2 (legendary): a helix that CLIMBS -- widening and rising once, not looping. Embers rise with it. */
+    private void ascent(World world, Location base, int k, int length, double density) {
+        double p = k / (double) Math.max(1, length);
+        double height = p * 5.5, radius = 1.1 + p * 1.4;
+        for (int strand = 0; strand < 3; strand++) {
+            double angle = k * .34 + strand * (Math.PI * 2 / 3);
+            Location point = base.clone().add(Math.cos(angle) * radius, height, Math.sin(angle) * radius);
             particle(world, Particle.END_ROD, point, 1, 0, 0, 0, 0);
-            particle(world, Particle.DUST, point, scaled(2, density), .08, .08, .08, 0,
-                    new Particle.DustOptions(legendary ? Color.fromRGB(214, 96, 255) : Color.fromRGB(255, 205, 60), legendary ? 1.6f : 1.25f));
+            particle(world, Particle.DUST, point, scaled(2, density), .07, .07, .07, 0,
+                    new Particle.DustOptions(palette(true, p), 1.5f));
         }
+        /** count 0 turns the offsets into a VELOCITY, which is the only way to make a particle actually
+         *  travel. Embers drift upward through the helix instead of hanging in the air. */
+        if (k % 3 == 0)
+            particle(world, Particle.SOUL_FIRE_FLAME,
+                    base.clone().add(ThreadLocalRandom.current().nextDouble(-2, 2), .3, ThreadLocalRandom.current().nextDouble(-2, 2)),
+                    0, 0, .18, 0, 1);
+    }
 
-        /** Shockwave rings, one per interval, each wider than the last. */
-        int ringEvery = legendary ? 7 : 10;
-        if (t % ringEvery == 0) {
-            double ring = 1 + (t / (double) ringEvery) * (legendary ? 1.3 : 1.0);
-            if (ring <= (legendary ? 9 : 5)) ring(world, base, ring, legendary, density);
+    /** ACT 2 (grand): the gold twin helix, rising once. */
+    private void spiral(World world, Location base, int k, int length, double density) {
+        double p = k / (double) Math.max(1, length);
+        for (int strand = 0; strand < 2; strand++) {
+            double angle = k * .38 + strand * Math.PI;
+            Location point = base.clone().add(Math.cos(angle) * 1.15, p * 3.2, Math.sin(angle) * 1.15);
+            particle(world, Particle.END_ROD, point, 1, 0, 0, 0, 0);
+            particle(world, Particle.DUST, point, scaled(2, density), .07, .07, .07, 0,
+                    new Particle.DustOptions(palette(false, p), 1.25f));
         }
+    }
 
-        /** A column of light for legendary only -- it is what makes the difference visible from across the
-         *  base rather than only to the player standing in it. */
-        if (legendary && t % 2 == 0)
-            for (double y = 0; y < 14; y += .55)
-                particle(world, Particle.ELECTRIC_SPARK, base.clone().add(0, y, 0), scaled(1, density), .14, 0, .14, 0);
-
-        if (legendary && t % 9 == 0) {
-            double angle = t * .7;
-            burst(world, base.clone().add(Math.cos(angle) * 2.4, 2.6 + (t % 27) / 9.0, Math.sin(angle) * 2.4), true, density);
-        } else if (!legendary && t % 16 == 0) {
-            burst(world, base.clone().add(0, 2.3, 0), false, density);
+    /** ACT 3 (legendary): a dome opening overhead like a firework shell, colour shifting as it expands.
+     *  Drawn as a growing hemisphere rather than a flat ring, so it reads as a different effect entirely
+     *  from the shockwaves in act one. */
+    private void bloom(World world, Location base, int k, int length, double density) {
+        double p = k / (double) Math.max(1, length);
+        double radius = .5 + p * 7;
+        Location centre = base.clone().add(0, 3.2, 0);
+        int rings = 4;
+        for (int r = 0; r < rings; r++) {
+            double lat = (Math.PI / 2) * (r / (double) rings);
+            double y = Math.sin(lat) * radius, ringRadius = Math.cos(lat) * radius;
+            int points = (int) Math.max(6, ringRadius * 6 * Math.min(1, density));
+            for (int i = 0; i < points; i++) {
+                double angle = Math.PI * 2 * i / points + k * .05;
+                Location point = centre.clone().add(Math.cos(angle) * ringRadius, y, Math.sin(angle) * ringRadius);
+                particle(world, Particle.DUST, point, 1, 0, 0, 0, 0, new Particle.DustOptions(palette(true, p), 1.4f));
+            }
         }
+        if (k % 6 == 0) particle(world, Particle.DRAGON_BREATH, centre, scaled(10, density), 1.4, .6, 1.4, .01, 1.0f);
+    }
 
-        sounds(player, base, legendary, t);
+    /** FINAL ACT, both tiers: confetti falling in silence, thinning out until there is nothing left.
+     *  The show fades rather than stopping, which is the difference between "it ended" and "it was cut off". */
+    private void drift(World world, Location base, double p, boolean legendary, double density) {
+        double remaining = Math.max(0, 1 - p);
+        int pieces = (int) Math.round((legendary ? 7 : 4) * remaining * Math.min(1, density));
+        double spread = legendary ? 4.5 : 3;
+        for (int i = 0; i < pieces; i++) {
+            Location point = base.clone().add(
+                    ThreadLocalRandom.current().nextDouble(-spread, spread),
+                    ThreadLocalRandom.current().nextDouble(1.5, legendary ? 7 : 5),
+                    ThreadLocalRandom.current().nextDouble(-spread, spread));
+            particle(world, Particle.DUST, point, 1, .04, .04, .04, 0,
+                    new Particle.DustOptions(palette(legendary, ThreadLocalRandom.current().nextDouble()), 1.35f));
+            /** A few pieces given real downward motion so the cloud visibly falls. */
+            if (i % 3 == 0) particle(world, Particle.FIREWORK, point, 0, 0, -.08, 0, 1);
+        }
+        if (legendary && pieces > 0 && ThreadLocalRandom.current().nextInt(14) == 0)
+            particle(world, Particle.TOTEM_OF_UNDYING, base.clone().add(0, 2.2, 0), scaled(3, density), 1.2, .8, 1.2, .04);
     }
 
     /** Spawns a particle with whatever data the API says it needs.
      *
      *  Paper particles differ in whether they REQUIRE a data object and which class it is, and that can
-     *  change between versions: Particle.FLASH takes a Color here, and spawning it bare threw. Rather than
-     *  hard-coding today's answer at every call site, ask getDataType() and supply something it accepts.
-     *  A particle whose data we cannot produce is skipped rather than thrown -- a missing sparkle is not
-     *  worth an exception on the main thread. */
+     *  change between versions: FLASH takes a Color here and DRAGON_BREATH takes a Float, and spawning
+     *  either bare threw. Rather than hard-coding today's answer at every call site, ask getDataType() and
+     *  supply something it accepts. A particle whose data we cannot produce is skipped rather than thrown --
+     *  a missing sparkle is not worth an exception on the main thread.
+     *
+     *  NOTE: a count of 0 is meaningful and must be passed through untouched. Vanilla then treats the
+     *  offsets as a VELOCITY vector, which is the only way to make a particle actually travel (used by the
+     *  falling confetti and the rising embers). */
     private void particle(World world, Particle particle, Location at, int count, double dx, double dy, double dz, double extra, Object data) {
         Class<?> required = particle.getDataType();
         if (required == null || required == Void.class) { world.spawnParticle(particle, at, count, dx, dy, dz, extra); return; }
@@ -209,7 +336,8 @@ final class SpectacleService {
 
     /** Asserts that every particle this service uses is one we can actually supply data for, so a Paper
      *  version that starts REQUIRING data for one of them fails a self-test instead of becoming a permanent
-     *  particle storm on somebody's screen. */
+     *  particle storm on somebody's screen. It has already earned this once: it caught DRAGON_BREATH needing
+     *  a Float immediately after FLASH was fixed for needing a Color. */
     boolean selfTest() {
         for (Particle particle : new Particle[]{Particle.END_ROD, Particle.DUST, Particle.FIREWORK, Particle.TOTEM_OF_UNDYING,
                 Particle.SOUL_FIRE_FLAME, Particle.ELECTRIC_SPARK, Particle.FLASH, Particle.DRAGON_BREATH}) {
@@ -218,65 +346,30 @@ final class SpectacleService {
                     || required == Particle.DustOptions.class || required == Float.class) continue;
             return false;
         }
-        return plugin.getConfig().getInt("celebrations.grand-seconds", 8) > 0
-                && plugin.getConfig().getInt("celebrations.legendary-seconds", 25) > 0;
+        /** Act boundaries must stay in order, or a phase would be skipped entirely. */
+        for (int seconds : new int[]{plugin.getConfig().getInt("celebrations.grand-seconds", 8),
+                                     plugin.getConfig().getInt("celebrations.legendary-seconds", 25)}) {
+            int span = seconds * 20;
+            if (seconds <= 0) return false;
+            if (!((int) (span * .08) <= (int) (span * .18) && (int) (span * .32) < (int) (span * .56) && (int) (span * .56) < span)) return false;
+        }
+        return true;
     }
 
-    private void ring(World world, Location centre, double radius, boolean legendary, double density) {
-        int points = (int) Math.max(12, radius * 14 * Math.min(1, density));
+    /** A flat ring on the ground at the given radius. */
+    private void ring(World world, Location centre, double radius, Color colour, double density, boolean legendary) {
+        int points = (int) Math.max(10, radius * 12 * Math.min(1, density));
         for (int i = 0; i < points; i++) {
             double angle = Math.PI * 2 * i / points;
             Location point = centre.clone().add(Math.cos(angle) * radius, .15, Math.sin(angle) * radius);
             particle(world, Particle.FIREWORK, point, 1, 0, 0, 0, .02);
-            if (legendary) particle(world, Particle.SOUL_FIRE_FLAME, point, 1, 0, 0, 0, .01);
-            else particle(world, Particle.TOTEM_OF_UNDYING, point, 1, 0, 0, 0, .05);
-        }
-    }
-
-    private void burst(World world, Location at, boolean legendary, double density) {
-        particle(world, Particle.FIREWORK, at, scaled(legendary ? 90 : 45, density), legendary ? 1.3 : .8, legendary ? 1.3 : .8, legendary ? 1.3 : .8, .16);
-        Color colour = legendary
-                ? Color.fromRGB(150 + ThreadLocalRandom.current().nextInt(106), 40 + ThreadLocalRandom.current().nextInt(80), 200 + ThreadLocalRandom.current().nextInt(56))
-                : Color.fromRGB(255, 180 + ThreadLocalRandom.current().nextInt(60), 40);
-        particle(world, Particle.DUST, at, scaled(legendary ? 70 : 35, density), 1.1, 1.1, 1.1, 0, new Particle.DustOptions(colour, 1.5f));
-        if (legendary) {
-            particle(world, Particle.FLASH, at, 1, 0, 0, 0, 0, colour);
-            particle(world, Particle.DRAGON_BREATH, at, scaled(24, density), .9, .9, .9, .02, 1.0f);
+            particle(world, Particle.DUST, point, 1, 0, 0, 0, 0, new Particle.DustOptions(colour, legendary ? 1.5f : 1.3f));
         }
     }
 
     private int scaled(int count, double density) { return Math.max(1, (int) Math.round(count * density)); }
 
     /** Played per listener so each player's own sound toggle is respected -- world.playSound would ignore it. */
-    private void sounds(Player owner, Location at, boolean legendary, int t) {
-        if (legendary) {
-            if (t == 0) {
-                play(at, Sound.ENTITY_ENDER_DRAGON_GROWL, .55f, 1.55f);
-                play(at, Sound.BLOCK_END_PORTAL_SPAWN, .7f, 1.4f);
-                play(at, Sound.EVENT_RAID_HORN, .35f, 1.9f);
-            }
-            if (t == 6) play(at, Sound.ENTITY_WITHER_SPAWN, .45f, 1.6f);
-            if (t == 24) play(at, Sound.BLOCK_CONDUIT_ACTIVATE, .8f, 1.5f);
-            if (t == 44) play(at, Sound.ITEM_TOTEM_USE, .7f, 1.3f);
-            if (t % 12 == 0) {
-                play(at, Sound.ENTITY_FIREWORK_ROCKET_LARGE_BLAST, .9f, .9f + (t % 36) / 40f);
-                play(at, Sound.ENTITY_FIREWORK_ROCKET_TWINKLE, .8f, 1.2f);
-            }
-            if (t == 96) play(at, Sound.UI_TOAST_CHALLENGE_COMPLETE, .9f, .85f);
-        } else {
-            if (t == 0) {
-                play(at, Sound.ENTITY_PLAYER_LEVELUP, .9f, 1.5f);
-                play(at, Sound.BLOCK_BEACON_ACTIVATE, .8f, 1.7f);
-            }
-            if (t == 14) play(at, Sound.BLOCK_AMETHYST_BLOCK_CHIME, .9f, 1.6f);
-            if (t % 16 == 0) {
-                play(at, Sound.ENTITY_FIREWORK_ROCKET_BLAST, .85f, 1.2f);
-                play(at, Sound.ENTITY_FIREWORK_ROCKET_TWINKLE, .7f, 1.4f);
-            }
-            if (t == 56) play(at, Sound.UI_TOAST_CHALLENGE_COMPLETE, .8f, 1.1f);
-        }
-    }
-
     private void play(Location at, Sound sound, float volume, float pitch) {
         World world = at.getWorld();
         if (world == null) return;
