@@ -5,6 +5,55 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-23 - the celebration that would not stop
+
+**Ships as:** `SMPCore-1.7.0.jar` + `plugins/SMPCore/config.yml` (`celebrations.grand-seconds`,
+`celebrations.legendary-seconds`).
+
+### Particles never stopped after a 50m purchase
+
+`Particle.FLASH` requires a `Color` in Paper 26.2 and was being spawned bare, throwing
+`IllegalArgumentException: missing required data class org.bukkit.Color` on the FIRST legendary frame.
+
+**A Bukkit repeating task is not cancelled by an exception** - it logs and runs again next tick. The frame
+counter was incremented AFTER the drawing, so it never advanced past 0 and the show ran for ever: 5,832
+exceptions in one log and a player who could not stop sparkling. The 10m tier was unaffected; only the
+legendary branch touches FLASH.
+
+Fixed three ways over, because one was clearly not enough:
+
+1. The counter advances BEFORE anything that can throw.
+2. `frame()` is wrapped - any exception cancels the task and logs once.
+3. An independent wall-clock deadline, so neither of the above can be the only thing standing between a
+   player and permanent glitter.
+
+`particle()` now asks `Particle#getDataType()` and supplies data the API will accept rather than hard-coding
+today's answer at each call site. A new self-test asserts every particle used is one we can satisfy - **and
+it immediately caught a second one**: `DRAGON_BREATH` requires a `Float` in this build and was also bare, so
+it would have thrown the moment FLASH was fixed.
+
+Durations are now config: **grand 8s, legendary 25s** (owner: 10s fine, a minute fine, longer excessive).
+
+### "MacoCT spent 50mil on Spawn Egg"
+
+`IRON_GOLEM_SPAWN_EGG` is only the shop KEY for the Iron Golem Spawner - `shop.yml` already carries
+`display: Iron Golem Spawner`, and the item handed over is and always was a spawner. The announcement was
+prettifying the material name. Added `ShopService.displayName(Material)` and the label now uses it.
+
+### Golem spawner allowance with two spawners - audited, plus one latent bug
+
+The owner's two spawners are STACKED in one block (`spawner_histories: [I; 1, 1]`), which is the case that
+works correctly: `stackSize` 2 -> two identities on every golem -> allowance 2 x 2200 = **4,400/day**, with
+`addSpawnerAllowance` splitting usage across both ids and `spawnerAllowanceUsed` summing them.
+
+**Latent bug found and fixed anyway.** Two golem spawners as SEPARATE blocks within the 12-block virtual
+merge radius would have silently halved it: the spawn-time merge OVERWROTE the host's `sourceIds` with
+whichever spawner fired last, and `consolidateStacks` discarded the donor's stamp entirely. Both now UNION
+the identities (capped at `spawners.max-source-identities`, 32). Nobody would ever have noticed this except
+as "my second 50m spawner earned me nothing extra".
+
+---
+
 ## Session: 2026-08-22 (part 3) - the boss payout that was multiplied by a rounding error
 
 **Ships as:** `SMPCore-1.7.0.jar` only. No config changes.

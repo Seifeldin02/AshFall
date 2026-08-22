@@ -142,6 +142,9 @@ celebrations:
   # Everything above, taken much further, plus a column of light visible across the base.
   legendary-threshold: 50000000
   broadcast-legendary: true
+  # How long each show runs. Long enough to feel earned, short enough to leave you alone afterwards.
+  grand-seconds: 8
+  legendary-seconds: 25
   broadcast-grand: false
 
 graves:

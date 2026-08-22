@@ -175,7 +175,12 @@ final class SpawnerService {
         LivingEntity host=findStackHost(spawned,cap);
         if(host!=null){
             setVirtualStack(host,Math.min(cap,virtualStack(host)+add));
-            host.getPersistentDataContainer().set(sourceIdsKey,PersistentDataType.STRING,source);
+            /** UNION, not overwrite. A representative can carry mobs from more than one spawner -- two golem
+             *  spawners in the same room merge into one entity -- and the daily allowance is granted PER
+             *  represented spawner. Overwriting the stamp with whichever spawner fired last silently halved
+             *  a two-spawner farm's allowance and charged the whole stack to one of them. Nobody would ever
+             *  notice except as "my second 50m spawner earned me nothing extra". */
+            host.getPersistentDataContainer().set(sourceIdsKey,PersistentDataType.STRING,mergedSources(host,source));
             event.setCancelled(true);
             return;
         }
@@ -223,12 +228,30 @@ final class SpawnerService {
                      *  donor outright or does nothing -- counts can rise, never shuffle. */
                     if(donor>room)continue;
                     hostStack+=donor;
+                    /** Carry the donor's spawner stamp across before it is removed, for the same reason the
+                     *  spawn-time merge unions rather than overwrites: the donor's spawners are still
+                     *  represented by the surviving entity and must keep counting toward the allowance. */
+                    String donorSource=other.getPersistentDataContainer().get(sourceIdsKey,PersistentDataType.STRING);
+                    if(donorSource!=null&&!donorSource.isBlank())
+                        host.getPersistentDataContainer().set(sourceIdsKey,PersistentDataType.STRING,mergedSources(host,donorSource));
                     consumed.add(other.getUniqueId());other.remove();
                 }
                 if(hostStack!=virtualStack(host))setVirtualStack(host,hostStack);
             }
         }
     }
+    /** Existing stamp plus the incoming one, de-duplicated and order-stable. Capped so a farm that merges
+     *  endlessly cannot grow an unbounded string in entity NBT; the cap is far above any real stack. */
+    private String mergedSources(LivingEntity host,String incoming){
+        java.util.LinkedHashSet<String> ids=new java.util.LinkedHashSet<>();
+        String existing=host.getPersistentDataContainer().get(sourceIdsKey,PersistentDataType.STRING);
+        for(String part:(existing==null?"":existing).split(","))if(!part.isBlank())ids.add(part);
+        for(String part:(incoming==null?"":incoming).split(","))if(!part.isBlank())ids.add(part);
+        int max=Math.max(1,plugin.getConfig().getInt("spawners.max-source-identities",32));
+        if(ids.size()>max)return String.join(",",new java.util.ArrayList<>(ids).subList(0,max));
+        return String.join(",",ids);
+    }
+
     private LivingEntity findStackHost(LivingEntity spawned,int cap){
         double radius=Math.max(2,plugin.getConfig().getDouble("spawners.virtual-merge-radius",6));
         LivingEntity best=null;int bestStack=-1;

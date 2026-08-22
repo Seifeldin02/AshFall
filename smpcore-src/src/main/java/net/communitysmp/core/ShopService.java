@@ -67,6 +67,9 @@ final class ShopService {
     java.util.Map<String,Integer> allStock(){return db.shopStockAll();}
     /** The authored category for a material, or null when it is not a shop item (auction listings). */
     String categoryOf(Material material){Price price=prices.get(material);return price==null?null:price.category();}
+    /** The catalogue name a player actually sees, which is not always the material. IRON_GOLEM_SPAWN_EGG
+     *  is the shop KEY for the Iron Golem Spawner; the item handed over is a spawner. */
+    String displayName(Material material){Price price=prices.get(material);return price==null?CoreUtil.pretty(material.name()):price.display();}
     /** Deliberate display order, not alphabetical: it runs from what a new player gathers first to what
      *  needs a mob farm, so the shop reads as a progression rather than an index. */
     private static final java.util.List<String> CATEGORY_ORDER=java.util.List.of("WOOD","MINING","FARMING","ANIMALS","MOB_DROPS");

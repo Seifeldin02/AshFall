@@ -72,6 +72,11 @@ final class SpectacleService {
         String cleaned = raw;
         for (String prefix : new String[]{"MERCHANT_", "SHOP_", "SPAWNER_SHOP_", "LUXURY_", "SINK_", "UPGRADE_"})
             if (cleaned.toUpperCase(Locale.ROOT).startsWith(prefix)) { cleaned = cleaned.substring(prefix.length()); break; }
+        /** Prefer the shop's own catalogue name. IRON_GOLEM_SPAWN_EGG is only the KEY under which the Iron
+         *  Golem Spawner is listed -- the item delivered is a spawner and always was -- so prettifying the
+         *  material announced "spent 50m on Iron Golem Spawn Egg" for something that is not a spawn egg. */
+        org.bukkit.Material material = org.bukkit.Material.matchMaterial(cleaned);
+        if (material != null && plugin.shop() != null) return plugin.shop().displayName(material);
         return cleaned.equals(cleaned.toUpperCase(Locale.ROOT)) ? CoreUtil.pretty(cleaned) : cleaned;
     }
 
@@ -94,16 +99,33 @@ final class SpectacleService {
         else if (!legendary && plugin.getConfig().getBoolean("celebrations.broadcast-grand", false)) announce(player, amount, what, verb);
 
         final UUID id = player.getUniqueId();
-        final int duration = legendary ? 110 : 65;
+        final int duration = 20 * Math.max(1, Math.min(120, plugin.getConfig().getInt(
+                legendary ? "celebrations.legendary-seconds" : "celebrations.grand-seconds", legendary ? 25 : 8)));
         final double density = Math.max(.2, plugin.settings() == null ? 1 : plugin.settings().particleScale(player));
         BukkitTask task = new BukkitRunnable() {
             int t = 0;
+            /** Wall-clock backstop, independent of the frame counter. */
+            final long deadline = System.currentTimeMillis() + duration * 50L + 5000L;
             @Override public void run() {
                 Player self = plugin.getServer().getPlayer(id);
-                /** A player who logs out or dies mid-show simply ends it; nothing here survives them. */
-                if (self == null || !self.isOnline() || t > duration) { running.remove(id); cancel(); return; }
-                frame(self, legendary, t, density);
-                t++;
+                /** The counter advances BEFORE anything that can throw.
+                 *
+                 *  A Bukkit repeating task is NOT cancelled by an exception -- it logs and runs again next
+                 *  tick -- so an increment placed after the drawing turns any single bad particle into a
+                 *  PERMANENT one. That is exactly what happened: Particle.FLASH requires a Color in this
+                 *  Paper build, spawning it without one threw on the very first legendary frame, and the
+                 *  show ran forever at t=0. 5,832 exceptions and a player who could not stop sparkling.
+                 *
+                 *  Three independent ways out now: the frame count, the wall clock, and cancel-on-error. */
+                int frame = t++;
+                if (self == null || !self.isOnline() || frame > duration || System.currentTimeMillis() > deadline) {
+                    running.remove(id); cancel(); return;
+                }
+                try { frame(self, legendary, frame, density); }
+                catch (RuntimeException ex) {
+                    running.remove(id); cancel();
+                    plugin.getLogger().warning("Celebration stopped after an error: " + ex);
+                }
             }
         }.runTaskTimer(plugin, 0L, 1L);
         running.put(id, task);
@@ -137,8 +159,8 @@ final class SpectacleService {
         for (int strand = 0; strand < strands; strand++) {
             double angle = t * .38 + strand * (Math.PI * 2 / strands);
             Location point = base.clone().add(Math.cos(angle) * radius, climb, Math.sin(angle) * radius);
-            world.spawnParticle(Particle.END_ROD, point, 1, 0, 0, 0, 0);
-            world.spawnParticle(Particle.DUST, point, scaled(2, density), .08, .08, .08, 0,
+            particle(world, Particle.END_ROD, point, 1, 0, 0, 0, 0);
+            particle(world, Particle.DUST, point, scaled(2, density), .08, .08, .08, 0,
                     new Particle.DustOptions(legendary ? Color.fromRGB(214, 96, 255) : Color.fromRGB(255, 205, 60), legendary ? 1.6f : 1.25f));
         }
 
@@ -153,7 +175,7 @@ final class SpectacleService {
          *  base rather than only to the player standing in it. */
         if (legendary && t % 2 == 0)
             for (double y = 0; y < 14; y += .55)
-                world.spawnParticle(Particle.ELECTRIC_SPARK, base.clone().add(0, y, 0), scaled(1, density), .14, 0, .14, 0);
+                particle(world, Particle.ELECTRIC_SPARK, base.clone().add(0, y, 0), scaled(1, density), .14, 0, .14, 0);
 
         if (legendary && t % 9 == 0) {
             double angle = t * .7;
@@ -165,26 +187,61 @@ final class SpectacleService {
         sounds(player, base, legendary, t);
     }
 
+    /** Spawns a particle with whatever data the API says it needs.
+     *
+     *  Paper particles differ in whether they REQUIRE a data object and which class it is, and that can
+     *  change between versions: Particle.FLASH takes a Color here, and spawning it bare threw. Rather than
+     *  hard-coding today's answer at every call site, ask getDataType() and supply something it accepts.
+     *  A particle whose data we cannot produce is skipped rather than thrown -- a missing sparkle is not
+     *  worth an exception on the main thread. */
+    private void particle(World world, Particle particle, Location at, int count, double dx, double dy, double dz, double extra, Object data) {
+        Class<?> required = particle.getDataType();
+        if (required == null || required == Void.class) { world.spawnParticle(particle, at, count, dx, dy, dz, extra); return; }
+        if (data != null && required.isInstance(data)) { world.spawnParticle(particle, at, count, dx, dy, dz, extra, data); return; }
+        if (required == Color.class) { world.spawnParticle(particle, at, count, dx, dy, dz, extra, Color.fromRGB(255, 225, 140)); return; }
+        if (required == Particle.DustOptions.class) { world.spawnParticle(particle, at, count, dx, dy, dz, extra, new Particle.DustOptions(Color.fromRGB(255, 205, 60), 1.4f)); return; }
+        if (required == Float.class) { world.spawnParticle(particle, at, count, dx, dy, dz, extra, 1.0f); return; }
+    }
+
+    private void particle(World world, Particle particle, Location at, int count, double dx, double dy, double dz, double extra) {
+        particle(world, particle, at, count, dx, dy, dz, extra, null);
+    }
+
+    /** Asserts that every particle this service uses is one we can actually supply data for, so a Paper
+     *  version that starts REQUIRING data for one of them fails a self-test instead of becoming a permanent
+     *  particle storm on somebody's screen. */
+    boolean selfTest() {
+        for (Particle particle : new Particle[]{Particle.END_ROD, Particle.DUST, Particle.FIREWORK, Particle.TOTEM_OF_UNDYING,
+                Particle.SOUL_FIRE_FLAME, Particle.ELECTRIC_SPARK, Particle.FLASH, Particle.DRAGON_BREATH}) {
+            Class<?> required = particle.getDataType();
+            if (required == null || required == Void.class || required == Color.class
+                    || required == Particle.DustOptions.class || required == Float.class) continue;
+            return false;
+        }
+        return plugin.getConfig().getInt("celebrations.grand-seconds", 8) > 0
+                && plugin.getConfig().getInt("celebrations.legendary-seconds", 25) > 0;
+    }
+
     private void ring(World world, Location centre, double radius, boolean legendary, double density) {
         int points = (int) Math.max(12, radius * 14 * Math.min(1, density));
         for (int i = 0; i < points; i++) {
             double angle = Math.PI * 2 * i / points;
             Location point = centre.clone().add(Math.cos(angle) * radius, .15, Math.sin(angle) * radius);
-            world.spawnParticle(Particle.FIREWORK, point, 1, 0, 0, 0, .02);
-            if (legendary) world.spawnParticle(Particle.SOUL_FIRE_FLAME, point, 1, 0, 0, 0, .01);
-            else world.spawnParticle(Particle.TOTEM_OF_UNDYING, point, 1, 0, 0, 0, .05);
+            particle(world, Particle.FIREWORK, point, 1, 0, 0, 0, .02);
+            if (legendary) particle(world, Particle.SOUL_FIRE_FLAME, point, 1, 0, 0, 0, .01);
+            else particle(world, Particle.TOTEM_OF_UNDYING, point, 1, 0, 0, 0, .05);
         }
     }
 
     private void burst(World world, Location at, boolean legendary, double density) {
-        world.spawnParticle(Particle.FIREWORK, at, scaled(legendary ? 90 : 45, density), legendary ? 1.3 : .8, legendary ? 1.3 : .8, legendary ? 1.3 : .8, .16);
+        particle(world, Particle.FIREWORK, at, scaled(legendary ? 90 : 45, density), legendary ? 1.3 : .8, legendary ? 1.3 : .8, legendary ? 1.3 : .8, .16);
         Color colour = legendary
                 ? Color.fromRGB(150 + ThreadLocalRandom.current().nextInt(106), 40 + ThreadLocalRandom.current().nextInt(80), 200 + ThreadLocalRandom.current().nextInt(56))
                 : Color.fromRGB(255, 180 + ThreadLocalRandom.current().nextInt(60), 40);
-        world.spawnParticle(Particle.DUST, at, scaled(legendary ? 70 : 35, density), 1.1, 1.1, 1.1, 0, new Particle.DustOptions(colour, 1.5f));
+        particle(world, Particle.DUST, at, scaled(legendary ? 70 : 35, density), 1.1, 1.1, 1.1, 0, new Particle.DustOptions(colour, 1.5f));
         if (legendary) {
-            world.spawnParticle(Particle.FLASH, at, 1, 0, 0, 0, 0);
-            world.spawnParticle(Particle.DRAGON_BREATH, at, scaled(24, density), .9, .9, .9, .02);
+            particle(world, Particle.FLASH, at, 1, 0, 0, 0, 0, colour);
+            particle(world, Particle.DRAGON_BREATH, at, scaled(24, density), .9, .9, .9, .02, 1.0f);
         }
     }
 
