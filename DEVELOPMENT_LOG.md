@@ -5,6 +5,46 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-24 (part 4) - PROMOTED TO PRODUCTION, and admin login persistence fixed
+
+**PROMOTED 2026-08-24.** One silent restart (only Asserto online), booted in 43s, selftest clean, **zero
+SMPCore errors**, jar MD5 identical to the artefact tested on staging. Staging stopped afterwards.
+
+Carried: the jar, plus `relics.yml` (the whole Skyward Anchor block), `bosses.yml` (`elite-types`) and
+`config.yml` (`trusted-admin.require-same-ip`). Config drift against staging is now only the documented
+staging-only admin flags and the legacy sigil list.
+
+### Admin login persistence: `require-same-ip` is not the IP check
+
+**I got this wrong first and talked myself into a much bigger fix than the problem needed.** Recording the
+mistake because the misreading is easy to repeat.
+
+AuthMe's own session feature is `enabled: true, timeout: 30` -- same IP, thirty minutes -- and it is already
+what every ordinary player gets. `RestoreSessionEvent` fires **only after AuthMe has validated that**: the
+connection matches the address of the player's own last password login and the timeout has not expired.
+
+`trusted-admin.require-same-ip` is a **second, much stricter constraint layered on top**, and its name is
+what caused the confusion: it does not mean "same IP as last time", it means "same machine as the SERVER"
+(`isThisMachine`: loopback or one of the server box's own NIC addresses). Admins connect from their own
+machines, so it refused every time -- which is precisely why admin logins never persisted while everyone
+else's did.
+
+Set to **false** on production. That is not a weakening to "any address may skip the password": AuthMe's
+same-IP, 30-minute check still stands in front of it, unchanged. It simply stops SMPCore adding a
+requirement that only the server console could ever satisfy.
+
+**What I nearly built instead, and did not:** a session-resume mechanism storing (account, address, time)
+and re-validating it. It was a reimplementation of what AuthMe already does, sitting behind AuthMe's own
+gate, and would have added a security surface for zero behavioural gain. Deleted unbuilt. The one thing kept
+from that work is the **logging** -- a restore now records the address it came from, and a refusal explains
+that AuthMe approved the session but `require-same-ip` rejected the machine. The silence was the only reason
+this needed diagnosing rather than reading.
+
+**To verify:** reconnect within 30 minutes of a password login and `logs/latest.log` should show
+`Administrator session restored for <name> from <address> (AuthMe session).`
+
+---
+
 ## Session: 2026-08-24 (part 3) - launch heights were being computed in a vacuum - STAGING ONLY
 
 Reported: the mace combo still does not launch high enough. It does not, and the reason is that every launch

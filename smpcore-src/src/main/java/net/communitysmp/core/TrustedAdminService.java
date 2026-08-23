@@ -95,15 +95,36 @@ final class TrustedAdminService implements Listener {
             authenticated.add(player.getUniqueId());
             player.setOp(true);
             grantGamemode(player);
-            plugin.getLogger().info("Administrator session restored ("+(requireSameIp?"same-ip":"any-ip")+"): "+player.getName()+".");
+            plugin.getLogger().info("Administrator session restored for "+player.getName()+" from "
+                    +describeAddress(player)+" (AuthMe session"+(requireSameIp?" + same machine":"")+").");
             player.updateCommands();
             return;
         }
+        /** Silence was the whole problem: persistence simply did not happen and there was no way to tell
+         *  whether the switch was off or the same-machine check had refused. Say which, and say what address
+         *  was seen.
+         *
+         *  Worth being clear about what require-same-ip actually is, because the name reads like the IP check
+         *  and it is not: AuthMe has ALREADY verified the session against the player's own previous address
+         *  and its 30-minute timeout before RestoreSessionEvent is ever fired. This flag is a SECOND,
+         *  stricter constraint on top -- "and also, only from the server box itself". Turning it off does not
+         *  mean any address may restore a session; it means admins get exactly the same same-IP session that
+         *  every other player already gets. */
+        if(persist)plugin.getLogger().info("Administrator session NOT restored for "+player.getName()
+                +" from "+describeAddress(player)+": AuthMe approved the session, but trusted-admin."
+                +"require-same-ip is on and that address is not this machine.");
         event.setCancelled(true);
         authenticated.remove(player.getUniqueId());
         player.setOp(false);
         revokeGamemode(player);
     }
+
+    private String describeAddress(Player player){
+        if(!(player.getAddress() instanceof java.net.InetSocketAddress socket))return "an unknown address";
+        java.net.InetAddress address=socket.getAddress();
+        return address==null?"an unknown address":address.getHostAddress();
+    }
+
     private boolean isThisMachine(Player player){
         if(!(player.getAddress() instanceof java.net.InetSocketAddress socket))return false;
         java.net.InetAddress address=socket.getAddress();
