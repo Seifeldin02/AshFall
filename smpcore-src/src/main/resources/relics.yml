@@ -131,7 +131,9 @@ buffs:
     max-burst-height: 70
     # The mace combo gets its own launch rather than a doubled slam: a Wind Burst VI-sized throw, still
     # multiplied per target struck.
-    mace-combo-burst-height: 22
+    # Heights here are what is ACTUALLY reached -- the velocity is solved against the game's real
+    # per-tick drag, not the vacuum formula, which was under-delivering by a third at this size.
+    mace-combo-burst-height: 45
 
   warlords-ember:
     # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its

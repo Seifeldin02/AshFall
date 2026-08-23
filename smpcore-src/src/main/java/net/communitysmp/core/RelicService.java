@@ -568,6 +568,39 @@ final class RelicService implements Listener {
         return 7+bonus+2.5*drop;
     }
 
+    /*  Launch heights, done against Minecraft's ACTUAL physics rather than a textbook parabola.
+     *
+     *  Every launch here derived its velocity from v = sqrt(2*g*h). That is the vacuum answer, and the game
+     *  is not a vacuum: a player's vertical motion is `y += vy; vy = (vy - 0.08) * 0.98` -- there is 2% drag
+     *  every tick. The error is small for a hop and enormous for a throw, because the drag compounds over
+     *  every tick of the ascent:
+     *
+     *      configured   actually reached
+     *          6              5.7
+     *         20             16.3
+     *         22             17.9      <- the mace combo, asking for 22 and delivering 18
+     *         70             47.6
+     *
+     *  So "mace-combo-burst-height: 22" was really "about eighteen blocks", which is exactly the reported
+     *  "still doesn't launch me insanely high".
+     *
+     *  apexHeight() is the closed form of that recurrence (terminal velocity 0.08*0.98/(1-0.98) = 3.92),
+     *  verified against a tick-by-tick simulation to within 0.01 blocks. launchVelocity() inverts it, so a
+     *  height in config is now the height genuinely reached. */
+    private static double apexHeight(double velocity){
+        if(velocity<=0)return 0;
+        double terminal=3.92;
+        double ticks=Math.log(terminal/(velocity+terminal))/Math.log(.98);
+        return 50*velocity-terminal*ticks;
+    }
+
+    /** The upward velocity that actually reaches this many blocks. */
+    private static double launchVelocity(double height){
+        double low=0,high=12;
+        for(int i=0;i<48;i++){double mid=(low+high)/2;if(apexHeight(mid)<height)low=mid;else high=mid;}
+        return (low+high)/2;
+    }
+
     private double anchorRadius(){return Math.max(.5,config.getDouble("buffs.skyward-anchor.aoe-radius",1.5));}
 
     /** 1.5x directly underneath, easing to 0.5x at the edge of the box. Horizontal distance only. */
@@ -590,7 +623,7 @@ final class RelicService implements Listener {
         if(hits>0)windBurst(player,hits);
         else{
             double height=Math.max(1,config.getDouble("buffs.skyward-anchor.height",20));
-            player.setVelocity(player.getVelocity().setY(Math.sqrt(2*0.08*height)));
+            player.setVelocity(player.getVelocity().setY(launchVelocity(height)));
             player.setFallDistance(0);
         }
         anchors.put(player.getUniqueId(),new Anchor(player.getLocation().getY()));
@@ -623,7 +656,7 @@ final class RelicService implements Listener {
                 Math.max(1,config.getDouble("buffs.skyward-anchor.max-burst-height",70)));
         /** Horizontal motion is damped so the launch reads as vertical lift rather than as being swatted. */
         Vector velocity=player.getVelocity();
-        player.setVelocity(new Vector(velocity.getX()*.4,Math.sqrt(2*0.08*height),velocity.getZ()*.4));
+        player.setVelocity(new Vector(velocity.getX()*.4,launchVelocity(height),velocity.getZ()*.4));
         player.setFallDistance(0);
         /** The ride down from a launch this size is not the player's fault, so it is not charged to them.
          *  Cleared the moment they land, so it only ever covers the one descent. */

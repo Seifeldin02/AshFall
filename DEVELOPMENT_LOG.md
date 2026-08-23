@@ -5,6 +5,35 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-24 (part 3) - launch heights were being computed in a vacuum - STAGING ONLY
+
+Reported: the mace combo still does not launch high enough. It does not, and the reason is that every launch
+height in this relic has been wrong since the first version.
+
+Velocity was derived with `v = sqrt(2*g*h)`. That is the textbook parabola, which assumes no drag. A player's
+real vertical motion is `y += vy; vy = (vy - 0.08) * 0.98` -- **2% drag every tick**, compounding over the
+whole ascent. The shortfall grows with the throw:
+
+| Configured | Actually reached | Short by |
+|---|---|---|
+| 6 | 5.7 | 5% |
+| 20 | 16.3 | 19% |
+| **22** (the mace combo) | **17.9** | **19%** |
+| 70 (the cap) | 47.6 | 32% |
+
+So the combo was asking for 22 blocks and delivering about eighteen. Both halves of the complaint were
+correct: the number was too small AND it was not even being honoured.
+
+`apexHeight()` is the closed form of that recurrence (terminal velocity `0.08*0.98/(1-0.98)` = 3.92),
+checked against a tick-by-tick simulation and agreeing to within 0.01 blocks across the whole range.
+`launchVelocity()` inverts it by bisection. **A height in config is now the height actually reached.**
+
+`mace-combo-burst-height` raised **22 -> 45**, which is the 40-50 asked for and needs v=3.235 -- far below
+anything that would trip Paper's moved-too-quickly check. The 45-block descent is already covered by the
+burst fall grace added earlier, so it cannot kill its own user. For scale, a normal jump is 1.25 blocks.
+
+---
+
 ## Session: 2026-08-24 (part 2) - Anchor resolves on landing - STAGING ONLY
 
 **STAGING ONLY.** Owner's design, adopted: the relic now resolves ONLY when the holder lands.
