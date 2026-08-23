@@ -475,7 +475,17 @@ final class IndustrialHopperService implements Listener {
                 && from.getBlockY() == destination.at.getBlockY() + 1
                 && from.getBlockZ() == destination.at.getBlockZ()) return;
         ItemStack wanted = event.getItem().clone();
-        /** Remove from the source first, then credit exactly what actually came out of it. */
+        /** Third copy of the remove-before-checking pattern, after move() and moveFromSlots(). This one is
+         *  reached when a vanilla hopper or dropper pushes INTO us: the item left the source, and anything
+         *  the full bay rejected was pushed back -- with whatever the source then refused thrown on the
+         *  floor at the hopper's own centre by dropItemNaturally. Dropped INSIDE the hopper block, the item
+         *  is immediately shoved out again by block collision and lands somewhere else, which is what
+         *  "items on top of a full hopper jump around and fall out" looks like from outside.
+         *
+         *  Take only what fits and there is nothing to reject, nothing to refund, and nothing to drop. */
+        int room = space(destination.inv, wanted);
+        if (room <= 0) return;
+        if (room < wanted.getAmount()) wanted.setAmount(room);
         int notRemoved = total(event.getSource().removeItem(wanted.clone()).values());
         int taken = wanted.getAmount() - notRemoved;
         if (taken <= 0) return;
@@ -969,8 +979,14 @@ final class IndustrialHopperService implements Listener {
         return room;
     }
 
+    /** Spilling is always a symptom, never a plan: every remaining call site is a last-resort refund that
+     *  should be unreachable now that capacity is checked before anything is removed. Logged so that if it
+     *  ever does fire, it says so instead of silently flinging somebody's farm across the floor. */
     private static void dropAt(Location at, ItemStack item) {
         if (at == null || item == null || item.getType().isAir()) return;
+        org.bukkit.Bukkit.getLogger().warning("[SMPCore] Industrial hopper spilled " + item.getAmount() + "x "
+                + item.getType() + " at " + at.getBlockX() + "," + at.getBlockY() + "," + at.getBlockZ()
+                + " - this should be unreachable; please report it.");
         /** Location.getWorld() throws rather than returning null once its world has been unloaded, and this
          *  is reached from refund paths that can run in the same tick a world goes away. There is nowhere to
          *  drop an item in a world that no longer exists, so the only correct answer is to do nothing. */

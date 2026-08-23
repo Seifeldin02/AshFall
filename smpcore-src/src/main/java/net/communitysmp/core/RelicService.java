@@ -42,6 +42,15 @@ final class RelicService implements Listener {
     private static final class Anchor {
         double peak;
         final long armedAt;
+        /** Has the holder actually LEFT the ground since arming?
+         *
+         *  Without this the relic killed itself on the tick after the right-click: Player#isOnGround reflects
+         *  the last movement packet the client sent, so it is still true for a tick or two after a launch,
+         *  the ground-contact branch fired immediately, and the anchor discharged into thin air with a fall
+         *  distance of zero. Damage was therefore 0.9 x 7 x 1.5 = about 9 -- which is exactly the "it does no
+         *  base damage" and "the buff doesn't seem active at all" that was reported, and it is also why the
+         *  mace combo never triggered: by the time you swung, there was nothing armed left to combo with. */
+        boolean airborne;
         Anchor(double peak){this.peak=peak;this.armedAt=System.currentTimeMillis();}
     }
     private final Map<UUID,Anchor> anchors=new java.util.concurrent.ConcurrentHashMap<>();
@@ -587,14 +596,28 @@ final class RelicService implements Listener {
     /** Launch upward, scaled by how many things were hit. Two targets is twice the HEIGHT, not twice the
      *  velocity, which keeps the multiplication readable instead of exponential. Fall distance is cleared
      *  the way a vanilla wind burst does, so the ride up is never what kills you. */
+    /** The launch. Tuned to read as a real Wind Burst rather than as a mace's little hop.
+     *
+     *  The first pass used 2.5 blocks per target, which is roughly what an unenchanted mace smash gives you
+     *  -- reported, correctly, as "the push is similar to a base mace push". The default is now a genuine
+     *  Wind Burst II-sized launch, and it still MULTIPLIES per target: two targets is twice the HEIGHT.
+     *  Height rather than velocity, because velocity would square the effect and put three targets in orbit.
+     *
+     *  Sound and particles are vanilla's own wind-burst pair, so it looks and sounds like the thing it is
+     *  imitating, and fall distance is cleared so the ride up is never what kills you. */
     private void windBurst(Player player,int hits){
         int counted=Math.max(1,Math.min(hits,config.getInt("buffs.skyward-anchor.max-burst-hits",8)));
-        double perHit=Math.max(.5,config.getDouble("buffs.skyward-anchor.burst-height-per-hit",2.5));
+        double perHit=Math.max(.5,config.getDouble("buffs.skyward-anchor.burst-height-per-hit",6));
         double height=perHit*counted;
-        player.setVelocity(player.getVelocity().setY(Math.sqrt(2*0.08*height)));
+        /** Horizontal motion is damped so the launch reads as vertical lift rather than as being swatted. */
+        Vector velocity=player.getVelocity();
+        player.setVelocity(new Vector(velocity.getX()*.4,Math.sqrt(2*0.08*height),velocity.getZ()*.4));
         player.setFallDistance(0);
-        player.getWorld().playSound(player.getLocation(),Sound.ITEM_MACE_SMASH_GROUND,1f,.9f);
-        player.getWorld().spawnParticle(Particle.GUST_EMITTER_SMALL,player.getLocation(),1,0,0,0,0);
+        Location at=player.getLocation();
+        player.getWorld().playSound(at,Sound.ENTITY_WIND_CHARGE_WIND_BURST,1.2f,counted>=2?.8f:1f);
+        player.getWorld().playSound(at,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1f,.9f);
+        player.getWorld().spawnParticle(Particle.GUST_EMITTER_LARGE,at,1,0,0,0,0);
+        player.getWorld().spawnParticle(Particle.GUST,at,counted,.6,.2,.6,0);
     }
 
     /** Applies the area damage. Returns how many valid targets were actually hit. */
@@ -615,7 +638,12 @@ final class RelicService implements Listener {
             impact.getWorld().spawnParticle(Particle.EXPLOSION,impact,1,0,0,0,0);
             impact.getWorld().spawnParticle(Particle.GUST,impact,1,0,0,0,0);
             impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1f,1f);
-            if(announce)player.sendActionBar(Component.text("Skyward Anchor \u2014 "+hits+" caught in the slam",NamedTextColor.AQUA));
+            /** Reports the actual numbers, so the damage can be checked against what it is supposed to be
+             *  instead of guessed at from a health bar. */
+            if(announce)player.sendActionBar(Component.text("\u2726 SLAM \u2014 ",NamedTextColor.GOLD)
+                    .append(Component.text(hits+(hits==1?" target":" targets"),NamedTextColor.WHITE))
+                    .append(Component.text(String.format(java.util.Locale.US," \u2022 %.0f block drop \u2022 up to %.1f dmg",
+                            fall,scale*maceEquivalent(fall)*config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5)),NamedTextColor.GRAY)));
         }
         return hits;
     }
@@ -655,20 +683,39 @@ final class RelicService implements Listener {
                 if(angle>maxAngle)anchor.peak=at.getY();
             }
 
-            /** Visible while it is live, on the legs, so both the holder and whoever they are diving at can
-             *  see that it is armed. */
-            player.getWorld().spawnParticle(Particle.GUST,at.clone().add(0,.15,0),0,0,-.05,0,1);
-            player.getWorld().spawnParticle(Particle.CLOUD,at.clone().add(0,.25,0),2,.22,.05,.22,.005);
+            /** Armed feedback, deliberately restrained.
+             *
+             *  The first version put a GUST puff and a cloud burst at the feet every tick, which filled the
+             *  whole screen the moment you looked down -- i.e. exactly when you are lining up a slam. Now a
+             *  couple of small motes in a slow ring around the ankles every quarter second, plus an action
+             *  bar that also reports the drop being carried. The readout is the real feedback: it is
+             *  unmissable, costs no screen space, and lets the holder time the hit. */
+            if(player.getTicksLived()%5==0){
+                double spin=player.getTicksLived()*.35;
+                for(int i=0;i<2;i++){
+                    double angle=spin+i*Math.PI;
+                    player.getWorld().spawnParticle(Particle.CLOUD,
+                            at.clone().add(Math.cos(angle)*.32,.12,Math.sin(angle)*.32),1,0,0,0,0);
+                }
+            }
+            if(player.getTicksLived()%4==0){
+                double carried=Math.max(0,anchor.peak-at.getY());
+                player.sendActionBar(Component.text("\u2726 Skyward Anchor armed \u2014 ",NamedTextColor.AQUA)
+                        .append(Component.text(String.format(java.util.Locale.US,"%.0f block drop",carried),NamedTextColor.WHITE)));
+            }
 
-            if(player.isOnGround()){
+            if(!player.isOnGround())anchor.airborne=true;
+            else if(anchor.airborne){
                 /** Landing with no fall damage event of its own (a short drop) still discharges, so a
-                 *  ground touch always resolves the relic exactly as promised. */
+                 *  ground touch always resolves the relic exactly as promised -- but only once the holder
+                 *  has genuinely been off the ground, or the launch tick itself would end it. */
                 discharge(player);
                 continue;
             }
-            /** Physically touching something on the way down. Deliberately only while descending, so
-                brushing past a mob on the way UP does not waste the charge. */
-            if(player.getVelocity().getY()<0){
+            /** Physically touching something on the way down. Deliberately only while descending, and only
+             *  once actually airborne, so neither the launch tick nor brushing past a mob on the way UP
+             *  wastes the charge. */
+            if(anchor.airborne&&player.getVelocity().getY()<0){
                 for(Entity entity:player.getNearbyEntities(.65,1,.65)){
                     if(!relicEffectTarget(player,entity))continue;
                     discharge(player);
@@ -712,15 +759,28 @@ final class RelicService implements Listener {
             target.damage(scale*maceEquivalent(fall)*centringMultiplier(impact,target.getLocation()),player);
             extra++;
         }
-        impact.getWorld().spawnParticle(Particle.EXPLOSION,impact,1,0,0,0,0);
-        impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1.1f,.85f);
+        /** Unmistakable on purpose -- a combo you cannot tell fired is a combo nobody will use. */
+        impact.getWorld().spawnParticle(Particle.EXPLOSION_EMITTER,impact,1,0,0,0,0);
+        impact.getWorld().spawnParticle(Particle.GUST_EMITTER_LARGE,impact,1,0,0,0,0);
+        impact.getWorld().spawnParticle(Particle.FLASH,impact,1,0,0,0,0,Color.fromRGB(255,235,190));
+        impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1.3f,.7f);
+        impact.getWorld().playSound(impact,Sound.ENTITY_WIND_CHARGE_WIND_BURST,1.3f,.75f);
+        impact.getWorld().playSound(impact,Sound.ITEM_TOTEM_USE,.7f,1.5f);
         windBurst(player,(extra+1)*2);
-        player.sendActionBar(Component.text("Anchor + Mace \u2014 "+(extra+1)+" struck",NamedTextColor.LIGHT_PURPLE));
+        player.showTitle(net.kyori.adventure.title.Title.title(
+                Component.text("\u2726 ANCHOR SLAM \u2726",NamedTextColor.LIGHT_PURPLE,net.kyori.adventure.text.format.TextDecoration.BOLD),
+                Component.text((extra+1)+" struck \u2022 mace damage doubled \u2022 burst x2",NamedTextColor.WHITE),
+                net.kyori.adventure.title.Title.Times.times(java.time.Duration.ofMillis(80),java.time.Duration.ofMillis(1200),java.time.Duration.ofMillis(400))));
     }
     /** Cooldowns are bound to the relic itself (persisted in the state table), not the player holding
      *  it — so dropping, relogging, dying, trading, or a server restart can never reset or bypass one;
      *  the single unique artifact simply isn't ready again until real time has actually passed. */
     private boolean onCooldown(Player player,String relicKey,long cooldownMs){
+        /** Creative is for testing. Waiting out a twenty-second cooldown between attempts makes tuning a
+         *  relic miserable, and nothing in creative is a balance concern by definition. Deliberately does
+         *  not WRITE a cooldown either, so a creative test cannot lock the relic out for a survival player
+         *  afterwards -- these cooldowns are bound to the relic itself, not to whoever is holding it. */
+        if(player.getGameMode()==GameMode.CREATIVE)return false;
         long now=System.currentTimeMillis(),ready=parseLong(db.state("relic_cooldown:"+relicKey));
         if(now<ready){CoreUtil.error(player,displayName(relicKey)+" is not ready yet ("+((ready-now)/1000+1)+"s).");return true;}
         db.state("relic_cooldown:"+relicKey,Long.toString(now+cooldownMs));return false;

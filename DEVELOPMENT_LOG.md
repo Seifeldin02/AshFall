@@ -5,6 +5,98 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-24 - Anchor field-test fixes, hopper spill #3, admin login persistence - STAGING ONLY
+
+**STAGING ONLY. Production untouched.**
+
+### TO PROMOTE LATER: admin login persistence is not working on production
+
+Diagnosed, **not** applied. Production has `trusted-admin.session-persistence: true` and
+`require-same-ip: true`, and `latest.log` contains **zero** "Administrator session restored" lines, so the
+IP constraint is refusing every attempt: `isThisMachine()` only accepts loopback or an address belonging to
+one of the server box's own network interfaces.
+
+**The obvious fix is dangerous here and must not be applied blind.** Production runs `online-mode=false`, so
+Mojang does not verify identity at all -- that is precisely why AuthMe is in front of it. Setting
+`require-same-ip: false` would mean **anyone who connects using the name "MacoCT" is opped with no password**.
+
+Built instead, ready to promote:
+
+1. `trusted-admin.trusted-ips` -- an explicit allowlist of addresses that may restore a session. Keeps the
+   property that matters (only a known machine skips the password) while working from somewhere that is not
+   the server box.
+2. A log line on every REFUSAL naming the address that was seen. The failure was previously silent, which is
+   the only reason this needed diagnosing at all rather than being read straight out of the log.
+
+**To finish at promotion:** connect once, read the refused address out of `logs/latest.log`, and add it to
+`trusted-admin.trusted-ips` in production's `config.yml`. Do not set `require-same-ip: false`.
+
+### Skyward Anchor: it was disarming one tick after being armed
+
+Field report: no apparent buff, no base damage, and the mace combo never fired. All three were the same bug.
+
+`Player#isOnGround()` reflects the last movement packet the client sent, so it is **still true for a tick or
+two after a launch**. The ground-contact branch therefore fired immediately, and the relic discharged into
+thin air with a fall distance of zero:
+
+| | Damage at dead centre |
+|---|---|
+| Intended, 20-block drop | `0.9 x 85 x 1.5` = **114.8** |
+| What actually happened (`fall = 0`) | `0.9 x 7 x 1.5` = **9.4** |
+
+Which is exactly "you forgot to give it base damage". And the combo could never fire because by the time you
+swung the mace there was nothing armed left to combo with. Fixed with an `airborne` flag: ground contact only
+counts once the holder has genuinely left the ground.
+
+**The damage model itself was correct and is unchanged.** Dead centre is `0.9 x 1.5` = **1.35x** a
+maximum-Density mace for the same drop, easing to `0.9 x 0.5` = 0.45x at the edge of the box. The strike now
+prints its own numbers to the action bar (targets, drop, peak damage) so it can be checked rather than
+guessed at.
+
+### Wind burst: it was a mace hop, not a wind burst
+
+`burst-height-per-hit` was 2.5 blocks -- which is roughly what a plain mace smash gives you, reported
+correctly as "the push is similar to a base mace push". Raised to **6.0**, a genuine Wind Burst II-sized
+launch, still multiplying per target. Horizontal motion is now damped to 40% so it reads as lift rather than
+as being swatted sideways, and it uses vanilla's own `ENTITY_WIND_CHARGE_WIND_BURST` sound and
+`GUST_EMITTER_LARGE` particle so it looks like the thing it is imitating.
+
+### Feedback that does not blind you
+
+The armed effect put a GUST puff and a cloud burst at the feet **every tick**, which filled the screen the
+moment you looked down -- i.e. exactly when lining up a slam. Now two small motes in a slow ring around the
+ankles every quarter second, plus an action bar reporting the drop currently being carried. The readout is
+the better feedback anyway: unmissable, costs no screen space, and lets the holder time the hit.
+
+The mace combo is now unmistakable: title card, `EXPLOSION_EMITTER`, a flash, the wind-burst sound and a
+totem chime.
+
+### Relics have no cooldown in creative
+
+Waiting out a twenty-second cooldown between attempts makes tuning miserable, and nothing in creative is a
+balance concern. Deliberately does not WRITE a cooldown either: these cooldowns are bound to the RELIC, not
+to whoever holds it, so a creative test could otherwise have locked the relic out for a survival player.
+
+### Industrial hopper: a third copy of the same spill
+
+`moveItem()` -- the path a vanilla hopper or dropper aimed at us uses -- had the same remove-before-checking
+pattern as `move()` and `moveFromSlots()`, and its spill point is `dropAt(destination.at, ...)`, i.e. the
+hopper's **own centre**. An item dropped inside a block is immediately shoved out again by block collision,
+which is very much what "the stack on top jumps around like it is on a slime block and eventually falls out"
+looks like from outside. Capacity is now checked before anything is removed, in all three.
+
+`dropAt` is also **instrumented**: every remaining call site is a last-resort refund that should now be
+unreachable, so if one ever fires it logs the item, the amount and the coordinates instead of silently
+flinging somebody's farm across the floor.
+
+**Honest status:** with the current build, a rig of a full industrial hopper (1728/1728) fed by a chest, with
+an item stack resting on top, showed **zero spills and zero displacement** -- the stack was collected
+normally. The earlier apparent reproduction was a test artefact: eight item entities summoned at one exact
+point, which vanilla pushes apart violently on its own. Three real mechanisms have been removed and a
+tripwire left in place; if it recurs, `logs/latest.log` will now name it.
+
+---
+
 ## Session: 2026-08-23 (part 3) - elite variety, bound-item exploit, Skyward Anchor rework, hoppers - STAGING ONLY
 
 **STAGING ONLY. Production deliberately untouched** at the owner's instruction, pending their own testing.

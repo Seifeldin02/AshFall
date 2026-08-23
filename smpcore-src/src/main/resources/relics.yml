@@ -102,7 +102,10 @@ buffs:
     edge-multiplier: 0.5
     # Wind burst. Each target hit adds this many blocks of launch height, so two targets is twice the
     # height. Capped only to stop an absurd stack from throwing somebody into the void.
-    burst-height-per-hit: 2.5
+    #
+    # 2.5 was roughly a plain mace's hop and read as "that is not a wind burst". Six is a genuine
+    # Wind Burst II-sized launch, and it still multiplies per target.
+    burst-height-per-hit: 6.0
     max-burst-hits: 8
     # Elytra: measured from straight down, so 0 is a vertical dive and 90 is level flight. Past this angle
     # the accumulated drop is surrendered -- but the relic stays armed, because you did pay for the charge.
