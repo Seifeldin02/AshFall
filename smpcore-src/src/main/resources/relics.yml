@@ -115,6 +115,23 @@ buffs:
     # Mace combo: weapon damage multiplier on the entity you actually hit. The wind burst is doubled
     # separately, and the mace hit gains the relic's own area damage.
     mace-combo-multiplier: 2.0
+    # Landing behaviour (2026-08-24 rework).
+    #
+    # The relic now resolves ONLY on landing -- there is no mid-air "you touched a mob" trigger, because it
+    # fired before you could ever swing and made the mace combo unreachable. Fall, swing whenever you like,
+    # and the slam happens when you arrive.
+    #
+    # Immunity granted the instant a slam CONNECTS, so committing to a big dive is not suicide in PvP.
+    # Deliberately not granted on a miss: missing still costs the full fall.
+    landing-invulnerability-ticks: 10
+    # The descent from a wind burst is not charged to the player -- a six-per-target launch reaches twenty
+    # blocks easily and would otherwise have the relic killing its own user. Cleared on the first landing.
+    burst-fall-grace-seconds: 12
+    # Hard ceiling on launch height however many targets were struck.
+    max-burst-height: 70
+    # The mace combo gets its own launch rather than a doubled slam: a Wind Burst VI-sized throw, still
+    # multiplied per target struck.
+    mace-combo-burst-height: 22
 
   warlords-ember:
     # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its

@@ -54,11 +54,19 @@ final class RelicService implements Listener {
         Anchor(double peak){this.peak=peak;this.armedAt=System.currentTimeMillis();}
     }
     private final Map<UUID,Anchor> anchors=new java.util.concurrent.ConcurrentHashMap<>();
+    /** Player -> tick deadline for the post-slam invulnerability window. */
+    private final Map<UUID,Long> slamGuard=new java.util.concurrent.ConcurrentHashMap<>();
+    /** Player -> deadline for "the fall you are in right now was caused by a wind burst".
+     *
+     *  A six-block-per-target launch happily reaches twenty-plus blocks, and landing from that unaided is
+     *  most of a health bar -- the relic would routinely kill its own user. This is also what was asked for
+     *  in so many words: a wind burst should not hand you the full fall back. */
+    private final Map<UUID,Long> burstGrace=new java.util.concurrent.ConcurrentHashMap<>();
     RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);anchorTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::anchorTick,1L,1L);}
     /** Test-only hook for /admin relictest — runs the real periodic lifecycle pass immediately instead of
      *  waiting up to 10 minutes for the next scheduled one. Not used by any normal game logic. */
     void debugForceLifecycleTick(){lifecycleTick();}
-    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();anchors.clear();}
+    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();anchors.clear();slamGuard.clear();burstGrace.clear();}
     void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));}
     Set<String> keys(){ConfigurationSection section=config.getConfigurationSection("relics");return section==null?Set.of():section.getKeys(false);}
     String displayName(String relicKey){return config.getString("relics."+relicKey+".name",CoreUtil.pretty(relicKey));}
@@ -606,13 +614,21 @@ final class RelicService implements Listener {
      *  Sound and particles are vanilla's own wind-burst pair, so it looks and sounds like the thing it is
      *  imitating, and fall distance is cleared so the ride up is never what kills you. */
     private void windBurst(Player player,int hits){
+        windBurst(player,hits,config.getDouble("buffs.skyward-anchor.burst-height-per-hit",6));
+    }
+
+    private void windBurst(Player player,int hits,double perHit){
         int counted=Math.max(1,Math.min(hits,config.getInt("buffs.skyward-anchor.max-burst-hits",8)));
-        double perHit=Math.max(.5,config.getDouble("buffs.skyward-anchor.burst-height-per-hit",6));
-        double height=perHit*counted;
+        double height=Math.min(Math.max(.5,perHit)*counted,
+                Math.max(1,config.getDouble("buffs.skyward-anchor.max-burst-height",70)));
         /** Horizontal motion is damped so the launch reads as vertical lift rather than as being swatted. */
         Vector velocity=player.getVelocity();
         player.setVelocity(new Vector(velocity.getX()*.4,Math.sqrt(2*0.08*height),velocity.getZ()*.4));
         player.setFallDistance(0);
+        /** The ride down from a launch this size is not the player's fault, so it is not charged to them.
+         *  Cleared the moment they land, so it only ever covers the one descent. */
+        burstGrace.put(player.getUniqueId(),System.currentTimeMillis()
+                +Math.max(1000,config.getLong("buffs.skyward-anchor.burst-fall-grace-seconds",12)*1000L));
         Location at=player.getLocation();
         player.getWorld().playSound(at,Sound.ENTITY_WIND_CHARGE_WIND_BURST,1.2f,counted>=2?.8f:1f);
         player.getWorld().playSound(at,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1f,.9f);
@@ -655,8 +671,38 @@ final class RelicService implements Listener {
         if(anchor==null)return 0;
         double fall=Math.max(0,anchor.peak-player.getLocation().getY());
         int hits=strike(player,player.getLocation(),fall,true);
-        if(hits>0)windBurst(player,hits);
+        if(hits>0){
+            windBurst(player,hits);
+            grantLandingGuard(player);
+        }
         return hits;
+    }
+
+    /** A short window of immunity the instant a slam connects.
+     *
+     *  Committing to a twenty-block dive and then standing in the open for the recovery is how a big
+     *  telegraphed move becomes a liability rather than a threat, especially in PvP. Deliberately granted
+     *  ONLY on a slam that actually connected: missing still costs the full fall and gives nothing back, so
+     *  the risk of committing is real. */
+    private void grantLandingGuard(Player player){
+        long ticks=Math.max(0,config.getLong("buffs.skyward-anchor.landing-invulnerability-ticks",10));
+        if(ticks<=0)return;
+        slamGuard.put(player.getUniqueId(),System.currentTimeMillis()+ticks*50L);
+        player.getWorld().spawnParticle(Particle.ENCHANT,player.getLocation().add(0,1,0),18,.5,.8,.5,.4);
+    }
+
+    /** The landing window, and the wind burst's own descent. Void is never survivable by design. */
+    @EventHandler(priority=EventPriority.HIGHEST,ignoreCancelled=true)
+    public void anchorGuard(org.bukkit.event.entity.EntityDamageEvent event){
+        if(!(event.getEntity() instanceof Player player))return;
+        if(event.getCause()==org.bukkit.event.entity.EntityDamageEvent.DamageCause.VOID)return;
+        long now=System.currentTimeMillis();
+        Long guard=slamGuard.get(player.getUniqueId());
+        if(guard!=null&&now<guard){event.setCancelled(true);return;}
+        if(guard!=null)slamGuard.remove(player.getUniqueId());
+        if(event.getCause()!=org.bukkit.event.entity.EntityDamageEvent.DamageCause.FALL)return;
+        Long grace=burstGrace.remove(player.getUniqueId());
+        if(grace!=null&&now<grace)event.setCancelled(true);
     }
 
     /** Per-tick bookkeeping for everyone with the relic armed. */
@@ -712,16 +758,15 @@ final class RelicService implements Listener {
                 discharge(player);
                 continue;
             }
-            /** Physically touching something on the way down. Deliberately only while descending, and only
-             *  once actually airborne, so neither the launch tick nor brushing past a mob on the way UP
-             *  wastes the charge. */
-            if(anchor.airborne&&player.getVelocity().getY()<0){
-                for(Entity entity:player.getNearbyEntities(.65,1,.65)){
-                    if(!relicEffectTarget(player,entity))continue;
-                    discharge(player);
-                    break;
-                }
-            }
+            /** There is deliberately NO mid-air "you touched a mob" trigger any more.
+             *
+             *  It used to fire the instant you brushed a target on the way down, which left no window at all
+             *  to swing the mace first -- the combo was effectively unreachable. Landing is now the only
+             *  thing that resolves the relic, which makes the whole dive predictable: fall, swing whenever
+             *  you like, and the slam happens when you arrive. The cost is that a purely airborne target
+             *  (a phantom, somebody on an elytra) can no longer be slammed in mid-air; it has to be caught
+             *  where it meets the ground, or with the mace.
+             */
         }
     }
 
@@ -766,7 +811,11 @@ final class RelicService implements Listener {
         impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1.3f,.7f);
         impact.getWorld().playSound(impact,Sound.ENTITY_WIND_CHARGE_WIND_BURST,1.3f,.75f);
         impact.getWorld().playSound(impact,Sound.ITEM_TOTEM_USE,.7f,1.5f);
-        windBurst(player,(extra+1)*2);
+        /** The combo gets its OWN launch height rather than a doubled slam. Doubling six blocks was still
+         *  read as "not as strong as I wanted"; this is a deliberately absurd, Wind-Burst-VI-sized throw,
+         *  which is the point of landing a combo in the first place. Still multiplies per target struck. */
+        windBurst(player,extra+1,config.getDouble("buffs.skyward-anchor.mace-combo-burst-height",22));
+        grantLandingGuard(player);
         player.showTitle(net.kyori.adventure.title.Title.title(
                 Component.text("\u2726 ANCHOR SLAM \u2726",NamedTextColor.LIGHT_PURPLE,net.kyori.adventure.text.format.TextDecoration.BOLD),
                 Component.text((extra+1)+" struck \u2022 mace damage doubled \u2022 burst x2",NamedTextColor.WHITE),

@@ -5,6 +5,35 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-24 (part 2) - Anchor resolves on landing - STAGING ONLY
+
+**STAGING ONLY.** Owner's design, adopted: the relic now resolves ONLY when the holder lands.
+
+**Why the combo was unreachable.** The relic discharged the instant you brushed a target on the way down,
+which is before any human can swing -- the mace window was effectively zero ticks wide. Landing is now the
+single trigger, so the whole dive is predictable: fall, swing whenever you like, and the slam resolves when
+you arrive. Connect and you get the launch, no fall damage, and a landing guard; hit nothing and you eat the
+fall exactly as a mace user who whiffed.
+
+**Cost, stated plainly:** a purely airborne target (a phantom, somebody on an elytra) can no longer be
+slammed in mid-air. It has to be caught where it meets the ground, or with the mace.
+
+Three additions the design needed to be playable:
+
+1. **Landing invulnerability, 10 ticks** (`landing-invulnerability-ticks`), granted only on a slam that
+   CONNECTED. Committing to a twenty-block dive and then standing in the open for the recovery is how a big
+   telegraphed move becomes a liability instead of a threat. Missing still gives nothing back, so the risk
+   of committing stays real. Void damage is never cancelled.
+2. **Wind-burst fall grace** (`burst-fall-grace-seconds`). Six blocks per target reaches twenty-plus easily,
+   and landing from that unaided is most of a health bar -- the relic would have routinely killed its own
+   user. The descent from a burst is not charged to the player, and the grace clears on the first landing.
+3. **The combo gets its own launch height** (`mace-combo-burst-height`, 22) rather than a doubled slam.
+   Doubling six was still read as "not as strong as I wanted"; this is a deliberately absurd Wind-Burst-VI
+   sized throw, which is the entire point of landing a combo. Still multiplies per target struck, under a
+   `max-burst-height` ceiling of 70.
+
+---
+
 ## Session: 2026-08-24 - Anchor field-test fixes, hopper spill #3, admin login persistence - STAGING ONLY
 
 **STAGING ONLY. Production untouched.**
