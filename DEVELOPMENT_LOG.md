@@ -5,6 +5,92 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-23 (part 3) - elite variety, bound-item exploit, Skyward Anchor rework, hoppers - STAGING ONLY
+
+**STAGING ONLY. Production deliberately untouched** at the owner's instruction, pending their own testing.
+
+Also added `SESSION_PROMPT.md` at the repo root: the start-of-session brief for future sessions, so the
+layout, the standing rules and the traps that have cost real time do not have to be rediscovered.
+
+### Every Overworld legendary was a Wither Skeleton
+
+`eliteType()` was a hardcoded switch: `case "legendary" -> WitherSkeleton.class`. Every Elite Hunt, for ever.
+The tier is meant to say how DANGEROUS a thing is, not what it is.
+
+Now a per-dimension, per-tier pool in `bosses.yml` (`elite-types`), picked flat-random, with invalid entries
+skipped and an empty list falling back to the old behaviour. Measured on staging, 30 spawns per tier:
+
+| Tier | Distinct types | Wither Skeletons |
+|---|---|---|
+| legendary | **11** | 1 / 30 |
+| epic | 11 | - |
+| uncommon | 9 | - |
+
+Piglins, Piglin Brutes and Hoglins are deliberately absent from the Overworld lists: they zombify there
+within seconds. Zoglins and Zombified Piglins stand in.
+
+### Bound Shard items: a one-keystroke bypass, and a block that should never have been there
+
+The guard only understood the CURSOR and shift-clicks. A **hotbar number-key swap is neither**: hover the
+destination slot, press the hotbar number, and a bound item walked straight into shared storage. Offhand
+swap (F) had the same hole, and **dragging was not checked at all**.
+
+The same rule also blocked something it never should have: with the player's own inventory open the top
+inventory is `CRAFTING`, so every bottom-inventory slot satisfies `rawSlot >= topSize` -- meaning a bound
+pickaxe could not be shift-clicked between the hotbar and the main inventory. An item you own, moving inside
+your own bag, refused.
+
+Every route into a container is now enumerated explicitly (cursor, `NUMBER_KEY`, `SWAP_OFFHAND`, shift-click,
+and a new drag handler), and the player's own inventory screen is exempt outright.
+
+### Skyward Anchor: a slam, not a jump
+
+Reworked to the owner's spec. Right-click LAUNCHES **20 blocks** and ARMS it (20s cooldown); it is not a
+hold-to-use effect. It discharges on the first of: touching an entity on the way down, touching the ground,
+or landing a mace hit.
+
+- **Damage** = `0.9 x` a maximum-Density mace for the same drop, using vanilla's own fall curve, then scaled
+  by how centred the target was: **1.5x** dead centre easing to **0.5x** at the edge of the 3x3x3.
+  **Horizontal offset only** -- the box is a cube and vertical position inside it is not a skill expression.
+- **Wind burst** per target hit, and the bursts MULTIPLY: two targets is twice the launch HEIGHT (not
+  velocity, which would be exponential). Fall distance cleared like a vanilla wind burst.
+- **Fall damage** is cancelled outright if the strike connected with anybody -- even if nobody was directly
+  beneath. Miss everything and the fall lands on you exactly as it would on a mace user who whiffed.
+- **Elytra**: the dive angle is measured from straight down. Past 40 degrees the accumulated drop is
+  surrendered but the relic stays ARMED, because the charge was already paid for. Fall distance is tracked
+  by the relic itself rather than read from `getFallDistance`, which vanilla zeroes constantly while gliding.
+- **Mace combo**: land a mace hit while armed and before it discharges -> double weapon damage on that
+  target, the relic's area damage to everything else in the box, and a doubled wind burst.
+- Damage is attributed to the player, so kill credit, boss damage tracking and PvP logging all see it.
+- Deliberately **no boss-specific bonus**. It is already among the strongest things to bring to a boss; the
+  one thing it does not do is get better at them.
+
+### Industrial Hoppers
+
+**`/shop sellall chest` now works on one.** The block is a vanilla HOPPER whose five native slots hold only
+the comparator calibration weight -- the real contents are a plugin-owned 27-slot inventory, so reading the
+block state reported an empty hopper and refused to sell. `sellTarget()` resolves the bay first and falls
+back to the block for every ordinary container, and the sale marks the bay dirty so a restart cannot restore
+what was just sold.
+
+**Two remove-before-checking defects fixed.** Both `move()` and `moveFromSlots()` pulled an item OUT of the
+source, then refunded whatever the destination rejected -- and the refund could itself fail, at which point
+the leftovers were thrown into the world with `dropItemNaturally`. `moveFromSlots` is the worse copy: its
+source is a furnace or brewing stand, whose `addItem` does not put a refund back where it came from but
+tries the ingredient slot, so a full hopper under a furnace could move the furnace's OUTPUT into its INPUT.
+Both now ask how much fits before touching anything, which removes the refund path entirely.
+
+**Verified on a live rig:** industrial hopper filled to 1728/1728, furnace above holding 64 iron ingots in
+its result slot, thirty seconds of sweeps -> **0 items dropped, 0 items lost, all 64 ingots still in the
+result slot**. `/ashfall hopper verify` passes with no failures.
+
+**Honest limit:** the reported symptom -- items above a full hopper being flung away -- did **not** reproduce
+in a controlled rig. Twelve item entities dropped onto a full hopper merged into one stack and sat still for
+thirty seconds, zero spread. Two genuine item-integrity defects were found and fixed on the way, but if the
+ejection recurs, what is directly ABOVE the hopper is the thing to report.
+
+---
+
 ## Session: 2026-08-23 (part 2) - celebration rebuilt as acts - PROMOTED TO PRODUCTION
 
 **PROMOTED 2026-08-23** after the owner reviewed it on staging ("PERFECT"). One silent restart (only Asserto

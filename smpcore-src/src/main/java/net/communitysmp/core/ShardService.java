@@ -385,8 +385,50 @@ final class ShardService implements Listener {
         }
         ItemStack current=event.getCurrentItem(),cursor=event.getCursor();
         if(bound(current)&&!belongsTo(player,current)||bound(cursor)&&!belongsTo(player,cursor)){event.setCancelled(true);CoreUtil.error(player,"That Shard reward belongs to another player.");return;}
-        boolean movingBound=bound(cursor)&&event.getRawSlot()<event.getView().getTopInventory().getSize()||event.isShiftClick()&&event.getRawSlot()>=event.getView().getTopInventory().getSize()&&bound(current);
-        if(movingBound){event.setCancelled(true);CoreUtil.error(player,"Shard rewards cannot be transferred into shared storage.");}
+        /** The player's own inventory screen has a CRAFTING top inventory and no container at all, so there
+         *  is nowhere for an item to GO except back into their own pockets. Every click there is fine.
+         *  The old rule blocked it, which is why a bound pickaxe could not even be shift-clicked between the
+         *  hotbar and the main inventory -- an item you own, moving inside your own bag, refused. */
+        if(topType==org.bukkit.event.inventory.InventoryType.CRAFTING||topType==org.bukkit.event.inventory.InventoryType.CREATIVE)return;
+        if(intoForeignStorage(player,event,current,cursor)){event.setCancelled(true);CoreUtil.error(player,"Shard rewards cannot be moved into shared storage.");}
+    }
+
+    /** Does this click put a bound item into a container that is not the owner's own storage?
+     *
+     *  The old test only knew about the CURSOR and about shift-clicks, which left the simplest possible
+     *  bypass wide open: hover the destination slot and press a hotbar number. That is a swap, not a
+     *  cursor placement and not a shift-click, so nothing matched and the bound item walked straight into
+     *  shared storage. Reported live, and trivially repeatable. Offhand swap (F) had the same hole, and
+     *  dragging was not covered at all -- see drag() below.
+     *
+     *  Every route an item can take INTO the top inventory is now enumerated explicitly. */
+    private boolean intoForeignStorage(Player player,InventoryClickEvent event,ItemStack current,ItemStack cursor){
+        int topSize=event.getView().getTopInventory().getSize();
+        if(event.getRawSlot()<0)return false;
+        if(event.getRawSlot()<topSize){
+            if(bound(cursor))return true;
+            if(event.getClick()==org.bukkit.event.inventory.ClickType.NUMBER_KEY&&event.getHotbarButton()>=0
+                    &&bound(player.getInventory().getItem(event.getHotbarButton())))return true;
+            if(event.getClick()==org.bukkit.event.inventory.ClickType.SWAP_OFFHAND
+                    &&bound(player.getInventory().getItemInOffHand()))return true;
+            return false;
+        }
+        return event.isShiftClick()&&bound(current);
+    }
+
+    /** Dragging a bound item across container slots was never checked at all. */
+    @EventHandler(ignoreCancelled=true) public void drag(org.bukkit.event.inventory.InventoryDragEvent event){
+        if(!(event.getWhoClicked() instanceof Player player))return;
+        if(!bound(event.getOldCursor()))return;
+        Inventory top=event.getView().getTopInventory();
+        org.bukkit.event.inventory.InventoryType type=top.getType();
+        if(type==org.bukkit.event.inventory.InventoryType.CRAFTING||type==org.bukkit.event.inventory.InventoryType.CREATIVE
+                ||type==org.bukkit.event.inventory.InventoryType.ANVIL
+                ||plugin.enderChests().isPersonalStorage(top,player))return;
+        if(event.getRawSlots().stream().anyMatch(slot->slot<top.getSize())){
+            event.setCancelled(true);
+            CoreUtil.error(player,"Shard rewards cannot be moved into shared storage.");
+        }
     }
     /** Admin-inspection ownership transfer for /inv (OpenInv) and /enderchest inspect: a bound item taken OUT
      *  of someone else's storage during an authorized inspection immediately rebinds to the admin who took

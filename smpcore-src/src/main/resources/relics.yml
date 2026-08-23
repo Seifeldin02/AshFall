@@ -84,10 +84,34 @@ buffs:
     boss-knockback: 2.6
     stagger-seconds: 5.0
   skyward-anchor:
+    # A slam, not a jump. Right-click launches you AND arms it; it discharges on the first of: touching an
+    # entity on the way down, touching the ground, or landing a mace hit.
+    #
     # Roughly how many blocks the launch reaches. Velocity is derived from this (v = sqrt(2*g*h)) rather
     # than hardcoded, so changing the height here actually lands where it says.
-    height: 12
-    cooldown-seconds: 10
+    height: 20
+    cooldown-seconds: 20
+    # Half-width of the damage cube, so 1.5 is the 3x3x3 the relic is described by.
+    aoe-radius: 1.5
+    # Damage is this fraction of a MAXIMUM-DENSITY mace for the same drop. Below 1.0 on purpose: this is
+    # area damage that is very hard to miss, so it should lose a straight trade against a mace.
+    mace-scale: 0.9
+    # How centred the target was under you. Only HORIZONTAL offset counts -- the box is a cube and vertical
+    # position inside it is not a skill expression.
+    centre-multiplier: 1.5
+    edge-multiplier: 0.5
+    # Wind burst. Each target hit adds this many blocks of launch height, so two targets is twice the
+    # height. Capped only to stop an absurd stack from throwing somebody into the void.
+    burst-height-per-hit: 2.5
+    max-burst-hits: 8
+    # Elytra: measured from straight down, so 0 is a vertical dive and 90 is level flight. Past this angle
+    # the accumulated drop is surrendered -- but the relic stays armed, because you did pay for the charge.
+    elytra-max-dive-angle: 40
+    # How long an armed anchor survives without discharging.
+    arm-seconds: 30
+    # Mace combo: weapon damage multiplier on the entity you actually hit. The wind burst is doubled
+    # separately, and the mace hit gains the relic's own area damage.
+    mace-combo-multiplier: 2.0
 
   warlords-ember:
     # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its

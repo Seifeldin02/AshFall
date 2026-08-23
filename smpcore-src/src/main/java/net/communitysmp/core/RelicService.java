@@ -34,12 +34,22 @@ import java.io.File;
 import java.util.*;
 
 final class RelicService implements Listener {
-    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask;
-    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);}
+    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask,anchorTask;
+
+    /** One armed Skyward Anchor. `peak` is OUR OWN fall tracking rather than Player#getFallDistance,
+     *  because vanilla zeroes that constantly while gliding and we need the drop to survive an elytra
+     *  descent (and to be deliberately reset when the dive flattens out). */
+    private static final class Anchor {
+        double peak;
+        final long armedAt;
+        Anchor(double peak){this.peak=peak;this.armedAt=System.currentTimeMillis();}
+    }
+    private final Map<UUID,Anchor> anchors=new java.util.concurrent.ConcurrentHashMap<>();
+    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);anchorTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::anchorTick,1L,1L);}
     /** Test-only hook for /admin relictest — runs the real periodic lifecycle pass immediately instead of
      *  waiting up to 10 minutes for the next scheduled one. Not used by any normal game logic. */
     void debugForceLifecycleTick(){lifecycleTick();}
-    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();}
+    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();anchors.clear();}
     void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));}
     Set<String> keys(){ConfigurationSection section=config.getConfigurationSection("relics");return section==null?Set.of():section.getKeys(false);}
     String displayName(String relicKey){return config.getString("relics."+relicKey+".name",CoreUtil.pretty(relicKey));}
@@ -507,25 +517,205 @@ final class RelicService implements Listener {
             default->{}
         }
     }
-    /** Throws the holder straight up roughly a fixed number of blocks.
+    // ================================================================== Skyward Anchor
+    /*  A slam, not a jump.
      *
-     *  Usable in mid-air as well as on the ground; the 10-second cooldown is the only limit, which is what
-     *  keeps it from being free flight.
+     *  Right-click LAUNCHES you and ARMS the relic; it is not a hold-to-use effect, so you cannot simply
+     *  fall while holding it and expect a hit. Once armed, the drop is being measured, and the relic
+     *  discharges on the first of three things:
      *
-     *  The velocity is derived from the requested height rather than hardcoded: with vanilla player gravity
-     *  the apex of an upward throw is v^2 / (2g), so v = sqrt(2 * g * h). Tuning the height in config
-     *  therefore lands within about a block, instead of needing a magic velocity number retuned by hand. */
+     *    1. you physically touch an entity on the way down,
+     *    2. you touch the ground,
+     *    3. you land a MACE hit before either of the above -- the combo.
+     *
+     *  Damage is 0.9x what a maximum-Density mace would do for the same drop, then scaled by how centred
+     *  the target was under you: 1.5x dead centre, falling off to 0.5x at the edge of the 3x3x3. Only
+     *  HORIZONTAL offset matters, because the box is a cube and vertical position within it is not a skill
+     *  expression. Slightly worse than a mace on purpose -- it is area damage that is very hard to miss.
+     *
+     *  Every hit adds a wind burst, and the bursts MULTIPLY: two targets is twice the launch. Like a vanilla
+     *  wind burst the launch itself costs no fall damage, and a strike that connects with anybody cancels
+     *  the landing damage entirely even if nobody was directly beneath you. Miss everything and you take the
+     *  fall exactly as a mace user would.
+     *
+     *  Deliberately no boss-specific bonus. It is already among the strongest things to bring to a boss;
+     *  the one thing it does not do is get better at them.
+     */
+
+    /** What a maximum-Density mace would deal for this drop. Vanilla's own fall bonus curve (4/block for the
+     *  first three, 2/block to eight, 0.5/block after) plus Density V at 0.5/block/level, on the mace's base
+     *  attack damage. Kept as one function so the relic tracks any mace retuning by construction. */
+    private double maceEquivalent(double fall){
+        double drop=Math.max(0,fall);
+        double bonus=drop<=3?4*drop:drop<=8?12+2*(drop-3):22+.5*(drop-8);
+        return 7+bonus+2.5*drop;
+    }
+
+    private double anchorRadius(){return Math.max(.5,config.getDouble("buffs.skyward-anchor.aoe-radius",1.5));}
+
+    /** 1.5x directly underneath, easing to 0.5x at the edge of the box. Horizontal distance only. */
+    private double centringMultiplier(Location impact,Location target){
+        double radius=anchorRadius();
+        double dx=target.getX()-impact.getX(),dz=target.getZ()-impact.getZ();
+        double horizontal=Math.sqrt(dx*dx+dz*dz);
+        double centre=config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5);
+        double edge=config.getDouble("buffs.skyward-anchor.edge-multiplier",.5);
+        double t=Math.max(0,Math.min(1,horizontal/radius));
+        return centre+(edge-centre)*t;
+    }
+
     private void skywardLaunch(Player player,PlayerInteractEvent event){
         event.setCancelled(true);
-        if(onCooldown(player,"skyward_anchor",config.getLong("buffs.skyward-anchor.cooldown-seconds",10)*1000L))return;
-        double height=Math.max(1,config.getDouble("buffs.skyward-anchor.height",12));
-        double velocity=Math.sqrt(2*0.08*height);
-        player.setVelocity(player.getVelocity().setY(velocity));
-        /** Cancels the fall damage the launch itself would cause, without granting general fall immunity. */
-        player.setFallDistance(0);
+        if(onCooldown(player,"skyward_anchor",config.getLong("buffs.skyward-anchor.cooldown-seconds",20)*1000L))return;
+        /** Anything already inside the box eats the strike right now -- the relic does not politely wait for
+         *  you to come back down before noticing somebody standing on top of you. */
+        int hits=strike(player,player.getLocation(),0,false);
+        if(hits>0)windBurst(player,hits);
+        else{
+            double height=Math.max(1,config.getDouble("buffs.skyward-anchor.height",20));
+            player.setVelocity(player.getVelocity().setY(Math.sqrt(2*0.08*height)));
+            player.setFallDistance(0);
+        }
+        anchors.put(player.getUniqueId(),new Anchor(player.getLocation().getY()));
         player.getWorld().playSound(player.getLocation(),Sound.ENTITY_BREEZE_JUMP,1f,.7f);
+        player.getWorld().playSound(player.getLocation(),Sound.ITEM_MACE_SMASH_AIR,.8f,1.4f);
+        player.getWorld().spawnParticle(Particle.GUST,player.getLocation(),1,0,0,0,0);
         player.getWorld().spawnParticle(Particle.CLOUD,player.getLocation(),25,.4,.1,.4,.02);
-        CoreUtil.msg(player,"The Skyward Anchor hurls you upward.");
+        CoreUtil.msg(player,hits>0?"The Skyward Anchor discharges as it lifts you.":"The Skyward Anchor hurls you skyward \u2014 come down hard.");
+    }
+
+    /** Launch upward, scaled by how many things were hit. Two targets is twice the HEIGHT, not twice the
+     *  velocity, which keeps the multiplication readable instead of exponential. Fall distance is cleared
+     *  the way a vanilla wind burst does, so the ride up is never what kills you. */
+    private void windBurst(Player player,int hits){
+        int counted=Math.max(1,Math.min(hits,config.getInt("buffs.skyward-anchor.max-burst-hits",8)));
+        double perHit=Math.max(.5,config.getDouble("buffs.skyward-anchor.burst-height-per-hit",2.5));
+        double height=perHit*counted;
+        player.setVelocity(player.getVelocity().setY(Math.sqrt(2*0.08*height)));
+        player.setFallDistance(0);
+        player.getWorld().playSound(player.getLocation(),Sound.ITEM_MACE_SMASH_GROUND,1f,.9f);
+        player.getWorld().spawnParticle(Particle.GUST_EMITTER_SMALL,player.getLocation(),1,0,0,0,0);
+    }
+
+    /** Applies the area damage. Returns how many valid targets were actually hit. */
+    private int strike(Player player,Location impact,double fall,boolean announce){
+        double radius=anchorRadius();
+        double scale=config.getDouble("buffs.skyward-anchor.mace-scale",.9);
+        int hits=0;
+        for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
+            if(!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
+            double damage=scale*maceEquivalent(fall)*centringMultiplier(impact,target.getLocation());
+            if(damage<=0)continue;
+            /** Attributed to the player, so kill credit, boss damage tracking, PvP logging and every
+             *  downstream reward path see it as their hit rather than as anonymous damage. */
+            target.damage(damage,player);
+            hits++;
+        }
+        if(hits>0){
+            impact.getWorld().spawnParticle(Particle.EXPLOSION,impact,1,0,0,0,0);
+            impact.getWorld().spawnParticle(Particle.GUST,impact,1,0,0,0,0);
+            impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1f,1f);
+            if(announce)player.sendActionBar(Component.text("Skyward Anchor \u2014 "+hits+" caught in the slam",NamedTextColor.AQUA));
+        }
+        return hits;
+    }
+
+    /** Discharges the armed relic against whatever is underneath. Returns hits so callers can decide about
+     *  fall damage. */
+    private int discharge(Player player){
+        Anchor anchor=anchors.remove(player.getUniqueId());
+        if(anchor==null)return 0;
+        double fall=Math.max(0,anchor.peak-player.getLocation().getY());
+        int hits=strike(player,player.getLocation(),fall,true);
+        if(hits>0)windBurst(player,hits);
+        return hits;
+    }
+
+    /** Per-tick bookkeeping for everyone with the relic armed. */
+    private void anchorTick(){
+        if(anchors.isEmpty())return;
+        double maxAngle=config.getDouble("buffs.skyward-anchor.elytra-max-dive-angle",40);
+        long life=Math.max(5,config.getLong("buffs.skyward-anchor.arm-seconds",30))*1000L;
+        for(Map.Entry<UUID,Anchor> entry:new ArrayList<>(anchors.entrySet())){
+            Player player=plugin.getServer().getPlayer(entry.getKey());
+            Anchor anchor=entry.getValue();
+            if(player==null||!player.isOnline()||player.isDead()){anchors.remove(entry.getKey());continue;}
+            if(System.currentTimeMillis()-anchor.armedAt>life){anchors.remove(entry.getKey());continue;}
+            Location at=player.getLocation();
+            anchor.peak=Math.max(anchor.peak,at.getY());
+
+            /** Elytra: a steep dive is a legitimate way to build the drop, a glide is not. Past the
+             *  configured angle from straight down the accumulated height is surrendered -- but the relic
+             *  stays armed, because the player did right-click for it and should not lose the charge for
+             *  levelling out. Angle is measured from vertical: 0 is straight down, 90 is level flight. */
+            if(player.isGliding()){
+                Vector velocity=player.getVelocity();
+                double speed=velocity.length();
+                double angle=speed<=1e-4||velocity.getY()>=0?90:Math.toDegrees(Math.acos(Math.min(1,-velocity.getY()/speed)));
+                if(angle>maxAngle)anchor.peak=at.getY();
+            }
+
+            /** Visible while it is live, on the legs, so both the holder and whoever they are diving at can
+             *  see that it is armed. */
+            player.getWorld().spawnParticle(Particle.GUST,at.clone().add(0,.15,0),0,0,-.05,0,1);
+            player.getWorld().spawnParticle(Particle.CLOUD,at.clone().add(0,.25,0),2,.22,.05,.22,.005);
+
+            if(player.isOnGround()){
+                /** Landing with no fall damage event of its own (a short drop) still discharges, so a
+                 *  ground touch always resolves the relic exactly as promised. */
+                discharge(player);
+                continue;
+            }
+            /** Physically touching something on the way down. Deliberately only while descending, so
+                brushing past a mob on the way UP does not waste the charge. */
+            if(player.getVelocity().getY()<0){
+                for(Entity entity:player.getNearbyEntities(.65,1,.65)){
+                    if(!relicEffectTarget(player,entity))continue;
+                    discharge(player);
+                    break;
+                }
+            }
+        }
+    }
+
+    /** Landing damage. A strike that connected cancels it outright -- even if nobody was directly beneath,
+     *  which is the whole point of an area slam. Miss, and the fall lands on you exactly as it would on a
+     *  mace user who whiffed. */
+    @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true)
+    public void anchorFall(org.bukkit.event.entity.EntityDamageEvent event){
+        if(event.getCause()!=org.bukkit.event.entity.EntityDamageEvent.DamageCause.FALL)return;
+        if(!(event.getEntity() instanceof Player player)||!anchors.containsKey(player.getUniqueId()))return;
+        if(discharge(player)>0)event.setCancelled(true);
+    }
+
+    /** The combo: mace first, ground second.
+     *
+     *  Land a mace hit while the relic is armed and before it has discharged and the strike rides along with
+     *  it -- double weapon damage on the target you actually hit, the relic's own area damage to everything
+     *  else in the box, and a doubled wind burst. One relic, two ways to use it. */
+    @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true)
+    public void anchorMaceCombo(org.bukkit.event.entity.EntityDamageByEntityEvent event){
+        if(!(event.getDamager() instanceof Player player))return;
+        Anchor anchor=anchors.get(player.getUniqueId());
+        if(anchor==null)return;
+        if(player.getInventory().getItemInMainHand().getType()!=Material.MACE)return;
+        if(!relicEffectTarget(player,event.getEntity()))return;
+        anchors.remove(player.getUniqueId());
+        event.setDamage(event.getDamage()*Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2)));
+        double fall=Math.max(0,anchor.peak-player.getLocation().getY());
+        /** The struck entity already took the (doubled) mace hit; the area damage is for everyone else. */
+        Location impact=event.getEntity().getLocation();
+        double radius=anchorRadius(),scale=config.getDouble("buffs.skyward-anchor.mace-scale",.9);
+        int extra=0;
+        for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
+            if(entity.equals(event.getEntity())||!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
+            target.damage(scale*maceEquivalent(fall)*centringMultiplier(impact,target.getLocation()),player);
+            extra++;
+        }
+        impact.getWorld().spawnParticle(Particle.EXPLOSION,impact,1,0,0,0,0);
+        impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1.1f,.85f);
+        windBurst(player,(extra+1)*2);
+        player.sendActionBar(Component.text("Anchor + Mace \u2014 "+(extra+1)+" struck",NamedTextColor.LIGHT_PURPLE));
     }
     /** Cooldowns are bound to the relic itself (persisted in the state table), not the player holding
      *  it — so dropping, relogging, dying, trading, or a server restart can never reset or bypass one;

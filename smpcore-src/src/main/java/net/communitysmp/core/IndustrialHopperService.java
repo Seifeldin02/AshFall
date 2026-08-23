@@ -168,6 +168,23 @@ final class IndustrialHopperService implements Listener {
     }
 
     // ------------------------------------------------------------------ item + recipe
+    /** The real 27-slot inventory of the industrial hopper at this location, or null if there is none.
+     *
+     *  Exposed because the block's own state is a vanilla five-slot HOPPER holding nothing but the
+     *  comparator calibration weight -- anything reading `container.getInventory()` (like /shop sellall
+     *  chest) sees an empty hopper and reports nothing to sell. */
+    Inventory inventoryAt(Location at) {
+        Bay bay = at == null ? null : bays.get(key(at));
+        return bay == null ? null : bay.inv;
+    }
+
+    /** Marks the hopper at this location as needing a save, for callers that changed its contents through
+     *  {@link #inventoryAt} rather than through the hopper's own paths. */
+    void markDirty(Location at) {
+        Bay bay = at == null ? null : bays.get(key(at));
+        if (bay != null) bay.dirty = true;
+    }
+
     ItemStack createItem() {
         ItemStack item = new ItemStack(Material.HOPPER);
         ItemMeta meta = item.getItemMeta();
@@ -771,7 +788,17 @@ final class IndustrialHopperService implements Listener {
              *  hopper underneath would drain the coal it was just fed. */
             if (from instanceof FurnaceInventory && slot == 1 && live.getType() != Material.BUCKET) continue;
             ItemStack item = live.clone();
-            int take = Math.min(item.getAmount(), budget - moved);
+            /** Same remove-before-checking flaw move() had, and this is the WORSE copy of it: the source
+             *  here is a furnace or brewing stand, whose addItem() does not put a refund back where it came
+             *  from -- it tries the ingredient slot. When that slot is full or will not take the item, the
+             *  refund fails and the leftovers were flung into the world with dropItemNaturally. A full
+             *  industrial hopper under a furnace therefore scattered the furnace's output across the floor,
+             *  every sweep, for as long as it stayed full. Ask how much fits first and nothing ever leaves
+             *  the source that cannot arrive. */
+            int room = space(to, item);
+            if (room <= 0) continue;
+            int take = Math.min(Math.min(item.getAmount(), budget - moved), room);
+            if (take <= 0) continue;
             ItemStack piece = item.clone();
             piece.setAmount(take);
             ItemStack keep = item.clone();
@@ -780,6 +807,8 @@ final class IndustrialHopperService implements Listener {
             int rejected = total(to.addItem(piece).values());
             moved += take - rejected;
             if (rejected > 0) {
+                /** Unreachable now that capacity is checked up front; kept as the last line of defence so a
+                 *  future change to space() degrades to a refund rather than to item loss. */
                 ItemStack back = item.clone();
                 back.setAmount(rejected);
                 for (ItemStack lost : from.addItem(back).values()) dropAt(spillAt, lost);
@@ -888,7 +917,22 @@ final class IndustrialHopperService implements Listener {
              *  that reference changes underneath us, and reading it afterwards to build a refund would
              *  produce air. Detach from the slot before touching it. */
             ItemStack item = live.clone();
-            int take = Math.min(item.getAmount(), budget - moved);
+            /** Take only what the destination can actually hold.
+             *
+             *  This used to pull the item out FIRST and refund whatever the destination rejected -- and the
+             *  refund could itself fail, at which point the leftovers were dropped into the world with
+             *  dropItemNaturally, i.e. flung outward. That is the reported "items above the hopper explode
+             *  when it is still full": a full industrial hopper under a full chest, or under a furnace whose
+             *  slots will not take the item back, scattering the source's contents across the floor every
+             *  sweep. Asking how much fits before touching anything removes the refund path entirely. */
+            int room = space(to, item);
+            if (room <= 0) {
+                /** Full for this material. Try a couple more slots in case something else fits, then stop
+                 *  scanning -- the same give-up rule the rejection path used. */
+                if (++rejections >= 3) break;
+                continue;
+            }
+            int take = Math.min(Math.min(item.getAmount(), budget - moved), room);
             ItemStack piece = item.clone();
             piece.setAmount(take);
             ItemStack keep = item.clone();

@@ -430,7 +430,31 @@ final class BossEventService {
             if(!world.getBlockAt(x+dx,y-1,z+dz).getType().isSolid())return null;
             for(int dy=0;dy<=2;dy++)if(!world.getBlockAt(x+dx,y+dy,z+dz).isPassable())return null;}
         return new Location(world,x+.5,y,z+.5,at.getYaw(),0);}
-    private Class<? extends LivingEntity> eliteType(String tier,World.Environment environment){if(environment==World.Environment.THE_END)return Enderman.class;if(environment==World.Environment.NETHER)return tier.equals("legendary")||tier.equals("miniboss")?WitherSkeleton.class:Piglin.class;return switch(tier){case"legendary"->WitherSkeleton.class;case"epic","rare"->Skeleton.class;default->Zombie.class;};}
+    /** Which creature an elite of this tier turns out to be.
+     *
+     *  This used to be a hardcoded switch, and every legendary in the Overworld was a Wither Skeleton --
+     *  every single Elite Hunt, for ever. The tier is meant to say how DANGEROUS the thing is, not what it
+     *  is; a hunt is a lot less interesting when you already know what you are walking towards.
+     *
+     *  Now a weighted-free random pick from a per-dimension, per-tier pool in bosses.yml, so the roster can
+     *  be retuned without a build. Entries that are not spawnable living types are skipped rather than
+     *  crashing the spawn, and an empty or entirely invalid list falls back to the original behaviour, so a
+     *  bad edit degrades to "boring" instead of "broken". */
+    private Class<? extends LivingEntity> eliteType(String tier,World.Environment environment){
+        String dimension=switch(environment){case NETHER->"nether";case THE_END->"the_end";default->"overworld";};
+        List<Class<? extends LivingEntity>> pool=new ArrayList<>();
+        for(String name:bosses.getStringList("elite-types."+dimension+"."+tier)){
+            try{
+                EntityType type=EntityType.valueOf(name.trim().toUpperCase(Locale.ROOT));
+                if(type.getEntityClass()==null||!LivingEntity.class.isAssignableFrom(type.getEntityClass()))continue;
+                pool.add(type.getEntityClass().asSubclass(LivingEntity.class));
+            }catch(IllegalArgumentException ignored){}
+        }
+        if(!pool.isEmpty())return pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+        if(environment==World.Environment.THE_END)return Enderman.class;
+        if(environment==World.Environment.NETHER)return tier.equals("legendary")||tier.equals("miniboss")?WitherSkeleton.class:Piglin.class;
+        return switch(tier){case"legendary"->WitherSkeleton.class;case"epic","rare"->Skeleton.class;default->Zombie.class;};
+    }
     private LivingEntity bossVictim(Entity entity){if(entity instanceof EnderDragonPart part)return part.getParent();return entity instanceof LivingEntity living?living:null;}
     private boolean isVanillaBoss(LivingEntity entity){List<String> types=bosses.getStringList("boss-participation.vanilla-types");if(types.isEmpty())types=List.of("ENDER_DRAGON","WITHER");return types.stream().anyMatch(type->type.equalsIgnoreCase(entity.getType().name()));}
     void rarityReport(CommandSender sender){CoreUtil.msg(sender,"Elite spawn telemetry (since this update):");Map<String,Database.EliteSpawnRow> counts=new HashMap<>();for(Database.EliteSpawnRow row:db.eliteSpawnCounts())counts.put(row.tier(),row);for(String tier:List.of("uncommon","rare","epic","legendary")){double chance=bosses.getDouble("natural-elites."+tier+"-chance",0);Database.EliteSpawnRow row=counts.get(tier);String odds=chance<=0?"disabled":"1 in "+Math.round(1/chance);CoreUtil.msg(sender,CoreUtil.pretty(tier)+": "+odds+" base | natural "+(row==null?0:row.natural())+" | custom "+(row==null?0:row.custom()));}CoreUtil.msg(sender,"Nether and End apply the configured dimension multiplier equally to every tier.");}

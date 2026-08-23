@@ -369,6 +369,40 @@ mob-penalties:
   PARROT: 30
   ALLAY: 40
 
+# Which creature an elite of each tier actually turns out to be.
+#
+# This used to be hardcoded, and EVERY Overworld legendary was a Wither Skeleton -- every Elite Hunt, for
+# ever. The tier says how dangerous the thing is; it should not also say what it is.
+#
+# A flat random pick from the matching list, so listing a type twice simply makes it twice as likely.
+# Anything that is not a spawnable living type is skipped. An empty or entirely invalid list falls back to
+# the old hardcoded behaviour, so a bad edit degrades to boring rather than broken.
+#
+# Piglins, Piglin Brutes and Hoglins are deliberately absent from the Overworld lists: they zombify there
+# within seconds. Zombified Piglins and Zoglins are the Overworld-safe equivalents.
+elite-types:
+  overworld:
+    legendary: [WITHER_SKELETON, RAVAGER, EVOKER, VINDICATOR, ILLUSIONER, WITCH, ENDERMAN, ZOGLIN,
+                ZOMBIFIED_PIGLIN, BREEZE, CREEPER, PILLAGER, BLAZE, BOGGED]
+    miniboss: [RAVAGER, EVOKER, WITHER_SKELETON, VINDICATOR, ZOGLIN, BREEZE]
+    epic: [SKELETON, ZOMBIE, SPIDER, CREEPER, WITCH, PILLAGER, HUSK, STRAY, DROWNED, ENDERMAN, VINDICATOR, BOGGED]
+    rare: [SKELETON, ZOMBIE, SPIDER, CREEPER, HUSK, STRAY, DROWNED, CAVE_SPIDER, BOGGED, PILLAGER]
+    uncommon: [ZOMBIE, SKELETON, SPIDER, CREEPER, HUSK, STRAY, DROWNED, CAVE_SPIDER, SILVERFISH]
+  nether:
+    legendary: [WITHER_SKELETON, PIGLIN_BRUTE, BLAZE, HOGLIN, ZOGLIN, MAGMA_CUBE, ZOMBIFIED_PIGLIN]
+    miniboss: [PIGLIN_BRUTE, WITHER_SKELETON, HOGLIN, BLAZE]
+    epic: [BLAZE, WITHER_SKELETON, PIGLIN, HOGLIN, MAGMA_CUBE, ZOMBIFIED_PIGLIN]
+    rare: [PIGLIN, BLAZE, ZOMBIFIED_PIGLIN, MAGMA_CUBE]
+    uncommon: [PIGLIN, ZOMBIFIED_PIGLIN, MAGMA_CUBE]
+  # The End stays deliberately narrow -- Shulkers need a face to cling to and Phantoms simply fly away, so
+  # neither survives as a hunt target.
+  the_end:
+    legendary: [ENDERMAN]
+    miniboss: [ENDERMAN]
+    epic: [ENDERMAN, ENDERMITE]
+    rare: [ENDERMAN, ENDERMITE]
+    uncommon: [ENDERMAN, ENDERMITE]
+
 mob-rewards:
   ALLAY: [0.10, 0.40]
   ARMADILLO: [0.10, 0.40]

@@ -212,14 +212,25 @@ final class ShopService {
         }
         return amount-remaining;
     }
+    /** The inventory /shop sellall chest should actually operate on.
+     *
+     *  An Industrial Hopper is a vanilla HOPPER block whose five native slots hold nothing but the
+     *  comparator calibration weight -- its real contents live in a plugin-owned 27-slot inventory. Reading
+     *  the block state therefore reported an empty hopper and refused to sell anything. Resolve the bay
+     *  first and fall back to the block's own inventory for every ordinary container. */
+    private Inventory sellTarget(Location location,org.bukkit.block.Container container){
+        Inventory bay=plugin.industrialHoppers()==null?null:plugin.industrialHoppers().inventoryAt(location);
+        return bay!=null?bay:container.getInventory();
+    }
+
     boolean sellAllChest(Player player){
         org.bukkit.util.RayTraceResult ray=player.rayTraceBlocks(6);
-        if(ray==null||ray.getHitBlock()==null||!(ray.getHitBlock().getState() instanceof org.bukkit.block.Container container)){CoreUtil.error(player,"Look at a chest, barrel, or shulker box within 6 blocks.");return true;}
+        if(ray==null||ray.getHitBlock()==null||!(ray.getHitBlock().getState() instanceof org.bukkit.block.Container container)){CoreUtil.error(player,"Look at a chest, barrel, hopper, or shulker box within 6 blocks.");return true;}
         Location location=container.getBlock().getLocation();
         if(plugin.spawnClaims().contains(location)&&!plugin.isAdmin(player)){CoreUtil.error(player,"This storage is protected by spawn.");return true;}
         FactionService.Claim claim=plugin.factions().claimAt(location);
         if(claim!=null&&!plugin.factions().isMember(player,claim.faction())&&!plugin.privileged(player)){CoreUtil.error(player,"This storage is protected by "+claim.faction().name()+".");return true;}
-        SaleQuote preview=containerQuote(container.getInventory(),player);
+        SaleQuote preview=containerQuote(sellTarget(location,container),player);
         if(preview.sellable()<=0){CoreUtil.error(player,"No supported ordinary items were found in that container.");plugin.settings().marketSound(player,"failed");return true;}
         plugin.confirmations().request(player,SettingsService.ConfirmationKind.SHOP,false,"Sell Container Contents",
                 List.of(preview.sellable()+" item"+(preview.sellable()==1?"":"s"),"Estimated total: "+CoreUtil.money(preview.earned())),
@@ -231,7 +242,7 @@ final class ShopService {
         if(plugin.spawnClaims().contains(location)&&!plugin.isAdmin(player)){CoreUtil.error(player,"This storage is protected by spawn.");return;}
         FactionService.Claim claim=plugin.factions().claimAt(location);
         if(claim!=null&&!plugin.factions().isMember(player,claim.faction())&&!plugin.privileged(player)){CoreUtil.error(player,"This storage is protected by "+claim.faction().name()+".");return;}
-        Inventory inv=container.getInventory();
+        Inventory inv=sellTarget(location,container);
         Map<Material,Integer> counts=containerSellableDeep(inv);
         SaleQuote quote=containerQuote(inv,player);
         if(quote.sellable()<=0){CoreUtil.error(player,"Nothing left to sell in that container.");plugin.settings().marketSound(player,"failed");return;}
@@ -243,6 +254,10 @@ final class ShopService {
             creditStock(player,material,removed,amount);
             db.recordSale(CoreUtil.id(player),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(player),"SHOP_SELL",earned,material.name());
         }
+        /** An industrial hopper owns its inventory in memory and serialises it on its own schedule, so a
+         *  sale made straight into that inventory has to say it changed or a restart would restore what
+         *  was just sold. Harmless for an ordinary container -- markDirty simply finds no bay. */
+        if(plugin.industrialHoppers()!=null)plugin.industrialHoppers().markDirty(location);
         CoreUtil.msg(player,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" from the container for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(player,"sale");
     }
 
