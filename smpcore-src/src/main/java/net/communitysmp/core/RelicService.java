@@ -946,9 +946,10 @@ final class RelicService implements Listener {
         });
         player.showTitle(net.kyori.adventure.title.Title.title(
                 Component.text("\u2726 ANCHOR SLAM \u2726",NamedTextColor.LIGHT_PURPLE,net.kyori.adventure.text.format.TextDecoration.BOLD),
-                Component.text(struck+(struck==1?" struck":" struck")+" \u2022 "
-                        +(windLevel>0?"Wind Burst "+windLevel:"no Wind Burst")+" \u2022 "
-                        +String.format(java.util.Locale.US,"%.0f block launch",comboHeight*struck),NamedTextColor.WHITE),
+                /** The drop, and nothing else. Targets, enchant level and launch height were noise on a
+                 *  title card -- the one number worth seeing at the moment of impact is how far you fell,
+                 *  because that is what the hit was made of. */
+                Component.text(String.format(java.util.Locale.US,"%,.0f blocks fallen",fall),NamedTextColor.WHITE),
                 net.kyori.adventure.title.Title.Times.times(java.time.Duration.ofMillis(80),java.time.Duration.ofMillis(1200),java.time.Duration.ofMillis(400))));
     }
     /** Cooldowns are bound to the relic itself (persisted in the state table), not the player holding

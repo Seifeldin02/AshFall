@@ -5,6 +5,63 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-24 (part 5) - PROMOTED: combo damage floor, per-spawner golem allowance, relic hotbar readout
+
+**PROMOTED 2026-08-24.** One silent restart (only Asserto online), booted in 35s, selftest clean, zero
+SMPCore errors, jar MD5 identical to the staging-tested artefact. Staging stopped and consoles cleared
+afterwards; exactly one Minecraft process chain left on the machine.
+
+### The combo damage report, handled without another theory
+
+Two confident wrong causes were given for "the combo makes my mace do LESS damage". The elytra explanation
+was wrong -- the owner swaps to a chestplate before diving and the drop counter reads correctly all the way
+down. Rather than produce a third guess, two things shipped:
+
+1. **The handler is arithmetically incapable of lowering the number.** The struck target takes the largest
+   of the untouched hit, the multiplied hit, and the slam that drop would have dealt anyway. Whatever the
+   mechanism was, the symptom cannot recur.
+2. **Telemetry** (`relics.yml` -> `log-combo`, on): one line per combo giving the tracked drop, vanilla's own
+   fallDistance, gliding state, mace base damage, what was applied and the final damage after armour and
+   boss toughness. Left ON in production deliberately -- the one remaining unreproduced sighting will now
+   produce evidence instead of another round of speculation.
+
+**Still open, and honestly unexplained:** one instance on staging where the combo looked interrupted, not
+reproducible afterwards. The owner's own guess -- the Warded Colossus's gravity pull yanking them mid-fall,
+which resets vanilla's fallDistance and therefore the tracked drop -- is plausible and is exactly what the
+telemetry line will show if it happens again.
+
+### Drop tracking follows vanilla's own signal
+
+Requested: the fall must be continuous, "same as the mace". Rather than invent a second rule, the tracked
+drop now restarts whenever vanilla clears its own `fallDistance` -- water, cobweb, ladder, being knocked
+upward -- which is the same moment the mace loses its smash bonus. Ascending is exempt, since fallDistance
+is legitimately zero on the way up while the peak is still rising.
+
+### Golem allowance was a shared pool, and that was a real bug
+
+`allowance = spawners x 2200`, minus everything spent across all of them. Adding a spawner therefore did
+nothing for the rest of the day, because the new one inherited the others' overdraft.
+
+Measured live before the fix: a third spawner added after 7,521 kills against a 4,400 pool contributed
+**exactly zero**, and the recorded payout reconstructs to a 4,400 cap to within 0.03% (predicted 1,211,482
+against a recorded 1,211,893).
+
+Each spawner now carries **its own** allowance, and usage fills the spawners that still have headroom first,
+so nothing is wasted topping up an exhausted one. A spawner added mid-day starts paying immediately.
+
+### Smaller
+
+- Combo launch scales with the mace's Wind Burst level: none/I/II/III -> 20/28/36/45 blocks, multiplied per
+  target struck.
+- The launch is applied one tick after the damage event. It was being set from inside the event, where
+  vanilla overwrites the attacker's motion and resets fall distance the instant `hurt()` returns.
+- Holding a relic shows its cooldown, or READY, on the hotbar text. While the Anchor is armed the drop
+  counter takes over instead.
+- The combo title card is now just the name and the blocks fallen; the targets/enchant/launch stat line was
+  noise at the moment of impact.
+
+---
+
 ## Session: 2026-08-24 (part 4) - PROMOTED TO PRODUCTION, and admin login persistence fixed
 
 **PROMOTED 2026-08-24.** One silent restart (only Asserto online), booted in 43s, selftest clean, **zero
