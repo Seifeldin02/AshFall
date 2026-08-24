@@ -134,6 +134,13 @@ buffs:
     # Heights here are what is ACTUALLY reached -- the velocity is solved against the game's real
     # per-tick drag, not the vacuum formula, which was under-delivering by a third at this size.
     mace-combo-burst-height: 45
+    # Combo launch height by the Wind Burst level of the mace that landed the hit. Index 0 = no Wind Burst,
+    # which gets the relic's ordinary launch: the combo is still worth landing for the damage, it just does
+    # not throw you across the sky. III reaches the full height.
+    mace-combo-burst-by-level: [20.0, 28.0, 36.0, 45.0]
+    # How long an elytra descent must stay shallow before the accumulated drop is surrendered. Without this
+    # a single shallow tick wiped a whole dive, and an ordinary glide is shallow nearly the entire way down.
+    elytra-level-flight-grace-ms: 1500
 
   warlords-ember:
     # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its

@@ -51,6 +51,8 @@ final class RelicService implements Listener {
          *  base damage" and "the buff doesn't seem active at all" that was reported, and it is also why the
          *  mace combo never triggered: by the time you swung, there was nothing armed left to combo with. */
         boolean airborne;
+        /** When the current elytra glide stopped being a dive; 0 while diving or not gliding. */
+        long shallowSince;
         Anchor(double peak){this.peak=peak;this.armedAt=System.currentTimeMillis();}
     }
     private final Map<UUID,Anchor> anchors=new java.util.concurrent.ConcurrentHashMap<>();
@@ -601,6 +603,24 @@ final class RelicService implements Listener {
         return (low+high)/2;
     }
 
+    /** Wind Burst level on the mace that landed the combo, 0 when it has none. */
+    private int windBurstLevel(org.bukkit.inventory.ItemStack item){
+        if(item==null||item.getType()!=Material.MACE)return 0;
+        try{return Math.max(0,item.getEnchantmentLevel(Enchantment.WIND_BURST));}
+        catch(RuntimeException ignored){return 0;}
+    }
+
+    /** How far a combo throws, by the Wind Burst level of the mace used.
+     *
+     *  A mace with no Wind Burst gets the relic's ordinary launch -- the combo is still worth landing for
+     *  the damage, it just does not throw you across the sky. Each level adds to that, with III reaching the
+     *  full height. Configured as a list indexed by level so the whole curve is tunable without a build. */
+    private double comboBurstHeight(int level){
+        java.util.List<Double> curve=config.getDoubleList("buffs.skyward-anchor.mace-combo-burst-by-level");
+        if(curve.isEmpty())return config.getDouble("buffs.skyward-anchor.mace-combo-burst-height",45);
+        return curve.get(Math.max(0,Math.min(level,curve.size()-1)));
+    }
+
     private double anchorRadius(){return Math.max(.5,config.getDouble("buffs.skyward-anchor.aoe-radius",1.5));}
 
     /** 1.5x directly underneath, easing to 0.5x at the edge of the box. Horizontal distance only. */
@@ -755,12 +775,28 @@ final class RelicService implements Listener {
              *  configured angle from straight down the accumulated height is surrendered -- but the relic
              *  stays armed, because the player did right-click for it and should not lose the charge for
              *  levelling out. Angle is measured from vertical: 0 is straight down, 90 is level flight. */
+            /*  Elytra. A steep dive is a legitimate way to build the drop; cruising is not.
+             *
+             *  This used to surrender the whole accumulated drop the instant the angle went shallow for a
+             *  SINGLE tick -- and an ordinary elytra descent is shallow by that measure almost the whole
+             *  way down, so a dive from y=1500 arrived carrying a drop of nearly zero. Combined with vanilla
+             *  refusing the mace smash bonus while gliding, that is both halves of "it does no damage".
+             *
+             *  A dive now has to genuinely flatten out -- shallower than the threshold CONTINUOUSLY for the
+             *  grace period -- before the drop is surrendered. A wobble, a course correction, or the moment
+             *  of pulling into the dive no longer erases it. */
             if(player.isGliding()){
                 Vector velocity=player.getVelocity();
                 double speed=velocity.length();
                 double angle=speed<=1e-4||velocity.getY()>=0?90:Math.toDegrees(Math.acos(Math.min(1,-velocity.getY()/speed)));
-                if(angle>maxAngle)anchor.peak=at.getY();
-            }
+                if(angle>maxAngle){
+                    if(anchor.shallowSince==0)anchor.shallowSince=System.currentTimeMillis();
+                    else if(System.currentTimeMillis()-anchor.shallowSince
+                            >=Math.max(200,config.getLong("buffs.skyward-anchor.elytra-level-flight-grace-ms",1500))){
+                        anchor.peak=at.getY();
+                    }
+                }else anchor.shallowSince=0;
+            }else anchor.shallowSince=0;
 
             /** Armed feedback, deliberately restrained.
              *
@@ -826,10 +862,30 @@ final class RelicService implements Listener {
         if(player.getInventory().getItemInMainHand().getType()!=Material.MACE)return;
         if(!relicEffectTarget(player,event.getEntity()))return;
         anchors.remove(player.getUniqueId());
-        event.setDamage(event.getDamage()*Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2)));
         double fall=Math.max(0,anchor.peak-player.getLocation().getY());
-        /** The struck entity already took the (doubled) mace hit; the area damage is for everyone else. */
+
+        /*  Why the combo could do LESS damage than not comboing at all.
+         *
+         *  Vanilla only grants the mace's smash bonus when `fallDistance > 1.5 && !isFallFlying()` --
+         *  read straight out of MaceItem.canSmashAttack in the running server jar. **While an elytra is
+         *  deployed there is no smash bonus whatsoever**, however far you have fallen. So a dive from y=1500
+         *  on an elytra arrives with a plain ~7 damage mace swing, and doubling seven is fourteen. It looked
+         *  like the relic was eating the damage; the damage was never there.
+         *
+         *  The relic's own drop went the same way at the same moment, because the elytra rule below reset
+         *  the tracked peak on any descent shallower than the dive threshold. Both halves collapsed
+         *  together, which is exactly "sometimes it does 0 damage from y = 1500".
+         *
+         *  So the combo no longer DEPENDS on vanilla having granted a smash. The struck target takes the
+         *  better of (multiplied mace hit) and (what the slam would have done to it anyway). When the mace
+         *  genuinely smashed, the multiplier is what applies and the combo is a straight upgrade; when
+         *  vanilla refused the smash, the relic still pays out on its own tracked drop. The combo can now
+         *  never be worse than simply landing the slam, which is the property that was broken. */
         Location impact=event.getEntity().getLocation();
+        double centre=config.getDouble("buffs.skyward-anchor.mace-scale",.9)*maceEquivalent(fall)
+                *centringMultiplier(impact,event.getEntity().getLocation());
+        double multiplied=event.getDamage()*Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2));
+        event.setDamage(Math.max(multiplied,centre));
         double radius=anchorRadius(),scale=config.getDouble("buffs.skyward-anchor.mace-scale",.9);
         int extra=0;
         for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
@@ -844,14 +900,28 @@ final class RelicService implements Listener {
         impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1.3f,.7f);
         impact.getWorld().playSound(impact,Sound.ENTITY_WIND_CHARGE_WIND_BURST,1.3f,.75f);
         impact.getWorld().playSound(impact,Sound.ITEM_TOTEM_USE,.7f,1.5f);
-        /** The combo gets its OWN launch height rather than a doubled slam. Doubling six blocks was still
-         *  read as "not as strong as I wanted"; this is a deliberately absurd, Wind-Burst-VI-sized throw,
-         *  which is the point of landing a combo in the first place. Still multiplies per target struck. */
-        windBurst(player,extra+1,config.getDouble("buffs.skyward-anchor.mace-combo-burst-height",22));
-        grantLandingGuard(player);
+        /** The launch is scaled by the Wind Burst level on the mace that landed the hit, so the enchantment
+         *  the player actually invested in is what decides how far they go. */
+        int windLevel=windBurstLevel(player.getInventory().getItemInMainHand());
+        double comboHeight=comboBurstHeight(windLevel);
+        final int struck=extra+1;
+        /*  Deferred by a tick, deliberately.
+         *
+         *  This is inside the damage event, which vanilla is still in the middle of: immediately after
+         *  hurt() returns, Player.attack overwrites the attacker's motion (setDeltaMovement Y=0.01) and
+         *  calls resetFallDistance() for a smash. Setting velocity and fall distance from in here means
+         *  fighting vanilla for the same fields in the same tick, and the launch loses. One tick later the
+         *  attack is finished and the field is ours. */
+        plugin.getServer().getScheduler().runTask(plugin,()->{
+            if(!player.isOnline())return;
+            windBurst(player,struck,comboHeight);
+            grantLandingGuard(player);
+        });
         player.showTitle(net.kyori.adventure.title.Title.title(
                 Component.text("\u2726 ANCHOR SLAM \u2726",NamedTextColor.LIGHT_PURPLE,net.kyori.adventure.text.format.TextDecoration.BOLD),
-                Component.text((extra+1)+" struck \u2022 mace damage doubled \u2022 burst x2",NamedTextColor.WHITE),
+                Component.text(struck+(struck==1?" struck":" struck")+" \u2022 "
+                        +(windLevel>0?"Wind Burst "+windLevel:"no Wind Burst")+" \u2022 "
+                        +String.format(java.util.Locale.US,"%.0f block launch",comboHeight*struck),NamedTextColor.WHITE),
                 net.kyori.adventure.title.Title.Times.times(java.time.Duration.ofMillis(80),java.time.Duration.ofMillis(1200),java.time.Duration.ofMillis(400))));
     }
     /** Cooldowns are bound to the relic itself (persisted in the state table), not the player holding
