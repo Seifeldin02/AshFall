@@ -845,15 +845,46 @@ final class BossEventService {
                  *  is the inflation control; the allowance only exists as a ceiling on a farm run around
                  *  the clock. Past it, the ordinary reduced spawner payout resumes. */
                 java.util.List<String> ids=plugin.spawners().sourceIdentities(mob);
-                int units=Math.max(1,ids.size());
-                int allowance=units*plugin.getConfig().getInt("mob-money.golem-daily-allowance-per-spawner",2200);
+                int perSpawner=plugin.getConfig().getInt("mob-money.golem-daily-allowance-per-spawner",2200);
                 /** Golems already alive from before this build carry no source stamp. They are metered
                  *  against the killer instead so they can never draw an untracked full rate; the stamp
                  *  arrives on the spawner's next cycle and normal per-spawner metering resumes. */
-                int used;
-                if(ids.isEmpty())used=db.addSpawnerKills(CoreUtil.id(killer),"IRON_GOLEM_UNSTAMPED",day,virtual);
-                else{used=db.spawnerAllowanceUsed(ids,day);db.addSpawnerAllowance(ids,day,virtual);}
-                int atFull=Math.max(0,Math.min(virtual,allowance-used));
+                int atFull;
+                if(ids.isEmpty()){
+                    int used=db.addSpawnerKills(CoreUtil.id(killer),"IRON_GOLEM_UNSTAMPED",day,virtual);
+                    atFull=Math.max(0,Math.min(virtual,perSpawner-used));
+                }else{
+                    /*  Each spawner carries its OWN daily allowance; they are not a shared pool.
+                     *
+                     *  It used to sum every spawner's allowance into one number and subtract the total spent
+                     *  across all of them. Arithmetically similar while the stack is unchanged, but it makes
+                     *  ADDING a spawner useless for the rest of the day: a third spawner raised the pool by
+                     *  2200 while inheriting the two older spawners' entire overdraft, so it paid nothing
+                     *  until the next reset. Measured live -- a third spawner added after 7,521 kills against
+                     *  a 4,400 pool contributed exactly zero.
+                     *
+                     *  Charging each spawner separately means a spawner that has not spent its own allowance
+                     *  still has it, whatever its neighbours have done. Usage fills the spawners with
+                     *  headroom first, so nothing is wasted topping up one that is already exhausted. */
+                    java.util.Map<String,Integer> headroom=new java.util.LinkedHashMap<>();
+                    int available=0;
+                    for(String id:ids){
+                        int free=Math.max(0,perSpawner-db.spawnerAllowanceUsed(java.util.List.of(id),day));
+                        headroom.put(id,free);available+=free;
+                    }
+                    atFull=Math.max(0,Math.min(virtual,available));
+                    java.util.Map<String,Integer> charge=new java.util.LinkedHashMap<>();
+                    int remaining=virtual;
+                    for(var entry:headroom.entrySet()){
+                        if(remaining<=0)break;
+                        int take=Math.min(remaining,entry.getValue());
+                        if(take>0){charge.merge(entry.getKey(),take,Integer::sum);remaining-=take;}
+                    }
+                    /** Anything past every spawner's allowance still has to be recorded somewhere, or the
+                     *  overdraft would vanish and the next kill would look like fresh headroom. */
+                    if(remaining>0)charge.merge(ids.get(0),remaining,Integer::sum);
+                    for(var entry:charge.entrySet())db.addSpawnerAllowance(java.util.List.of(entry.getKey()),day,entry.getValue());
+                }
                 double fullRate=plugin.getConfig().getDouble("mob-money.golem-full-rate",270);
                 amount=atFull*fullRate+(virtual-atFull)*roll*reducedShare;
                 db.recordGolemDaily(day,virtual,amount);

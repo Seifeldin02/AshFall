@@ -141,6 +141,10 @@ buffs:
     # How long an elytra descent must stay shallow before the accumulated drop is surrendered. Without this
     # a single shallow tick wiped a whole dive, and an ordinary glide is shallow nearly the entire way down.
     elytra-level-flight-grace-ms: 1500
+    # Logs every combo hit: tracked drop, vanilla fallDistance, whether gliding, the mace base damage, what
+    # was applied and the final damage after armour and boss toughness. On while the damage complaint is
+    # being chased -- it is one line per combo, not per hit.
+    log-combo: true
 
   warlords-ember:
     # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its

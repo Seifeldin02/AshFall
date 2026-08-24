@@ -760,6 +760,7 @@ final class RelicService implements Listener {
 
     /** Per-tick bookkeeping for everyone with the relic armed. */
     private void anchorTick(){
+        heldRelicTick();
         if(anchors.isEmpty())return;
         double maxAngle=config.getDouble("buffs.skyward-anchor.elytra-max-dive-angle",40);
         long life=Math.max(5,config.getLong("buffs.skyward-anchor.arm-seconds",30))*1000L;
@@ -819,6 +820,15 @@ final class RelicService implements Listener {
                         .append(Component.text(String.format(java.util.Locale.US,"%.0f block drop",carried),NamedTextColor.WHITE)));
             }
 
+            /*  The drop has to be a CONTINUOUS fall, the same rule the mace plays by.
+             *
+             *  Vanilla clears its own fallDistance the moment a fall is interrupted -- water, a cobweb, a
+             *  ladder, a boat, slow falling, being knocked upward -- and the mace loses its smash bonus with
+             *  it. The relic now follows vanilla's own signal rather than a second opinion: if the game has
+             *  decided this is no longer a fall, the tracked drop restarts from here too. Ascending is
+             *  exempt, because fallDistance is legitimately zero on the way up and the peak is still rising. */
+            if(anchor.airborne&&player.getVelocity().getY()<0&&player.getFallDistance()<=.5&&!player.isGliding())
+                anchor.peak=at.getY();
             if(!player.isOnGround())anchor.airborne=true;
             else if(anchor.airborne){
                 /** Landing with no fall damage event of its own (a short drop) still discharges, so a
@@ -882,10 +892,27 @@ final class RelicService implements Listener {
          *  vanilla refused the smash, the relic still pays out on its own tracked drop. The combo can now
          *  never be worse than simply landing the slam, which is the property that was broken. */
         Location impact=event.getEntity().getLocation();
+        double original=event.getDamage();
         double centre=config.getDouble("buffs.skyward-anchor.mace-scale",.9)*maceEquivalent(fall)
                 *centringMultiplier(impact,event.getEntity().getLocation());
-        double multiplied=event.getDamage()*Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2));
-        event.setDamage(Math.max(multiplied,centre));
+        double multiplied=original*Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2));
+        /** Non-decreasing BY CONSTRUCTION.
+         *
+         *  The reported behaviour was that comboing made the mace hit for LESS than not comboing, and I have
+         *  not been able to reproduce the mechanism. Rather than ship another theory, the handler is now
+         *  arithmetically incapable of lowering the number: whatever else is going on, the struck target
+         *  takes the largest of the untouched hit, the multiplied hit, and the slam this drop would have
+         *  dealt anyway. If damage still comes out low, the cause is upstream of this handler and the
+         *  telemetry below will say so with real numbers instead of a guess. */
+        double applied=Math.max(original,Math.max(multiplied,centre));
+        event.setDamage(applied);
+        if(config.getBoolean("buffs.skyward-anchor.log-combo",true))
+            plugin.getLogger().info(String.format(java.util.Locale.US,
+                    "[anchor-combo] %s -> %s | tracked drop %.1f | vanilla fallDistance %.1f | gliding=%s"
+                    +" | mace base %.2f -> applied %.2f (x%.2f = %.2f, slam = %.2f) | final %.2f",
+                    player.getName(),event.getEntity().getType(),fall,player.getFallDistance(),player.isGliding(),
+                    original,applied,Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2)),
+                    multiplied,centre,event.getFinalDamage()));
         double radius=anchorRadius(),scale=config.getDouble("buffs.skyward-anchor.mace-scale",.9);
         int extra=0;
         for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
@@ -1031,5 +1058,22 @@ final class RelicService implements Listener {
     double eliteOutgoingMultiplier(Player player){return activeItem(player.getInventory().getItemInMainHand(),"oathblade")?config.getDouble("buffs.oathblade.elite-damage-multiplier",1.25):1;}
     double eliteIncomingMultiplier(Player player){return activeItem(player.getInventory().getHelmet(),"crown_of_ash")?config.getDouble("buffs.crown-of-ash.elite-damage-multiplier",.8):1;}
     double oathbladeLifesteal(Player player){return activeItem(player.getInventory().getItemInMainHand(),"oathblade")?config.getDouble("buffs.oathblade.lifesteal-percent",10)/100.0:0;}
+    /** Held-relic readout: while a relic is in hand its state replaces the hotbar text, so its cooldown is
+     *  visible without opening anything or guessing. The Skyward Anchor's armed drop counter takes
+     *  precedence over this -- while it is armed, the drop is the more useful number. */
+    private void heldRelicTick(){
+        for(Player player:plugin.getServer().getOnlinePlayers()){
+            if(anchors.containsKey(player.getUniqueId()))continue;
+            String relicKey=keyOf(player.getInventory().getItemInMainHand());
+            if(relicKey==null||!isActive(relicKey))continue;
+            long ready=parseLong(db.state("relic_cooldown:"+relicKey)),now=System.currentTimeMillis();
+            boolean creative=player.getGameMode()==GameMode.CREATIVE;
+            Component state=creative||now>=ready
+                    ?Component.text("READY",NamedTextColor.GREEN,net.kyori.adventure.text.format.TextDecoration.BOLD)
+                    :Component.text(((ready-now)/1000+1)+"s",NamedTextColor.RED);
+            player.sendActionBar(Component.text(displayName(relicKey)+" \u2022 ",NamedTextColor.GOLD).append(state));
+        }
+    }
+
     private void buffTick(){for(Player player:plugin.getServer().getOnlinePlayers()){if(activeItem(player.getInventory().getHelmet(),"crown_of_ash")){player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.FIRE_RESISTANCE,100,0,true,false,true));player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.RESISTANCE,100,0,true,false,true));}boolean wayfinder=activeItem(player.getInventory().getItemInMainHand(),"wayfinder")||activeItem(player.getInventory().getItemInOffHand(),"wayfinder");if(wayfinder){player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.SPEED,100,0,true,false,true));player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.NIGHT_VISION,260,0,true,false,true));}}}
 }
