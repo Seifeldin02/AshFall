@@ -145,6 +145,12 @@ buffs:
     # was applied and the final damage after armour and boss toughness. On while the damage complaint is
     # being chased -- it is one line per combo, not per hit.
     log-combo: true
+    # The slam staggers what it lands on, scaled like the damage: dead centre is the full duration, the edge
+    # of the box is the minimum. Duration scales, not amplitude -- a glancing hit that still froze the target
+    # solid would make position irrelevant.
+    slow-level: 5
+    slow-max-seconds: 3.0
+    slow-min-seconds: 0.5
 
   warlords-ember:
     # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its

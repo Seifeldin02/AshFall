@@ -177,10 +177,26 @@ final class RelicService implements Listener {
         if(!(event.getWhoClicked() instanceof Player player))return;
         Inventory top=event.getView().getTopInventory();
         if(!isPersistentStorage(top))return;
-        int topSize=top.getSize();
-        boolean intoStorage=event.getRawSlot()<topSize&&keyOf(event.getCursor())!=null;
-        boolean shiftedIntoStorage=event.getClick().isShiftClick()&&event.getRawSlot()>=topSize&&keyOf(event.getCurrentItem())!=null;
-        if(intoStorage||shiftedIntoStorage){event.setCancelled(true);CoreUtil.error(player,"Relics cannot be stored — carry, drop, trade, or auction them instead.");}
+        if(relicEntersStorage(player,event)){event.setCancelled(true);CoreUtil.error(player,"Relics cannot be stored — carry, drop, trade, wager, or auction them instead.");}
+    }
+
+    /** Every route an item can take INTO the open container, not just the two obvious ones.
+     *
+     *  This only understood the CURSOR and shift-clicks, which left the same one-keystroke bypass the Shard
+     *  guard had: hover the destination slot and press the hotbar number the relic is on, and it goes
+     *  straight in. That is a SWAP, not a cursor placement and not a shift-click, so nothing matched.
+     *  Offhand swap (F) had the identical hole. Both are enumerated now. */
+    private boolean relicEntersStorage(Player player,InventoryClickEvent event){
+        int topSize=event.getView().getTopInventory().getSize();
+        if(event.getRawSlot()<0)return false;
+        if(event.getRawSlot()<topSize){
+            if(keyOf(event.getCursor())!=null)return true;
+            if(event.getClick()==org.bukkit.event.inventory.ClickType.NUMBER_KEY&&event.getHotbarButton()>=0
+                    &&keyOf(player.getInventory().getItem(event.getHotbarButton()))!=null)return true;
+            return event.getClick()==org.bukkit.event.inventory.ClickType.SWAP_OFFHAND
+                    &&keyOf(player.getInventory().getItemInOffHand())!=null;
+        }
+        return event.getClick().isShiftClick()&&keyOf(event.getCurrentItem())!=null;
     }
     @EventHandler(priority=EventPriority.HIGH) public void guardStorageDrag(InventoryDragEvent event){
         if(!(event.getWhoClicked() instanceof Player player))return;
@@ -621,6 +637,45 @@ final class RelicService implements Listener {
         return curve.get(Math.max(0,Math.min(level,curve.size()-1)));
     }
 
+    /** The slam staggers what it lands on, scaled the same way the damage is: a dead-centre hit is
+     *  Slowness V for three seconds, easing to half a second at the edge of the box. Applied to players,
+     *  mobs and bosses alike -- it is a body dropped on you from height, and it should not care what you
+     *  are. Deliberately duration-scaled rather than amplitude-scaled: a glancing hit that still froze the
+     *  target solid would make position irrelevant, which is the opposite of the point. */
+    /*  Why a 294 slam could land for nothing.
+     *
+     *  Vanilla gives an entity invulnerability frames after any hit, and inside that window a NEW hit only
+     *  deals `amount - lastDamage` -- nothing at all if the new hit is the smaller of the two. Land on a
+     *  boss dead centre and the mace swing and the slam arrive within the same handful of ticks, so the
+     *  slam is measured against the mace hit that just landed and is swallowed whole. Land slightly to the
+     *  side and the two separate enough in time to both count, which is exactly the reported "it works when
+     *  I hit from the side but not when I drop straight on top of him".
+     *
+     *  It also explains a boss recap crediting 200 one fight and 1100 the next for the same solo kill: the
+     *  slam was silently eaten by whichever hit happened to precede it.
+     *
+     *  The slam is a once-per-cooldown, fully committed strike, so it clears the window rather than
+     *  competing for it. lastDamage is reset too -- that, not the tick counter, is the number vanilla
+     *  actually subtracts. */
+    private void slamDamage(LivingEntity target,double damage,Player source){
+        target.setNoDamageTicks(0);
+        target.setLastDamage(0);
+        target.damage(damage,source);
+    }
+
+    private void slamSlow(LivingEntity target,double centring){
+        double edge=config.getDouble("buffs.skyward-anchor.edge-multiplier",.5);
+        double centre=config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5);
+        double span=Math.max(1e-6,centre-edge);
+        double howCentred=Math.max(0,Math.min(1,(centring-edge)/span));
+        double minSeconds=config.getDouble("buffs.skyward-anchor.slow-min-seconds",.5);
+        double maxSeconds=config.getDouble("buffs.skyward-anchor.slow-max-seconds",3);
+        int ticks=(int)Math.round((minSeconds+(maxSeconds-minSeconds)*howCentred)*20);
+        if(ticks<=0)return;
+        int amplifier=Math.max(0,config.getInt("buffs.skyward-anchor.slow-level",5)-1);
+        target.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS,ticks,amplifier,true,true,true));
+    }
+
     private double anchorRadius(){return Math.max(.5,config.getDouble("buffs.skyward-anchor.aoe-radius",1.5));}
 
     /** 1.5x directly underneath, easing to 0.5x at the edge of the box. Horizontal distance only. */
@@ -696,11 +751,13 @@ final class RelicService implements Listener {
         int hits=0;
         for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
             if(!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
-            double damage=scale*maceEquivalent(fall)*centringMultiplier(impact,target.getLocation());
+            double centring=centringMultiplier(impact,target.getLocation());
+            double damage=scale*maceEquivalent(fall)*centring;
             if(damage<=0)continue;
+            slamSlow(target,centring);
             /** Attributed to the player, so kill credit, boss damage tracking, PvP logging and every
              *  downstream reward path see it as their hit rather than as anonymous damage. */
-            target.damage(damage,player);
+            slamDamage(target,damage,player);
             hits++;
         }
         if(hits>0){
@@ -917,7 +974,9 @@ final class RelicService implements Listener {
         int extra=0;
         for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
             if(entity.equals(event.getEntity())||!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
-            target.damage(scale*maceEquivalent(fall)*centringMultiplier(impact,target.getLocation()),player);
+            double comboCentring=centringMultiplier(impact,target.getLocation());
+            slamSlow(target,comboCentring);
+            slamDamage(target,scale*maceEquivalent(fall)*comboCentring,player);
             extra++;
         }
         /** Unmistakable on purpose -- a combo you cannot tell fired is a combo nobody will use. */

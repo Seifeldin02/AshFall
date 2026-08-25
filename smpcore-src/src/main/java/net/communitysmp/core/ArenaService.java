@@ -374,7 +374,11 @@ final class ArenaService implements Listener {
                 new ItemStack(Material.WATER_BUCKET));
             case SWORD -> List.of(
                 enchanted(Material.NETHERITE_SWORD, Map.of(Enchantment.SHARPNESS, 5, Enchantment.FIRE_ASPECT, 2, Enchantment.UNBREAKING, 3)),
-                enchanted(Material.BOW, Map.of(Enchantment.POWER, 5)), new ItemStack(Material.GOLDEN_APPLE, 16), new ItemStack(Material.CROSSBOW),
+                enchanted(Material.BOW, Map.of(Enchantment.POWER, 5)), new ItemStack(Material.GOLDEN_APPLE, 16),
+                /** Piercing so the crossbow is not simply a worse bow in the one kit that carries both -- a
+                 *  pierced bolt goes through a raised shield, which is the whole point of bringing it to a
+                 *  Sword + Shield match. */
+                enchanted(Material.CROSSBOW, Map.of(Enchantment.PIERCING, 4)),
                 splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1), splash(org.bukkit.potion.PotionType.STRONG_HEALING, 1),
                 splash(org.bukkit.potion.PotionType.STRONG_SWIFTNESS, 1), splash(org.bukkit.potion.PotionType.FIRE_RESISTANCE, 1),
                 new ItemStack(Material.WATER_BUCKET));
@@ -1888,7 +1892,14 @@ final class ArenaService implements Listener {
         menu.inv.setItem(48, icon(Material.CAULDRON, "Clear wager", List.of(already > 0 ? "Return all " + already + " staged stack(s)" : "Nothing staged yet")));
         menu.inv.setItem(49, icon(Material.LIME_CONCRETE, "Confirm wager", List.of("Add the items above to your wager", "Winner takes both sides' wagered items")));
         menu.inv.setItem(53, icon(Material.BOOK, "Currently wagered", List.of(already + " stack(s) staged", "Add more above, then Confirm")));
-        player.openInventory(menu.inv);
+        /** Through transition(), like every other screen change here.
+         *
+         *  Opening an inventory fires InventoryCloseEvent for the one being replaced, and closeSetup turns a
+         *  closed setup screen into a CANCELLED DUEL. Without the guard, clicking "Wager items" closed the
+         *  stage screen, closeSetup saw an ordinary walk-away and forfeited the match -- reported as "when I
+         *  go to wager items it cancels the duel". openWagerView already went through transition; this was
+         *  the single screen that did not. */
+        transition(player, () -> player.openInventory(menu.inv));
         CoreUtil.msg(player, "Put items in the top area, then click Confirm to stake them. Closing without confirming returns them.");
     }
 
@@ -1900,7 +1911,16 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         List<ItemStack> staged = new ArrayList<>();
         for (int i = 0; i < 45; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) staged.add(it); }
-        if (duel == null || duel.phase != Phase.STAKING) { giveOrStash(id, staged, "Your items were returned \u2014 the match was no longer accepting wagers."); player.closeInventory(); return; }
+        if (duel == null || duel.phase != Phase.STAKING) {
+            /** Clear the box BEFORE handing anything back. closeInventory() below fires closeWager, which
+             *  returns whatever it finds still sitting in the top of the box -- so refunding the items and
+             *  then leaving them there handed out a second copy of every stack. That is the reported
+             *  duplication, and it is exactly 2x because there are exactly two return paths. */
+            for (int i = 0; i < 45; i++) box.setItem(i, null);
+            giveOrStash(id, staged, "Your items were returned — the match was no longer accepting wagers.");
+            player.closeInventory();
+            return;
+        }
         if (staged.isEmpty()) { actionbar(player, "Put items in the box first, then Confirm."); sound(player, "error"); return; }
         List<ItemStack> full = new ArrayList<>(loadWager(duel, id));
         full.addAll(staged);
@@ -1937,7 +1957,12 @@ final class ArenaService implements Listener {
          *  is a cancel. Confirmed items already live in the DB escrow and are untouched here. */
         List<ItemStack> unconfirmed = new ArrayList<>();
         if (menu.kind.equals("wagerbox"))
-            for (int i = 0; i < 45; i++) { ItemStack it = event.getInventory().getItem(i); if (it != null && !it.getType().isAir()) unconfirmed.add(it); }
+            /** Emptied as they are collected, so no future path that closes the box after already
+             *  refunding can hand out a second copy, whatever order the handlers run in. */
+            for (int i = 0; i < 45; i++) {
+                ItemStack it = event.getInventory().getItem(i);
+                if (it != null && !it.getType().isAir()) { unconfirmed.add(it); event.getInventory().setItem(i, null); }
+            }
         if (!unconfirmed.isEmpty()) giveOrStash(id, unconfirmed, "Unconfirmed wager items were returned.");
         /** The wager box is a sub-screen of the kit stage, not a stage of its own, so closing it puts the
          *  duellist back on their stage rather than cancelling. That also keeps the invariant the cancel rule
