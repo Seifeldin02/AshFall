@@ -2525,6 +2525,61 @@ final class ArenaService implements Listener {
             if (a.size() != b.size() || a.isEmpty()) return false;
             for (int i = 0; i < a.size(); i++) if (!a.get(i).isSimilar(b.get(i))) return false;
         }
+        /** Kit layouts, as a bijection test -- which is the entire safety argument for /duels.
+     *
+     *  What a layout stores is a PERMUTATION of the kit's default arrangement, never items, and a
+     *  permutation cannot mint or delete anything. That argument only holds if every way of corrupting the
+     *  permutation is REJECTED rather than half-applied: an index used twice would duplicate an item, an
+     *  occupied slot left unplaced would delete one, and an index pointing at an empty slot or past the end
+     *  of the arrangement is meaningless. Each of those is constructed here and required to fail. */
+        for (Kit k : Kit.values()) {
+            ItemStack[] arrangement = defaultArrangement(k);
+            int occupied = 0, total = 0;
+            for (ItemStack item : arrangement) if (real(item)) { occupied++; total += item.getAmount(); }
+            int expected = 0;
+            List<ItemStack> layoutHotbar = kitHotbar(k);
+            for (int i = 0; i < layoutHotbar.size() && i < 9; i++) expected += layoutHotbar.get(i).getAmount();
+            for (ItemStack extra : kitExtra(k)) expected += extra.getAmount();
+            /** The default arrangement has to hold the whole kit -- if addItem ever ran out of room, the
+             *  layout would be a permutation of something smaller than the kit it claims to describe. */
+            if (occupied == 0 || total != expected) return false;
+
+            int[] identity = identityLayout(arrangement);
+            if (!layoutMatches(identity, arrangement)) return false;
+            if (layoutMatches(null, arrangement)) return false;
+
+            /** A real rearrangement -- everything pushed to the far end of the inventory -- still balances. */
+            int[] shuffled = new int[LAYOUT_SLOTS];
+            java.util.Arrays.fill(shuffled, -1);
+            int cursor = LAYOUT_SLOTS - 1;
+            for (int index = 0; index < LAYOUT_SLOTS; index++) if (real(arrangement[index])) shuffled[cursor--] = index;
+            if (!layoutMatches(shuffled, arrangement)) return false;
+            int moved = 0;
+            for (int slot = 0; slot < LAYOUT_SLOTS; slot++) if (shuffled[slot] >= 0) moved += arrangement[shuffled[slot]].getAmount();
+            if (moved != total) return false;
+
+            int first = -1, second = -1, empty = -1;
+            for (int slot = 0; slot < LAYOUT_SLOTS; slot++) {
+                if (identity[slot] >= 0) { if (first < 0) first = slot; else if (second < 0) second = slot; }
+                else if (empty < 0) empty = slot;
+            }
+            if (first < 0 || second < 0 || empty < 0) return false;
+            int[] duplicated = identity.clone(); duplicated[second] = duplicated[first];
+            if (layoutMatches(duplicated, arrangement)) return false;
+            int[] deleted = identity.clone(); deleted[first] = -1;
+            if (layoutMatches(deleted, arrangement)) return false;
+            int[] past = identity.clone(); past[first] = LAYOUT_SLOTS + 5;
+            if (layoutMatches(past, arrangement)) return false;
+            int[] atNothing = identity.clone(); atNothing[first] = empty;
+            if (layoutMatches(atNothing, arrangement)) return false;
+        }
+
+        /** The wager box's three regions must not overlap, and the boundary the clicks are locked at has to
+         *  be the same one every "what did this player stage" scan stops at. If those ever drifted apart,
+         *  the opponent's display copies would start being collected as staged items. */
+        if (WAGER_STAGE != 27 || WAGER_VIEW != 36 || WAGER_VIEW < WAGER_STAGE || LAYOUT_SLOTS != 36) return false;
+        for (int slot = 0; slot < LAYOUT_SLOTS; slot++) if (editorSlot(gameSlot(slot)) != slot) return false;
+
         double winning = 300, losing = 700, payout = 0;
         for (double stake : new double[]{100, 200}) payout += stake + losing * (stake / winning);
         if (Math.abs(payout - (winning + losing)) >= 0.01) return false;

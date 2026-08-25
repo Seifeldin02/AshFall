@@ -36,10 +36,17 @@ partly-eaten stack rather than replace it. `dropAt` drops just above the block w
 Nothing else about the block changed -- 27 slots, nine per transfer, comparator behaviour, redstone lock and
 the vanilla-parity fixes are all untouched.
 
-**New test**, `/ashfall hopper verify` -> "partial collection by a full, draining hopper": a full hopper with
+**Three new tests**, `/ashfall hopper verify`. "partial collection by a full, draining hopper": a full hopper with
 a chest beneath it and a 200-stack sitting on top, driven cycle by cycle. It asserts the pile is never
 re-spawned as a new entity, never moves, never becomes two entities, is still drained as capacity opens, and
-that `floor + hopper + destination` is unchanged on **every** cycle.
+that `floor + hopper + destination` is unchanged on **every** cycle. "a full hopper whose output is
+blocked" and "a redstone-locked hopper with items on top of it" cover the other two states the owner asked
+about: in both the correct answer is to do nothing at all, and in both the pile must be left untouched
+rather than nudged, partially eaten or re-dropped.
+
+A fourth test lives in `/ashfall selftest` (Arena kit parity): the layout bijection, including four ways of
+corrupting a saved permutation -- an index used twice, an occupied slot left unplaced, an index past the end
+of the arrangement, and one pointing at an empty slot -- each of which must be rejected outright.
 
 ### The Market Axe opened the hopper it had just sold
 

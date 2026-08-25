@@ -247,6 +247,64 @@ final class IndustrialHopperVerify {
         check("items are still collected as capacity opens", consumed > 0);
         for (org.bukkit.entity.Entity entity : world.getNearbyEntities(resting, 6, 6, 6))
             if (entity instanceof Item item) item.remove();
+        blockedOutput(world);
+        lockedWithAPileOnTop(world);
+    }
+
+    /** The other two states a full hopper can be in with items sitting on it: nowhere to push them, and
+     *  switched off. In both, the correct behaviour is to do NOTHING -- and specifically to leave the pile
+     *  exactly as it is rather than nudging, re-dropping or partially eating it. */
+    private void blockedOutput(World world) {
+        section("a full hopper whose output is blocked");
+        Block hopper = industrial(world, BlockFace.DOWN);
+        Inventory destination = chest(hopper.getRelative(BlockFace.DOWN));
+        for (int slot = 0; slot < 27; slot++) hoppers.setStored(hopper, slot, new ItemStack(Material.IRON_INGOT, 64));
+        for (int slot = 0; slot < destination.getSize(); slot++) destination.setItem(slot, new ItemStack(Material.IRON_INGOT, 64));
+        int downstream = count(destination);
+        Item pile = world.dropItem(hopper.getLocation().add(0.5, 1.2, 0.5), new ItemStack(Material.IRON_INGOT, 64));
+        pile.setVelocity(new org.bukkit.util.Vector());
+        java.util.UUID identity = pile.getUniqueId();
+        Location resting = pile.getLocation().clone();
+        for (int cycle = 0; cycle < 10; cycle++) hoppers.sweepOnce();
+        check("the hopper takes nothing", hoppers.storedCount(hopper) == 27 * 64);
+        check("the blocked chest gains nothing", count(destination) == downstream);
+        check("the pile is untouched, and is still the same entity",
+                pile.isValid() && identity.equals(pile.getUniqueId()) && pile.getItemStack().getAmount() == 64);
+        check("the pile has not been moved", pile.getLocation().distance(resting) <= 0.001);
+        check("nothing else was spawned", groundEntities(world, resting) == 1);
+        pile.remove();
+    }
+
+    private void lockedWithAPileOnTop(World world) {
+        section("a redstone-locked hopper with items on top of it");
+        Block hopper = industrial(world, BlockFace.DOWN);
+        Inventory destination = chest(hopper.getRelative(BlockFace.DOWN));
+        hoppers.setStored(hopper, 0, new ItemStack(Material.IRON_INGOT, 5));
+        Hopper data = (Hopper) hopper.getBlockData();
+        data.setEnabled(false);
+        hopper.setBlockData(data, false);
+        Item pile = world.dropItem(hopper.getLocation().add(0.5, 1.2, 0.5), new ItemStack(Material.IRON_INGOT, 40));
+        pile.setVelocity(new org.bukkit.util.Vector());
+        java.util.UUID identity = pile.getUniqueId();
+        for (int cycle = 0; cycle < 6; cycle++) hoppers.sweepOnce();
+        check("a locked hopper collects nothing off the floor, even with room", hoppers.storedCount(hopper) == 5);
+        check("and pushes nothing downstream", count(destination) == 0);
+        check("the pile is untouched, and is still the same entity",
+                pile.isValid() && identity.equals(pile.getUniqueId()) && pile.getItemStack().getAmount() == 40);
+        data.setEnabled(true);
+        hopper.setBlockData(data, false);
+        hoppers.sweepOnce();
+        check("unlocking resumes collection immediately",
+                hoppers.storedCount(hopper) + count(destination) + (pile.isValid() ? pile.getItemStack().getAmount() : 0) == 45
+                        && (!pile.isValid() || pile.getItemStack().getAmount() < 40));
+        if (pile.isValid()) pile.remove();
+    }
+
+    private int groundEntities(World world, Location around) {
+        int entities = 0;
+        for (org.bukkit.entity.Entity entity : world.getNearbyEntities(around, 6, 6, 6))
+            if (entity instanceof Item) entities++;
+        return entities;
     }
 
     private void minecart(World world) {
