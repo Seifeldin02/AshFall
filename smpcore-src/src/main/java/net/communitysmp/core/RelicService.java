@@ -274,6 +274,21 @@ final class RelicService implements Listener {
                 }
                 continue;
             }
+            /*  Never delete a relic that its own tracked owner is holding.
+             *
+             *  If the ledger says LOST/ELIGIBLE and the tracked owner walks up carrying the thing, the
+             *  ledger is what is wrong -- that is the copy, coming back from wherever the sweep could not
+             *  see it. Deleting it was the second half of the destruction chain above: the sweep wrongly
+             *  declared it lost, then this guard destroyed the physical item when the duel returned it.
+             *  Reinstating costs nothing if the ledger was right, because a genuinely duplicated relic
+             *  cannot be held by the tracked owner while a different tracked copy also exists -- that case
+             *  is handled by the PRESENT branch further up, which is checked first. */
+            if(CoreUtil.id(player).equals(row.owner())){
+                db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());
+                plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reappeared in its tracked owner's hands ("+player.getName()+", tracked status was "+row.status()+"); reinstating rather than removing it.");
+                db.history("SERVER",null,"RELIC",displayName(relicKey)+" was recovered by "+player.getName()+" after being wrongly recorded as lost.");
+                continue;
+            }
             item.setAmount(0);
             plugin.getLogger().warning("[RelicDuplicateGuard] Removed a stray "+relicKey+" from "+player.getName()+" (tracked status="+row.status()+", tracked owner="+row.ownerName()+") — did not match the single tracked copy.");
             db.history("SERVER",null,"RELIC",displayName(relicKey)+": a duplicate/stale physical copy was removed from "+player.getName()+" during a routine check (tracked owner: "+row.ownerName()+", status: "+row.status()+").");
@@ -359,6 +374,18 @@ final class RelicService implements Listener {
             if(hasRelic(db.graveItems(grave.id()).toArray(new ItemStack[0]),relicKey)){missingStrikes.remove(relicKey);return;}
         for(World world:plugin.getServer().getWorlds())for(Entity entity:world.getEntities())
             if(entity instanceof Item dropped&&relicKey.equals(keyOf(dropped.getItemStack()))){missingStrikes.remove(relicKey);return;}
+        /*  The duel stash.
+         *
+         *  This is the location that was missing, and it is exactly how a relic was destroyed for real: a
+         *  duellist's whole inventory is serialised into arena_state for the length of the match, so a relic
+         *  carried into a duel is in none of the places above. Two passes later (~20 minutes -- easily one
+         *  long duel session) the sweep concluded it had been destroyed and marked it LOST. The match then
+         *  ended, the inventory came back, and the duplicate guard deleted the returning relic for not
+         *  matching a tracked copy that was by then recorded as lost. Confirmed in the production log at
+         *  02:22 and 02:23 on 2026-08-25. */
+        if(plugin.arena()!=null)
+            for(String stashOwner:plugin.arena().duelStashOwners())
+                if(hasRelic(plugin.arena().duelStash(stashOwner),relicKey)){missingStrikes.remove(relicKey);return;}
         if(missingStrikes.merge(relicKey,1,Integer::sum)<2)return;
         missingStrikes.remove(relicKey);
         plugin.getLogger().info("[RelicLifecycle] "+relicKey+" could not be found in any checkable location across two consecutive passes while its owner ("+row.ownerName()+") was online — treating it as destroyed.");
@@ -386,39 +413,9 @@ final class RelicService implements Listener {
      *  normally-held relic. This is the "never resurface while any valid copy remains" guarantee: it
      *  simply never fires while a tracked copy (inventory, Ender Storage, or auction escrow) is known to
      *  still exist and its owner is still coming back. */
-    /*  A relic that no longer exists.
-     *
-     *  The reclaim clock is anchored on the owner's LAST LOGIN, which is the right rule for "the owner has
-     *  stopped playing and the relic is stranded with them". It is the wrong rule for "the relic was
-     *  destroyed": the owner keeps logging in, so the anchor keeps moving forward and the relic can never
-     *  resurface -- it is simply gone from the world for ever while the ledger insists it exists. Confirmed
-     *  live: a Skyward Anchor had to be re-spawned by hand with an admin command.
-     *
-     *  last_confirmed is the answer, and it was already being recorded and never used for this. It is set
-     *  every time a copy is actually SEEN, so if the owner has been online since well after the last
-     *  sighting, the copy is gone. That is a much shorter and much more accurate clock than waiting a week
-     *  for somebody who never left. */
-    private boolean presumedDestroyed(Database.RelicLifecycleRow row,long now){
-        long days=config.getLong("lifecycle.presumed-destroyed-after-real-days",2);
-        if(days<=0)return false;
-        long window=days*86400000L;
-        long confirmed=row.lastConfirmed(),seen=db.lastSeen(row.owner());
-        /** Both must be known, the sighting must be genuinely stale, AND the owner must have logged in
-         *  since then -- otherwise this is just an absent owner, which is the other clock's job. */
-        return confirmed>0&&seen>0&&now-confirmed>window&&seen>confirmed+window/2;
-    }
-
     private void checkReclaim(Database.RelicLifecycleRow row,long now){
         String relicKey=row.key(),owner=row.owner();
         if(activeAuctionFor(owner,relicKey)!=null)return;
-        if(expiredAuctionFor(owner,relicKey)==null&&presumedDestroyed(row,now)){
-            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" has not been seen in any inventory since "
-                    +new java.util.Date(row.lastConfirmed())+" while "+row.ownerName()
-                    +" has logged in since; presuming it was destroyed and returning it to the world.");
-            db.history("SERVER",null,"RELIC",displayName(relicKey)+" was lost and has returned to the world (last owner: "+row.ownerName()+").");
-            db.makeRelicEligible(relicKey);
-            return;
-        }
         long reclaimAfter=config.getLong("lifecycle.reclaim-after-real-days",7)*86400000L;
         Database.AuctionRow expired=expiredAuctionFor(owner,relicKey);
         long anchor=expired!=null?Math.max(expired.expires(),db.lastSeen(owner)):db.lastSeen(owner);
@@ -993,6 +990,10 @@ final class RelicService implements Listener {
          *  telemetry below will say so with real numbers instead of a guess. */
         double applied=Math.max(original,Math.max(multiplied,centre));
         event.setDamage(applied);
+        /** The thing you actually landed on takes the FULL stagger, whatever the geometry says -- it was hit
+         *  directly, not caught in the blast. Only the surrounding area damage scales with distance. */
+        if(event.getEntity() instanceof LivingEntity struckTarget)
+            slamSlow(struckTarget,config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5));
         if(config.getBoolean("buffs.skyward-anchor.log-combo",true))
             plugin.getLogger().info(String.format(java.util.Locale.US,
                     "[anchor-combo] %s -> %s | tracked drop %.1f | vanilla fallDistance %.1f | gliding=%s"

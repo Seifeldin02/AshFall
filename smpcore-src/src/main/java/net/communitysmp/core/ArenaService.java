@@ -471,6 +471,23 @@ final class ArenaService implements Listener {
     }
 
     // ------------------------------------------------------------------ state capture / restore
+    /** Everything currently held in the duel stash for this player, or an empty array.
+     *
+     *  A duellist's real inventory is serialised into arena_state for the length of the match, and until now
+     *  nothing outside this class could see it. That mattered: the relic lifecycle sweep looks for a relic in
+     *  inventories, Ender Storage, graves, auction escrow and dropped items -- none of which is where a
+     *  duellist's belongings actually are -- so a relic carried into a duel simply ceased to exist as far as
+     *  that check was concerned. */
+    ItemStack[] duelStash(String id) {
+        Database.ArenaState state = id == null ? null : db.arenaState(id);
+        if (state == null || state.items() == null) return new ItemStack[0];
+        try { return ItemStack.deserializeItemsFromBytes(state.items()); }
+        catch (RuntimeException ignored) { return new ItemStack[0]; }
+    }
+
+    /** Every player who currently has belongings parked in a duel stash. */
+    List<String> duelStashOwners() { return db.arenaStateOwners(); }
+
     private void capture(Player player) {
         String id = CoreUtil.id(player);
         if (db.arenaState(id) != null) return;
