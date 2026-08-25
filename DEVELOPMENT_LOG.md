@@ -5,9 +5,28 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
-## Session: 2026-08-25 (part 2) - Hopper collection stability, /duels layouts, opponent wager panel, advancement toasts
+## Session: 2026-08-25 (part 2) - PROMOTED: hopper collection stability, /duels layouts, opponent wager panel, advancement toasts
 
-Staging only at time of writing.
+**PROMOTED 2026-08-25.** Silent restart (only MacoCT and Asserto online), booted in 60.7s, selftest 0
+failures, hopper parity verified with no failures, 0 SMPCore errors, jar MD5 `e0e14529...` identical across
+build output, staging and production. `check_deploy.py` 32/33 -- the one item being the four documented
+staging-only `trusted-admin` keys and the extra staging sigil UUID. **No YAML was synced this time, by
+design:** this batch changed only Java and the bundled `plugin.yml`, so there was nothing to copy, and last
+session's config clobber had nothing to recur from.
+
+### Two deploy traps hit while shipping this
+
+**Two SMPCore jars in `plugins/`.** `deploy-to-staging.ps1` writes the VERSIONED name (`SMPCore-1.7.0.jar`);
+production has always been promoted by hand to the unversioned `SMPCore.jar`. Staging ended up holding both,
+and Paper logged `Ambiguous plugin name 'SMPCore'` and picked one without saying which. Tests run in that
+state prove nothing about the build you think you are testing. Staging now holds exactly one jar; the deploy
+check already asserts `exactly one` for production.
+
+**A `schtasks /SC ONCE` launcher is a landmine.** The escape-hatch task used to get a visible console is
+created with a run time later the same day, so it fires again at that time and launches a SECOND server into
+a locked world folder. The staging task was deleted afterwards; the production one was **disabled**, not
+deleted -- deleting a task whose instance is still running can take the running process with it, and that
+process is production.
 
 ### The Industrial Hopper was destroying and re-spawning the pile on top of it
 
