@@ -694,7 +694,13 @@ final class SettingsService implements Listener {
             case"confirm"->{sound=Sound.BLOCK_NOTE_BLOCK_PLING;pitch=1.5f;}
             case"ready"->{sound=Sound.BLOCK_NOTE_BLOCK_PLING;pitch=1.9f;}
             case"stage"->{sound=Sound.BLOCK_NOTE_BLOCK_BELL;pitch=1.2f;volume=.6f;}
-            case"start"->{sound=Sound.UI_TOAST_CHALLENGE_COMPLETE;pitch=1f;volume=.7f;}
+            /** A round STARTING is not a victory. UI_TOAST_CHALLENGE_COMPLETE is the advancement fanfare,
+             *  so every duel opened by congratulating both fighters before a punch was thrown. A raid horn
+             *  reads as "begin" instead of "well done", and it carries across an arena. */
+            case"start"->{sound=Sound.EVENT_RAID_HORN;pitch=1.4f;volume=.7f;}
+            /** The two ends of a match, so the result is audible before the message is read. */
+            case"victory"->{sound=Sound.UI_TOAST_CHALLENGE_COMPLETE;pitch=1f;volume=.9f;}
+            case"defeat"->{sound=Sound.ENTITY_ELDER_GUARDIAN_CURSE;pitch=1.6f;volume=.55f;}
             case"back"->{sound=Sound.BLOCK_NOTE_BLOCK_BASS;pitch=1.3f;}
             case"cancel"->{sound=Sound.BLOCK_NOTE_BLOCK_BASS;pitch=.8f;volume=.6f;}
             case"error"->{sound=Sound.BLOCK_NOTE_BLOCK_BASS;pitch=.6f;volume=.6f;}

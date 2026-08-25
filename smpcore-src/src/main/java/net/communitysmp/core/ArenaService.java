@@ -1091,6 +1091,11 @@ final class ArenaService implements Listener {
          *  escrow is only paid out once. */
         if (duel.phase != Phase.LIVE) return;
         duel.phase = Phase.ENDING;
+        /** Each side hears its own result. Deliberately here at the top of finish(), before any payout or
+         *  teleport work, so the cue lands on the same tick the match actually ends rather than trailing
+         *  behind the scoreboard. */
+        sound(plugin.getServer().getPlayer(winner), "victory");
+        sound(plugin.getServer().getPlayer(loser), "defeat");
         double pot = db.arenaEscrowOf(duel.a) + db.arenaEscrowOf(duel.b);
         db.arenaEscrowClear(duel.a); db.arenaEscrowClear(duel.b);
         if (pot > 0) {
