@@ -5,6 +5,11 @@ lifecycle:
   # entirely; for an expired-and-uncollected listing the clock starts no earlier than the expiry, and
   # any later login still resets it, same as a normally-held relic.
   reclaim-after-real-days: 7
+  # A relic that no longer exists anywhere. last_confirmed is set every time a copy is actually SEEN, so if
+  # the owner has been logging in well after the last sighting, the copy is gone and the relic should return
+  # to the world. The reclaim clock above is anchored on the owner's last LOGIN and therefore never fires for
+  # an active player -- which is how a destroyed relic stayed permanently missing.
+  presumed-destroyed-after-real-days: 2
   # Real days after a reclaim before the relic becomes eligible to resurface.
   resurface-after-real-days: 2
 

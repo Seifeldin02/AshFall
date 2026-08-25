@@ -126,7 +126,11 @@ spawners:
   # Virtual stacking: a placed spawner keeps only a few real entities and folds further spawns into them
   # as an internal count (rendered "Blaze x50"). A new representative appears only once the current one
   # reaches the cap. Throughput is limited by the CYCLE alone -- never by how many mobs are already there.
-  virtual-stack-cap: 100
+  # 100,000 per representative. The old 100 meant a busy golem farm reached the entity cap and started
+  # cramming long before the daily money allowance was spent -- so more spawners bought LESS afk time, which
+  # is backwards. A huge per-entity count keeps the ENTITY total flat however many spawners are stacked:
+  # extra spawners fill the same representatives faster instead of spawning more of them.
+  virtual-stack-cap: 100000
   # Larger than the spawn range on purpose: representatives drift (Blazes fly), and a farm should settle
   # into as few entities as the cap allows rather than leaving stacks stranded side by side.
   virtual-merge-radius: 12
@@ -194,7 +198,10 @@ bounties:
   repeat-pair-days: 7
   placement-fee-percent: 2.0
   claim-tax-percent: 3.0
-  admin-approval-threshold: 10000
+  # Bounties below this pay out automatically. Manual review is for the genuinely large ones only -- the
+  # anti-abuse checks that actually matter (same IP, same faction, repeat pairs, the treasury cap) run on
+  # every bounty regardless and are untouched by this number.
+  admin-approval-threshold: 500000
   auto:
     window-hours: 72
     distinct-victims-threshold: 4

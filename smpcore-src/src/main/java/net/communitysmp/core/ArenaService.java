@@ -158,6 +158,8 @@ final class ArenaService implements Listener {
          *  re-equipped, and neither can be hurt until each has clicked Ready. The fight begins only when both
          *  are ready. Spectators may place their bets during the gate. */
         boolean gating = false;
+        /** When the current ready gate opened, so a gate that never resolves can be broken out of. */
+        long gateOpenedAt = 0;
         /** Ids that have clicked Ready for the current round; cleared when each round's gate opens. */
         final Set<String> roundReady = new HashSet<>();
         /** When betting closes for the round that is running. Set the moment a round actually starts, so a
@@ -308,7 +310,7 @@ final class ArenaService implements Listener {
         return new Location(arena, slotBaseX(duel.slot) + 0.5, FLOOR_Y + 6, 0.5, 0f, 25f);
     }
 
-    private boolean inArena(Player player) { return isArenaWorld(player.getWorld()); }
+    boolean inArena(Player player) { return isArenaWorld(player.getWorld()); }
 
     /** True for any world a duel runs in: the legacy shared arena, and every per-match instance world. Other
      *  services key their duel exclusions off this (graves, progression), so a per-match instance must be
@@ -886,6 +888,7 @@ final class ArenaService implements Listener {
         resetArena(duel);
         duel.resolving = false;
         duel.gating = true;
+        duel.gateOpenedAt = System.currentTimeMillis();
         duel.roundReady.clear();
         capture(one); capture(two);
         one.teleport(corner(duel, 0)); two.teleport(corner(duel, 1));
@@ -940,10 +943,15 @@ final class ArenaService implements Listener {
         refreshSpectate(duel);
     }
 
-    /** While gated, a duellist is held on their block (they may still look around) and cannot be hurt. */
+    /** While gated, a duellist is held on their block (they may still look around) and cannot be hurt.
+     *
+     *  Only ever inside the arena. A duellist who is somehow OUTSIDE it while a gate is open used to be
+     *  pinned to the spot anyway: the server rejected every move while the client kept walking, which is
+     *  the classic rubber-band -- "stuck in place server side but can move client side", and untouchable in
+     *  both directions because gateShield was cancelling all their damage at the same time. */
     @EventHandler(ignoreCancelled = true) public void freeze(PlayerMoveEvent event) {
         Duel duel = duelOf(event.getPlayer());
-        if (duel == null || !duel.gating) return;
+        if (duel == null || !duel.gating || !inArena(event.getPlayer())) return;
         Location from = event.getFrom(), to = event.getTo();
         if (to == null) return;
         if (from.getBlockX() != to.getBlockX() || from.getBlockZ() != to.getBlockZ() || to.getY() > from.getY() + 0.02) {
@@ -956,6 +964,25 @@ final class ArenaService implements Listener {
         if (!(event.getEntity() instanceof Player hurt)) return;
         Duel duel = duelOf(hurt);
         if (duel != null && duel.gating && inArena(hurt)) event.setCancelled(true);
+    }
+
+    /** A ready gate that never resolves used to hold both duellists frozen for ever -- there was no timeout
+     *  on it at all, so anything that lost a player their Ready screen (a closed GUI, a resource-pack
+     *  reload, a client hiccup) left them pinned in place and invulnerable with no way out but a restart.
+     *
+     *  The gate now breaks itself: past the timeout the round simply starts. Starting is the friendlier
+     *  failure -- both duellists are already stood in the arena with their kits, so the fight is what they
+     *  were waiting for anyway, and an abort would throw away a match nobody actually left. */
+    private void tickReadyGates() {
+        long now = System.currentTimeMillis();
+        long timeout = Math.max(5, plugin.getConfig().getLong("arena.ready-gate-timeout-seconds", 45)) * 1000L;
+        for (Duel duel : new ArrayList<>(duels)) {
+            if (!duel.gating || duel.gateOpenedAt <= 0 || now - duel.gateOpenedAt < timeout) continue;
+            Player one = a(duel), two = b(duel);
+            if (one == null || two == null) { abortAndRefund(duel, "a duellist went offline"); continue; }
+            both(duel, "Ready gate timed out — starting the round.");
+            startFight(duel);
+        }
     }
 
     /** A gated duellist cannot escape the ready-gate by closing it -- it reopens until they ready up (or the
@@ -1391,6 +1418,7 @@ final class ArenaService implements Listener {
     }
 
     private void tick() {
+        tickReadyGates();
         long grace = Math.max(3, plugin.getConfig().getLong("arena.reconnect-grace-seconds", 10)) * 1000L;
         long setupTimeout = Math.max(30, plugin.getConfig().getLong("arena.setup-timeout-seconds", 180)) * 1000L;
         long now = System.currentTimeMillis();

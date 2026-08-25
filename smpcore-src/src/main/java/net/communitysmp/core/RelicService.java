@@ -386,9 +386,39 @@ final class RelicService implements Listener {
      *  normally-held relic. This is the "never resurface while any valid copy remains" guarantee: it
      *  simply never fires while a tracked copy (inventory, Ender Storage, or auction escrow) is known to
      *  still exist and its owner is still coming back. */
+    /*  A relic that no longer exists.
+     *
+     *  The reclaim clock is anchored on the owner's LAST LOGIN, which is the right rule for "the owner has
+     *  stopped playing and the relic is stranded with them". It is the wrong rule for "the relic was
+     *  destroyed": the owner keeps logging in, so the anchor keeps moving forward and the relic can never
+     *  resurface -- it is simply gone from the world for ever while the ledger insists it exists. Confirmed
+     *  live: a Skyward Anchor had to be re-spawned by hand with an admin command.
+     *
+     *  last_confirmed is the answer, and it was already being recorded and never used for this. It is set
+     *  every time a copy is actually SEEN, so if the owner has been online since well after the last
+     *  sighting, the copy is gone. That is a much shorter and much more accurate clock than waiting a week
+     *  for somebody who never left. */
+    private boolean presumedDestroyed(Database.RelicLifecycleRow row,long now){
+        long days=config.getLong("lifecycle.presumed-destroyed-after-real-days",2);
+        if(days<=0)return false;
+        long window=days*86400000L;
+        long confirmed=row.lastConfirmed(),seen=db.lastSeen(row.owner());
+        /** Both must be known, the sighting must be genuinely stale, AND the owner must have logged in
+         *  since then -- otherwise this is just an absent owner, which is the other clock's job. */
+        return confirmed>0&&seen>0&&now-confirmed>window&&seen>confirmed+window/2;
+    }
+
     private void checkReclaim(Database.RelicLifecycleRow row,long now){
         String relicKey=row.key(),owner=row.owner();
         if(activeAuctionFor(owner,relicKey)!=null)return;
+        if(expiredAuctionFor(owner,relicKey)==null&&presumedDestroyed(row,now)){
+            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" has not been seen in any inventory since "
+                    +new java.util.Date(row.lastConfirmed())+" while "+row.ownerName()
+                    +" has logged in since; presuming it was destroyed and returning it to the world.");
+            db.history("SERVER",null,"RELIC",displayName(relicKey)+" was lost and has returned to the world (last owner: "+row.ownerName()+").");
+            db.makeRelicEligible(relicKey);
+            return;
+        }
         long reclaimAfter=config.getLong("lifecycle.reclaim-after-real-days",7)*86400000L;
         Database.AuctionRow expired=expiredAuctionFor(owner,relicKey);
         long anchor=expired!=null?Math.max(expired.expires(),db.lastSeen(owner)):db.lastSeen(owner);
