@@ -203,6 +203,50 @@ final class IndustrialHopperVerify {
         hoppers.sweepOnce();
         check("a full hopper leaves the item on the floor", spare.isValid() && spare.getItemStack().getAmount() == 5);
         spare.remove();
+        partialPickupIsStable(world);
+    }
+
+    /** The reported bug, as a test: a FULL hopper that is actively draining downstream, with a stack of
+     *  items sitting on top of it.
+     *
+     *  Every cycle the push frees a few slots and the pile gives up a few items, which is correct. What was
+     *  not correct was how: the leftover was destroyed and re-dropped as a new entity each time, so the
+     *  pile visibly jumped around and got flung off the block. The assertion that matters is therefore not
+     *  about counts at all -- it is that the pile stays the SAME ENTITY, in the same place, the whole way
+     *  down. The count invariant is checked on every single cycle alongside it. */
+    private void partialPickupIsStable(World world) {
+        section("partial collection by a full, draining hopper");
+        Block hopper = industrial(world, BlockFace.DOWN);
+        Inventory destination = chest(hopper.getRelative(BlockFace.DOWN));
+        for (int slot = 0; slot < 27; slot++) hoppers.setStored(hopper, slot, new ItemStack(Material.IRON_INGOT, 64));
+        Item pile = world.dropItem(hopper.getLocation().add(0.5, 1.2, 0.5), new ItemStack(Material.IRON_INGOT, 200));
+        pile.setVelocity(new org.bukkit.util.Vector());
+        java.util.UUID identity = pile.getUniqueId();
+        Location resting = pile.getLocation().clone();
+        int total = 27 * 64 + 200;
+
+        boolean conserved = true, sameEntity = true, stayedPut = true, extras = false;
+        int consumed = 0;
+        for (int cycle = 0; cycle < 40 && pile.isValid(); cycle++) {
+            hoppers.sweepOnce();
+            if (pile.isValid()) {
+                if (!identity.equals(pile.getUniqueId())) sameEntity = false;
+                if (pile.getLocation().distance(resting) > 0.001) stayedPut = false;
+            }
+            int floor = 0, entities = 0;
+            for (org.bukkit.entity.Entity entity : world.getNearbyEntities(resting, 6, 6, 6))
+                if (entity instanceof Item item) { floor += item.getItemStack().getAmount(); entities++; }
+            if (entities > 1) extras = true;
+            if (floor + hoppers.storedCount(hopper) + count(destination) != total) { conserved = false; break; }
+            consumed = 200 - floor;
+        }
+        check("nothing is created or destroyed on any cycle", conserved);
+        check("the pile is never re-spawned as a new entity", sameEntity);
+        check("the pile never moves", stayedPut);
+        check("no second item entity is ever created", !extras);
+        check("items are still collected as capacity opens", consumed > 0);
+        for (org.bukkit.entity.Entity entity : world.getNearbyEntities(resting, 6, 6, 6))
+            if (entity instanceof Item item) item.remove();
     }
 
     private void minecart(World world) {

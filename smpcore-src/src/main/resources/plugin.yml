@@ -11,6 +11,9 @@ commands:
   duel:
     description: Challenge somebody to a wagered 1v1
     usage: /duel <player>
+  duels:
+    description: Arrange where each piece of a duel kit sits
+    usage: /duels [kit]
   orders:
     description: Browse and fill buy orders
     usage: /orders

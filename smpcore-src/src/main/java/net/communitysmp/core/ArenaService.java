@@ -24,6 +24,7 @@ import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
@@ -440,6 +441,197 @@ final class ArenaService implements Listener {
         return item;
     }
 
+    // ------------------------------------------------------------------ kit layouts (/duels)
+    /** A duel kit always contains the same things; where they sit is the player's business.
+     *
+     *  What is saved is a PERMUTATION, never items. For each of the 36 inventory slots the layout records
+     *  which slot of the kit's default arrangement belongs there, or -1 for empty. Applying it is a
+     *  reordering of a list the server built a moment ago from {@link #kitHotbar} and {@link #kitExtra}, so
+     *  a corrupt, stale or hand-edited row in the database cannot add an item, remove one, or change what
+     *  one is -- the worst it can do is fail validation and fall back to the default. */
+    private static final int LAYOUT_SLOTS = 36;
+
+    /** The editor is laid out like the inventory it configures: main rows on top, hotbar underneath. */
+    private static int gameSlot(int editorSlot) { return editorSlot < 27 ? editorSlot + 9 : editorSlot - 27; }
+    private static int editorSlot(int gameSlot) { return gameSlot < 9 ? gameSlot + 27 : gameSlot - 9; }
+    private static boolean real(ItemStack item) { return item != null && !item.getType().isAir(); }
+    private String layoutKey(String id, Kit kit) { return "duel_layout:" + id + ":" + kit.name(); }
+
+    /** Exactly where {@link #equip} would put this kit with no layout saved -- hotbar first, then addItem
+     *  for the extras, into a container whose slot order matches a player inventory's. Reproducing the
+     *  default through the same calls is what lets a saved layout be stored as a permutation of it. */
+    private ItemStack[] defaultArrangement(Kit kit) {
+        Inventory scratch = plugin.getServer().createInventory(null, LAYOUT_SLOTS);
+        List<ItemStack> hotbar = kitHotbar(kit);
+        for (int i = 0; i < hotbar.size() && i < 9; i++) scratch.setItem(i, hotbar.get(i));
+        for (ItemStack extra : kitExtra(kit)) scratch.addItem(extra);
+        ItemStack[] out = new ItemStack[LAYOUT_SLOTS];
+        for (int i = 0; i < LAYOUT_SLOTS; i++) out[i] = scratch.getItem(i);
+        return out;
+    }
+
+    private int[] identityLayout(ItemStack[] arrangement) {
+        int[] layout = new int[LAYOUT_SLOTS];
+        for (int i = 0; i < LAYOUT_SLOTS; i++) layout[i] = real(arrangement[i]) ? i : -1;
+        return layout;
+    }
+
+    private int[] savedLayout(String id, Kit kit) {
+        String raw = db.state(layoutKey(id, kit));
+        if (raw == null || raw.isBlank()) return null;
+        String[] parts = raw.split(",");
+        if (parts.length != LAYOUT_SLOTS) return null;
+        int[] layout = new int[LAYOUT_SLOTS];
+        try { for (int i = 0; i < LAYOUT_SLOTS; i++) layout[i] = Integer.parseInt(parts[i].trim()); }
+        catch (NumberFormatException malformed) { return null; }
+        return layout;
+    }
+
+    /** A layout is only ever applied if it is a genuine bijection onto the kit's occupied slots: every one
+     *  of them placed exactly once, and nothing else referenced at all. Anything less -- a kit whose
+     *  contents changed since the layout was saved, a truncated row, a repeated index -- falls back to the
+     *  default rather than being partially honoured. */
+    private boolean layoutMatches(int[] layout, ItemStack[] arrangement) {
+        if (layout == null) return false;
+        boolean[] used = new boolean[arrangement.length];
+        int placed = 0;
+        for (int index : layout) {
+            if (index < 0) continue;
+            if (index >= arrangement.length || !real(arrangement[index]) || used[index]) return false;
+            used[index] = true;
+            placed++;
+        }
+        int occupied = 0;
+        for (ItemStack item : arrangement) if (real(item)) occupied++;
+        return placed == occupied;
+    }
+
+    private void saveLayout(Player player, Kit kit, int[] layout) {
+        StringBuilder joined = new StringBuilder();
+        for (int i = 0; i < layout.length; i++) joined.append(i == 0 ? "" : ",").append(layout[i]);
+        db.state(layoutKey(CoreUtil.id(player), kit), joined.toString());
+    }
+
+    /** The kit picker. Reachable any time, in or out of a duel -- the arrangement is a standing preference,
+     *  not part of a match. */
+    void openKitLayoutPicker(Player player) {
+        Menu menu = new Menu("layoutpick", 0);
+        menu.inv = plugin.getServer().createInventory(menu, 27, Component.text("Duel kit layouts", NamedTextColor.DARK_AQUA));
+        for (int slot = 0; slot < 27; slot++) menu.inv.setItem(slot, filler());
+        Kit[] kits = Kit.values();
+        int[] kitSlots = {10, 12, 14, 16};
+        for (int i = 0; i < kits.length; i++) {
+            ItemStack[] arrangement = defaultArrangement(kits[i]);
+            boolean custom = layoutMatches(savedLayout(CoreUtil.id(player), kits[i]), arrangement);
+            ItemStack card = icon(kits[i].icon(), kits[i].label(),
+                    List.of(kits[i].blurb(), custom ? "Your own arrangement is saved" : "Using the default arrangement", "Click to arrange it"));
+            menu.inv.setItem(kitSlots[i], custom ? glow(card) : card);
+        }
+        menu.inv.setItem(4, icon(Material.BOOK, "Kit layouts",
+                List.of("Every duel hands out the same kit.", "This is where each piece of it sits", "when the match starts.", "Saved per kit, and used for every duel.")));
+        menu.inv.setItem(26, icon(Material.BARRIER, "Close", List.of()));
+        transition(player, () -> player.openInventory(menu.inv));
+    }
+
+    void openKitLayout(Player player, Kit kit) {
+        Menu menu = new Menu("kitlayout", 0);
+        menu.layoutKit = kit;
+        ItemStack[] arrangement = defaultArrangement(kit);
+        int[] saved = savedLayout(CoreUtil.id(player), kit);
+        menu.layout = layoutMatches(saved, arrangement) ? saved : identityLayout(arrangement);
+        menu.inv = plugin.getServer().createInventory(menu, 54, Component.text(kit.label() + " \u2014 kit layout", NamedTextColor.DARK_AQUA));
+        renderKitLayout(player, menu);
+        transition(player, () -> player.openInventory(menu.inv));
+        CoreUtil.msg(player, "Click an item, then click where you want it. Changes save as you make them.");
+    }
+
+    private void renderKitLayout(Player player, Menu menu) {
+        ItemStack[] arrangement = defaultArrangement(menu.layoutKit);
+        for (int editor = 0; editor < LAYOUT_SLOTS; editor++) {
+            int index = menu.layout[gameSlot(editor)];
+            if (index < 0 || !real(arrangement[index])) { menu.inv.setItem(editor, null); continue; }
+            ItemStack show = arrangement[index].clone();
+            if (gameSlot(editor) == menu.selected) show = selectedMarker(show);
+            menu.inv.setItem(editor, show);
+        }
+        /** Row five is context, not configuration: armour and the offhand are placed by the kit and cannot
+         *  be moved, so they are shown greyed out rather than silently omitted. */
+        for (int slot = 36; slot < 54; slot++) menu.inv.setItem(slot, filler());
+        List<ItemStack> armour = kitArmour(menu.layoutKit);
+        for (int i = 0; i < armour.size() && i < 4; i++) menu.inv.setItem(36 + i, context(armour.get(i), "Worn \u2014 fixed"));
+        ItemStack offhand = kitOffhand(menu.layoutKit);
+        if (offhand != null) menu.inv.setItem(41, context(offhand, "Offhand \u2014 fixed"));
+        menu.inv.setItem(44, icon(Material.PAPER, "Rows 1-3 are your inventory",
+                List.of("Row 4 is your hotbar.", "Click an item, then click a slot", "to move or swap it.")));
+        menu.inv.setItem(45, icon(Material.ARROW, "Back", List.of("Return to the kit list")));
+        menu.inv.setItem(49, icon(Material.CAULDRON, "Reset to default", List.of("Puts everything back where", "the kit normally places it")));
+        menu.inv.setItem(53, menu.selected >= 0
+                ? icon(Material.LIME_DYE, "Now click a destination", List.of("Click the slot you want it in", "Click the same slot again to cancel"))
+                : icon(Material.GRAY_DYE, "Nothing selected", List.of("Click an item to pick it up")));
+    }
+
+    private ItemStack selectedMarker(ItemStack item) {
+        ItemStack copy = glow(item.clone());
+        ItemMeta meta = copy.getItemMeta();
+        if (meta != null) {
+            List<Component> lore = meta.lore() == null ? new ArrayList<>() : new ArrayList<>(meta.lore());
+            lore.add(Component.text("\u25b6 Selected \u2014 click a destination", NamedTextColor.YELLOW));
+            meta.lore(lore);
+            copy.setItemMeta(meta);
+        }
+        return copy;
+    }
+
+    private ItemStack context(ItemStack item, String note) {
+        ItemStack copy = item.clone();
+        ItemMeta meta = copy.getItemMeta();
+        if (meta != null) {
+            List<Component> lore = meta.lore() == null ? new ArrayList<>() : new ArrayList<>(meta.lore());
+            lore.add(Component.text(note, NamedTextColor.DARK_GRAY));
+            meta.lore(lore);
+            copy.setItemMeta(meta);
+        }
+        return copy;
+    }
+
+    /** Click to select, click to place.
+     *
+     *  Deliberately NOT drag-and-drop. Everything on this screen is a real netherite duel kit, and the
+     *  moment one of those is allowed onto the cursor, closing the window hands it to the player for keeps.
+     *  Nothing here ever leaves the menu: a click swaps two entries of an int array and repaints. */
+    private void layoutClick(Player player, Menu menu, int slot) {
+        if (menu.layout == null || menu.layoutKit == null) return;
+        if (slot == 45) { openKitLayoutPicker(player); return; }
+        if (slot == 49) {
+            db.state(layoutKey(CoreUtil.id(player), menu.layoutKit), "");
+            menu.layout = identityLayout(defaultArrangement(menu.layoutKit));
+            menu.selected = -1;
+            renderKitLayout(player, menu);
+            sound(player, "cancel");
+            actionbar(player, "Layout reset to the kit default.");
+            return;
+        }
+        if (slot < 0 || slot >= LAYOUT_SLOTS) return;
+        int game = gameSlot(slot);
+        if (menu.selected < 0) {
+            if (menu.layout[game] < 0) { sound(player, "error"); return; }
+            menu.selected = game;
+            renderKitLayout(player, menu);
+            sound(player, "adjust");
+            actionbar(player, "Selected \u2014 now click where you want it.");
+            return;
+        }
+        if (menu.selected == game) { menu.selected = -1; renderKitLayout(player, menu); sound(player, "cancel"); return; }
+        int moving = menu.layout[menu.selected];
+        menu.layout[menu.selected] = menu.layout[game];
+        menu.layout[game] = moving;
+        menu.selected = -1;
+        saveLayout(player, menu.layoutKit, menu.layout);
+        renderKitLayout(player, menu);
+        sound(player, "confirm");
+        actionbar(player, "Saved.");
+    }
+
     private void equip(Player player, Kit kit) {
         var inv = player.getInventory();
         inv.clear();
@@ -453,9 +645,19 @@ final class ArenaService implements Listener {
         inv.setBoots(armour.get(3));
         ItemStack offhand = kitOffhand(kit);
         if (offhand != null) inv.setItemInOffHand(offhand);
-        List<ItemStack> hotbar = kitHotbar(kit);
-        for (int i = 0; i < hotbar.size() && i < 9; i++) inv.setItem(i, hotbar.get(i));
-        for (ItemStack extra : kitExtra(kit)) inv.addItem(extra);
+        /** The player's own arrangement if they have saved a valid one, otherwise exactly what this always
+         *  did. The default path is left untouched on purpose: everyone who has never opened /duels gets
+         *  byte-identical kits to the ones they had before layouts existed. */
+        ItemStack[] arrangement = defaultArrangement(kit);
+        int[] layout = savedLayout(CoreUtil.id(player), kit);
+        if (layoutMatches(layout, arrangement)) {
+            for (int slot = 0; slot < LAYOUT_SLOTS; slot++)
+                inv.setItem(slot, layout[slot] < 0 ? null : arrangement[layout[slot]]);
+        } else {
+            List<ItemStack> hotbar = kitHotbar(kit);
+            for (int i = 0; i < hotbar.size() && i < 9; i++) inv.setItem(i, hotbar.get(i));
+            for (ItemStack extra : kitExtra(kit)) inv.addItem(extra);
+        }
         player.setGameMode(GameMode.SURVIVAL);
         player.setAllowFlight(false);
         player.setFlying(false);
@@ -1414,6 +1616,26 @@ final class ArenaService implements Listener {
      *  PlayerAdvancementDoneEvent is not cancellable, so the grant is revoked on the same tick instead: the
      *  advancement was earned a moment ago in the arena, so undoing it takes nothing the player had before.
      *  Recipe advancements are left alone -- revoking those would strip recipe-book entries. */
+    /** The toast, killed at the only point where killing it is free.
+     *
+     *  Revoking a finished advancement (below) undoes the record, but by then the server has already run
+     *  the advancement's rewards and queued the client update, and the player has already watched the
+     *  popup. Paper fires PlayerAdvancementCriterionGrantEvent one step earlier -- before the criterion is
+     *  written -- and it is cancellable. Cancelling it means the criterion is never granted, the
+     *  advancement never completes, no reward is handed out, nothing is queued for the client, and there is
+     *  no toast to suppress.
+     *
+     *  It is also gentler than the revoke: revoking a completed advancement strips EVERY criterion on it,
+     *  including ones the player earned legitimately days ago outside the arena. Refusing the grant leaves
+     *  all of that alone -- the duel simply contributes nothing towards it.
+     *
+     *  The revoke handler stays as the backstop for anything that reaches "done" by another route. */
+    @EventHandler(ignoreCancelled = true) public void advancementCriterion(com.destroystokyo.paper.event.player.PlayerAdvancementCriterionGrantEvent event) {
+        if (!inArena(event.getPlayer())) return;
+        if (event.getAdvancement().getKey().getKey().startsWith("recipes/")) return;
+        event.setCancelled(true);
+    }
+
     @EventHandler public void advancement(org.bukkit.event.player.PlayerAdvancementDoneEvent event) {
         Player player = event.getPlayer();
         if (!inArena(player)) return;
@@ -1574,6 +1796,11 @@ final class ArenaService implements Listener {
         /** When true this inventory is a real container the player fills (the item-wager box), so clicks and
          *  drags are NOT cancelled. Every other Menu is a button panel and stays fully click-locked. */
         boolean fillable = false;
+        /** Kit-layout editor state. The arrangement being edited is held here rather than re-read from the
+         *  database on every click, so a click is one swap and one save rather than a round trip. */
+        Kit layoutKit;
+        int[] layout;
+        int selected = -1;
         Menu(String kind, int duelId) { this.kind = kind; this.duelId = duelId; }
         @Override public Inventory getInventory() { return inv; }
     }
@@ -1787,16 +2014,27 @@ final class ArenaService implements Listener {
     @EventHandler public void click(InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Menu menu)) return;
         if (menu.fillable) {
-            /** The wager box: the top 45 slots and the player's own inventory are freely usable; the bottom row
-             *  is a control bar (Back / Clear / Confirm) and stays click-locked. */
+            /** The wager box: the top three rows and the player's own inventory are freely usable. The
+             *  control row and the opponent's read-only wager below it stay click-locked. */
             if (!(event.getWhoClicked() instanceof Player boxPlayer)) return;
             int raw = event.getRawSlot();
-            if (raw >= 45 && raw < 54) {
+            /** Double-click-to-gather sweeps matching items out of EVERY slot in the view, the opponent's
+             *  display panel included, and lands them on the cursor. That is a mint, so it is refused. */
+            if (event.getAction() == InventoryAction.COLLECT_TO_CURSOR) { event.setCancelled(true); return; }
+            if (raw >= WAGER_STAGE && raw < 54) {
                 event.setCancelled(true);
-                if (raw == 45) { Duel back = duelOf(boxPlayer); if (back != null) openStage(boxPlayer, back); }
-                else if (raw == 48) clearWager(boxPlayer, event.getInventory());
-                else if (raw == 49) confirmWager(boxPlayer, event.getInventory());
+                Duel open = duelOf(boxPlayer);
+                switch (raw) {
+                    case 27 -> { if (open != null) openStage(boxPlayer, open); }
+                    case 29 -> clearWager(boxPlayer, event.getInventory());
+                    case 31 -> confirmWager(boxPlayer, event.getInventory());
+                    case 53 -> { if (open != null && event.getCurrentItem() != null
+                            && event.getCurrentItem().getType() == Material.SPYGLASS) openOpponentWager(boxPlayer); }
+                    default -> { }
+                }
+                return;
             }
+            if (raw >= 54 && event.isShiftClick()) { event.setCancelled(true); stageIntoBox(boxPlayer, event); }
             return;
         }
         event.setCancelled(true);
@@ -1889,6 +2127,14 @@ final class ArenaService implements Listener {
                 }
             }
             case "wagerview" -> { if (slot == 49) { Duel back = duelOf(player); if (back != null) openStage(player, back); } return; }
+            case "layoutpick" -> {
+                Kit[] kits = Kit.values();
+                int[] kitSlots = {10, 12, 14, 16};
+                for (int i = 0; i < kits.length; i++) if (slot == kitSlots[i]) { openKitLayout(player, kits[i]); return; }
+                if (slot == 26) transition(player, player::closeInventory);
+                return;
+            }
+            case "kitlayout" -> { layoutClick(player, menu, slot); return; }
             case "ready" -> {
                 Duel duel = find(menu.duelId);
                 if (duel == null || !duel.gating) { player.closeInventory(); return; }
@@ -1930,18 +2176,109 @@ final class ArenaService implements Listener {
         transition(player, () -> player.openInventory(menu.inv));
     }
 
+    /** Where the wager box stops being yours.
+     *
+     *  Slots 0-26 are the only ones a player may put anything into. 27-35 is the control row, and 36-53 is a
+     *  read-only view of what the opponent has staked -- you should not have to leave the screen you are
+     *  staking on to see what you are staking against. Every scan of "what did this player put in the box"
+     *  stops at WAGER_STAGE, which is what keeps the opponent's DISPLAY COPIES from ever being handed out:
+     *  they are pictures of somebody else's escrow, and treating one as a staged item would mint it. */
+    private static final int WAGER_STAGE = 27, WAGER_VIEW = 36;
+
+    /** Paints the bottom two rows with the opponent's confirmed wager, and labels it.
+     *
+     *  Display copies only, and every slot from WAGER_STAGE up is click-locked, so there is no path from
+     *  this panel to an inventory. The copies carry an extra lore line saying so, because an item that
+     *  looks exactly like a real one and cannot be picked up needs to say why. */
+    private void renderOpponentWager(Duel duel, Player player, Inventory box) {
+        String me = CoreUtil.id(player);
+        String themId = duel.other(me), themName = me.equals(duel.a) ? duel.bName : duel.aName;
+        List<ItemStack> theirs = loadWager(duel, themId);
+        for (int slot = WAGER_VIEW; slot < 54; slot++) box.setItem(slot, filler());
+        int room = 54 - WAGER_VIEW;
+        boolean overflow = theirs.size() > room;
+        int shown = overflow ? room - 1 : theirs.size();
+        for (int i = 0; i < shown; i++) box.setItem(WAGER_VIEW + i, viewOnly(theirs.get(i)));
+        if (overflow)
+            box.setItem(53, icon(Material.SPYGLASS, "+" + (theirs.size() - shown) + " more stack(s)",
+                    List.of("Click to see " + themName + "'s full wager", "Unconfirmed items are returned")));
+        else if (theirs.isEmpty())
+            box.setItem(WAGER_VIEW + 4, icon(Material.BARRIER, themName + " has not wagered anything", List.of("Nothing staked on their side yet")));
+        box.setItem(35, icon(Material.SHIELD, themName + "'s wager", List.of("Shown in the bottom two rows", "View only \u2014 " + theirs.size() + " stack(s)")));
+    }
+
+    /** A display copy: the real item, plus a line making it obvious it cannot be taken. */
+    private ItemStack viewOnly(ItemStack item) {
+        ItemStack copy = item.clone();
+        ItemMeta meta = copy.getItemMeta();
+        if (meta != null) {
+            List<Component> lore = meta.lore() == null ? new ArrayList<>() : new ArrayList<>(meta.lore());
+            lore.add(Component.text("View only \u2014 your opponent's stake", NamedTextColor.DARK_GRAY));
+            meta.lore(lore);
+            copy.setItemMeta(meta);
+        }
+        return copy;
+    }
+
+    /** Repaints the opponent panel of any wager box that is currently open, IN PLACE.
+     *
+     *  Never by reopening the screen: closing a wager box hands back everything unconfirmed sitting in it,
+     *  so re-opening somebody's box to refresh it would empty their staging area under them. */
+    private void refreshWagerBoxes(Duel duel) {
+        for (Player p : new Player[]{a(duel), b(duel)}) {
+            if (p == null) continue;
+            Inventory top = p.getOpenInventory().getTopInventory();
+            if (top.getHolder(false) instanceof Menu m && "wagerbox".equals(m.kind) && m.duelId == duel.id)
+                renderOpponentWager(duel, p, top);
+        }
+    }
+
+    /** Moves a shift-clicked stack from the player's own inventory into the STAGING AREA only.
+     *
+     *  Bukkit's own shift-click would spread the stack across the whole top inventory, opponent panel
+     *  included, where it would be quietly destroyed when the box closed (nothing outside the staging area
+     *  is ever collected). Placing it by hand keeps the move inside slots 0-26, and what is added to the box
+     *  is exactly what is taken off the source stack. */
+    private void stageIntoBox(Player player, InventoryClickEvent event) {
+        ItemStack moving = event.getCurrentItem();
+        if (moving == null || moving.getType().isAir()) return;
+        Inventory box = event.getInventory();
+        int remaining = moving.getAmount(), max = Math.max(1, moving.getMaxStackSize());
+        for (int slot = 0; slot < WAGER_STAGE && remaining > 0; slot++) {
+            ItemStack there = box.getItem(slot);
+            if (there == null || !there.isSimilar(moving)) continue;
+            int take = Math.min(max - there.getAmount(), remaining);
+            if (take <= 0) continue;
+            there.setAmount(there.getAmount() + take);
+            box.setItem(slot, there);
+            remaining -= take;
+        }
+        for (int slot = 0; slot < WAGER_STAGE && remaining > 0; slot++) {
+            ItemStack there = box.getItem(slot);
+            if (there != null && !there.getType().isAir()) continue;
+            ItemStack piece = moving.clone();
+            piece.setAmount(Math.min(max, remaining));
+            box.setItem(slot, piece);
+            remaining -= piece.getAmount();
+        }
+        if (remaining == moving.getAmount()) { actionbar(player, "The staging area is full \u2014 Confirm what is there first."); sound(player, "error"); return; }
+        if (remaining <= 0) event.setCurrentItem(null);
+        else { ItemStack left = moving.clone(); left.setAmount(remaining); event.setCurrentItem(left); }
+    }
+
     private void openWagerBox(Player player) {
         Duel duel = duelOf(player);
         if (duel == null || duel.phase != Phase.STAKING) { actionbar(player, "Items can only be wagered before the match starts."); return; }
         Menu menu = new Menu("wagerbox", duel.id);
         menu.fillable = true;
         menu.inv = plugin.getServer().createInventory(menu, 54, Component.text("Wager items \u2014 winner takes all", NamedTextColor.DARK_AQUA));
-        for (int slot = 45; slot < 54; slot++) menu.inv.setItem(slot, filler());
+        for (int slot = WAGER_STAGE; slot < 54; slot++) menu.inv.setItem(slot, filler());
         int already = loadWager(duel, CoreUtil.id(player)).size();
-        menu.inv.setItem(45, icon(Material.ARROW, "Back", List.of("Return to duel setup", "Unconfirmed items above are returned")));
-        menu.inv.setItem(48, icon(Material.CAULDRON, "Clear wager", List.of(already > 0 ? "Return all " + already + " staged stack(s)" : "Nothing staged yet")));
-        menu.inv.setItem(49, icon(Material.LIME_CONCRETE, "Confirm wager", List.of("Add the items above to your wager", "Winner takes both sides' wagered items")));
-        menu.inv.setItem(53, icon(Material.BOOK, "Currently wagered", List.of(already + " stack(s) staged", "Add more above, then Confirm")));
+        menu.inv.setItem(27, icon(Material.ARROW, "Back", List.of("Return to duel setup", "Unconfirmed items above are returned")));
+        menu.inv.setItem(29, icon(Material.CAULDRON, "Clear wager", List.of(already > 0 ? "Return all " + already + " staged stack(s)" : "Nothing staged yet")));
+        menu.inv.setItem(31, icon(Material.LIME_CONCRETE, "Confirm wager", List.of("Add the items above to your wager", "Winner takes both sides' wagered items")));
+        menu.inv.setItem(33, icon(Material.BOOK, "Currently wagered", List.of(already + " stack(s) staged", "Add more above, then Confirm")));
+        renderOpponentWager(duel, player, menu.inv);
         /** Through transition(), like every other screen change here.
          *
          *  Opening an inventory fires InventoryCloseEvent for the one being replaced, and closeSetup turns a
@@ -1950,7 +2287,7 @@ final class ArenaService implements Listener {
          *  go to wager items it cancels the duel". openWagerView already went through transition; this was
          *  the single screen that did not. */
         transition(player, () -> player.openInventory(menu.inv));
-        CoreUtil.msg(player, "Put items in the top area, then click Confirm to stake them. Closing without confirming returns them.");
+        CoreUtil.msg(player, "Put items in the top three rows, then click Confirm to stake them. Closing without confirming returns them.");
     }
 
     /** Appends the items staged in the top of the box to the player's DB item-wager escrow, then clears the box
@@ -1960,13 +2297,13 @@ final class ArenaService implements Listener {
         String id = CoreUtil.id(player);
         Duel duel = duelOf(player);
         List<ItemStack> staged = new ArrayList<>();
-        for (int i = 0; i < 45; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) staged.add(it); }
+        for (int i = 0; i < WAGER_STAGE; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) staged.add(it); }
         if (duel == null || duel.phase != Phase.STAKING) {
             /** Clear the box BEFORE handing anything back. closeInventory() below fires closeWager, which
              *  returns whatever it finds still sitting in the top of the box -- so refunding the items and
              *  then leaving them there handed out a second copy of every stack. That is the reported
              *  duplication, and it is exactly 2x because there are exactly two return paths. */
-            for (int i = 0; i < 45; i++) box.setItem(i, null);
+            for (int i = 0; i < WAGER_STAGE; i++) box.setItem(i, null);
             giveOrStash(id, staged, "Your items were returned — the match was no longer accepting wagers.");
             player.closeInventory();
             return;
@@ -1975,11 +2312,11 @@ final class ArenaService implements Listener {
         List<ItemStack> full = new ArrayList<>(loadWager(duel, id));
         full.addAll(staged);
         db.arenaItemWagerSave(duel.id, id, ItemStack.serializeItemsAsBytes(full.toArray(new ItemStack[0])));
-        for (int i = 0; i < 45; i++) box.setItem(i, null);
+        for (int i = 0; i < WAGER_STAGE; i++) box.setItem(i, null);
         sound(player, "confirm");
         actionbar(player, "Wager confirmed \u2014 " + full.size() + " stack(s) staked.");
         player.closeInventory();
-        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); });
+        Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); refreshWagerBoxes(duel); });
     }
 
     /** Returns every item the player has wagered (confirmed escrow plus anything unconfirmed still in the box)
@@ -1988,12 +2325,12 @@ final class ArenaService implements Listener {
         String id = CoreUtil.id(player);
         Duel duel = duelOf(player);
         List<ItemStack> back = new ArrayList<>();
-        for (int i = 0; i < 45; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) { back.add(it); box.setItem(i, null); } }
+        for (int i = 0; i < WAGER_STAGE; i++) { ItemStack it = box.getItem(i); if (it != null && !it.getType().isAir()) { back.add(it); box.setItem(i, null); } }
         if (duel != null) { back.addAll(loadWager(duel, id)); db.arenaItemWagerClear(duel.id, id); }
         sound(player, "cancel");
         giveOrStash(id, back, "Wager cleared \u2014 items returned.");
         player.closeInventory();
-        if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); });
+        if (duel != null) Bukkit.getScheduler().runTask(plugin, () -> { if (player.isOnline() && duelOf(player) == duel && duel.phase == Phase.STAKING) openStage(player, duel); refreshStageOpen(duel); refreshWagerBoxes(duel); });
     }
 
     /** On closing the wager box, escrow whatever is inside to the DB (crash-safe) and hand any surplus back if
@@ -2009,7 +2346,7 @@ final class ArenaService implements Listener {
         if (menu.kind.equals("wagerbox"))
             /** Emptied as they are collected, so no future path that closes the box after already
              *  refunding can hand out a second copy, whatever order the handlers run in. */
-            for (int i = 0; i < 45; i++) {
+            for (int i = 0; i < WAGER_STAGE; i++) {
                 ItemStack it = event.getInventory().getItem(i);
                 if (it != null && !it.getType().isAir()) { unconfirmed.add(it); event.getInventory().setItem(i, null); }
             }
@@ -2155,7 +2492,7 @@ final class ArenaService implements Listener {
     @EventHandler public void drag(InventoryDragEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Menu m)) return;
         if (!m.fillable) { event.setCancelled(true); return; }
-        for (int raw : event.getRawSlots()) if (raw >= 45 && raw < 54) { event.setCancelled(true); return; }
+        for (int raw : event.getRawSlots()) if (raw >= WAGER_STAGE && raw < 54) { event.setCancelled(true); return; }
     }
 
     private String PlainName(ItemStack head) {

@@ -5,6 +5,108 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-25 (part 2) - Hopper collection stability, /duels layouts, opponent wager panel, advancement toasts
+
+Staging only at time of writing.
+
+### The Industrial Hopper was destroying and re-spawning the pile on top of it
+
+Reported: a full hopper that is also transferring downstream collects a few items whenever capacity opens,
+and the leftover stack "keeps jumping around and items spill everywhere".
+
+Two paths absorb floating items: the sweep's `collectItems`, and `pickup`, which intercepts vanilla's own
+suction event. `collectItems` was already correct -- it takes only what fits and shrinks the entity's stack
+in place. `pickup` was not:
+
+```java
+entity.remove();
+for (ItemStack rejected : bay.inv.addItem(stack).values())
+    entity.getWorld().dropItem(entity.getLocation(), rejected);
+```
+
+It removed the WHOLE entity, added the WHOLE stack, and re-dropped whatever the bay refused as a **brand new
+item entity**. A full hopper pushing nine items a tick frees a slot or two every tick, so this fired every
+tick: new entity, snapped back to the drop point, fresh pickup delay. That is the jumping. `dropAt`, the
+last-resort refund, made it worse -- it dropped at the hopper's own block centre, which is inside the
+funnel's collision, with `dropItemNaturally` adding a random throw on top. That is the spilling.
+
+Both paths now share one `absorb(Bay, Item)`: measure capacity first, take only what fits, and **edit** a
+partly-eaten stack rather than replace it. `dropAt` drops just above the block with no velocity.
+
+Nothing else about the block changed -- 27 slots, nine per transfer, comparator behaviour, redstone lock and
+the vanilla-parity fixes are all untouched.
+
+**New test**, `/ashfall hopper verify` -> "partial collection by a full, draining hopper": a full hopper with
+a chest beneath it and a 200-stack sitting on top, driven cycle by cycle. It asserts the pile is never
+re-spawned as a new entity, never moves, never becomes two entities, is still drained as capacity opens, and
+that `floor + hopper + destination` is unchanged on **every** cycle.
+
+### The Market Axe opened the hopper it had just sold
+
+Right-clicking an Industrial Hopper with the Market Axe sold the contents **and** opened the hopper. Two
+handlers were both claiming the click: `ShardService` cancels the event and sells, `IndustrialHopperService`
+cancels it and opens its own screen, and whichever ran first did not stop the other.
+
+Against a vanilla container the cancel is enough, because vanilla is what would have opened it. This block
+opens its own screen, so it now asks first: `ShardService.hasRightClickAction` covers the Market Axe, the
+Haste token and cosmetic tokens, and `open()` steps aside for all of them.
+
+### /duels -- kit layouts
+
+Where each piece of a duel kit sits is now the player's choice, per kit, saved for every future duel. Click
+an item, click where you want it. The editor is laid out like the inventory it configures: main rows on top,
+hotbar underneath, armour and offhand shown greyed out because the kit places those.
+
+Deliberately click-to-move rather than drag-and-drop: everything on that screen is a real netherite kit, and
+the moment one is allowed onto the cursor, closing the window hands it over for keeps. Nothing leaves the
+menu -- a click swaps two entries in an int array.
+
+**What is stored is a permutation, never items.** For each of the 36 slots the row records which slot of the
+kit's *default* arrangement belongs there, and it is only applied if it is a genuine bijection onto the
+kit's occupied slots. A corrupt, stale or hand-edited row cannot add an item, remove one, or change what one
+is; the worst case is that it fails validation and the default is used. A kit whose contents change
+invalidates every saved layout for it automatically.
+
+The default path is byte-identical to what it was: `defaultArrangement` reproduces the old
+`setItem`-then-`addItem` sequence exactly, so anyone who never opens `/duels` gets the same kit as before,
+including the golden-apple merge on the Mace kit.
+
+### The opponent's wager, in the wager box
+
+The box is now three regions: **0-26** your staging area, **27-35** the control row, **36-53** the
+opponent's confirmed wager, read-only, repainted live when they confirm or clear.
+
+The dangerous part is that those bottom slots hold real-looking items that are somebody else's escrow. Every
+route from them to an inventory is closed:
+
+- every scan of "what did this player stage" now stops at slot 27 (`confirmWager`, `clearWager`,
+  `closeWager`) -- previously all three read 45 slots;
+- slots 27-53 are click-locked, which also covers number-key swaps and offhand swaps aimed at them;
+- the drag guard starts at 27 instead of 45;
+- **double-click-to-gather is refused outright** -- it sweeps matching items out of every slot in the view,
+  the opponent's panel included, and lands them on the cursor;
+- shift-clicking from the player's own inventory is placed by hand into slots 0-26, because Bukkit's own
+  shift-click would spread it across the whole top inventory, opponent panel included, where it would be
+  silently destroyed on close.
+
+Refreshes happen **in place**. Re-opening a wager box to refresh it would fire `closeWager` and empty the
+other player's staging area under them.
+
+### The advancement toast
+
+The existing handler revokes a completed advancement on the tick it lands. That is too late for the popup,
+too late for the advancement's rewards, and it strips **every** criterion on that advancement -- including
+ones earned legitimately days earlier outside the arena.
+
+Paper fires `PlayerAdvancementCriterionGrantEvent` one step earlier, before the criterion is written, and it
+is cancellable. Verified against `paper-26.2.jar`: cancelling makes `award()` call `revokeProgress` and
+return before `progressChanged.add`, so the advancement never completes, no reward is granted, nothing is
+queued for the client, and there is no toast to suppress. Prior progress is untouched.
+
+The revoke handler stays as the backstop. Recipe advancements are still exempt in both.
+
+---
+
 ## Session: 2026-08-24 (part 5) - PROMOTED: combo damage floor, per-spawner golem allowance, relic hotbar readout
 
 **PROMOTED 2026-08-24.** One silent restart (only Asserto online), booted in 35s, selftest clean, zero

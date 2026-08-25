@@ -239,6 +239,18 @@ final class ShardService implements Listener {
     private ItemStack cosmeticToken(Stock stock){ItemStack item=CoreUtil.named(stock.icon(),stock.name(),List.of("Right-click to unlock and equip."));ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(cosmeticTokenKey,PersistentDataType.STRING,stock.key().substring("cosmetic_".length()));item.setItemMeta(meta);return item;}
     private void bind(ItemStack item,Player player,String stock){ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(boundKey,PersistentDataType.STRING,CoreUtil.id(player));meta.getPersistentDataContainer().set(stockKey,PersistentDataType.STRING,stock);item.setItemMeta(meta);}
     boolean bound(ItemStack item){return item!=null&&item.hasItemMeta()&&item.getItemMeta().getPersistentDataContainer().has(boundKey,PersistentDataType.STRING);}
+    /** Whether right-clicking with this item runs a shard-tool action of its own.
+     *
+     *  When it does, the click belongs to that action and nothing else should also treat it as an ordinary
+     *  interaction with whatever was clicked. Vanilla containers get this for free because the handler
+     *  cancels the event; anything that opens its own screen has to ask. */
+    boolean hasRightClickAction(Player player,ItemStack item){
+        if(item==null||!item.hasItemMeta()||!belongsTo(player,item))return false;
+        var pdc=item.getItemMeta().getPersistentDataContainer();
+        String function=pdc.get(toolKey,PersistentDataType.STRING);
+        return pdc.has(cosmeticTokenKey,PersistentDataType.STRING)||"MARKET".equals(function)||"HASTE_24H".equals(function);
+    }
+
     boolean belongsTo(Player player,ItemStack item){return !bound(item)||CoreUtil.id(player).equals(item.getItemMeta().getPersistentDataContainer().get(boundKey,PersistentDataType.STRING));}
     /** Re-assigns a Shard-bound item's ownership tag to a new player, keeping its stock/source tag as-is.
      *  Used only by the one sanctioned bound-item transfer path — looting it from a defeated player's PvP

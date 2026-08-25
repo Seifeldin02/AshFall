@@ -437,6 +437,13 @@ final class IndustrialHopperService implements Listener {
         ItemStack hand = player.getInventory().getItemInMainHand();
         /** Sneaking with something in hand is a build action, exactly as on a vanilla hopper. */
         if (player.isSneaking() && hand != null && !hand.getType().isAir()) return;
+        /** A tool whose entire purpose is a right-click action ON a container must not also open it.
+         *
+         *  The Market Axe sells a container's contents from where you stand. Against every vanilla
+         *  container it cancels the interaction, so nothing opens; this block opens its own screen instead
+         *  of letting vanilla do it, so it has to make the same check for itself. Reported live: right
+         *  clicking an Industrial Hopper with the axe sold the contents AND opened the hopper. */
+        if (plugin.shards() != null && plugin.shards().hasRightClickAction(player, hand)) return;
         Bay bay = bay(block);
         if (bay == null) return;
         event.setCancelled(true);
@@ -496,20 +503,22 @@ final class IndustrialHopperService implements Listener {
         destination.dirty = true;
     }
 
-    /** Item entities floating above the hopper. Capacity is checked before the entity is touched, so the
-     *  entity is only ever destroyed once the inventory has room for at least part of it. */
+    /** Vanilla's own suction, aimed at the real store instead of at the five native slots.
+     *
+     *  Cancelled and redone through absorb() rather than allowed to run, because vanilla would move the
+     *  item into the native slots, which hold nothing but the comparator calibration weight. Sharing
+     *  absorb() with the sweep is also what stops the two paths racing: whichever fires first takes only
+     *  what fits, and the other then finds either an emptier bay or a smaller stack.
+     *
+     *  This handler used to do its own thing -- remove the whole entity, add the whole stack, and re-drop
+     *  whatever the bay rejected as a brand new entity. On a full hopper that was draining downstream it
+     *  fired every time a slot opened, which is precisely the reported jumping and spilling. */
     @EventHandler(ignoreCancelled = true)
     public void pickup(InventoryPickupItemEvent event) {
         Bay bay = bayOf(event.getInventory());
         if (bay == null) return;
         event.setCancelled(true);
-        Item entity = event.getItem();
-        ItemStack stack = entity.getItemStack().clone();
-        if (space(bay.inv, stack) <= 0) return;
-        entity.remove();
-        for (ItemStack rejected : bay.inv.addItem(stack).values())
-            entity.getWorld().dropItem(entity.getLocation(), rejected);
-        bay.dirty = true;
+        absorb(bay, event.getItem());
     }
 
     // ------------------------------------------------------------------ test surface
@@ -637,23 +646,39 @@ final class IndustrialHopperService implements Listener {
         org.bukkit.util.BoundingBox box = new org.bukkit.util.BoundingBox(
                 at.getBlockX(), at.getBlockY() + 0.6875, at.getBlockZ(),
                 at.getBlockX() + 1, at.getBlockY() + 1.5, at.getBlockZ() + 1);
-        for (org.bukkit.entity.Entity entity : block.getWorld().getNearbyEntities(box, e -> e instanceof Item)) {
-            Item dropped = (Item) entity;
-            if (!dropped.isValid()) continue;
-            ItemStack stack = dropped.getItemStack();
-            if (stack == null || stack.getType().isAir()) continue;
-            int room = space(bay.inv, stack);
-            if (room <= 0) continue;
-            int take = Math.min(room, stack.getAmount());
-            /** Decrement the entity FIRST, then credit what was taken -- the same remove-before-add order
-             *  every other path here uses, so a rejected remainder can never become a second copy. */
-            ItemStack piece = stack.clone();
-            piece.setAmount(take);
-            if (take >= stack.getAmount()) dropped.remove();
-            else { ItemStack left = stack.clone(); left.setAmount(stack.getAmount() - take); dropped.setItemStack(left); }
-            for (ItemStack rejected : bay.inv.addItem(piece).values()) dropAt(bay.at, rejected);
-            bay.dirty = true;
-        }
+        for (org.bukkit.entity.Entity entity : block.getWorld().getNearbyEntities(box, e -> e instanceof Item))
+            absorb(bay, (Item) entity);
+    }
+
+    /** Takes as much of one floating stack as the bay can genuinely hold, and leaves the rest where it lies.
+     *
+     *  The ONE place an item entity is ever consumed, shared by this sweep and by vanilla's own suction
+     *  event, so the two can never disagree about what happened to a stack. Two rules make it safe.
+     *
+     *  Take only what fits. Capacity is measured before the entity is touched, so nothing is ever removed
+     *  that cannot be credited, and there is no remainder to refund or throw on the floor.
+     *
+     *  A partly-eaten stack is EDITED, never replaced. Removing the entity and re-dropping the leftover as
+     *  a new one is what "the pile on top of a full hopper keeps jumping around and spilling everywhere"
+     *  actually was: a full hopper that is also pushing items downstream frees a slot or two every tick, so
+     *  every tick the resting stack was destroyed and respawned -- a new entity each time, snapped back to
+     *  the drop point, with a fresh pickup delay and a randomised throw from dropItemNaturally. Shrinking
+     *  the stack in place keeps it the same entity, sitting still, for as long as it takes to drain. */
+    private int absorb(Bay bay, Item dropped) {
+        if (dropped == null || !dropped.isValid()) return 0;
+        ItemStack stack = dropped.getItemStack();
+        if (stack == null || stack.getType().isAir()) return 0;
+        int take = Math.min(space(bay.inv, stack), stack.getAmount());
+        if (take <= 0) return 0;
+        /** Decrement the entity FIRST, then credit what was taken -- the same remove-before-add order
+         *  every other path here uses, so a rejected remainder can never become a second copy. */
+        ItemStack piece = stack.clone();
+        piece.setAmount(take);
+        if (take >= stack.getAmount()) dropped.remove();
+        else { ItemStack left = stack.clone(); left.setAmount(stack.getAmount() - take); dropped.setItemStack(left); }
+        for (ItemStack rejected : bay.inv.addItem(piece).values()) dropAt(bay.at, rejected);
+        bay.dirty = true;
+        return take;
     }
 
     // ------------------------------------------------------------------ comparator output
@@ -993,7 +1018,12 @@ final class IndustrialHopperService implements Listener {
         World world;
         try { world = at.getWorld(); } catch (IllegalArgumentException unloaded) { return; }
         if (world == null) return;
-        world.dropItemNaturally(at.clone().add(.5, .5, .5), item);
+        /** Above the block, with no random throw. The old landing point was the block's own centre, and
+         *  the centre of a hopper is inside its funnel: an item dropped there is shoved straight back out
+         *  by collision and ends up somewhere else entirely, with dropItemNaturally adding a random kick on
+         *  top. A refund should land where its owner can pick it up again. */
+        Item spilled = world.dropItem(at.clone().add(.5, 1.2, .5), item);
+        spilled.setVelocity(new org.bukkit.util.Vector());
     }
 
     // ------------------------------------------------------------------ diagnostics
