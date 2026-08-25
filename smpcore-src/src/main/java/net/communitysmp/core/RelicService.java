@@ -283,7 +283,14 @@ final class RelicService implements Listener {
              *  Reinstating costs nothing if the ledger was right, because a genuinely duplicated relic
              *  cannot be held by the tracked owner while a different tracked copy also exists -- that case
              *  is handled by the PRESENT branch further up, which is checked first. */
-            if(CoreUtil.id(player).equals(row.owner())){
+            /** LOST only, never ELIGIBLE.
+             *
+             *  LOST means "we believe this was destroyed" -- if its own tracked owner is holding it, that
+             *  belief was simply wrong and the ledger should be corrected. ELIGIBLE is the opposite: the
+             *  relic was deliberately RECYCLED and released for anyone to re-find, so a stale physical copy
+             *  in the previous owner's hands is exactly what has to be removed. Reinstating on ELIGIBLE
+             *  would silently cancel the recycle and hand the relic straight back to whoever lost it. */
+            if("LOST".equals(row.status())&&CoreUtil.id(player).equals(row.owner())){
                 db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());
                 plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reappeared in its tracked owner's hands ("+player.getName()+", tracked status was "+row.status()+"); reinstating rather than removing it.");
                 db.history("SERVER",null,"RELIC",displayName(relicKey)+" was recovered by "+player.getName()+" after being wrongly recorded as lost.");

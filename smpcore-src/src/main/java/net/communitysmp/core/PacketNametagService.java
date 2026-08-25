@@ -233,7 +233,15 @@ final class PacketNametagService implements Listener {
                  *  re-sent and that one player's tag stayed missing until something unrelated changed the
                  *  text. That is exactly the "couldn't see MacoCT until we both /spawn" case: /spawn forced
                  *  a re-track, which is the only thing that fixed it. Paper tells us directly. */
-                boolean tracked=viewer.getWorld().equals(target.getWorld())&&viewer.canSee(target)
+                /** A dead player is never tagged.
+                 *
+                 *  death() destroys the tag entities, but the rescan it schedules ten ticks later would
+                 *  happily rebuild them: the corpse is still tracked by nearby clients through the death
+                 *  animation, so `tracked` was still true and the tag was re-sent onto a body. It then sat
+                 *  at the death spot until something forced a re-track -- which is why it only cleared when
+                 *  the owner walked back into view. Excluding dead targets stops it being recreated at all,
+                 *  and costs nothing else: a living player is never isDead(). */
+                boolean tracked=!target.isDead()&&viewer.getWorld().equals(target.getWorld())&&viewer.canSee(target)
                         &&target.isTrackedBy(viewer)
                         &&viewer.getLocation().distanceSquared(target.getLocation())
                           <(seen.containsKey(id)?outerRangeSq():innerRangeSq());
