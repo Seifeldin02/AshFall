@@ -690,6 +690,9 @@ spawner-shop:
     ZOMBIE: 300000
 
 industrial-hopper:
+  # Logs every hopper movement with the counts either side, for reproducing a reported item loss live.
+  # Noisy; leave off unless chasing something.
+  trace: false
   # Keep the block's own five (otherwise unused) slots loaded with a calibration weight so an adjacent
   # comparator reads the fill level of the real 27 slots. Turn this off only if some other plugin objects
   # to the marker items; with it off, comparators read every Industrial Hopper as empty.

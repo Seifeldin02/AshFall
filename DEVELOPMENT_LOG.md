@@ -5,6 +5,70 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-08-31 — Hopper chain rig, raw food prices, stacked-mob audit (staging only)
+
+### The Industrial Hopper chain could not be made to lose an item
+
+Built the exact reported rig — chest → hopper → chest → hopper → chest — as a permanent regression test
+(`/ashfall hopper verify`). Five payload scenarios, conservation asserted across **all five blocks plus
+ground items after every single cycle**, because counting them one command at a time is not a measurement:
+at nine items a cycle the contents move between the reads.
+
+| Scenario | Result |
+|---|---|
+| Full stack of 64 | all 64 arrive in 9 cycles |
+| 16-stack item (egg) | all 16 arrive in 2 cycles |
+| Unstackable (diamond sword) | arrives in 2 cycles |
+| Destination nearly full (1708/1728) | 20 delivered, 44 correctly held in h2 |
+| Destination completely full | payload held in the chain, nothing eaten |
+| Chunk/serialise round trip mid-flight | total intact, chain completes afterwards |
+
+**No duplication, no deletion, no single-item stranding in any of them.** The first run did report a
+failure, and it was my assertion, not the code: a 27-slot chest tops out at 1728, so "nearly full" at 1708
+has room for twenty, not sixty-four.
+
+So the loss is not in the transfer arithmetic the sweep drives. What the rig **cannot** drive is vanilla's
+own hopper tick — `InventoryMoveItemEvent` and the suction event only fire on a live ticking server, and a
+manual insert goes through those. Rather than guess, `industrial-hopper.trace` (off by default) now logs
+every movement with the counts either side, so a live reproduction produces the exact cycle where the total
+changes instead of another theory.
+
+### Raw meat and fish
+
+Added `CHICKEN`, `BEEF`, `COD`, `SALMON`, `MUTTON`, `PORKCHOP`, `TROPICAL_FISH`, `PUFFERFISH`. Priced by the
+owner's crafting-tax rule read backwards: cooking is a craft, so cooked = raw + tax, and raw = cooked / 1.125
+at the midpoint of the stated 10–15% band. Sell stays at the 20% of buy every other food row uses. Tropical
+fish and pufferfish have no cooked form to derive from, so they are placed against their nearest neighbours
+by use rather than by an invented rule.
+
+`/ashfall selftest` now asserts the raw→cooked ratio stays inside 10–15%, so the two sets cannot drift apart.
+
+### 100k stacked-mob lag — audit and recommendation (NOT implemented)
+
+`SpawnerService.stackedDeath` multiplies drops at kill time. Three cost centres, worst first:
+
+1. **`for(ItemStack item:complex) for(int i=0;i<stack;i++) drops.add(item.clone())`** — O(stack) allocations
+   on the main thread. A 100,000 stack with one enchanted drop is 100,000 clones in one tick. This is the
+   dominant cost and it is unbounded.
+2. **Item entities.** 100k Blazes ≈ 1,563 stacks of rods; 100k Iron Golems ≈ 6,250 stacks of iron. Every one
+   becomes a real entity with physics, merge checks and spawn packets, all in the same tick.
+3. **XP orbs.** `setDroppedExp(exp * stack)` = 2,000,000 XP for a 100k Blaze stack, which vanilla splits into
+   ~800 orb entities that then tick and path toward the player.
+
+**Recommendation: keep the value identical, change only the delivery.** Compute the same totals, then hand
+them to the killer directly — `CoreUtil.give` into the inventory with the existing claim-later stash for
+overflow — instead of spawning entities, and replace the orb shower with a single `giveExp`. Same items, same
+XP, no duplication surface (the totals are computed exactly as now), and the entity count drops from
+thousands to zero. The `complex` list should also be merged and capped rather than cloned per unit.
+
+This changes how loot arrives, so it is deliberately left unimplemented pending the owner's call.
+
+### Still not done
+
+Temporary void worlds.
+
+---
+
 ## Session: 2026-08-25 (part 2) - PROMOTED: hopper collection stability, /duels layouts, opponent wager panel, advancement toasts
 
 **PROMOTED 2026-08-25.** Silent restart (only MacoCT and Asserto online), booted in 60.7s, selftest 0

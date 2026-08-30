@@ -57,6 +57,7 @@ final class IndustrialHopperVerify {
         if (world == null) { out.add("FAIL could not create the test world"); return finish(null); }
         try {
             check("pure arithmetic self test (conservation, budget, comparator maths)", hoppers.selfTest());
+            chain(world);
             placement(world);
             pullFromChest(world);
             pushToChest(world);
@@ -421,6 +422,136 @@ final class IndustrialHopperVerify {
     // ------------------------------------------------------------------ rig plumbing
 
     /** A fresh column for each case, far enough apart that no two rigs can see each other. */
+    /*  The reported layout, built exactly: chest -> hopper -> chest -> hopper -> chest.
+     *
+     *  Reported symptom: drop a stack into the top chest and sometimes only ONE item survives the trip.
+     *  The parity rig tests one hopper against one container, which is why it never saw this -- a chain has
+     *  a container that is simultaneously one hopper's DESTINATION and the next hopper's SOURCE, and that
+     *  container is touched by both hoppers in the same sweep.
+     *
+     *  The invariant is checked after every single cycle across all five blocks at once, because counting
+     *  them one command at a time is not a measurement: at nine items a cycle the contents move between the
+     *  reads. Every cycle is traced so a failure says WHERE the items went, not just that they are gone. */
+    private void chain(World world) {
+        section("chest -> hopper -> chest -> hopper -> chest");
+        chainRun(world, new ItemStack(Material.STONE, 64), 0, "full stack of 64");
+        chainRun(world, new ItemStack(Material.EGG, 16), 0, "16-stack item (egg)");
+        chainRun(world, new ItemStack(Material.DIAMOND_SWORD, 1), 0, "unstackable single item");
+        chainRun(world, new ItemStack(Material.STONE, 64), 27 * 64 - 20, "destination nearly full");
+        chainRun(world, new ItemStack(Material.STONE, 64), 27 * 64, "destination completely full");
+        chainPersistence(world);
+    }
+
+    private Block installAt(Block block, BlockFace facing) {
+        block.setType(Material.HOPPER, false);
+        Hopper data = (Hopper) block.getBlockData();
+        data.setFacing(facing);
+        data.setEnabled(true);
+        block.setBlockData(data, false);
+        hoppers.install(block);
+        return block;
+    }
+
+    /** One run of the chain. `prefill` is how many STONE to jam into the bottom chest first, so the same
+     *  path is exercised against an empty, a nearly-full and a completely full destination. */
+    private void chainRun(World world, ItemStack payload, int prefill, String label) {
+        x += 10;
+        for (int dy = -4; dy <= 4; dy++) world.getBlockAt(x, Y + dy, 0).setType(Material.AIR, false);
+        Inventory source = chest(world.getBlockAt(x, Y + 2, 0));
+        Block upper = installAt(world.getBlockAt(x, Y + 1, 0), BlockFace.DOWN);
+        Inventory middle = chest(world.getBlockAt(x, Y, 0));
+        Block lower = installAt(world.getBlockAt(x, Y - 1, 0), BlockFace.DOWN);
+        Inventory bottom = chest(world.getBlockAt(x, Y - 2, 0));
+
+        int filler = 0;
+        for (int slot = 0; slot < bottom.getSize() && filler < prefill; slot++) {
+            int here = Math.min(64, prefill - filler);
+            bottom.setItem(slot, new ItemStack(Material.STONE, here));
+            filler += here;
+        }
+        source.setItem(0, payload.clone());
+        int total = payload.getAmount() + filler;
+
+        boolean conserved = true;
+        int cycles = 0;
+        String worst = null;
+        for (int cycle = 0; cycle < 80; cycle++) {
+            hoppers.sweepOnce();
+            cycles++;
+            int a = count(source), b = hoppers.storedCount(upper), c = count(middle),
+                d = hoppers.storedCount(lower), e = count(bottom), ground = groundNear(world, x);
+            int seen = a + b + c + d + e + ground;
+            if (seen != total) {
+                conserved = false;
+                worst = String.format("cycle %d: source=%d h1=%d middle=%d h2=%d bottom=%d ground=%d -> %d, expected %d",
+                        cycle + 1, a, b, c, d, e, ground, seen, total);
+                break;
+            }
+            if (a == 0 && b == 0 && c == 0 && d == 0) break;
+        }
+        check("[" + label + "] nothing created or destroyed on any cycle", conserved);
+        if (!conserved) { fail("  " + worst); return; }
+
+        int a = count(source), b = hoppers.storedCount(upper), c = count(middle),
+            d = hoppers.storedCount(lower), e = count(bottom);
+        out.add(String.format("       after %d cycles: source=%d h1=%d middle=%d h2=%d bottom=%d", cycles, a, b, c, d, e));
+        /** With a full destination the payload is expected to STOP in the chain, not vanish. With room, it
+         *  must arrive -- and above all it must never arrive as a single leftover item. */
+        /*  A single chest is 27 slots, so it tops out at 1728. "Nearly full" at 1708 has room for TWENTY,
+         *  not for the whole 64 -- the first version of this assertion demanded all 64 arrive and failed on
+         *  a chain that was behaving perfectly (20 delivered, 44 correctly held back in the second hopper).
+         *  What actually matters is the pair below: everything is accounted for, and the far chest is filled
+         *  to whatever room it genuinely had. */
+        int room = Math.max(0, 27 * 64 - filler), expected = Math.min(room, payload.getAmount());
+        check("[" + label + "] the far chest receives everything it had room for",
+                e - filler == expected);
+        check("[" + label + "] the remainder is held in the chain, not eaten",
+                a + b + c + d == payload.getAmount() - expected);
+        check("[" + label + "] nothing is left stranded as a single item",
+                !(a + b + c + d == 1 && payload.getAmount() > 1));
+    }
+
+    /** The same chain across a chunk round trip and a simulated restart, because the reported failure was
+     *  intermittent and "some hoppers work, others do not" is what a persistence gap looks like. */
+    private void chainPersistence(World world) {
+        x += 10;
+        for (int dy = -4; dy <= 4; dy++) world.getBlockAt(x, Y + dy, 0).setType(Material.AIR, false);
+        Inventory source = chest(world.getBlockAt(x, Y + 2, 0));
+        Block upper = installAt(world.getBlockAt(x, Y + 1, 0), BlockFace.DOWN);
+        chest(world.getBlockAt(x, Y, 0));
+        Block lower = installAt(world.getBlockAt(x, Y - 1, 0), BlockFace.DOWN);
+        Inventory bottom = chest(world.getBlockAt(x, Y - 2, 0));
+        source.setItem(0, new ItemStack(Material.STONE, 64));
+        for (int cycle = 0; cycle < 6; cycle++) hoppers.sweepOnce();
+
+        int before = count(source) + hoppers.storedCount(upper)
+                + count(((Container) world.getBlockAt(x, Y, 0).getState(false)).getInventory())
+                + hoppers.storedCount(lower) + count(bottom);
+        check("[chain persistence] mid-flight total is intact before the round trip", before == 64);
+
+        /** flushAndForget is the exact serialise path a restart takes. */
+        boolean flushedUpper = hoppers.flushAndForget(upper), flushedLower = hoppers.flushAndForget(lower);
+        check("[chain persistence] both hoppers write themselves into their blocks", flushedUpper && flushedLower);
+        int after = count(source) + hoppers.storedCount(upper)
+                + count(((Container) world.getBlockAt(x, Y, 0).getState(false)).getInventory())
+                + hoppers.storedCount(lower) + count(bottom);
+        check("[chain persistence] nothing is lost across the write/re-read", after == before);
+
+        for (int cycle = 0; cycle < 80; cycle++) {
+            hoppers.sweepOnce();
+            if (count(source) == 0 && hoppers.storedCount(upper) == 0 && hoppers.storedCount(lower) == 0
+                    && count(((Container) world.getBlockAt(x, Y, 0).getState(false)).getInventory()) == 0) break;
+        }
+        check("[chain persistence] the payload still completes the chain afterwards", count(bottom) == 64);
+    }
+
+    private int groundNear(World world, int atX) {
+        int sum = 0;
+        for (org.bukkit.entity.Entity entity : world.getNearbyEntities(new Location(world, atX + .5, Y, .5), 6, 8, 6))
+            if (entity instanceof Item dropped) sum += dropped.getItemStack().getAmount();
+        return sum;
+    }
+
     private Block industrial(World world, BlockFace facing) {
         x += 8;
         Block block = world.getBlockAt(x, Y, 0);

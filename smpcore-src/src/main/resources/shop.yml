@@ -172,6 +172,20 @@ items:
   COOKED_SALMON: {buy: 11, sell: 2.2, daily-full: 2048, category: ANIMALS}  # Fished
   COOKED_MUTTON: {buy: 12.95, sell: 2.59, daily-full: 2048, category: ANIMALS}  # Sheep breeder
   COOKED_PORKCHOP: {buy: 15, sell: 3, daily-full: 2048, category: ANIMALS}  # Pig breeder
+  # Raw meat and fish. Priced by the owner's crafting-tax rule read backwards: cooking is a craft, so the
+  # cooked price is the raw price plus the tax. At the 12.5% midpoint of the stated 10-15% band, raw is
+  # cooked / 1.125. Sell stays at the 20% of buy that every other food row here uses.
+  CHICKEN: {buy: 2.8, sell: 0.56, daily-full: 2048, category: ANIMALS}  # -> COOKED_CHICKEN 3.15
+  BEEF: {buy: 6.67, sell: 1.33, daily-full: 2048, category: ANIMALS}  # -> COOKED_BEEF 7.5
+  COD: {buy: 7.16, sell: 1.43, daily-full: 2048, category: ANIMALS}  # -> COOKED_COD 8.05
+  SALMON: {buy: 9.78, sell: 1.96, daily-full: 2048, category: ANIMALS}  # -> COOKED_SALMON 11
+  MUTTON: {buy: 11.51, sell: 2.3, daily-full: 2048, category: ANIMALS}  # -> COOKED_MUTTON 12.95
+  PORKCHOP: {buy: 13.33, sell: 2.67, daily-full: 2048, category: ANIMALS}  # -> COOKED_PORKCHOP 15
+  # Never cooked, so no cooked price to derive from. Placed against their nearest neighbours by use:
+  # tropical fish is axolotl food and decoration, pufferfish is the Water Breathing brewing ingredient and
+  # is priced alongside RABBIT_FOOT's brewing-demand logic rather than as food.
+  TROPICAL_FISH: {buy: 14, sell: 2.8, daily-full: 1024, category: ANIMALS}
+  PUFFERFISH: {buy: 20, sell: 4, daily-full: 512, category: ANIMALS}
   GLOW_INK_SAC: {buy: 20, sell: 4, daily-full: 2048, category: ANIMALS}  # Glow squid farm, deep cave
   RABBIT_FOOT: {buy: 45.45, sell: 9.09, daily-full: 512, category: ANIMALS}  # Uncommon rabbit drop; brewing demand
   TURTLE_SCUTE: {buy: 70, sell: 14, daily-full: 256, category: ANIMALS}  # One scute per growth cycle; painfully slow

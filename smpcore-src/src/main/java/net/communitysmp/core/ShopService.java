@@ -347,6 +347,26 @@ final class ShopService {
     }
 
     double configuredSell(Material material){Price price=prices.get(material);return price==null||price.luxury()?0:Math.max(0,price.sell());}
+    /*  The owner's stated rule, as an assertion: a cooked item is its raw item plus a 10-15% crafting tax.
+     *
+     *  This is the only price relationship on the list that was given as a hard rule rather than a feel, so
+     *  it is the only one encoded. It exists to stop the raw rows drifting away from the cooked ones the
+     *  next time either is touched -- not to police prices the owner set deliberately, which are pinned
+     *  elsewhere and are none of this test's business. */
+    boolean craftingTaxSelfTest(){
+        String[][] pairs={{"CHICKEN","COOKED_CHICKEN"},{"BEEF","COOKED_BEEF"},{"COD","COOKED_COD"},
+                {"SALMON","COOKED_SALMON"},{"MUTTON","COOKED_MUTTON"},{"PORKCHOP","COOKED_PORKCHOP"}};
+        for(String[] pair:pairs){
+            Material raw=Material.matchMaterial(pair[0]),cooked=Material.matchMaterial(pair[1]);
+            if(raw==null||cooked==null)return false;
+            Price rawPrice=prices.get(raw),cookedPrice=prices.get(cooked);
+            if(rawPrice==null||cookedPrice==null)return false;
+            double ratio=cookedPrice.buy()/Math.max(.0001,rawPrice.buy());
+            if(ratio<1.09||ratio>1.16)return false;
+        }
+        return true;
+    }
+
     boolean selfTest(){Price shell=prices.get(Material.SHULKER_SHELL),stone=prices.get(Material.COBBLESTONE),wind=prices.get(Material.WIND_CHARGE),dirt=prices.get(Material.DIRT),cane=prices.get(Material.SUGAR_CANE),tag=prices.get(Material.NAME_TAG),egg=prices.get(Material.DRAGON_EGG),single=prices.get(Material.TRIAL_KEY),reusable=prices.get(Material.OMINOUS_TRIAL_KEY);if(shell==null||Math.abs(shell.buy()-40000)>.001||stone==null||wind==null||Math.abs(wind.buy()-5000)>.001||dirt==null||cane==null||tag==null||tag.buy()!=10000||!tag.luxury()||egg==null||egg.buy()!=50000000||single==null||single.buy()!=100000||reusable==null||reusable.buy()!=5000000||dirt.reduced()!=.5||dirt.dailyLimit()!=Integer.MAX_VALUE)return false;
         /** Every commodity must price at exactly the fixed multiple of its sell value, with no exceptions:
          *  the point of deriving buy is that no single item can drift. Luxuries have no sell price so are

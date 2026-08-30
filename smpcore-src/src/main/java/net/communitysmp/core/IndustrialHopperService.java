@@ -596,6 +596,27 @@ final class IndustrialHopperService implements Listener {
     void explodeForTest(List<Block> blocks) { explode(blocks); }
 
     // ------------------------------------------------------------------ transfer
+    /*  Per-transfer audit trail, off by default.
+     *
+     *  The chest -> hopper -> chest -> hopper -> chest chain was built as a regression rig and could not be
+     *  made to lose an item: conservation held on every cycle for a 64 stack, a 16 stack, an unstackable,
+     *  a nearly-full destination, a completely full one, and across a serialise/re-read round trip. So the
+     *  reported loss is not in the transfer arithmetic this rig drives.
+     *
+     *  What the rig CANNOT drive is vanilla's own hopper tick -- InventoryMoveItemEvent and the suction
+     *  event only fire on a live server with real ticking blocks, and those are the paths a manual insert
+     *  goes through. Rather than guess at them, this logs every movement with the counts either side, so a
+     *  live reproduction produces the exact cycle where the total changes instead of another theory.
+     *
+     *  Enable with industrial-hopper.trace: true, reproduce, then read logs/latest.log for [IH-trace]. */
+    private boolean tracing() { return plugin.getConfig().getBoolean("industrial-hopper.trace", false); }
+
+    private void trace(Bay bay, String stage, int before, int after) {
+        if (before == after) return;
+        plugin.getLogger().info("[IH-trace] " + bay.id + " " + stage + ": " + before + " -> " + after
+                + " (" + (after - before >= 0 ? "+" : "") + (after - before) + ")");
+    }
+
     private void sweep() {
         if (bays.isEmpty()) return;
         int budget = Math.max(1, plugin.getConfig().getInt("industrial-hopper.items-per-tick", 9));
@@ -627,10 +648,16 @@ final class IndustrialHopperService implements Listener {
                 refreshComparator(block, bay);
                 continue;
             }
+            boolean trace = tracing();
+            int mark = trace ? count(bay.inv) : 0;
             drainNative(block, bay);
+            if (trace) { trace(bay, "drainNative", mark, count(bay.inv)); mark = count(bay.inv); }
             collectItems(block, bay);
+            if (trace) { trace(bay, "collectItems", mark, count(bay.inv)); mark = count(bay.inv); }
             pullFromAbove(block, bay, budget);
+            if (trace) { trace(bay, "pullFromAbove", mark, count(bay.inv)); mark = count(bay.inv); }
             pushToFacing(block, bay, budget);
+            if (trace) trace(bay, "pushToFacing", mark, count(bay.inv));
             refreshComparator(block, bay);
         }
     }
