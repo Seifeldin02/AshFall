@@ -481,7 +481,12 @@ final class BossEventService {
         if(loc==null||!loc.getWorld().equals(world)||protectedEventLocation(loc))return null;
         LivingEntity boss = null;
         try {
-            boss = spawnBossEntity(world, loc, kind); double rawHp = bosses.getDouble(prefix+".health", 18000); double hp = clampHealth(rawHp); boss.getAttribute(Attribute.MAX_HEALTH).setBaseValue(hp); boss.setHealth(hp); if(boss.getAttribute(Attribute.ATTACK_DAMAGE)!=null)boss.getAttribute(Attribute.ATTACK_DAMAGE).setBaseValue(bosses.getDouble(prefix+".damage", 18)); if(kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)boss.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, Integer.MAX_VALUE, 0, false, false));
+            boss = spawnBossEntity(world, loc, kind);
+            /** Stamped FIRST, before health, equipment or names. The damage listener keys off this and drops
+             *  any hit that arrives while it is missing, so every statement between the spawn and the stamp
+             *  was a window in which a player's damage went unrecorded. */
+            boss.getPersistentDataContainer().set(tierKey, PersistentDataType.STRING, tierFor(kind));
+            double rawHp = bosses.getDouble(prefix+".health", 18000); double hp = clampHealth(rawHp); boss.getAttribute(Attribute.MAX_HEALTH).setBaseValue(hp); boss.setHealth(hp); if(boss.getAttribute(Attribute.ATTACK_DAMAGE)!=null)boss.getAttribute(Attribute.ATTACK_DAMAGE).setBaseValue(bosses.getDouble(prefix+".damage", 18)); if(kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)boss.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, Integer.MAX_VALUE, 0, false, false));
             if(boss.getAttribute(Attribute.FOLLOW_RANGE)!=null)boss.getAttribute(Attribute.FOLLOW_RANGE).setBaseValue(bosses.getDouble("world-boss-targeting.range",50));
             if(boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE)!=null){
                 /** Per-boss knockback footing. The Warlord is the mobile, in-your-face boss, so being punted
@@ -927,7 +932,12 @@ final class BossEventService {
     }
     private void rewardVanillaBoss(EntityDeathEvent event,LivingEntity boss,Player killer){
         UUID id=boss.getUniqueId();Map<String,Double> raw=damage.remove(id);Map<String,Long> hits=lastContribution.remove(id);sharedBossIds.remove(id);Map<String,Double> participants=meaningfulParticipants(boss,raw,hits);
-        if(participants.isEmpty()&&killer!=null)participants=Map.of(CoreUtil.id(killer),Math.max(1,boss.getAttribute(Attribute.MAX_HEALTH).getValue()));
+        if(participants.isEmpty()&&killer!=null){
+            participants=Map.of(CoreUtil.id(killer),Math.max(1,boss.getAttribute(Attribute.MAX_HEALTH).getValue()));
+            plugin.getLogger().warning("[BossDamage] "+boss.getType()+" died with NO recorded damage; crediting "
+                    +killer.getName()+" by fallback. A hit that lands before the boss is stamped with its tier"
+                    +" key is discarded by the damage listener, which is how this happens.");
+        }
         sendDamageRecap(boss,participants);
         boolean weeklyKill=boss instanceof EnderDragon&&plugin.weeklyDragon().isWeekly(boss);
         /** Vanilla only ever grants the real first-kill reward (dragon egg + 12000 XP instead of the
@@ -1030,7 +1040,26 @@ final class BossEventService {
     private double farmFactor(Player p, EntityType type) { String key = CoreUtil.id(p) + ":" + type.name(); Deque<Long> queue = farmKills.computeIfAbsent(key, x -> new ArrayDeque<>()); long cutoff = System.currentTimeMillis() - plugin.getConfig().getLong("mob-money.anti-farm-window-minutes", 10) * 60000L; while (!queue.isEmpty() && queue.peekFirst() < cutoff) queue.removeFirst(); queue.addLast(System.currentTimeMillis()); double n=queue.size()*plugin.getConfig().getDouble("mob-money.farm-weights."+type.name(),1);int full=plugin.getConfig().getInt("mob-money.full-reward-kills",20),soft=plugin.getConfig().getInt("mob-money.soft-reward-kills",50),hard=plugin.getConfig().getInt("mob-money.hard-reward-kills",100);double softFloor=plugin.getConfig().getDouble("mob-money.soft-multiplier",.35),floor=plugin.getConfig().getDouble("mob-money.minimum-multiplier",.05);if(n<=full)return 1;if(n<=soft)return 1-(1-softFloor)*(n-full)/Math.max(1,soft-full);if(n<=hard)return softFloor-(softFloor-floor)*(n-soft)/Math.max(1,hard-soft);return floor; }
     private void rewardElite(EntityDeathEvent e, Player killer, String tier) {
         LivingEntity mob = e.getEntity(); boolean worldBoss = isWorldBossTier(tier); WorldBossKind bossKind = worldBoss ? kindFromTier(tier) : null;
-        Map<String,Double> raw=damage.remove(mob.getUniqueId());Map<String,Long> hits=lastContribution.remove(mob.getUniqueId());Map<String,Double> participants=meaningfulParticipants(mob,raw,hits);sharedBossIds.remove(mob.getUniqueId());if(participants.isEmpty()&&killer!=null)participants=Map.of(CoreUtil.id(killer),1.0);
+        Map<String,Double> raw=damage.remove(mob.getUniqueId());Map<String,Long> hits=lastContribution.remove(mob.getUniqueId());Map<String,Double> participants=meaningfulParticipants(mob,raw,hits);sharedBossIds.remove(mob.getUniqueId());
+        /*  The literal 1.0 that produced "it said I dealt 1 damage".
+         *
+         *  This fallback fires when NOTHING was recorded for the mob, and it credited the killer with a
+         *  hard-coded 1.0 -- which is then what the damage recap prints and what the share maths divides by.
+         *  It is not a measurement of anything; the boss did not have 1 HP. It is the placeholder for "no
+         *  damage was captured at all".
+         *
+         *  Damage goes unrecorded when a hit lands before the entity carries its tier key: the listener
+         *  reads the key first and returns early if it is absent, and the world-boss spawn path sets health
+         *  and equipment for ten-odd statements before stamping it. One-shotting something the instant it
+         *  appears lands squarely in that window, which is exactly what was reported twice.
+         *
+         *  Crediting max health instead makes the recap read as the one-shot it was, and matches what the
+         *  world-boss path already does. The warning gives the next occurrence a timestamp to check. */
+        if(participants.isEmpty()&&killer!=null){
+            participants=Map.of(CoreUtil.id(killer),Math.max(1,mob.getAttribute(Attribute.MAX_HEALTH).getValue()));
+            plugin.getLogger().warning("[BossDamage] elite "+mob.getType()+" died with NO recorded damage; crediting "
+                    +killer.getName()+" with its max health rather than the old placeholder of 1.");
+        }
         if (participants.isEmpty()) {
             if (worldBoss && worldBossId != null && worldBossId.equals(mob.getUniqueId())) {
                 db.deleteBossState(worldBossId.toString());

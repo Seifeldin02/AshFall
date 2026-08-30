@@ -280,6 +280,35 @@ final class SpawnerShopService implements Listener {
             plugin.settings().uiSound(player, "error");
             return;
         }
+        /*  Ask before anything moves.
+         *
+         *  Nothing at all happens on this path until the player confirms: no stock is taken, no money is
+         *  charged, no item is created. Cancelling therefore cannot leave a spawner reserved or a balance
+         *  short -- it just re-opens the shop. The stock compare-and-swap and the payment stay in exactly
+         *  the order they were in, they simply now run inside the accept branch. */
+        plugin.confirmations().request(player, SettingsService.ConfirmationKind.SPAWNER,
+                cost >= plugin.getConfig().getDouble("confirmations.mandatory-spawner-price", 10_000_000),
+                "Buy a " + CoreUtil.pretty(type.name()) + " Spawner",
+                List.of("Cost: " + CoreUtil.money(cost)),
+                () -> buyConfirmed(player, type, holder, cost),
+                () -> open(player, holder.page(), holder.sort()));
+    }
+
+    private void buyConfirmed(Player player, EntityType type, Holder holder, double quotedCost) {
+        /** Re-quote and re-check on accept. The price or the player's inventory can both change between the
+         *  click and the confirmation, and the confirmed purchase must be the one that was agreed to. */
+        double cost = buyPrice(type);
+        if (cost != quotedCost) {
+            CoreUtil.error(player, "The price changed to " + CoreUtil.money(cost) + " -- nothing was bought.");
+            plugin.settings().uiSound(player, "error");
+            open(player, holder.page(), holder.sort());
+            return;
+        }
+        if (!ShopService.canFit(player, new ItemStack(Material.SPAWNER))) {
+            CoreUtil.error(player, "Make room in your inventory first.");
+            plugin.settings().uiSound(player, "error");
+            return;
+        }
         if (!db.spawnerShopTake(type.name())) {
             CoreUtil.error(player, "That spawner just sold out.");
             plugin.settings().uiSound(player, "error");

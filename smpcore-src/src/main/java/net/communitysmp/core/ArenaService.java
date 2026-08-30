@@ -294,6 +294,23 @@ final class ArenaService implements Listener {
 
     /** Where each duellist starts. The spawn pair comes from the map, and the yaw is derived from the pair
      *  rather than stored, so the two always begin facing each other however the points are moved. */
+    /** The round-start horn, sourced from the midpoint of the two spawns instead of from inside each
+     *  player's head. Both fighters hear it arrive from the middle of the arena, which is where the fight
+     *  is about to happen, and it gives the cue a direction rather than being flat. */
+    private void startHorn(Duel duel) {
+        Location one = corner(duel, 0), two = corner(duel, 1);
+        Player first = a(duel), second = b(duel);
+        if (one == null || two == null || one.getWorld() == null || !one.getWorld().equals(two.getWorld())) {
+            sound(duel, "start");
+            return;
+        }
+        Location middle = new Location(one.getWorld(), (one.getX() + two.getX()) / 2,
+                (one.getY() + two.getY()) / 2, (one.getZ() + two.getZ()) / 2);
+        if (plugin.settings() == null) return;
+        if (first != null) plugin.settings().uiSoundAt(first, middle, "start");
+        if (second != null) plugin.settings().uiSoundAt(second, middle, "start");
+    }
+
     private Location corner(Duel duel, int index) {
         if (duel.instance != null && duel.map != null)
             return index == 0 ? duel.map.p1(duel.instance) : duel.map.p2(duel.instance);
@@ -709,6 +726,19 @@ final class ArenaService implements Listener {
         String id = CoreUtil.id(player);
         Database.ArenaState state = db.arenaState(id);
         if (state == null) return;
+        /*  A DEAD duellist must not be restored here, and above all must not have their capture cleared.
+         *
+         *  This is why duel losers sometimes woke up at their bed instead of where they started. Losing a
+         *  round means dying, and death schedules roundOver() for the NEXT TICK -- long before the player
+         *  has clicked Respawn. finish() then called this for both sides: teleport silently fails on a
+         *  corpse, and the last line of this method wipes the arena_state row. When the player finally did
+         *  click Respawn, the respawn handler looked the capture up, found nothing, and vanilla sent them to
+         *  their spawn point. Forfeits and disconnects never hit it because nobody died, which is exactly
+         *  why it looked intermittent.
+         *
+         *  So the corpse is left alone and returnPlayers() forces the respawn instead; the respawn handler
+         *  owns placing and restoring them, with the capture still intact. */
+        if (player.isDead()) return;
         player.getInventory().clear();
         player.getInventory().setArmorContents(null);
         try {
@@ -1293,11 +1323,6 @@ final class ArenaService implements Listener {
          *  escrow is only paid out once. */
         if (duel.phase != Phase.LIVE) return;
         duel.phase = Phase.ENDING;
-        /** Each side hears its own result. Deliberately here at the top of finish(), before any payout or
-         *  teleport work, so the cue lands on the same tick the match actually ends rather than trailing
-         *  behind the scoreboard. */
-        sound(plugin.getServer().getPlayer(winner), "victory");
-        sound(plugin.getServer().getPlayer(loser), "defeat");
         double pot = db.arenaEscrowOf(duel.a) + db.arenaEscrowOf(duel.b);
         db.arenaEscrowClear(duel.a); db.arenaEscrowClear(duel.b);
         if (pot > 0) {
@@ -1312,6 +1337,16 @@ final class ArenaService implements Listener {
         returnPlayers(duel);
         awardItemWagers(duel, winner, loser);
         dispose(duel);
+        /*  Each side hears its own result AFTER it is home.
+         *
+         *  These used to play at the top of finish(), which is the same tick the winner is teleported out
+         *  of the arena world. A cue started on one world and finished on another is dropped by the client,
+         *  so the winner in particular almost never heard it. Half a second after the return the player is
+         *  settled in their restored world and the sound actually lands. Once each, from here only. */
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            sound(plugin.getServer().getPlayer(winner), "victory");
+            sound(plugin.getServer().getPlayer(loser), "defeat");
+        }, 10L);
     }
 
     /** Settle every wager in ONE scope: round 0 is the whole-match pool (paid at finish); round N is that
@@ -1731,7 +1766,18 @@ final class ArenaService implements Listener {
     }
 
     private void returnPlayers(Duel duel) {
-        for (String id : List.of(duel.a, duel.b)) { Player player = plugin.getServer().getPlayer(id); if (player != null) restore(player); }
+        for (String id : List.of(duel.a, duel.b)) {
+            Player player = plugin.getServer().getPlayer(id);
+            if (player == null) continue;
+            /** Force the respawn rather than waiting for the player to click. It fires PlayerRespawnEvent
+             *  immediately, while the capture still exists, so respawn() places them on their exact
+             *  pre-duel spot and restores them -- and it means nobody is still lying dead inside the
+             *  instance world when dispose() unloads it a moment later, which is how somebody ended up
+             *  stuck at 0,0 with the duel already gone. */
+            /** Player#respawn() is not on the interface in this API; the Spigot subclass carries it. */
+            if (player.isDead()) player.spigot().respawn();
+            else restore(player);
+        }
         for (Map.Entry<String, Integer> entry : new ArrayList<>(spectators.entrySet())) {
             if (entry.getValue() != duel.id) continue;
             Player player = plugin.getServer().getPlayer(entry.getKey());

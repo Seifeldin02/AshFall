@@ -997,6 +997,29 @@ final class RelicService implements Listener {
          *  telemetry below will say so with real numbers instead of a guess. */
         double applied=Math.max(original,Math.max(multiplied,centre));
         event.setDamage(applied);
+        /*  The rare "combo did nothing at all" case: invulnerability frames.
+         *
+         *  Read out of LivingEntity.hurtServer in paper-26.2.jar: when `invulnerableTime > 0` the hit is
+         *  still delivered to Bukkit, but vanilla fires it with the previous hit's `lastHurt` folded in, so
+         *  what the target actually takes is (this hit - the last one). Raising the base damage cannot
+         *  rescue that -- if the previous hit was bigger, the subtraction eats the entire swing and the
+         *  target takes literally zero.
+         *
+         *  This relic makes that collision routine rather than rare: it resolves its slam on landing, and
+         *  the mace swing that combos with it lands in the same half second, on the same target. Every
+         *  other damage path in this file already clears i-frames for exactly this reason (see slamDamage);
+         *  the combo was the one that did not.
+         *
+         *  Only the i-frame case is touched. A normal combo -- the overwhelming majority -- takes the
+         *  branch above and behaves precisely as before. */
+        if(event.getEntity() instanceof LivingEntity framed&&framed.getNoDamageTicks()>0&&framed.getLastDamage()>0){
+            event.setCancelled(true);
+            framed.setNoDamageTicks(0);
+            framed.setLastDamage(0);
+            /** Re-entrant by design and safe: the anchor was already removed above, so this handler returns
+             *  immediately on the way back in and cannot loop. */
+            framed.damage(applied,player);
+        }
         /** The thing you actually landed on takes the FULL stagger, whatever the geometry says -- it was hit
          *  directly, not caught in the blast. Only the surrounding area damage scales with distance. */
         if(event.getEntity() instanceof LivingEntity struckTarget)

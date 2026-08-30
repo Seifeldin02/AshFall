@@ -256,6 +256,18 @@ bank:
     base-limit: 1000
     per-milestone-limit: 1500
     maximum-limit: 0
+    # Hidden credit rating. The loan limit is a fraction of the CURRENT treasury, and the fraction is
+    # earned: 55% the Coin Counter economic score from /progress, 20% repayment record (minus a penalty
+    # per overdue loan), 15% play hours, 10% milestones. The old flat formula is kept as a floor, so no
+    # limit can go down. At a 300M treasury this is ~150k at the bottom and ~6M at the top.
+    credit:
+      economic-target: 5000000
+      repaid-target: 6
+      overdue-penalty: 0.25
+      tenure-hours: 120
+      milestone-target: 12
+      treasury-fraction-min: 0.0005
+      treasury-fraction-max: 0.02
     daily-interest-percent: 1.0
     maximum-interest-percent: 25.0
     due-days: 7
@@ -733,3 +745,9 @@ discord-reminder:
 
 database:
   file: smpcore.db
+
+admin:
+  # Suppresses the sendCommandFeedback gamerule so console/RCON command messages stop being echoed to
+  # in-game operators. OFF by default: it also suppresses a player's feedback from their own commands.
+  # Commands are still written to the server log regardless.
+  hide-console-command-feedback: false

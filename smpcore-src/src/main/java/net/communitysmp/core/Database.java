@@ -950,6 +950,13 @@ final class Database implements AutoCloseable {
     }
     synchronized LoanRow loan(String player){return one("SELECT * FROM bank_loans WHERE player=? AND status IN ('ACTIVE','OVERDUE') ORDER BY issued_at DESC LIMIT 1",Database::mapLoan,player);}
     synchronized int repaidLoanCount(String player){return integer("SELECT COUNT(*) FROM bank_loans WHERE player=? AND status='PAID'",player);}
+    /** The credit rating's only downward term -- a record of paying late is exactly what a credit score
+     *  is for. Limited by the schema: bank_loans has no paid_at column, so a loan that was late but has
+     *  since been settled leaves no trace and cannot be counted. This therefore measures CURRENT
+     *  delinquency (0 or 1, since the unique index allows one active loan at a time) rather than lifetime
+     *  history. Adding a paid_at column would make it a real history; not done here to keep the migration
+     *  out of this change. */
+    synchronized int overdueLoanCount(String player){return integer("SELECT COUNT(*) FROM bank_loans WHERE player=? AND status='OVERDUE'",player);}
     synchronized LoanRow accrueLoan(String player,double maxInterestPercent){
         LoanRow loan=loan(player);if(loan==null)return null;long now=System.currentTimeMillis();double elapsed=Math.max(0,now-loan.lastAccrual())/86400000.0;
         double cap=loan.originalAmount()*Math.max(0,maxInterestPercent)/100.0,interest=Math.min(cap,loan.interest()+loan.principal()*Math.max(0,loan.rateDaily())*elapsed);

@@ -88,6 +88,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         for(String name:List.of("f","balance","pay","home","sethome","delhome","renamehome","homes","buyhome","tpa","tpahere","tpaccept","tpdeny","spawn","rtp","back","msg","reply","shop","luxuryshop","shardshop","settings","ah","bounty","bounties","events","relics","leaderboards","guide","smphelp","role","sidebar","feedback","stats","progress","history","graves","enderchest","ashfall","nickname","discord","admin","shout","afk","myorders")){
             PluginCommand command=getCommand(name);if(command!=null){command.setExecutor(this);command.setTabCompleter(this);}
         }
+        applyCommandFeedbackPolicy();
         getLogger().info("SMPCore 1.7.0 enabled: marketplace, accessibility settings, shards, faction relations and weekly Dragon are ready.");
     }
     @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(spectacle!=null)spectacle.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
@@ -532,7 +533,38 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             error->{getLogger().warning("[ReplayDebug] search failed: "+error);CoreUtil.error(s,"Replay search failed: "+error.getMessage());}
         );
     }
-    private static final List<String> ELITE_MOBS=List.of("here","zombie","husk","skeleton","stray","bogged","wither_skeleton","spider","cave_spider","creeper","enderman","witch","piglin","piglin_brute","zombified_piglin","blaze","drowned","vindicator","pillager","evoker","ravager","hoglin","zoglin","slime","phantom","vex","breeze","warden");
+    /** Derived from the SAME predicate the command validates with, rather than hand-listed beside it.
+     *
+     *  The hand-written list had drifted: `guardian` was spawnable and worked perfectly, it simply was not
+     *  offered, and so were a dozen others. Generating it from parseMobType means the suggestions and the
+     *  accepted values can never disagree again. */
+    /*  Hiding console/RCON command messages from in-game admins.
+     *
+     *  `broadcast-console-to-ops` and `broadcast-rcon-to-ops` are ALREADY false on both servers, so the
+     *  usual answer is not the answer here -- whatever the owner is seeing survives both. The remaining
+     *  vanilla mechanism is the sendCommandFeedback gamerule, which is what actually governs whether a
+     *  command's success message is echoed to operators.
+     *
+     *  It is config-gated and OFF by default on purpose: the same gamerule also suppresses the feedback a
+     *  PLAYER gets from their own commands, which the owner explicitly asked not to break. Turn it on, see
+     *  whether the message disappears, and we will know which mechanism produced it. Commands keep being
+     *  written to the server log either way, so the audit trail is untouched. */
+    void applyCommandFeedbackPolicy(){
+        if(!getConfig().getBoolean("admin.hide-console-command-feedback",false))return;
+        for(org.bukkit.World world:getServer().getWorlds())
+            world.setGameRule(org.bukkit.GameRule.SEND_COMMAND_FEEDBACK,false);
+        getLogger().info("[Admin] sendCommandFeedback disabled on all worlds (admin.hide-console-command-feedback).");
+    }
+
+    private static final List<String> ELITE_MOBS=buildEliteMobs();
+    private static List<String> buildEliteMobs(){
+        List<String> out=new ArrayList<>();out.add("here");
+        for(org.bukkit.entity.EntityType type:org.bukkit.entity.EntityType.values()){
+            String name=type.name().toLowerCase(Locale.ROOT);
+            if(parseMobType(name)!=null)out.add(name);
+        }
+        return List.copyOf(out);
+    }
     private static org.bukkit.entity.EntityType parseMobType(String value){try{org.bukkit.entity.EntityType type=org.bukkit.entity.EntityType.valueOf(value.toUpperCase(Locale.ROOT));Class<?> cls=type.getEntityClass();if(cls!=null&&org.bukkit.entity.Mob.class.isAssignableFrom(cls)&&type.isSpawnable())return type;}catch(IllegalArgumentException ignored){}return null;}
     private static Double parseCoord(String value){try{return Double.parseDouble(value);}catch(NumberFormatException e){return null;}}
 

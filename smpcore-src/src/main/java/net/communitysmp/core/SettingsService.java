@@ -36,7 +36,10 @@ final class SettingsService implements Listener {
     enum ConfirmationKind {
         /** Confirmations are on for everything that spends a lot or is hard to undo, and off for the
          *  regular shop, where the amounts are small and a prompt on every purchase is just friction. */
-        SHOP("confirm_shop",false), AUCTION("confirm_auction",true), LUXURY("confirm_luxury",true), SHARD("confirm_shard",true);
+        SHOP("confirm_shop",false), AUCTION("confirm_auction",true), LUXURY("confirm_luxury",true), SHARD("confirm_shard",true),
+        /** The Spawner Shop was the one paid screen with no confirmation at all -- a single misclick bought a
+         *  multi-million spawner outright. Defaults ON like every other non-routine purchase. */
+        SPAWNER("confirm_spawner",true);
         final String key;final boolean fallback;
         ConfirmationKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
@@ -685,6 +688,22 @@ final class SettingsService implements Listener {
      *  site can never be quietly soundless. */
     void uiSound(Player player,String action){
         if(player==null||action==null||!sounds(player))return;
+        Cue cue=cue(action);
+        player.playSound(player.getLocation(),cue.sound(),cue.volume(),cue.pitch());
+    }
+
+    /** The same vocabulary, but sourced from a POINT IN THE WORLD rather than from the listener's own ears.
+     *  A cue that belongs to a place -- the duel start horn, which should sound from between the two
+     *  fighters rather than from inside each of their heads -- gets distance and direction this way. */
+    void uiSoundAt(Player player,Location at,String action){
+        if(player==null||at==null||action==null||!sounds(player))return;
+        Cue cue=cue(action);
+        player.playSound(at,cue.sound(),cue.volume(),cue.pitch());
+    }
+
+    private record Cue(Sound sound,float volume,float pitch){}
+
+    private Cue cue(String action){
         Sound sound;float volume=.55f,pitch;
         switch(action){
             case"select"->{sound=Sound.UI_BUTTON_CLICK;pitch=1.25f;}
@@ -707,7 +726,7 @@ final class SettingsService implements Listener {
             case"success"->{sound=Sound.ENTITY_EXPERIENCE_ORB_PICKUP;pitch=1.2f;}
             default->{sound=Sound.UI_BUTTON_CLICK;pitch=1f;}
         }
-        player.playSound(player.getLocation(),sound,volume,pitch);
+        return new Cue(sound,volume,pitch);
     }
 
     void marketSound(Player player,String action){
@@ -735,7 +754,7 @@ final class SettingsService implements Listener {
     private boolean defaultFor(String key){for(ConfirmationKind kind:ConfirmationKind.values())if(kind.key.equals(key))return kind.fallback;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
     private String state(Player player,String key,boolean fallback){return enabled(player,key,fallback)?"ON":"OFF";}
     private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
-    private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";};}
+    private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";case SPAWNER->"Spawner Shop";};}
     private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
     /** Auto-TPA submenu clicks. Kept out of the TPA branch above so the two pages cannot collide on a slot. */
     private void autoTpaClick(InventoryClickEvent event,Player player,int slot){
@@ -771,7 +790,9 @@ final class SettingsService implements Listener {
         for(Player player:plugin.getServer().getOnlinePlayers()){
             boolean requested=enabled(player,"night_vision",false),darkness=player.hasPotionEffect(PotionEffectType.DARKNESS)||player.hasPotionEffect(PotionEffectType.BLINDNESS);
             if(requested&&!darkness)applyNightVision(player);
-            else if(appliedNightVision.contains(player.getUniqueId()))removeNightVision(player);
+            /** Unconditional now, not gated on the tracking set -- removeNightVision() is self-guarding and
+             *  this is what finally clears a stale infinite effect left behind across a relog. */
+            else removeNightVision(player);
         }
         appliedNightVision.removeIf(id->plugin.getServer().getPlayer(id)==null);
     }
@@ -781,7 +802,22 @@ final class SettingsService implements Listener {
         if(current==null||current.getDuration()!=PotionEffect.INFINITE_DURATION||!appliedNightVision.contains(player.getUniqueId()))player.addPotionEffect(new PotionEffect(PotionEffectType.NIGHT_VISION,PotionEffect.INFINITE_DURATION,0,false,false,false));
         appliedNightVision.add(player.getUniqueId());
     }
-    private void removeNightVision(Player player){if(appliedNightVision.remove(player.getUniqueId()))player.removePotionEffect(PotionEffectType.NIGHT_VISION);}
+    /** Turning it off has to work on the FIRST press.
+     *
+     *  Removal used to be gated on the in-memory tracking set: no entry, no removal. But the effect this
+     *  applies is INFINITE, so it survives a relog inside the player's own data, while the set does not --
+     *  `appliedNightVision.removeIf(offline)` in the tick drops it the moment the player leaves. Come back,
+     *  press off, and nothing happened; press on (which re-adds the set entry) then off, and it finally
+     *  cleared. That is exactly the reported disable/enable/disable dance.
+     *
+     *  So the set is no longer the authority for removal -- the effect is. An INFINITE duration is this
+     *  plugin's own signature: drunk potions and beacons are always finite and re-applied, so keying on it
+     *  removes ours and never touches a real one. */
+    private void removeNightVision(Player player){
+        appliedNightVision.remove(player.getUniqueId());
+        PotionEffect current=player.getPotionEffect(PotionEffectType.NIGHT_VISION);
+        if(current!=null&&current.getDuration()==PotionEffect.INFINITE_DURATION)player.removePotionEffect(PotionEffectType.NIGHT_VISION);
+    }
     private void peacefulTick(){
         double radius=plugin.getConfig().getDouble("settings.natural-spawn-influence-radius",128),radiusSq=radius*radius;
         List<Player> disabled=new ArrayList<>();List<Location> enabledLocations=new ArrayList<>();
@@ -899,7 +935,7 @@ final class SettingsService implements Listener {
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()==10&&ConfirmationKind.values().length==4&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
+    boolean selfTest(){return MAIN.size()==10&&ConfirmationKind.values().length==5&&defaultFor(ConfirmationKind.SPAWNER.key)&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 
