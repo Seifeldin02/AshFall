@@ -28,8 +28,14 @@ final class AuctionService {
         double factor=merchantActive(p)?feeMultiplier():1;
         double fee=listingFee(price,factor);
         ItemStack quoted=held.clone();
-        plugin.confirmations().request(p,SettingsService.ConfirmationKind.AUCTION_LIST,
-                fee>=plugin.getConfig().getDouble("confirmations.mandatory-listing-fee",100_000),
+        /** The toggle is the ONLY authority here -- deliberately never mandatory, whatever the fee.
+         *
+         *  It defaults on, so the 600k surprise cannot happen to anyone who has not gone looking for the
+         *  switch. But once somebody turns it off they have said they know what listing costs, and having
+         *  it reappear at some hidden price threshold would make the setting a lie. High-value listings are
+         *  exactly the ones a trader repeats most, so a forced prompt there is the most annoying place to
+         *  put one. */
+        plugin.confirmations().request(p,SettingsService.ConfirmationKind.AUCTION_LIST,false,
                 "List "+quoted.getAmount()+"x "+CoreUtil.pretty(quoted.getType().name()),
                 java.util.List.of("Asking price: "+CoreUtil.money(price),
                         "Listing fee charged now: "+CoreUtil.money(fee),
