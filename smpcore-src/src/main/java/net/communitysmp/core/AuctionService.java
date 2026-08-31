@@ -28,7 +28,7 @@ final class AuctionService {
         double factor=merchantActive(p)?feeMultiplier():1;
         double fee=listingFee(price,factor);
         ItemStack quoted=held.clone();
-        plugin.confirmations().request(p,SettingsService.ConfirmationKind.AUCTION,
+        plugin.confirmations().request(p,SettingsService.ConfirmationKind.AUCTION_LIST,
                 fee>=plugin.getConfig().getDouble("confirmations.mandatory-listing-fee",100_000),
                 "List "+quoted.getAmount()+"x "+CoreUtil.pretty(quoted.getType().name()),
                 java.util.List.of("Asking price: "+CoreUtil.money(price),

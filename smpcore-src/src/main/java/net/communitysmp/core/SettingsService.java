@@ -39,7 +39,11 @@ final class SettingsService implements Listener {
         SHOP("confirm_shop",false), AUCTION("confirm_auction",true), LUXURY("confirm_luxury",true), SHARD("confirm_shard",true),
         /** The Spawner Shop was the one paid screen with no confirmation at all -- a single misclick bought a
          *  multi-million spawner outright. Defaults ON like every other non-routine purchase. */
-        SPAWNER("confirm_spawner",true);
+        SPAWNER("confirm_spawner",true),
+        /** Listing is not buying. Selling something into the AH charges a percentage fee up front, which is
+         *  a completely different risk from spending a known price on a listing you chose -- so it gets its
+         *  own switch rather than riding on AUCTION. */
+        AUCTION_LIST("confirm_auction_list",true);
         final String key;final boolean fallback;
         ConfirmationKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
@@ -268,7 +272,7 @@ final class SettingsService implements Listener {
             if(page==Page.MAIN){
                 for(Toggle toggle:mainToggles(player))buttons.add(nativeToggle(player,toggle,Page.MAIN));
                 buttons.add(nativeCycle(player));
-                buttons.add(nativeButton("Purchase Confirmations","settings native confirmations"));
+                buttons.add(nativeButton("Confirmations","settings native confirmations"));
                 buttons.add(nativeButton("TPA Requests","settings native tpa"));
                 buttons.add(nativeButton("Nametags","settings native nametags"));
                 buttons.add(nativeButton("Account","settings native account"));
@@ -445,7 +449,7 @@ final class SettingsService implements Listener {
             if(page==Page.MAIN){
                 for(Toggle toggle:mainToggles(player))form.button(toggle.title()+"\n"+(enabled(player,toggle.key(),toggle.fallback())?"§aON":"§cOFF"));
                 form.button("Particle Intensity\n§e"+CoreUtil.pretty(particles(player)));
-                form.button("Purchase Confirmations");
+                form.button("Confirmations");
                 form.button("TPA Requests");
                 form.button("Nametags");
                 form.button("Random Travel");
@@ -510,7 +514,7 @@ final class SettingsService implements Listener {
             inv.setItem(21,button(Material.ENDER_PEARL,"TPA Requests",List.of("Configure who can send you teleport requests.")));
             inv.setItem(22,button(Material.NAME_TAG,"Nametags",List.of("Show balances or faction tags under player names.")));
             inv.setItem(23,cycle(Material.FIREWORK_STAR,"Particle Intensity",particles(player)));
-            inv.setItem(31,button(Material.REPEATER,"Purchase Confirmations",List.of("Configure each marketplace section.")));
+            inv.setItem(31,button(Material.REPEATER,"Confirmations",List.of("Configure each marketplace section.")));
             inv.setItem(39,button(Material.ENDER_PEARL,"Random Travel",List.of("Travel safely in your current dimension.")));
             boolean queued=plugin.teleports().isQueuedForRtp(player);
             inv.setItem(40,button(queued?Material.LIME_DYE:Material.COMPASS,"RTP Queue",List.of(queued?"§aQueued — click to leave.":"Click to join the queue.","Pairs you with another queued player","in the same dimension.")));
@@ -635,7 +639,7 @@ final class SettingsService implements Listener {
     }
     boolean confirmationEnabled(Player player,ConfirmationKind kind){return enabled(player,kind.key,kind!=ConfirmationKind.SHOP);}
     private boolean allConfirmations(Player player){return Arrays.stream(ConfirmationKind.values()).allMatch(kind->confirmationEnabled(player,kind));}
-    private void setAllConfirmations(Player player,boolean enabled){for(ConfirmationKind kind:ConfirmationKind.values())db.preference(CoreUtil.id(player),kind.key,Boolean.toString(enabled));CoreUtil.msg(player,"Routine Purchase Confirmations "+(enabled?"enabled":"disabled")+". Mandatory confirmations remain on.");}
+    private void setAllConfirmations(Player player,boolean enabled){for(ConfirmationKind kind:ConfirmationKind.values())db.preference(CoreUtil.id(player),kind.key,Boolean.toString(enabled));CoreUtil.msg(player,"Routine Confirmations "+(enabled?"enabled":"disabled")+". Mandatory confirmations remain on.");}
     boolean naturalSpawns(Player player){return enabled(player,"natural_spawns",true);}
     boolean eliteMobs(Player player){return enabled(player,"elite_mobs",true);}
     /** Elite Mobs is a SUBSET of Hostile Mobs: a player "allows" elites near them only when both are on. */
@@ -754,7 +758,7 @@ final class SettingsService implements Listener {
     private boolean defaultFor(String key){for(ConfirmationKind kind:ConfirmationKind.values())if(kind.key.equals(key))return kind.fallback;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
     private String state(Player player,String key,boolean fallback){return enabled(player,key,fallback)?"ON":"OFF";}
     private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
-    private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";case SPAWNER->"Spawner Shop";};}
+    private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"Auction House";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";case SPAWNER->"Spawner Shop";case AUCTION_LIST->"AH Listing Fee";};}
     private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
     /** Auto-TPA submenu clicks. Kept out of the TPA branch above so the two pages cannot collide on a slot. */
     private void autoTpaClick(InventoryClickEvent event,Player player,int slot){
@@ -784,7 +788,7 @@ final class SettingsService implements Listener {
 
     private String prettyNametag(NametagKind kind){return switch(kind){case BALANCES->"Show Balances";case FACTIONS->"Show Faction Tags";case HEARTS->"Show Hearts";};}
     private String nametagHint(NametagKind kind){return switch(kind){case BALANCES->"Show each player's balance under their name.";case FACTIONS->"Show each player's faction tag beside their name.";case HEARTS->"Show the health line. Always shown when every option here is off.";};}
-    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"PURCHASE CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";case AUTOTPA->"AUTO-TPA ALLOWLIST";case AUTOTPA_REMOVE->"REMOVE FROM AUTO-TPA";};}
+    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";case AUTOTPA->"AUTO-TPA ALLOWLIST";case AUTOTPA_REMOVE->"REMOVE FROM AUTO-TPA";};}
 
     private void nightVisionTick(){
         for(Player player:plugin.getServer().getOnlinePlayers()){
@@ -935,7 +939,7 @@ final class SettingsService implements Listener {
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()==10&&ConfirmationKind.values().length==5&&defaultFor(ConfirmationKind.SPAWNER.key)&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
+    boolean selfTest(){return MAIN.size()==10&&ConfirmationKind.values().length==6&&defaultFor(ConfirmationKind.SPAWNER.key)&&defaultFor(ConfirmationKind.AUCTION_LIST.key)&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 
