@@ -29,7 +29,7 @@ final class SpawnerService {
     private final SMPCore plugin;
     private final Database db;
     private final FactionService factions;
-    private final NamespacedKey typeKey,placedKey,historiesKey,stackKey,identityKey,identitiesKey,spawnerMobKey,raidFactionKey,virtualKey,sourceIdsKey;
+    private final NamespacedKey typeKey,placedKey,historiesKey,stackKey,identityKey,identitiesKey,spawnerMobKey,raidFactionKey,virtualKey,sourceIdsKey,bulkKey;
     private final Map<UUID,Long> warned=new HashMap<>();
     private final Map<String,Long> miningStarted=new HashMap<>();
     private final Map<String,Long> tntOwners=new HashMap<>();
@@ -38,7 +38,7 @@ final class SpawnerService {
 
     SpawnerService(SMPCore plugin,FactionService factions){
         this.plugin=plugin;this.db=plugin.db();this.factions=factions;
-        sourceIdsKey=new NamespacedKey(plugin,"spawner_source_ids");virtualKey=new NamespacedKey(plugin,"virtual_stack");typeKey=new NamespacedKey(plugin,"spawner_type");placedKey=new NamespacedKey(plugin,"placed_spawner");historiesKey=new NamespacedKey(plugin,"spawner_histories");stackKey=new NamespacedKey(plugin,"spawner_stack");identityKey=new NamespacedKey(plugin,"spawner_identity");identitiesKey=new NamespacedKey(plugin,"spawner_identities");spawnerMobKey=new NamespacedKey(plugin,"spawner_mob");raidFactionKey=new NamespacedKey(plugin,"raid_faction");
+        sourceIdsKey=new NamespacedKey(plugin,"spawner_source_ids");bulkKey=new NamespacedKey(plugin,"stack_bulk_resolved");virtualKey=new NamespacedKey(plugin,"virtual_stack");typeKey=new NamespacedKey(plugin,"spawner_type");placedKey=new NamespacedKey(plugin,"placed_spawner");historiesKey=new NamespacedKey(plugin,"spawner_histories");stackKey=new NamespacedKey(plugin,"spawner_stack");identityKey=new NamespacedKey(plugin,"spawner_identity");identitiesKey=new NamespacedKey(plugin,"spawner_identities");spawnerMobKey=new NamespacedKey(plugin,"spawner_mob");raidFactionKey=new NamespacedKey(plugin,"raid_faction");
         plugin.getServer().getScheduler().runTaskLater(plugin,this::migrateLoadedFactionSpawners,100L);
         plugin.getServer().getScheduler().runTaskTimer(plugin,this::logGolemDayRollover,1200L,6000L);
         hoverTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::hoverTick,10L,
@@ -312,12 +312,114 @@ final class SpawnerService {
      *  Runs at HIGH so it sees the final vanilla drop list (including Looting) and multiplies THAT, rather
      *  than re-running any reward logic and risking a double payout. Drops are merged into full stacks so
      *  a x100 kill produces a handful of item entities instead of hundreds. */
+    /*  What a stacked death owes, computed once, without ever building the items.
+     *
+     *  A x1000 zombie stack produces two thousand rotten flesh. Cloning an ItemStack per represented mob to
+     *  find that out is the expensive half of the problem, so the plan is arithmetic on the drop list the
+     *  event already carries: each plain drop's amount times the stack size, each drop carrying custom data
+     *  kept aside to be handed over as real items, and the experience multiplied the same way.
+     *
+     *  Pure, so the conservation properties can be asserted without a mob, a player or a world. */
+    record BulkPlan(java.util.Map<Material,Integer> plain,java.util.List<ItemStack> keep,int experience){
+        int plainTotal(){int sum=0;for(int amount:plain.values())sum+=amount;return sum;}
+    }
+
+    static BulkPlan planStack(java.util.List<ItemStack> drops,int stack,int experienceEach){
+        java.util.Map<Material,Integer> plain=new java.util.LinkedHashMap<>();
+        java.util.List<ItemStack> keep=new java.util.ArrayList<>();
+        for(ItemStack drop:drops){
+            if(drop==null||drop.getType().isAir())continue;
+            if(drop.hasItemMeta()&&(drop.getItemMeta().hasDisplayName()||drop.getItemMeta().hasEnchants())){
+                for(int i=0;i<stack;i++)keep.add(drop.clone());
+            }else plain.merge(drop.getType(),drop.getAmount()*stack,Integer::sum);
+        }
+        return new BulkPlan(plain,keep,experienceEach*stack);
+    }
+
+    /** Splits a plan's plain materials by whether the shop currently buys them. Unsellables are never
+     *  discarded -- they are handed to the killer through the ordinary give-or-drop path. */
+    private java.util.Map<Material,Integer> sellablePart(java.util.Map<Material,Integer> plain,boolean wanted){
+        java.util.Map<Material,Integer> out=new java.util.LinkedHashMap<>();
+        ShopService shop=plugin.shop();
+        for(var entry:plain.entrySet())
+            if(shop!=null&&shop.buysBack(entry.getKey())==wanted)out.put(entry.getKey(),entry.getValue());
+        return out;
+    }
+
+    /*  Resolves a stack of a thousand or more into money and experience instead of item entities.
+     *
+     *  At a x1000 stack the ordinary path is not merely slow, it is a different kind of event: two thousand
+     *  rotten flesh is thirty-two item entities that immediately begin merging, plus a thousand experience
+     *  orbs, all in one tick, on a server where somebody built the farm precisely because they intend to do
+     *  it repeatedly.
+     *
+     *  So the sellable half never becomes items at all. It goes through the shop's own bulk sale, which is
+     *  the same quote, the same daily threshold and reduced rate, the same treasury check and loan garnish,
+     *  and the same stock and economy accounting a manual sale would have produced -- the ONLY difference is
+     *  that there is nothing to take out of an inventory. Anything the shop does not buy is aggregated into
+     *  whole stacks and handed over as real items, because deleting it would be a loss the player never
+     *  agreed to. Experience is granted as a single number rather than as a thousand orbs.
+     *
+     *  Anything that stops the sale -- no killer, an offline killer, a treasury that cannot cover it --
+     *  falls straight back to the ordinary drop path. A stack is never resolved twice: the entity is stamped
+     *  before anything is paid, and a stamped entity returns immediately. */
+    private boolean bulkResolve(org.bukkit.event.entity.EntityDeathEvent event,int stack){
+        int threshold=Math.max(1,plugin.getConfig().getInt("spawners.bulk-resolve-threshold",1000));
+        if(stack<threshold)return false;
+        LivingEntity mob=event.getEntity();
+        if(mob.getPersistentDataContainer().has(bulkKey,PersistentDataType.BYTE))return true;
+        Player killer=mob.getKiller();
+        if(killer==null||!killer.isOnline())return false;
+        ShopService shop=plugin.shop();
+        if(shop==null)return false;
+
+        BulkPlan plan=planStack(event.getDrops(),stack,event.getDroppedExp());
+        java.util.Map<Material,Integer> sellable=sellablePart(plan.plain(),true);
+        java.util.Map<Material,Integer> unsold=sellablePart(plan.plain(),false);
+        java.util.Map<Material,Double> earnings=shop.bulkQuote(killer,sellable);
+        double money=0;for(double value:earnings.values())money+=value;
+        money=Math.round(money*100)/100.0;
+        if(!sellable.isEmpty()&&!shop.sellBulk(killer,sellable,"STACKED_MOB_"+mob.getType().name()))return false;
+
+        mob.getPersistentDataContainer().set(bulkKey,PersistentDataType.BYTE,(byte)1);
+        event.getDrops().clear();
+        /** Unsellables and anything carrying custom data become real items, merged into whole stacks so a
+         *  thousand-mob kill hands over a handful of stacks rather than a thousand singles. */
+        int returned=0;
+        for(var entry:unsold.entrySet()){
+            int remaining=entry.getValue(),max=Math.max(1,entry.getKey().getMaxStackSize());
+            returned+=remaining;
+            while(remaining>0){int take=Math.min(max,remaining);CoreUtil.give(killer,new ItemStack(entry.getKey(),take));remaining-=take;}
+        }
+        for(ItemStack item:plan.keep()){CoreUtil.give(killer,item);returned+=item.getAmount();}
+        /** Granted directly, at exactly the total the orbs would have carried. setDroppedExp(0) is what
+         *  stops the orbs existing at all; giveExp is what keeps the number honest. */
+        event.setDroppedExp(0);
+        if(plan.experience()>0)killer.giveExp(plan.experience());
+
+        StringBuilder line=new StringBuilder();
+        int shown=0;
+        for(var entry:sellable.entrySet()){
+            if(shown++==3){line.append(", +").append(sellable.size()-3).append(" more");break;}
+            if(shown>1)line.append(", ");
+            line.append(entry.getValue()).append("x ").append(CoreUtil.pretty(entry.getKey().name()));
+        }
+        CoreUtil.msg(killer,"Stack of "+stack+" resolved: sold "+(shown==0?"nothing":line.toString())
+                +" for "+CoreUtil.money(money)+(returned>0?", "+returned+" unsold item"+(returned==1?"":"s")+" delivered":"")
+                +", "+plan.experience()+" XP granted.");
+        return true;
+    }
+
     void stackedDeath(org.bukkit.event.entity.EntityDeathEvent event){
         /** Custom golem-spawner golems drop XP (vanilla Iron Golems drop none) -- 2x a Blaze (20). Exclusive to
          *  spawner-origin golems; the virtual-stack multiply below then scales it like every other spawner drop. */
         if(event.getEntity().getType()==EntityType.IRON_GOLEM&&event.getEntity().getPersistentDataContainer().has(spawnerMobKey))event.setDroppedExp(Math.max(event.getDroppedExp(),plugin.getConfig().getInt("spawner-golem-exp",20)));
         int stack=virtualStack(event.getEntity());
         if(stack<=1)return;
+        /** A thousand or more resolves to money and experience instead of entities. Anything that stops it
+         *  -- no killer, no shop, a treasury that cannot pay -- returns false and falls through to the
+         *  ordinary path below, so a failure costs throughput and never items. */
+        if(bulkResolve(event,stack))return;
         java.util.Map<org.bukkit.Material,Integer> totals=new java.util.LinkedHashMap<>();
         java.util.List<ItemStack> complex=new java.util.ArrayList<>();
         for(ItemStack drop:event.getDrops()){
@@ -371,6 +473,49 @@ final class SpawnerService {
     }
 
     int stackSize(CreatureSpawner spawner){return histories(spawner).length;}
+    /*  Item and experience conservation for a stacked resolution.
+     *
+     *  Two things have to be true and neither is obvious from reading the code. Everything that would have
+     *  dropped must still exist somewhere in the plan -- multiplied, sorted into sellable and not, but never
+     *  quietly rounded away; and the experience must be the exact number the orbs would have carried, since
+     *  granting it directly is the one place a stack could silently pay less than an unstacked kill. */
+    static boolean bulkPlanSelfTest(){
+        ItemStack named=new ItemStack(Material.DIAMOND_SWORD);
+        ItemMeta meta=named.getItemMeta();
+        meta.displayName(Component.text("Keepsake"));
+        named.setItemMeta(meta);
+        java.util.List<ItemStack> drops=java.util.List.of(
+                new ItemStack(Material.ROTTEN_FLESH,2),new ItemStack(Material.IRON_INGOT,1),named);
+        BulkPlan plan=planStack(drops,1000,5);
+        if(plan.experience()!=5000)return false;
+        if(plan.plain().getOrDefault(Material.ROTTEN_FLESH,0)!=2000)return false;
+        if(plan.plain().getOrDefault(Material.IRON_INGOT,0)!=1000)return false;
+        /** Custom-data drops are never merged into a plain stack: a thousand named swords are a thousand
+         *  named swords, not one stack of a thousand. */
+        if(plan.keep().size()!=1000)return false;
+        int before=0;for(ItemStack drop:drops)before+=drop.getAmount();
+        int after=plan.plainTotal();for(ItemStack kept:plan.keep())after+=kept.getAmount();
+        if(after!=before*1000)return false;
+        /** A single mob must come out of the same function completely unchanged. */
+        BulkPlan one=planStack(drops,1,5);
+        return one.experience()==5&&one.plainTotal()==3&&one.keep().size()==1;
+    }
+
+    /** The split by shop interest has to be a partition: every material lands on exactly one side, and the
+     *  two sides add back up to the whole. Run against the live price list rather than a stub, because the
+     *  failure this guards against is a material the shop stops buying going missing rather than being
+     *  handed over. */
+    boolean bulkSplitSelfTest(){
+        java.util.Map<Material,Integer> plain=new java.util.LinkedHashMap<>();
+        plain.put(Material.ROTTEN_FLESH,2000);plain.put(Material.BONE,1000);
+        plain.put(Material.IRON_INGOT,1000);plain.put(Material.DIRT,50);
+        java.util.Map<Material,Integer> sellable=sellablePart(plain,true),unsold=sellablePart(plain,false);
+        if(sellable.size()+unsold.size()!=plain.size())return false;
+        int total=0;for(int amount:sellable.values())total+=amount;for(int amount:unsold.values())total+=amount;
+        int expected=0;for(int amount:plain.values())expected+=amount;
+        return total==expected&&java.util.Collections.disjoint(sellable.keySet(),unsold.keySet());
+    }
+
     boolean selfTest(){ItemStack item=createItem(EntityType.BLAZE,2,"selftest-spawner");ItemMeta meta=item.getItemMeta();return item.getMaxStackSize()==1&&"BLAZE".equals(meta.getPersistentDataContainer().get(typeKey,PersistentDataType.STRING))&&meta.getPersistentDataContainer().getOrDefault(historiesKey,PersistentDataType.INTEGER,0)==2&&meta.getPersistentDataContainer().getOrDefault(stackKey,PersistentDataType.INTEGER,0)==1&&"selftest-spawner".equals(meta.getPersistentDataContainer().get(identityKey,PersistentDataType.STRING))&&value(EntityType.BLAZE)>value(EntityType.ZOMBIE)&&(!(meta instanceof BlockStateMeta blockMeta)||!blockMeta.hasBlockState())&&plugin.getConfig().getInt("spawners.max-stack",0)==10&&plugin.getConfig().getInt("spawner-breaking.relocated-durability-cost",0)>=500;}
 
     private void raidRecover(Block block,CreatureSpawner spawner){int[] histories=histories(spawner);String[] identities=identities(spawner,histories.length);int selected=histories[histories.length-1];block.getWorld().dropItemNaturally(block.getLocation().add(.5,.5,.5),createItem(spawner.getSpawnedType(),selected+1,identities[identities.length-1]));if(histories.length>1){setHistories(spawner,Arrays.copyOf(histories,histories.length-1));setIdentities(spawner,Arrays.copyOf(identities,identities.length-1));spawner.update(true);plugin.netWorth().blockChanged(block);}else{plugin.netWorth().removed(block);block.setType(Material.AIR,false);}}

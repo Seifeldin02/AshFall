@@ -112,6 +112,11 @@ spawner-breaking:
   relocated-durability-cost: 512
 
 spawners:
+  # Stacks of this many represented mobs or more resolve straight to money and experience instead of
+  # spawning drops and orbs. The sale goes through the ordinary shop path -- same prices, daily threshold,
+  # reduced rate, treasury check and loan garnish -- and anything the shop does not buy is handed to the
+  # killer as items. Inclusive: a stack of exactly this size is resolved. Set very high to disable.
+  bulk-resolve-threshold: 1000
   max-stack: 10
   # Placed spawners only -- natural world spawners keep vanilla behaviour entirely.
   # 5-10 second cycle (100-200 ticks).

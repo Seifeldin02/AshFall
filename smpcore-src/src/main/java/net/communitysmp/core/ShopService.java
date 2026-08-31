@@ -261,6 +261,80 @@ final class ShopService {
         CoreUtil.msg(player,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" from the container for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(player,"sale");
     }
 
+    /** Whether the shop currently buys this material at all. The single question every caller outside
+     *  this class should be asking, so that "what counts as sellable" has one definition. */
+    boolean buysBack(Material material){Price price=prices.get(material);return price!=null&&!price.luxury()&&price.sell()>=0;}
+
+    /** What a sale of these counts is worth right now, per material, with the daily threshold, the reduced
+     *  rate past it and the Central Bank sell factor all applied exactly as every other sell path does. */
+    java.util.Map<Material,Double> bulkQuote(Player p,java.util.Map<Material,Integer> counts){
+        java.util.Map<Material,Double> out=new LinkedHashMap<>();String day=LocalDate.now().toString();
+        for(var entry:counts.entrySet()){
+            Price price=prices.get(entry.getKey());
+            if(price==null||price.luxury()||price.sell()<0)continue;
+            out.put(entry.getKey(),bulkLine(price,entry.getValue(),
+                    db.dailySold(CoreUtil.id(p),entry.getKey().name(),day),plugin.bank().sellFactor()));
+        }
+        return out;
+    }
+
+    /** What one material line of a sale is worth: full price up to the day's threshold, the reduced rate
+     *  beyond it, the whole thing scaled by the Central Bank sell factor. Pulled out of the quote so the
+     *  money side of a bulk sale can be asserted without a player, a day or a database -- and so a bulk
+     *  sale cannot drift away from the per-item price by having its own copy of the formula. */
+    static double bulkLine(Price price,int amount,int alreadySold,double sellFactor){
+        int full=Math.min(amount,Math.max(0,price.dailyFull()-alreadySold)),reduced=amount-full;
+        return Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*sellFactor*100)/100.0;
+    }
+
+    /*  Money conservation for the bulk path.
+     *
+     *  The property that actually matters is the last one: selling a thousand mobs' worth of drops in one
+     *  aggregate must pay exactly what selling the same drops one mob at a time would have paid. If it pays
+     *  more, the threshold is a formality and the reduced rate does nothing; if it pays less, a farm is
+     *  quietly taxed for being efficient. Everything above it is the arithmetic that has to hold for that
+     *  to be true at all. */
+    static boolean bulkSelfTest(){
+        Price price=new Price(10,2,100,0,.5,"Test",false,"TEST");
+        if(Math.abs(bulkLine(price,50,0,1)-100)>.001)return false;
+        if(Math.abs(bulkLine(price,200,0,1)-300)>.001)return false;
+        if(Math.abs(bulkLine(price,100,100,1)-100)>.001)return false;
+        if(Math.abs(bulkLine(price,50,0,.5)-50)>.001)return false;
+        if(Math.abs(bulkLine(price,0,0,1))>.001)return false;
+        double piecemeal=0;
+        for(int mob=0;mob<1000;mob++)piecemeal+=bulkLine(price,2,2*mob,1);
+        return Math.abs(bulkLine(price,2000,0,1)-piecemeal)<.01;
+    }
+
+    /*  Sells items that were never in anybody's inventory.
+     *
+     *  Every other sell path is quote / pay / remove-from-somewhere. This one has nothing to remove: the
+     *  caller is holding an aggregate that has not been spawned into the world at all, which is the entire
+     *  point -- a thousand-mob stack that materialises its drops just to sell them back is exactly the lag
+     *  the aggregate exists to avoid.
+     *
+     *  Everything else is the ordinary path and deliberately so: the same daily threshold, the same reduced
+     *  rate past it, the same Central Bank sell factor, the same payShopSeller (which is where an overdue
+     *  loan is garnished and where a treasury that cannot cover the sale refuses it), the same shop stock
+     *  credit, the same sale and economy rows. Nothing about a mob stack gets its own economics. */
+    boolean sellBulk(Player p,java.util.Map<Material,Integer> counts,String detail){
+        java.util.Map<Material,Double> earnings=bulkQuote(p,counts);
+        if(earnings.isEmpty())return false;
+        double total=0;for(double value:earnings.values())total+=value;
+        total=Math.round(total*100)/100.0;
+        if(!plugin.bank().payShopSeller(p,total,detail))return false;
+        String day=LocalDate.now().toString();
+        for(var entry:earnings.entrySet()){
+            int amount=counts.get(entry.getKey());
+            /** removed == quoted here by construction: the shop receives every one of them, because they
+             *  came into existence owed to the shop rather than being taken out of a container. */
+            creditStock(p,entry.getKey(),amount,amount);
+            db.recordSale(CoreUtil.id(p),entry.getKey().name(),day,amount,entry.getValue());
+            db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",entry.getValue(),entry.getKey().name());
+        }
+        return true;
+    }
+
     /** Credits the shop with what a sale actually removed from the player, not what was quoted. Every sell
      *  path funnels through here: anything the shop pays for it must also come to own, or items would leave
      *  the world with nothing to resell and the shop could never restock itself. */

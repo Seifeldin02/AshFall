@@ -115,6 +115,17 @@ final class VoidWorldService implements Listener {
 
     boolean inside(Player player) { return isVoidWorld(player.getWorld()); }
 
+    /** Everything a player can be holding, in one place. An open screen is included on purpose: the crafting
+     *  grid and the cursor are both real storage, and a stack parked in either of them is the obvious way to
+     *  carry an event item out if only the main inventory is cleared. */
+    private void strip(Player player) {
+        player.closeInventory();
+        player.getInventory().clear();
+        player.getInventory().setArmorContents(null);
+        player.getInventory().setItemInOffHand(null);
+        player.setItemOnCursor(null);
+    }
+
     /** Captured state exists only while somebody is inside. Its presence IS the "this player is in an event"
      *  flag, which is what makes the restore idempotent and crash-safe. */
     private boolean hasCapture(String id) { String value = db.state(STATE + id); return value != null && !value.isBlank(); }
@@ -125,10 +136,7 @@ final class VoidWorldService implements Listener {
         if (inside(player)) return "You are already in a void world.";
         if (hasCapture(CoreUtil.id(player))) return "You already have belongings held by a void world; use exit first.";
         capture(player);
-        player.getInventory().clear();
-        player.getInventory().setArmorContents(null);
-        player.getInventory().setItemInOffHand(null);
-        player.setItemOnCursor(null);
+        strip(player);
         for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
         player.setLevel(0);
         player.setExp(0);
@@ -146,11 +154,16 @@ final class VoidWorldService implements Listener {
      *  not be an item source. */
     String exit(Player player) {
         String id = CoreUtil.id(player);
-        if (!hasCapture(id)) return inside(player) ? "You have no held belongings; nothing to restore." : "You are not in a void world.";
-        player.getInventory().clear();
-        player.getInventory().setArmorContents(null);
-        player.getInventory().setItemInOffHand(null);
-        player.setItemOnCursor(null);
+        if (!hasCapture(id)) {
+            /** Inside with nothing held is the stranded case: whatever put them here did not go through
+             *  enter(), so there is nothing to give back, but leaving them in an event world would be
+             *  worse than sending them home empty-handed -- which is the state they are already in. */
+            if (!inside(player)) return "You are not in a void world.";
+            strip(player);
+            player.teleport(Bukkit.getWorlds().getFirst().getSpawnLocation());
+            return "You had no held belongings, so you have been returned to spawn.";
+        }
+        strip(player);
         restore(player);
         CoreUtil.msg(player, "Returned. Your belongings are exactly as you left them.");
         return null;
@@ -247,11 +260,19 @@ final class VoidWorldService implements Listener {
      *  if the world was deleted in the meantime. */
     @EventHandler public void join(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-        if (!hasCapture(CoreUtil.id(player))) return;
-        if (inside(player)) {
-            player.getInventory().clear();
-            player.getInventory().setArmorContents(null);
+        if (!hasCapture(CoreUtil.id(player))) {
+            /** In an event world with nothing held: they cannot be restored because there is nothing to
+             *  restore, so the only failure left to avoid is leaving them stuck in it. */
+            if (inside(player)) Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (player.isOnline() && inside(player)) {
+                    strip(player);
+                    player.teleport(Bukkit.getWorlds().getFirst().getSpawnLocation());
+                    CoreUtil.msg(player, "The event world you were in has closed; you have been returned to spawn.");
+                }
+            }, 20L);
+            return;
         }
+        if (inside(player)) strip(player);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (player.isOnline()) { restore(player); CoreUtil.msg(player, "Your belongings were restored after the event world closed."); }
         }, 20L);
@@ -260,10 +281,7 @@ final class VoidWorldService implements Listener {
     /** A quit inside the world leaves the capture in place on purpose -- join() is what resolves it. Nothing
      *  is done here beyond making sure they do not carry event items in their inventory across the logout. */
     @EventHandler public void quit(PlayerQuitEvent event) {
-        if (inside(event.getPlayer())) {
-            event.getPlayer().getInventory().clear();
-            event.getPlayer().getInventory().setArmorContents(null);
-        }
+        if (inside(event.getPlayer())) strip(event.getPlayer());
     }
 
     void shutdown() {

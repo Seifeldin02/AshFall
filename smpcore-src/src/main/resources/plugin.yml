@@ -121,6 +121,10 @@ commands:
   ashfall:
     description: Ashfall administration
     aliases: [smp, smpcore]
+  voidworld:
+    description: "Temporary event worlds: list | exit | enter <name> | create <name> | delete <name>"
+    usage: /voidworld <list|exit|enter|create|delete> [name]
+    aliases: [vw, eventworld]
   nickname:
     description: Apply an administrator disguise
     aliases: [disguise]
@@ -150,3 +154,9 @@ permissions:
   smpcore.play:
     description: Normal SMPCore gameplay
     default: true
+  smpcore.voidworld.enter:
+    description: Enter a temporary event world that an administrator has opened
+    default: true
+  smpcore.voidworld.manage:
+    description: Create and delete temporary event worlds
+    default: op

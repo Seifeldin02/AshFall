@@ -48,9 +48,11 @@ import org.bukkit.scheduler.BukkitTask;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** Industrial Hopper: a hopper with 27 slots that moves nine items per cycle in each direction.
  *
@@ -465,42 +467,134 @@ final class IndustrialHopperService implements Listener {
         return at == null ? null : bays.get(key(at));
     }
 
-    /** Everything vanilla would move into or out of the native five slots is intercepted here.
+    /*  Everything vanilla would move into or out of the native five slots is intercepted here.
+     *
+     *  NOTHING IN THIS METHOD MAY WRITE TO event.getSource(). That is not a style rule, it is the bug that
+     *  deleted MacoCT's chests, and it is worth stating exactly because the broken version looked correct.
+     *
+     *  Paper does not hand a listener a copy of the moving stack. HopperBlockEntity#hopperPull and
+     *  #hopperPush take the LIVE ItemStack out of the source slot, remember its real count, call setCount()
+     *  on it to shrink it to the one item being moved, fire the event, and then -- if the event was
+     *  cancelled -- call setCount() again with the remembered count to put it back. For the whole duration
+     *  of the event the source slot therefore holds a stack of 64 that is temporarily claiming to be a
+     *  stack of 1, and the restore is a mutation of that particular object rather than a re-insert.
+     *
+     *  Bukkit's Inventory#removeItem, asked for one item, finds a slot whose stack says it holds one, sees
+     *  that the whole slot is consumed, and calls clear(slot). The object is now detached from the
+     *  container. Paper's restore then writes 64 into an ItemStack nobody is holding, and the sixty-four
+     *  items are simply gone -- minus the single one this method credited to the bay. Sixty-three lost per
+     *  event, which is exactly what was reported and exactly what the live column reproduced.
+     *
+     *  The old code only reached that path when the source was NOT the block directly above, and it decided
+     *  that by comparing Inventory#getLocation() against the block overhead. A double chest reports one of
+     *  its two halves there, and which half is arbitrary -- so a hopper under a double chest took the
+     *  inbound path and lost items, while the same hopper under a single chest was left to the sweep and
+     *  worked perfectly. That is the whole of "some Industrial Hoppers are glitched and others are fine".
+     *
+     *  So: cancel, never write, and let the settled state be read a tick later.
      *
      *  Out: cancelled outright. The native slots hold nothing, and output is the sweep's job.
-     *  In, from the block directly above: cancelled and left to the sweep, which pulls nine a tick.
-     *  In, from anywhere else (a hopper or dropper aimed at us): performed here, into the real inventory. */
+     *  In, from the block directly above: cancelled and left to the sweep, which pulls nine a cycle.
+     *  In, from anywhere else (a hopper or dropper aimed at us): cancelled and re-performed next tick. */
     @EventHandler(ignoreCancelled = true)
     public void moveItem(InventoryMoveItemEvent event) {
+        if (tracing()) plugin.getLogger().info("[IH-move] " + describe(event.getSource()) + " -> "
+                + describe(event.getDestination()) + " item=" + describe(event.getItem())
+                + " srcBay=" + (bayOf(event.getSource()) != null) + " dstBay=" + (bayOf(event.getDestination()) != null));
         if (bayOf(event.getSource()) != null) { event.setCancelled(true); return; }
         Bay destination = bayOf(event.getDestination());
         if (destination == null) return;
         event.setCancelled(true);
-        Location from = event.getSource().getLocation();
-        if (from != null && from.getWorld() != null && from.getWorld().getName().equals(destination.worldName)
-                && from.getBlockX() == destination.at.getBlockX()
-                && from.getBlockY() == destination.at.getBlockY() + 1
-                && from.getBlockZ() == destination.at.getBlockZ()) return;
-        ItemStack wanted = event.getItem().clone();
-        /** Third copy of the remove-before-checking pattern, after move() and moveFromSlots(). This one is
-         *  reached when a vanilla hopper or dropper pushes INTO us: the item left the source, and anything
-         *  the full bay rejected was pushed back -- with whatever the source then refused thrown on the
-         *  floor at the hopper's own centre by dropItemNaturally. Dropped INSIDE the hopper block, the item
-         *  is immediately shoved out again by block collision and lands somewhere else, which is what
-         *  "items on top of a full hopper jump around and fall out" looks like from outside.
-         *
-         *  Take only what fits and there is nothing to reject, nothing to refund, and nothing to drop. */
-        int room = space(destination.inv, wanted);
-        if (room <= 0) return;
-        if (room < wanted.getAmount()) wanted.setAmount(room);
-        int notRemoved = total(event.getSource().removeItem(wanted.clone()).values());
-        int taken = wanted.getAmount() - notRemoved;
-        if (taken <= 0) return;
-        ItemStack held = wanted.clone();
-        held.setAmount(taken);
-        for (ItemStack rejected : destination.inv.addItem(held).values())
-            for (ItemStack lost : event.getSource().addItem(rejected).values()) dropAt(destination.at, lost);
-        destination.dirty = true;
+        if (feedsFromAbove(event.getSource(), destination)) return;
+        pullLater(destination, event.getSource());
+    }
+
+    /** Every block position that backs an inventory.
+     *
+     *  A double chest is one inventory over two blocks and reports only one of them from getLocation(),
+     *  so a caller asking "is this the container directly above me" has to be given both halves or it will
+     *  answer no half the time. */
+    private List<Location> anchors(Inventory inv) {
+        List<Location> out = new ArrayList<>();
+        if (inv instanceof org.bukkit.inventory.DoubleChestInventory doubled) {
+            for (Inventory half : new Inventory[]{doubled.getLeftSide(), doubled.getRightSide()})
+                if (half != null) anchor(half, out);
+            if (!out.isEmpty()) return out;
+        }
+        anchor(inv, out);
+        return out;
+    }
+
+    private void anchor(Inventory inv, List<Location> out) {
+        try {
+            Location at = inv.getLocation();
+            if (at != null) out.add(at);
+        } catch (Throwable unavailable) {
+            /** getLocation goes through the holder, which can be a virtual or already-unloaded one. */
+        }
+    }
+
+    /** True when this inventory is (or includes) the block sitting directly on top of the bay, which the
+     *  sweep already drains through pullFromAbove at the full nine-item rate. */
+    private boolean feedsFromAbove(Inventory source, Bay bay) {
+        for (Location at : anchors(source)) {
+            World world;
+            try { world = at.getWorld(); } catch (Throwable unloaded) { continue; }
+            if (world == null || !world.getName().equals(bay.worldName)) continue;
+            if (at.getBlockX() == bay.at.getBlockX() && at.getBlockY() == bay.at.getBlockY() + 1
+                    && at.getBlockZ() == bay.at.getBlockZ()) return true;
+        }
+        return false;
+    }
+
+    /** One deferred inbound pull per bay per source per tick. Without the guard a hopper aimed at a bay
+     *  would queue a fresh task on every one of its own attempts and the bay would drain it faster than
+     *  vanilla ever would. */
+    private final Set<String> pendingPulls = new HashSet<>();
+
+    /*  The inbound transfer a vanilla hopper or dropper aimed at us would have made, performed one tick
+     *  later against the settled source rather than against the half-mutated one the event exposes.
+     *
+     *  Deferring is not a workaround for a race; it is the only point at which the source can be read at
+     *  all. Once Paper has restored the slot, this is an ordinary move(): capacity is measured first, the
+     *  source is decremented by exactly what the bay accepts, and nothing can be left in both places or in
+     *  neither. Cancelling costs the pusher one tick, which is what a vanilla hopper spends anyway when a
+     *  destination refuses it, and the dropper case behaves as a momentarily-full container -- it keeps its
+     *  item and we take it on the next tick instead of it being pushed. */
+    private void pullLater(Bay bay, Inventory source) {
+        List<Location> where = anchors(source);
+        Location anchor = where.isEmpty() ? null : where.getFirst();
+        String token = bay.id + " <- " + (anchor == null ? "inv" + System.identityHashCode(source)
+                : anchor.getBlockX() + "," + anchor.getBlockY() + "," + anchor.getBlockZ());
+        if (!pendingPulls.add(token)) return;
+        String anchorWorld = null;
+        int ax = 0, ay = 0, az = 0;
+        if (anchor != null) {
+            try { anchorWorld = anchor.getWorld() == null ? null : anchor.getWorld().getName(); }
+            catch (Throwable unloaded) { anchorWorld = null; }
+            ax = anchor.getBlockX(); ay = anchor.getBlockY(); az = anchor.getBlockZ();
+        }
+        final String world = anchorWorld;
+        final int fx = ax, fy = ay, fz = az;
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            pendingPulls.remove(token);
+            Bay live = bays.get(bay.id);
+            if (live == null) return;
+            Inventory from = source;
+            /** Re-resolved from the world rather than trusting the captured handle: the pusher can be
+             *  broken, replaced or unloaded in the tick we waited, and a detached container would be a
+             *  handle on items that no longer exist anywhere. */
+            if (world != null) {
+                World in = Bukkit.getWorld(world);
+                if (in == null || !in.isChunkLoaded(fx >> 4, fz >> 4)) return;
+                if (!(in.getBlockAt(fx, fy, fz).getState(false) instanceof Container container)) return;
+                from = container.getInventory();
+            }
+            int budget = Math.max(1, plugin.getConfig().getInt("industrial-hopper.items-per-tick", 9));
+            int moved = move(from, live.inv, budget, live.at);
+            if (moved > 0) live.dirty = true;
+            if (tracing()) plugin.getLogger().info("[IH-move] deferred inbound pull " + token + " moved " + moved);
+        });
     }
 
     /** Vanilla's own suction, aimed at the real store instead of at the five native slots.
@@ -518,7 +612,8 @@ final class IndustrialHopperService implements Listener {
         Bay bay = bayOf(event.getInventory());
         if (bay == null) return;
         event.setCancelled(true);
-        absorb(bay, event.getItem());
+        int took = absorb(bay, event.getItem());
+        if (tracing()) plugin.getLogger().info("[IH-pickup] " + bay.id + " absorbed " + took);
     }
 
     /*  The LIVE chain rig: chest -> hopper -> chest -> hopper -> chest, in a real world.
@@ -535,7 +630,7 @@ final class IndustrialHopperService implements Listener {
      *
      *  Chunks are force-loaded for the duration: a hopper in an unloaded chunk does not tick, and a rig that
      *  quietly stopped ticking would report a clean run having tested nothing. */
-    void liveChain(org.bukkit.World world, int x, int y, int z, int payload, java.util.function.Consumer<String> report) {
+    void liveChain(org.bukkit.World world, int x, int y, int z, int payload, Material what, java.util.function.Consumer<String> report) {
         for (int dy = -3; dy <= 3; dy++) world.getBlockAt(x, y + dy, z).setType(Material.AIR, false);
         world.setChunkForceLoaded(x >> 4, z >> 4, true);
 
@@ -561,9 +656,11 @@ final class IndustrialHopperService implements Listener {
 
         /** The ordinary path a player's inventory click takes. Not setItem, not the test hook. */
         Inventory source = ((Container) topChest.getState(false)).getInventory();
-        source.addItem(new ItemStack(Material.STONE, payload));
+        /** The material matters. A stone run passed cleanly while a real 64-stack of CHESTS lost 62 of
+         *  them, so the payload is a parameter now rather than a hardcoded assumption. */
+        source.addItem(new ItemStack(what, payload));
         int total = payload;
-        report.accept("inserted " + payload + "x STONE through Inventory#addItem; sampling every tick");
+        report.accept("inserted " + payload + "x " + what + " through Inventory#addItem; sampling every tick");
 
         int[] worstTick = {-1};
         String[] worstLine = {null};
@@ -594,7 +691,7 @@ final class IndustrialHopperService implements Listener {
         }, 1L, 1L);
     }
 
-    private int countAt(Block block) {
+    int countAt(Block block) {
         if (!(block.getState(false) instanceof Container container)) return 0;
         int sum = 0;
         for (ItemStack item : container.getInventory().getContents())
@@ -696,6 +793,66 @@ final class IndustrialHopperService implements Listener {
         if (before == after) return;
         plugin.getLogger().info("[IH-trace] " + bay.id + " " + stage + ": " + before + " -> " + after
                 + " (" + (after - before >= 0 ? "+" : "") + (after - before) + ")");
+    }
+
+    private String describe(Inventory inv) {
+        if (inv == null) return "null";
+        Location at = null;
+        try { at = inv.getLocation(); } catch (Throwable ignored) { }
+        return inv.getType() + (at == null ? "@?" : "@" + at.getBlockX() + "," + at.getBlockY() + "," + at.getBlockZ())
+                + "/size" + inv.getSize();
+    }
+
+    private String describe(ItemStack item) {
+        return item == null ? "null" : item.getAmount() + "x" + item.getType();
+    }
+
+    /*  Per-tick census of a vertical column, for chasing a reported loss on blocks somebody actually built.
+     *
+     *  Counts every place an item in that column can legitimately be -- container contents, the real store
+     *  of each Industrial Hopper, the native five slots (minus calibration weight), and item entities in the
+     *  neighbourhood -- and reports only the ticks on which the TOTAL changes. A stable total with items
+     *  moving between rows is a working chain; a falling total is the loss, timestamped to the tick and
+     *  attributed to whichever row lost it. */
+    void watch(World world, int x, int fromY, int toY, int z, int seconds, java.util.function.Consumer<String> report) {
+        int lowY = Math.min(fromY, toY), highY = Math.max(fromY, toY);
+        world.setChunkForceLoaded(x >> 4, z >> 4, true);
+        int[] ticks = {0}, last = {-1};
+        report.accept("watching " + x + " " + lowY + ".." + highY + " " + z + " in " + world.getName()
+                + " for " + seconds + "s");
+        Bukkit.getScheduler().runTaskTimer(plugin, task -> {
+            ticks[0]++;
+            StringBuilder row = new StringBuilder();
+            int seen = 0;
+            for (int y = highY; y >= lowY; y--) {
+                Block block = world.getBlockAt(x, y, z);
+                Bay bay = bays.get(key(block.getLocation()));
+                int here = countAt(block);
+                if (bay != null) here += count(bay.inv);
+                seen += here;
+                if (here > 0 || bay != null || block.getState(false) instanceof Container)
+                    row.append(' ').append(y).append(':').append(block.getType() == Material.HOPPER
+                            ? (bay != null ? "IH" : "hopper") : block.getType().name().toLowerCase(java.util.Locale.ROOT))
+                       .append('=').append(here);
+            }
+            int ground = 0;
+            for (org.bukkit.entity.Entity entity : world.getNearbyEntities(
+                    new Location(world, x + .5, (lowY + highY) / 2.0, z + .5), 8, (highY - lowY) / 2.0 + 8, 8))
+                if (entity instanceof Item dropped) ground += dropped.getItemStack().getAmount();
+            seen += ground;
+            if (seen != last[0]) {
+                String line = "tick " + ticks[0] + " total=" + seen
+                        + (last[0] < 0 ? "" : " (" + (seen - last[0] >= 0 ? "+" : "") + (seen - last[0]) + ")")
+                        + row + " ground=" + ground;
+                last[0] = seen;
+                report.accept(line);
+            }
+            if (ticks[0] >= seconds * 20L) {
+                task.cancel();
+                world.setChunkForceLoaded(x >> 4, z >> 4, false);
+                report.accept("watch finished after " + ticks[0] + " ticks, final total " + seen);
+            }
+        }, 1L, 1L);
     }
 
     private void sweep() {
