@@ -521,6 +521,87 @@ final class IndustrialHopperService implements Listener {
         absorb(bay, event.getItem());
     }
 
+    /*  The LIVE chain rig: chest -> hopper -> chest -> hopper -> chest, in a real world.
+     *
+     *  The synthetic rig in IndustrialHopperVerify drives sweep() by hand, which is the one thing a real
+     *  server never does. This builds the same column out of genuinely ticking blocks in a loaded chunk,
+     *  inserts the payload through the ORDINARY inventory path (Inventory#addItem, exactly as a player's
+     *  click does), and then does nothing at all -- the plugin's own scheduled sweep and vanilla's hopper
+     *  tick move the items, and InventoryMoveItemEvent and the suction event fire for real.
+     *
+     *  It samples every tick rather than at the end, because "the total was right before and after" is not
+     *  the same statement as "the total was never wrong". If the count ever changes, the sampler stops on
+     *  that tick and reports the full five-block breakdown for it.
+     *
+     *  Chunks are force-loaded for the duration: a hopper in an unloaded chunk does not tick, and a rig that
+     *  quietly stopped ticking would report a clean run having tested nothing. */
+    void liveChain(org.bukkit.World world, int x, int y, int z, int payload, java.util.function.Consumer<String> report) {
+        for (int dy = -3; dy <= 3; dy++) world.getBlockAt(x, y + dy, z).setType(Material.AIR, false);
+        world.setChunkForceLoaded(x >> 4, z >> 4, true);
+
+        Block topChest = world.getBlockAt(x, y + 2, z);
+        Block upper = world.getBlockAt(x, y + 1, z);
+        Block midChest = world.getBlockAt(x, y, z);
+        Block lower = world.getBlockAt(x, y - 1, z);
+        Block bottomChest = world.getBlockAt(x, y - 2, z);
+        topChest.setType(Material.CHEST, false);
+        midChest.setType(Material.CHEST, false);
+        bottomChest.setType(Material.CHEST, false);
+        for (Block block : new Block[]{upper, lower}) {
+            block.setType(Material.HOPPER, false);
+            org.bukkit.block.data.type.Hopper data = (org.bukkit.block.data.type.Hopper) block.getBlockData();
+            data.setFacing(BlockFace.DOWN);
+            data.setEnabled(true);
+            block.setBlockData(data, false);
+            install(block);
+        }
+        report.accept("rig built at " + x + "," + y + "," + z + " in " + world.getName()
+                + " (chest/IH/chest/IH/chest), chunk force-loaded, both hoppers installed="
+                + (isIndustrial(upper) && isIndustrial(lower)));
+
+        /** The ordinary path a player's inventory click takes. Not setItem, not the test hook. */
+        Inventory source = ((Container) topChest.getState(false)).getInventory();
+        source.addItem(new ItemStack(Material.STONE, payload));
+        int total = payload;
+        report.accept("inserted " + payload + "x STONE through Inventory#addItem; sampling every tick");
+
+        int[] worstTick = {-1};
+        String[] worstLine = {null};
+        int[] ticks = {0};
+        Bukkit.getScheduler().runTaskTimer(plugin, task -> {
+            ticks[0]++;
+            int a = countAt(topChest), b = storedCount(upper), c = countAt(midChest),
+                d = storedCount(lower), e = countAt(bottomChest), g = 0;
+            for (org.bukkit.entity.Entity entity : world.getNearbyEntities(
+                    new Location(world, x + .5, y, z + .5), 5, 6, 5))
+                if (entity instanceof Item dropped) g += dropped.getItemStack().getAmount();
+            int seen = a + b + c + d + e + g;
+            if (seen != total && worstTick[0] < 0) {
+                worstTick[0] = ticks[0];
+                worstLine[0] = "tick " + ticks[0] + ": top=" + a + " IH1=" + b + " mid=" + c
+                        + " IH2=" + d + " bottom=" + e + " ground=" + g + " -> " + seen + ", expected " + total;
+            }
+            boolean settled = a == 0 && b == 0 && c == 0 && d == 0;
+            if (ticks[0] >= 400 || settled) {
+                task.cancel();
+                world.setChunkForceLoaded(x >> 4, z >> 4, false);
+                report.accept("finished after " + ticks[0] + " ticks: top=" + a + " IH1=" + b + " mid=" + c
+                        + " IH2=" + d + " bottom=" + e + " ground=" + g);
+                if (worstLine[0] != null) report.accept("CONSERVATION BROKE -- " + worstLine[0]);
+                else report.accept("conservation held on every one of " + ticks[0] + " ticks; delivered "
+                        + e + "/" + total + " with real ticking blocks and real events");
+            }
+        }, 1L, 1L);
+    }
+
+    private int countAt(Block block) {
+        if (!(block.getState(false) instanceof Container container)) return 0;
+        int sum = 0;
+        for (ItemStack item : container.getInventory().getContents())
+            if (item != null && !item.getType().isAir() && !isSignalMarker(item)) sum += item.getAmount();
+        return sum;
+    }
+
     // ------------------------------------------------------------------ test surface
     /** A deliberately small, explicitly-named set of hooks for {@link IndustrialHopperVerify}.
      *

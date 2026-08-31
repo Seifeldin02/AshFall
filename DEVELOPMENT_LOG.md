@@ -5,6 +5,55 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-08-31 (part 2) - Temporary void worlds, live hopper rig (staging only)
+
+### Temporary void worlds
+
+`/ashfall voidworld <create|enter|exit|list|delete> [name]`, with tab completion on every verb and on the
+real world names for `enter`/`delete`.
+
+The rule is absolute in BOTH directions: nothing goes in, nothing comes out. Enforced by capture-and-clear
+on entry and clear-and-restore on exit -- the same shape the duel arena uses, and for the same reason: it is
+the only model where a crash cannot merge the two inventories.
+
+- The capture lives in the DATABASE, not memory, so a restart mid-event cannot strand a real inventory.
+- Log out inside and the capture survives; `join` restores you even if the world was deleted meanwhile.
+- `delete` evacuates everyone first, then unloads and removes the folder.
+- Every world this service touches carries an `ashfall_void_` prefix, and the name is sanitised to
+  `[a-z0-9_]`, so a mistyped delete can never be aimed at the overworld or a duel instance. Asserted in
+  `/ashfall selftest`, including that `../../etc` sanitises to a harmless name.
+- Generator produces nothing at all -- no terrain, decorations, structures or mobs -- with a 9x9 platform at
+  spawn, because a void world with no floor drops the first entrant straight out of the bottom.
+
+### The Industrial Hopper chain, tested live
+
+The previous rig drove `sweep()` by hand, which is the one thing a real server never does. `/ashfall hopper
+live [amount]` now builds the exact reported column out of **genuinely ticking blocks in a force-loaded
+chunk**, inserts the payload through `Inventory#addItem` (the ordinary path a player's click takes), and
+then does nothing -- the plugin's scheduled sweep and vanilla's hopper tick move the items, so
+`InventoryMoveItemEvent` and the suction event fire for real. It samples every tick, because "right before
+and after" is not the same statement as "never wrong".
+
+**Result: 64/64 delivered, conservation held on every one of 65 ticks, nothing on the ground.**
+
+Code audit alongside it, all of which came back clean:
+
+- Every `getState` call in the service is `getState(false)`. There is no snapshot-then-`update()` path, so
+  the classic Bukkit hazard of a stale tile-entity write clobbering the PDC marker does not exist here.
+- Startup adoption is present and correct: the constructor walks every already-loaded chunk on the first
+  tick, so hoppers in spawn chunks -- up before the plugin enables -- are registered. That was the leading
+  theory for "some hoppers work and others do not" and it is wrong.
+- `chunkUnload` flushes and drops the bay; `chunkLoad` re-adopts by PDC marker. Symmetric.
+- The calibration weight is PDC-tagged, so real items and comparator scaffolding are never confused;
+  `drainNative` rescues anything real that reaches the native five, and `refreshComparator` only ever writes
+  into empty slots.
+
+So the reported loss is not in the transfer arithmetic, not in the event interception, and not in
+registration. `industrial-hopper.trace` remains available: enable it, reproduce by hand, and the log names
+the exact cycle where the total changes.
+
+---
+
 ## Session: 2026-08-31 â€” Hopper chain rig, raw food prices, stacked-mob audit (staging only)
 
 ### The Industrial Hopper chain could not be made to lose an item
