@@ -695,6 +695,10 @@ spawner-shop:
     ZOMBIE: 300000
 
 industrial-hopper:
+  # How many items a PLAIN hopper may move into an Industrial Hopper per cycle. Match this to
+  # settings.hopper-amount in spigot.yml: the nine-item transfer is the Industrial Hopper's own buff and
+  # must not leak onto an ordinary hopper feeding it, from above or from the side.
+  vanilla-hopper-amount: 1
   # Logs every hopper movement with the counts either side, for reproducing a reported item loss live.
   # Noisy; leave off unless chasing something.
   trace: false

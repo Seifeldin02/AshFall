@@ -79,14 +79,58 @@ sync:
   - path: world/dimensions/minecraft/ashfall_reconstruction_the_end/paper-world.yml
   - path: config/paper-global.yml
   - path: spigot.yml
+    ignore_keys:
+      # Each server points restart-script at its OWN absolute path, so this one value must differ while the
+      # rest of the file stays in lockstep. Absolute rather than relative on purpose: the watchdog's child
+      # inherits the JVM's environment, and NoDefaultCurrentDirectoryInExePath alone makes a relative script
+      # name fail with "not recognized" while the file is sitting right there.
+      - settings.restart-script
+    note: |
+      Owner-approved 2026-09-01 after the console stall (DEVELOPMENT_LOG.md):
+        log-named-deaths     false   was true; 9,694 of 10,704 lines in one day were one creeper farm
+        log-villager-deaths  false   same reasoning
+        restart-script       ABSOLUTE path to restart-server.bat, was ./start.sh and could never run
+        timeout-time         60      unchanged, but only useful now that the restart script exists
+      A jar swap does not carry any of this. See yaml_asserts below, which pins all four.
   - path: bukkit.yml
   - path: disable-quickedit.ps1
-    note: per-console QuickEdit fix for the Windows console stall; start.bat must invoke it
+    note: |
+      The ORIGINAL per-console QuickEdit fix, kept because it costs nothing and closes the window before the
+      JVM starts. It is NOT sufficient on its own -- see console-guard.ps1 below, and the 2026-09-01 entry in
+      DEVELOPMENT_LOG.md. Measured live: with this script having just run, the console mode at JVM start was
+      still 0x1F7, QuickEdit bit set.
+  - path: console-guard.ps1
+    note: |
+      ADDED 2026-09-01 after the 22h 35m production console stall. Runs ALONGSIDE the JVM and re-asserts the
+      console mode every five seconds, because JLine sets its own mode when Paper initialises the terminal
+      (observed: 0x9, extended flags cleared) and nothing re-asserted it afterwards. Logs to
+      logs/console-guard.log, never to the console -- writing to the console is the thing being guarded.
+      start.bat / start-staging.bat must launch it with `start /b`. Verify with an external probe attached to
+      the server console: mode must read 0x89 while Java is running.
+  - path: restart-server.bat
+    note: |
+      ADDED 2026-09-01. spigot.yml settings.restart-script now points at this file by ABSOLUTE path; it used
+      to be ./start.sh, a Linux path on a Windows host, so Spigot's isFile() check failed and the watchdog
+      restart silently did nothing. Identical on both servers on purpose; it picks the local launcher by
+      which one exists next to it.
 
 # Values production must actually have, asserted independently of the staging<->production comparison.
 # A sync check can only prove the two servers match -- if a setting is dropped from BOTH at once it looks
 # perfectly in sync while being wrong, which is exactly how ReplayCore came back on.
 yaml_asserts:
+  - path: spigot.yml
+    key: settings.log-named-deaths
+    equals: false
+    note: |
+      The console stall's contributing factor. True here means one busy mob farm can emit ten thousand
+      console lines a day, which is what turned a stray text selection into a 22-hour outage.
+  - path: spigot.yml
+    key: settings.log-villager-deaths
+    equals: false
+  - path: spigot.yml
+    key: settings.restart-on-crash
+    equals: true
+    note: without this the watchdog halts the JVM and nothing brings it back.
   - path: plugins/SMPCore/config.yml
     key: integrations.disabled-plugins
     contains: ReplayCore
@@ -111,6 +155,12 @@ jar_versions:
     contains: "b140"
 
 env:
+  - path: start.bat
+    note: |
+      Production launcher. Differs from staging by heap and by filename (staging uses start-staging.bat), so
+      it is never copied -- but BOTH must invoke disable-quickedit.ps1 before the JVM and launch
+      console-guard.ps1 with `start /b` alongside it. A launcher missing the guard is how the 2026-08-31
+      outage happened.
   - path: server.properties
     assert:
       server-port: "25565"
@@ -121,6 +171,15 @@ env:
       level-name: "world"
   - path: plugins/Geyser-Spigot/config.yml
     note: Bedrock listener port differs (prod 19132 / staging 19133)
+
+# Artifacts that exist ONLY on staging and must never be copied to production, but still have to be
+# tracked -- their absence on production is correct, while their absence on STAGING is a fault.
+staging_only:
+  - path: start-staging.bat
+    note: |
+      Staging launcher. Same two requirements as production's start.bat: invoke disable-quickedit.ps1 before
+      the JVM, and launch console-guard.ps1 with `start /b` alongside it. Differs by heap (-Xmx2G) and by
+      name, which is why it is not an env entry -- production has no file by this name at all.
 
 plugins:
   # Geyser and Floodgate are the Bedrock runtime. These are pinned by FILENAME here, but the filename is

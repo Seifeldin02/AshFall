@@ -5,6 +5,214 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-09-01 (part 2) - Hopper rate, void-world sealing, /ec case, mob-drop shop audit (staging only)
+
+### A plain hopper must move at a plain hopper's rate
+
+Reported: "Normal Hopper -> Industrial Hopper makes the Normal Hopper magically move nine items at once."
+It did. `pullFromAbove` treats anything overhead with an inventory as a source and drains it at the bay's own
+budget, so the nine-item buff leaked onto whatever was feeding it.
+
+The rule now: the buff belongs to the Industrial Hopper and to nothing else.
+
+- Inbound pushes are re-performed at `event.getItem().getAmount()` - exactly what vanilla was about to move,
+  i.e. `settings.hopper-amount` - instead of the configured nine.
+- `pullFromAbove` leaves a plain hopper alone when it faces down into us (it is already pushing, and that
+  push is now rate-correct), and otherwise pulls at most `industrial-hopper.vanilla-hopper-amount`.
+
+**This produced a stand-off that only a live test could find.** Both halves stepped aside for each other:
+`moveItem` deferred to the sweep for anything directly overhead, and the sweep deferred to `moveItem` for a
+plain hopper. Nothing moved at all - 33 items parked in a vanilla hopper with an empty Industrial Hopper
+underneath it. Ownership of each inbound link is now decided in one place, `sweepDrains()`, and the live
+suite has an eleventh case asserting both that all 64 arrive AND that they arrive at eight ticks per item.
+
+### Void worlds: sealed
+
+- **Dying inside no longer ejects you.** `PlayerRespawnEvent` respawns you on the event world's platform,
+  still holding your capture. Vanilla was sending the corpse to its spawn point, which is in the overworld -
+  real belongings were never at risk, but the state was plainly wrong. No graves, because `keepInventory` is
+  on in these worlds and a death drops nothing for a grave to hold.
+- **Arriving by teleport is entering.** `PlayerChangedWorldEvent` runs the same capture the command does.
+  The first attempt shared `enter()` wholesale and did not work: `enter()` refuses when you are already
+  inside, which by then you always are, so it returned before capturing and the arrival kept a real
+  inventory. The mechanism now lives in `absorb()`, which both routes call; `enter()` keeps only the
+  command's own preconditions.
+- **Leaving by teleport is exiting**, through the same restore, so an admin dragging somebody out cannot
+  strand them holding event items.
+- **Closed by default, and closed in both directions.** `/voidworld open|close [name]`, persisted per world
+  in the state table and cleared when the world is deleted. A non-administrator cannot enter a closed world
+  by command OR by being teleported into it - blocking only the escape would leave "teleport to a friend who
+  is already inside" wide open.
+- **No way out except the way in.** Every teleport out of an event world by a non-administrator is cancelled
+  unless the service itself is making it, which covers commands nobody listed and plugins added later. The
+  command denylist (`/spawn`, `/home`, `/tpa`, `/f`, `/back`, `/warp`, ... ) exists so the refusal comes with
+  "To leave the void world, type /voidworld exit." rather than as a silent cancel. Movement *within* the
+  world is untouched.
+- `voidWorlds.shutdown()` was written but never called from `onDisable`. It is now.
+- Entry and exit strip the cursor and close any open screen as well as the inventory - a crafting grid is
+  real storage and was the obvious way to carry an event item out.
+
+### /ec inspect is case-insensitive again
+
+`/ec inspect xfpu` failed where `/ec inspect xFPu` worked. The account row was always found
+case-insensitively (ids are lowercased), but the OFFLINE path passed the typed string to
+`Bukkit.getOfflinePlayer`, which on an offline-mode server derives a UUID by hashing that exact string - so
+the two spellings were two different players and only one had a data file. It now passes the stored
+canonical name from the row it just found. Still an exact full-name match; no partial matching was added and
+nothing else about the command changed.
+
+### Every vanilla mob drop the shop was missing
+
+Extracted from `data/minecraft/loot_table/entities/*.json` in the running Paper build, following
+`loot_table` references (a guardian's rare pool rolls the fishing table; sheep have per-colour tables), so
+nothing one level down was missed. 81 distinct droppable items, 48 already priced, **33 missing**. 31 added
+as commodities, `WET_SPONGE` added as a luxury at the existing `SPONGE` price, and `TIPPED_ARROW`
+deliberately excluded - its identity IS its potion data, so the ordinary-item rule rejects every real one
+and a bought one would be a blank arrow.
+
+Plus `STICK`, `BOW` and `COOKED_RABBIT`, none of which are loot-table entries: the first two because the bow
+was asked for by name, the third because a rabbit killed by fire drops the cooked form.
+
+**The bow is priced from its recipe:** 3 string (9.60) + 3 sticks (0.72) = 10.32, plus a 20% crafting
+premium = **12.38 sell / 61.90 buy**. 20% is the middle of the 15-25% band and is chosen so the bow's buy
+price stays above the 51.60 its ingredients cost - below about 15% the two cross and the shop undercuts the
+crafting table. No profit loop exists in either direction, asserted in `/ashfall selftest`.
+
+**Damaged gear can be sold; enchanted gear cannot.** A skeleton's bow arrives with durability spent and
+nothing else different, which the "identical to a fresh one" rule rejected. `allow-damaged: true` is opt-in
+per shop entry and forgives damage AND NOTHING ELSE: the test clears the damage and then demands what
+remains be indistinguishable from a fresh item, so an enchanted, named or relic bow still fails. Every quote
+site and every removal site uses the same predicate, so a quote can never accept an item the removal cannot
+find. `BOW` is currently the only entry that opts in.
+
+Two priced-on-merit decisions undercut existing luxuries and were reported rather than bent: `BREEZE_ROD`
+(4 wind charges per rod vs the 5,000 `WIND_CHARGE` luxury) and `WITHER_SKELETON_SKULL` (3 skulls per wither
+vs the 500,000 `NETHER_STAR` luxury). Both are one edit away from moving if the owner prefers.
+
+### Verification
+
+`/ashfall selftest` all green, including four new lines (bow recipe and no-profit-loop, damaged-gear opt-in
+with enchanted bows refused, stacked-mob conservation, void-world naming). `/ashfall hopper livesuite` - all
+11 live cases conserved every item on every tick, including the new plain-hopper-above case at 8 ticks per
+item. `/ashfall hopper verify` - no failures.
+
+---
+
+## Session: 2026-09-01 - Production console stall (22h 35m), and the fixes for it
+
+### What happened
+
+Production stopped ticking at **23:08:47 on 2026-08-31** and stayed stopped until the console was cleared by
+hand at **21:44:15 on 2026-09-01** - 22 hours 35 minutes. Players tried to join all day and could not.
+
+A text selection was active on the production console window. Windows blocks console writes while a
+selection is held; that blocked Log4j's appender, and the server thread blocked on its next log call. Paper's
+watchdog fired ten seconds later at 23:08:57 - and a watchdog dump is itself written to the console, so it
+blocked partway through and never reached the `timeout-time: 60` halt that would have killed and restarted
+the JVM. **The safety net was disabled by the very thing it was trying to report.**
+
+### Evidence
+
+- `logs/2026-08-31-1.log.gz` ends with normal creeper-farm output at 23:08:47, then a single line at
+  23:08:57 - the CLOSING banner of a watchdog dump whose body never reached disk, which is what a blocked
+  appender looks like.
+- `spark` confirmed the stall independently from its own thread: `Timed out waiting for world statistics`
+  once a minute, 23:09:05 through 23:14:05, then silence.
+- Across the whole outage only ten lines reached the log, all `UUID of player` from login threads.
+- It ended within seconds of the selection being cleared, and the server thread was demonstrably ALIVE
+  immediately after: two dumps one second apart (21:44:15, 21:44:16) show two DIFFERENT stacks. A deadlock
+  shows the same frame; clearing a mouse selection does not release a deadlock.
+- No JVM crash artifacts, no OOM.
+
+### Contributing factor
+
+9,694 of the 10,704 log lines that day - **90.6%** - were `Named entity ... died` from one Volatile Creeper
+farm at ~6996,147,6819. One 300-character console write every few seconds is what turns a stray click into an
+outage within seconds instead of something harmless.
+
+### Why the existing guard did not help
+
+`start.bat` already ran `disable-quickedit.ps1`, and it ran, and the selection happened anyway. Measured on
+staging with that script having just run: the console mode at JVM start was **0x1F7** - QuickEdit bit still
+set. And fifteen seconds later JLine set its own mode when Paper initialised the terminal (**0x9**, extended
+flags cleared), after which nothing re-asserted anything. A one-shot pre-JVM fix cannot win that race.
+
+### Exact changes
+
+All are host files, none Git-tracked; every one is now in `deploy/manifest.yml`.
+
+| File | Change |
+|---|---|
+| `spigot.yml` (both servers) | `log-named-deaths: true` to `false`; `log-villager-deaths: true` to `false` |
+| `spigot.yml` (both servers) | `restart-script: ./start.sh` to each server's ABSOLUTE path to `restart-server.bat` |
+| `restart-server.bat` (new, both) | what the watchdog runs after a halt; waits 15s, then relaunches the visible console |
+| `console-guard.ps1` (new, both) | runs ALONGSIDE the JVM, re-asserting the console mode every 5s |
+| `start.bat` / `start-staging.bat` | launch the guard with `start /b` after the existing pre-JVM script |
+| `deploy/manifest.yml` + `check_deploy.py` | track all of the above; new `staging_only` section and `ignore_keys` support |
+
+`./start.sh` was a Linux path on a Windows host. Spigot will not run a restart script it cannot stat
+(`RestartCommand` checks `new File(script).isFile()`), so the restart had never been capable of running -
+the watchdog's halt, had it been reached, would have left production down anyway.
+
+### Verification (not assumption)
+
+- **Guard, from its own log:** `QuickEdit re-disabled: mode 0x1F7 -> 0x1B7` at startup, then
+  `QuickEdit re-disabled: mode 0x9 -> 0x89` fifteen seconds later when JLine changed it. Both re-asserts are
+  real; without the guard the console sits in whatever state JLine left it.
+- **Guard, from OUTSIDE the process:** a separate process detached from its own console, attached to the
+  staging server's console and read the mode directly while Java was running: **0x89 - QUICK_EDIT OFF,
+  EXTENDED_FLAGS ON. PASS.** Note that 0x9 also has the QuickEdit bit clear and is still unsafe: without
+  EXTENDED_FLAGS the console falls back to the registry default, which is why the guard pins both.
+- **Restart script, end to end:** staging was stopped and Spigot's exact invocation issued
+  (`cmd /c start <abs path>`, via `ProcessStartInfo` so the command line matches `Runtime.exec` byte for
+  byte). The server came back on its own, unattended.
+
+Three real defects were found by running these rather than reading them, and all three are fixed:
+
+1. `0xC0000000` parses as a signed Int32 in Windows PowerShell 5.1, so `CreateFileW` received a negative
+   number and the guard died before logging anything. Pinned to `[uint32]`.
+2. `"%~dp0"` ends the argument with a backslash before the closing quote and escapes it, so
+   `start /D "%~dp0"` silently did nothing. Uses `"%~dp0."` now.
+3. `ping -n 16 127.0.0.1` took **79 seconds** for a 15-second wait, because the firewall hardening drops
+   loopback ICMP and every echo sat out its full timeout. Replaced with `waitfor /t 15`, which needs neither
+   the network nor stdin (`timeout.exe` refuses to run when stdin is redirected, which is exactly the state a
+   process launched by a dying JVM can be in).
+
+### Rollback
+
+Each piece is independent and reversible on its own; none requires a rebuild.
+
+1. **Log volume:** set `log-named-deaths` and `log-villager-deaths` back to `true` in `spigot.yml`, restart.
+   Reverting this alone re-opens the exposure that made the outage fast, so revert it last if at all.
+2. **Restart script:** set `settings.restart-script` back to `./start.sh` (or empty to disable), restart. The
+   watchdog then halts without restarting, which is the pre-2026-09-01 behaviour.
+3. **Console guard:** delete the `start /b ... console-guard.ps1` line from `start.bat` /
+   `start-staging.bat` and restart. `console-guard.ps1` and `restart-server.bat` can be left in place -
+   nothing invokes them once the launcher line is gone. A running guard can be stopped immediately by ending
+   the PowerShell process whose command line contains `console-guard`; it also exits by itself two minutes
+   after the last server process disappears.
+4. **Deploy tooling:** the `staging_only` and `ignore_keys` handling in `check_deploy.py` is additive;
+   removing the manifest sections disables it without touching anything else.
+
+### Not changed, deliberately
+
+The watchdog dump also surfaced two things that are NOT part of this fix and were left alone on instruction:
+
+- **Prism** constructs a complete new entity, AI `Brain` and all, for EVERY entity death, purely to serialise
+  the dead one's NBT (`EntityDeathListener` to `NbtService.processEntityNbt` to
+  `CraftRegionAccessor.createEntity`). At ~9,700 creeper deaths a day that is a real per-death cost.
+  Third-party; unchanged.
+- **SMPCore** trips Paper's excessive-velocity warning in `RelicService.windBurst` (Skyward Anchor burst,
+  y = 4.2498 against a threshold of 4.0). Cosmetic log noise, unrelated to the stall. Unchanged.
+
+### Standing lesson
+
+A console the server writes to synchronously is a single point of failure for the whole server, and a
+watchdog cannot report a fault whose symptom is that reporting is blocked. Keep console output low, keep the
+guard running, and treat `Select ` in a server window title as an outage in progress.
+
+---
+
 ## Session: 2026-08-31 (part 2) - Temporary void worlds, live hopper rig (staging only)
 
 ### Temporary void worlds

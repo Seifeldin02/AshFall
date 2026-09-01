@@ -132,6 +132,17 @@ final class PacketNametagService implements Listener {
     @EventHandler public void death(PlayerDeathEvent event){forget(event.getEntity());}
     @EventHandler public void respawn(PlayerRespawnEvent event){forget(event.getPlayer());}
     @EventHandler public void changedWorld(PlayerChangedWorldEvent event){forget(event.getPlayer());}
+    /*  A game mode change tears the tag down immediately.
+     *
+     *  The refresh loop already refuses to tag a spectator, but it can only tear an existing tag down while
+     *  it still VISITS that target -- and the moment somebody becomes a spectator, other clients stop
+     *  tracking them, so isTrackedBy goes false and the loop stops reaching them at all. The overlay was
+     *  therefore left mounted on a player nobody receives position updates for any more, and hung at the
+     *  block where /gamemode spectator was typed. Reported live, exactly that way.
+     *
+     *  forget() destroys it on every client that holds it, which is the same treatment death and a world
+     *  change already get, and the rescan ten ticks later declines to rebuild it. */
+    @EventHandler public void gameMode(org.bukkit.event.player.PlayerGameModeChangeEvent event){forget(event.getPlayer());}
     @EventHandler public void teleport(PlayerTeleportEvent event){
         if(event.getTo()==null||event.getFrom().getWorld()==null)return;
         if(!event.getFrom().getWorld().equals(event.getTo().getWorld())||event.getFrom().distanceSquared(event.getTo())>4096)forget(event.getPlayer());

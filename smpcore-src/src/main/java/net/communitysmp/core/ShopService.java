@@ -16,7 +16,7 @@ import java.time.LocalDate;
 import java.util.*;
 
 final class ShopService {
-    record Price(double buy,double sell,int dailyFull,int dailyLimit,double reduced,String display,boolean luxury,String category){}
+    record Price(double buy,double sell,int dailyFull,int dailyLimit,double reduced,String display,boolean luxury,String category,boolean allowDamaged){}
     static final class SellHolder implements InventoryHolder {
         final double multiplier; boolean finalized;
         SellHolder(double multiplier){this.multiplier=multiplier;} @Override public Inventory getInventory(){return null;}
@@ -51,7 +51,11 @@ final class ShopService {
              *  balls under redstone and dumped anything it did not recognise into a catch-all, which is no
              *  basis for the shop's default grouping. */
             String category=section.getString(key+".category",luxury?"LUXURY":"UTILITY");
-            prices.put(material,new Price(buy,sell,Math.max(0,full),Math.max(full,limit),Math.max(0,Math.min(1,reduced)),display,luxury,category));
+            /** Opt-in, per item, and off everywhere it is not written. Only gear a mob can drop already
+             *  worn needs it, and confining it to those entries is what stops the relaxed rule reaching
+             *  anything else in the file. */
+            boolean allowDamaged=section.getBoolean(key+".allow-damaged",false);
+            prices.put(material,new Price(buy,sell,Math.max(0,full),Math.max(full,limit),Math.max(0,Math.min(1,reduced)),display,luxury,category,allowDamaged));
         }
     }
 
@@ -141,7 +145,7 @@ final class ShopService {
     private ItemStack totalIcon(SaleQuote quote){List<String> lore=new ArrayList<>();lore.add("Total: "+CoreUtil.money(quote.earned()));lore.add(quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" accepted");if(quote.unsupported()>0)lore.add(quote.unsupported()+" item"+(quote.unsupported()==1?"":"s")+" will be returned");return CoreUtil.named(Material.GOLD_INGOT,"Sale Total",lore);}
     private SaleQuote quote(Inventory inv,Player p,double multiplier){
         Map<Material,Integer> counts=new LinkedHashMap<>();int unsupported=0;
-        for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir())continue;Price price=prices.get(item.getType());if(price==null||price.luxury()||price.sell()<0||!item.isSimilar(new ItemStack(item.getType()))){unsupported+=item.getAmount();continue;}counts.merge(item.getType(),item.getAmount(),Integer::sum);}
+        for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir())continue;Price price=prices.get(item.getType());if(price==null||price.luxury()||price.sell()<0||!ordinary(item)){unsupported+=item.getAmount();continue;}counts.merge(item.getType(),item.getAmount(),Integer::sum);}
         String day=LocalDate.now().toString();double earned=0;int sellable=0;
         for(var entry:counts.entrySet()){Price price=prices.get(entry.getKey());int sold=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day),amount=entry.getValue();int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;earned+=(full*price.sell()+reduced*price.sell()*price.reduced())*multiplier;sellable+=amount;}
         return new SaleQuote(Math.round(earned*plugin.bank().sellFactor()*100)/100.0,sellable,unsupported);
@@ -157,7 +161,7 @@ final class ShopService {
     private Map<Material,Integer> sellableFrom(ItemStack[] contents){
         Map<Material,Integer> counts=new LinkedHashMap<>();
         for(ItemStack item:contents){
-            if(item==null||item.getType().isAir()||!item.isSimilar(new ItemStack(item.getType())))continue;
+            if(!ordinary(item))continue;
             Price price=prices.get(item.getType());if(price!=null&&!price.luxury()&&price.sell()>=0)counts.merge(item.getType(),item.getAmount(),Integer::sum);
         }
         return counts;
@@ -172,7 +176,7 @@ final class ShopService {
      *  only its contents. Chest-only: the plain /shop sellall (player inventory) path is untouched. */
     private boolean isShulkerBox(ItemStack item){return item!=null&&item.getType().name().endsWith("SHULKER_BOX")&&item.getItemMeta() instanceof org.bukkit.inventory.meta.BlockStateMeta bsm&&bsm.getBlockState() instanceof org.bukkit.block.ShulkerBox;}
     private void countSellable(ItemStack item,Map<Material,Integer> counts){
-        if(item==null||item.getType().isAir()||!item.isSimilar(new ItemStack(item.getType())))return;
+        if(!ordinary(item))return;
         Price price=prices.get(item.getType());if(price!=null&&!price.luxury()&&price.sell()>=0)counts.merge(item.getType(),item.getAmount(),Integer::sum);
     }
     private Map<Material,Integer> containerSellableDeep(Inventory inv){
@@ -197,7 +201,7 @@ final class ShopService {
                 Inventory boxInv=box.getInventory();boolean modified=false;
                 for(int inner=0;inner<boxInv.getSize()&&remaining>0;inner++){
                     ItemStack it=boxInv.getItem(inner);
-                    if(it==null||it.getType()!=material||!it.isSimilar(new ItemStack(material)))continue;
+                    if(!ordinary(it,material))continue;
                     int take=Math.min(remaining,it.getAmount());
                     if(take>=it.getAmount())boxInv.setItem(inner,null);else{it.setAmount(it.getAmount()-take);boxInv.setItem(inner,it);}
                     remaining-=take;modified=true;
@@ -205,7 +209,7 @@ final class ShopService {
                 if(modified){bsm.setBlockState(box);item.setItemMeta(bsm);inv.setItem(slot,item);}
                 continue;
             }
-            if(item.getType()!=material||!item.isSimilar(new ItemStack(material)))continue;
+            if(!ordinary(item,material))continue;
             int take=Math.min(remaining,item.getAmount());
             if(take>=item.getAmount())inv.setItem(slot,null);else{item.setAmount(item.getAmount()-take);inv.setItem(slot,item);}
             remaining-=take;
@@ -261,6 +265,39 @@ final class ShopService {
         CoreUtil.msg(player,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" from the container for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(player,"sale");
     }
 
+    /*  Is this an ordinary, unmodified item of its kind?
+     *
+     *  The shop's rule has always been "identical to a factory-fresh one", which is exactly what keeps
+     *  relics, named items, enchanted gear and anything carrying custom data out of the commodity path.
+     *  Mob-dropped equipment breaks that rule for an entirely innocent reason: a skeleton's bow arrives with
+     *  durability already spent and nothing else different about it, so the shop refused to buy a bow that
+     *  was, in every way that matters, an ordinary bow.
+     *
+     *  So damage -- and ONLY damage -- is forgiven, and only for entries that ask for it with
+     *  allow-damaged. The test is not "ignore the meta": it clears the damage and then demands that what
+     *  remains be indistinguishable from a fresh item. An enchanted bow still carries its enchantments
+     *  after the damage is cleared and fails; so does a renamed one, a relic, a shard reward, or anything
+     *  with custom model data or attributes. There is no path here that accepts an item on the strength of
+     *  its material alone. */
+    boolean ordinary(ItemStack item){
+        if(item==null||item.getType().isAir())return false;
+        if(item.isSimilar(new ItemStack(item.getType())))return true;
+        Price price=prices.get(item.getType());
+        if(price==null||!price.allowDamaged())return false;
+        if(!(item.getItemMeta() instanceof org.bukkit.inventory.meta.Damageable damageable)||!damageable.hasDamage())return false;
+        ItemStack bare=item.clone();
+        bare.setAmount(1);
+        org.bukkit.inventory.meta.ItemMeta meta=bare.getItemMeta();
+        ((org.bukkit.inventory.meta.Damageable)meta).resetDamage();
+        bare.setItemMeta(meta);
+        return bare.isSimilar(new ItemStack(item.getType()));
+    }
+
+    /** The same question about a specific material, for the removal loops that have to match exactly what
+     *  the quote counted -- a quote that accepts an item the removal cannot find would pay for goods the
+     *  player keeps. */
+    private boolean ordinary(ItemStack item,Material material){return item!=null&&item.getType()==material&&ordinary(item);}
+
     /** Whether the shop currently buys this material at all. The single question every caller outside
      *  this class should be asking, so that "what counts as sellable" has one definition. */
     boolean buysBack(Material material){Price price=prices.get(material);return price!=null&&!price.luxury()&&price.sell()>=0;}
@@ -295,7 +332,7 @@ final class ShopService {
      *  quietly taxed for being efficient. Everything above it is the arithmetic that has to hold for that
      *  to be true at all. */
     static boolean bulkSelfTest(){
-        Price price=new Price(10,2,100,0,.5,"Test",false,"TEST");
+        Price price=new Price(10,2,100,0,.5,"Test",false,"TEST",false);
         if(Math.abs(bulkLine(price,50,0,1)-100)>.001)return false;
         if(Math.abs(bulkLine(price,200,0,1)-300)>.001)return false;
         if(Math.abs(bulkLine(price,100,100,1)-100)>.001)return false;
@@ -349,7 +386,7 @@ final class ShopService {
         String day=LocalDate.now().toString();
         for(var entry:counts.entrySet()){
             Material material=entry.getKey();Price price=prices.get(material);int amount=entry.getValue(),sold=db.dailySold(CoreUtil.id(p),material.name(),day);int full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*multiplier*100)/100.0;
-            int remaining=amount;for(ItemStack item:p.getInventory().getStorageContents())if(item!=null&&item.getType()==material&&item.isSimilar(new ItemStack(material))){int take=Math.min(remaining,item.getAmount());item.setAmount(item.getAmount()-take);remaining-=take;if(remaining==0)break;}
+            int remaining=amount;for(ItemStack item:p.getInventory().getStorageContents())if(ordinary(item,material)){int take=Math.min(remaining,item.getAmount());item.setAmount(item.getAmount()-take);remaining-=take;if(remaining==0)break;}
             creditStock(p,material,amount-remaining,amount);
             db.recordSale(CoreUtil.id(p),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,material.name());
         }
@@ -359,10 +396,10 @@ final class ShopService {
     private void confirmBasket(Player p,Inventory inv,SellHolder holder){
         SaleQuote quote=quote(inv,p,holder.multiplier);if(quote.sellable()<=0){CoreUtil.error(p,"No supported items are currently sellable.");plugin.settings().marketSound(p,"failed");refreshBasket(inv,p);return;}
         String day=LocalDate.now().toString();Map<Material,Integer> remaining=new HashMap<>(),soldAmounts=new HashMap<>();Map<Material,Double> earnings=new HashMap<>();
-        for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir()||!item.isSimilar(new ItemStack(item.getType())))continue;Price price=prices.get(item.getType());if(price!=null&&!price.luxury()&&price.sell()>=0)remaining.merge(item.getType(),item.getAmount(),Integer::sum);}
+        for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(!ordinary(item))continue;Price price=prices.get(item.getType());if(price!=null&&!price.luxury()&&price.sell()>=0)remaining.merge(item.getType(),item.getAmount(),Integer::sum);}
         for(var entry:remaining.entrySet()){Price price=prices.get(entry.getKey());int already=db.dailySold(CoreUtil.id(p),entry.getKey().name(),day),amount=entry.getValue();int full=Math.min(amount,Math.max(0,price.dailyFull()-already)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*holder.multiplier*plugin.bank().sellFactor()*100)/100.0;soldAmounts.put(entry.getKey(),amount);earnings.put(entry.getKey(),earned);}
         if(!plugin.bank().payShopSeller(p,quote.earned(),"BASKET")){CoreUtil.error(p,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(p,"failed");refreshBasket(inv,p);return;}
-        for(var entry:soldAmounts.entrySet()){int remove=entry.getValue();for(int slot=0;slot<INPUT_END&&remove>0;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType()!=entry.getKey()||!item.isSimilar(new ItemStack(entry.getKey())))continue;int take=Math.min(remove,item.getAmount());item.setAmount(item.getAmount()-take);remove-=take;}creditStock(p,entry.getKey(),entry.getValue()-remove,entry.getValue());double earned=earnings.get(entry.getKey());db.recordSale(CoreUtil.id(p),entry.getKey().name(),day,entry.getValue(),earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,entry.getKey().name());}
+        for(var entry:soldAmounts.entrySet()){int remove=entry.getValue();for(int slot=0;slot<INPUT_END&&remove>0;slot++){ItemStack item=inv.getItem(slot);if(!ordinary(item,entry.getKey()))continue;int take=Math.min(remove,item.getAmount());item.setAmount(item.getAmount()-take);remove-=take;}creditStock(p,entry.getKey(),entry.getValue()-remove,entry.getValue());double earned=earnings.get(entry.getKey());db.recordSale(CoreUtil.id(p),entry.getKey().name(),day,entry.getValue(),earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,entry.getKey().name());}
         holder.finalized=true;returnItems(p,inv);
         CoreUtil.msg(p,"Sold "+quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" for "+CoreUtil.money(quote.earned())+".");plugin.settings().marketSound(p,"sale");
         /** Selling a basket used to drop the player out of the shop entirely, which is the wrong end of the
@@ -407,7 +444,7 @@ final class ShopService {
          *  somehow cannot take them they are dropped rather than deleted -- the money and the stock have
          *  already moved, so silently swallowing them would destroy paid-for items. */
         for(ItemStack leftover:p.getInventory().addItem(wanted).values())p.getWorld().dropItemNaturally(p.getLocation(),leftover);CoreUtil.msg(p,"Bought "+amount+" "+price.display()+" for "+CoreUtil.money(cost)+".");boolean specialSound=material==Material.ELYTRA||material==Material.DRAGON_EGG||material==Material.WIND_CHARGE;if(!price.luxury()||!specialSound)plugin.settings().marketSound(p,"purchase");if(price.luxury())celebrateLuxury(p,material,price,amount,cost);}
-    void sell(Player p,Material material,int wanted,double multiplier){Price price=prices.get(material);if(price==null||price.luxury()||price.sell()<0){CoreUtil.error(p,"That item cannot be sold to the server.");plugin.settings().marketSound(p,"failed");return;}ItemStack vanilla=new ItemStack(material);int available=0;for(ItemStack item:p.getInventory().getStorageContents())if(item!=null&&item.isSimilar(vanilla))available+=item.getAmount();int amount=Math.min(wanted,available);if(amount<=0){CoreUtil.error(p,"Only ordinary, unmodified "+CoreUtil.pretty(material.name())+" can be sold.");plugin.settings().marketSound(p,"failed");return;}String day=LocalDate.now().toString();int sold=db.dailySold(CoreUtil.id(p),material.name(),day),full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*multiplier*plugin.bank().sellFactor()*100)/100.0;if(!plugin.bank().payShopSeller(p,earned,material.name())){CoreUtil.error(p,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(p,"failed");return;}int remaining=amount;for(ItemStack item:p.getInventory().getStorageContents())if(item!=null&&item.isSimilar(vanilla)){int take=Math.min(remaining,item.getAmount());item.setAmount(item.getAmount()-take);remaining-=take;if(remaining==0)break;}creditStock(p,material,amount-remaining,amount);db.recordSale(CoreUtil.id(p),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,material.name());CoreUtil.msg(p,"Sold "+amount+" "+CoreUtil.pretty(material.name())+" for "+CoreUtil.money(earned)+(reduced>0?" (50% rate applied after today's threshold)":"")+".");plugin.settings().marketSound(p,"sale");}
+    void sell(Player p,Material material,int wanted,double multiplier){Price price=prices.get(material);if(price==null||price.luxury()||price.sell()<0){CoreUtil.error(p,"That item cannot be sold to the server.");plugin.settings().marketSound(p,"failed");return;}int available=0;for(ItemStack item:p.getInventory().getStorageContents())if(ordinary(item,material))available+=item.getAmount();int amount=Math.min(wanted,available);if(amount<=0){CoreUtil.error(p,"Only ordinary, unmodified "+CoreUtil.pretty(material.name())+" can be sold.");plugin.settings().marketSound(p,"failed");return;}String day=LocalDate.now().toString();int sold=db.dailySold(CoreUtil.id(p),material.name(),day),full=Math.min(amount,Math.max(0,price.dailyFull()-sold)),reduced=amount-full;double earned=Math.round((full*price.sell()+reduced*price.sell()*price.reduced())*multiplier*plugin.bank().sellFactor()*100)/100.0;if(!plugin.bank().payShopSeller(p,earned,material.name())){CoreUtil.error(p,"The Central Bank treasury cannot cover this sale yet.");plugin.settings().marketSound(p,"failed");return;}int remaining=amount;for(ItemStack item:p.getInventory().getStorageContents())if(ordinary(item,material)){int take=Math.min(remaining,item.getAmount());item.setAmount(item.getAmount()-take);remaining-=take;if(remaining==0)break;}creditStock(p,material,amount-remaining,amount);db.recordSale(CoreUtil.id(p),material.name(),day,amount,earned);db.recordEconomy(CoreUtil.id(p),"SHOP_SELL",earned,material.name());CoreUtil.msg(p,"Sold "+amount+" "+CoreUtil.pretty(material.name())+" for "+CoreUtil.money(earned)+(reduced>0?" (50% rate applied after today's threshold)":"")+".");plugin.settings().marketSound(p,"sale");}
 
     List<Map.Entry<Material,Price>> entries(boolean luxury){return prices.entrySet().stream().filter(entry->entry.getValue().luxury()==luxury).map(entry->Map.entry(entry.getKey(),entry.getValue())).toList();}
     Price price(Material material){return prices.get(material);}
@@ -429,7 +466,8 @@ final class ShopService {
      *  elsewhere and are none of this test's business. */
     boolean craftingTaxSelfTest(){
         String[][] pairs={{"CHICKEN","COOKED_CHICKEN"},{"BEEF","COOKED_BEEF"},{"COD","COOKED_COD"},
-                {"SALMON","COOKED_SALMON"},{"MUTTON","COOKED_MUTTON"},{"PORKCHOP","COOKED_PORKCHOP"}};
+                {"SALMON","COOKED_SALMON"},{"MUTTON","COOKED_MUTTON"},{"PORKCHOP","COOKED_PORKCHOP"},
+                {"RABBIT","COOKED_RABBIT"}};
         for(String[] pair:pairs){
             Material raw=Material.matchMaterial(pair[0]),cooked=Material.matchMaterial(pair[1]);
             if(raw==null||cooked==null)return false;
@@ -439,6 +477,53 @@ final class ShopService {
             if(ratio<1.09||ratio>1.16)return false;
         }
         return true;
+    }
+
+    /*  The bow's price is a recipe, and a recipe can drift.
+     *
+     *  Three string plus three sticks plus a crafting premium in the 15-25% band the owner set, and -- the
+     *  part that actually matters -- no way to make money out of the loop in either direction. If somebody
+     *  later raises the bow or drops the price of string, this is what notices. */
+    boolean bowRecipeSelfTest(){
+        Price string=prices.get(Material.STRING),stick=prices.get(Material.STICK),bow=prices.get(Material.BOW);
+        if(string==null||stick==null||bow==null)return false;
+        double ingredients=3*string.sell()+3*stick.sell();
+        double premium=bow.sell()/ingredients;
+        if(premium<1.15||premium>1.25)return false;
+        /** Buy the parts, craft, sell the bow: must lose money. */
+        if(3*string.buy()+3*stick.buy()<=bow.sell())return false;
+        /** Buy the bow, sell it back: must lose money. */
+        if(bow.buy()<=bow.sell())return false;
+        /** And crafting must still beat buying one outright, or the shop undercuts the crafting table. */
+        if(bow.buy()<=3*string.buy()+3*stick.buy())return false;
+        /** A stick must stay a fraction of the log it comes from -- eight to a log. */
+        Price log=prices.get(Material.OAK_LOG);
+        return log!=null&&8*stick.sell()<log.buy();
+    }
+
+    /** Every entry that forgives durability must be gear a mob can actually drop worn, never a commodity. */
+    boolean damagedOptInSelfTest(){
+        for(var entry:prices.entrySet())
+            if(entry.getValue().allowDamaged()&&!(entry.getKey().getMaxDurability()>0))return false;
+        ItemStack enchanted=new ItemStack(Material.BOW);
+        org.bukkit.inventory.meta.ItemMeta meta=enchanted.getItemMeta();
+        meta.addEnchant(org.bukkit.enchantments.Enchantment.POWER,1,true);
+        if(meta instanceof org.bukkit.inventory.meta.Damageable damaged)damaged.setDamage(100);
+        enchanted.setItemMeta(meta);
+        /** An enchanted bow is refused even though bows forgive damage: clearing the damage leaves the
+         *  enchantment behind, and what is left is not an ordinary bow. */
+        if(ordinary(enchanted))return false;
+        ItemStack used=new ItemStack(Material.BOW);
+        org.bukkit.inventory.meta.ItemMeta plain=used.getItemMeta();
+        ((org.bukkit.inventory.meta.Damageable)plain).setDamage(200);
+        used.setItemMeta(plain);
+        if(!ordinary(used))return false;
+        /** A damaged item whose entry did NOT opt in stays refused. */
+        ItemStack pick=new ItemStack(Material.IRON_PICKAXE);
+        org.bukkit.inventory.meta.ItemMeta pickMeta=pick.getItemMeta();
+        ((org.bukkit.inventory.meta.Damageable)pickMeta).setDamage(50);
+        pick.setItemMeta(pickMeta);
+        return !ordinary(pick)&&ordinary(new ItemStack(Material.STICK));
     }
 
     boolean selfTest(){Price shell=prices.get(Material.SHULKER_SHELL),stone=prices.get(Material.COBBLESTONE),wind=prices.get(Material.WIND_CHARGE),dirt=prices.get(Material.DIRT),cane=prices.get(Material.SUGAR_CANE),tag=prices.get(Material.NAME_TAG),egg=prices.get(Material.DRAGON_EGG),single=prices.get(Material.TRIAL_KEY),reusable=prices.get(Material.OMINOUS_TRIAL_KEY);if(shell==null||Math.abs(shell.buy()-40000)>.001||stone==null||wind==null||Math.abs(wind.buy()-5000)>.001||dirt==null||cane==null||tag==null||tag.buy()!=10000||!tag.luxury()||egg==null||egg.buy()!=50000000||single==null||single.buy()!=100000||reusable==null||reusable.buy()!=5000000||dirt.reduced()!=.5||dirt.dailyLimit()!=Integer.MAX_VALUE)return false;

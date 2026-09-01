@@ -110,9 +110,16 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         java.util.List<String> verbs=new ArrayList<>(List.of("list","exit"));
         if(sender.hasPermission("smpcore.voidworld.enter"))verbs.add("enter");
         if(sender.hasPermission("smpcore.voidworld.manage")||(sender instanceof Player vp&&isAdmin(vp))||!(sender instanceof Player)){
-            verbs.add("create");verbs.add("delete");
+            verbs.add("create");verbs.add("delete");verbs.add("open");verbs.add("close");
         }
         return verbs;
+    }
+
+    /** The name may be omitted while exactly one event world exists, which is the normal case for a live
+     *  event -- "/voidworld open" should not need an argument to state the obvious. */
+    private String soleVoidWorld(){
+        java.util.List<String> labels=voidWorlds.labels();
+        return labels.size()==1?labels.getFirst():null;
     }
 
     private boolean voidWorldCommand(CommandSender sender,String[] args){
@@ -126,7 +133,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         switch(verb){
             case"list"->{
                 java.util.List<String> labels=voidWorlds.labels();
-                CoreUtil.msg(sender,"Event worlds: "+(labels.isEmpty()?"none open":String.join(", ",labels)));
+                if(labels.isEmpty()){CoreUtil.msg(sender,"Event worlds: none");return true;}
+                java.util.List<String> shown=new ArrayList<>();
+                for(String each:labels)shown.add(each+(voidWorlds.isOpen(each)?" (open)":" (closed)"));
+                CoreUtil.msg(sender,"Event worlds: "+String.join(", ",shown));
             }
             case"exit"->{
                 if(!(sender instanceof Player ep)){CoreUtil.error(sender,"That is a player command.");return true;}
@@ -138,6 +148,15 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 if(args.length<2){CoreUtil.error(sender,"Usage: /voidworld enter <name>");return true;}
                 String problem=voidWorlds.enter(np,args[1]);
                 if(problem!=null)CoreUtil.error(np,problem);
+            }
+            case"open",  "close"->{
+                boolean open=verb.equals("open");
+                String target=args.length>=2?args[1]:soleVoidWorld();
+                if(target==null){CoreUtil.error(sender,"Usage: /voidworld "+verb+" <name>");return true;}
+                if(voidWorlds.find(target)==null){CoreUtil.error(sender,"No void world called '"+target+"'.");return true;}
+                voidWorlds.setOpen(target,open);
+                CoreUtil.msg(sender,"Event world '"+target+"' is now "+(open?"OPEN -- anyone may enter.":"CLOSED -- administrators only."));
+                db.history("SERVER",null,"VOIDWORLD","The temporary event world '"+target+"' was "+(open?"opened":"closed")+".");
             }
             case"create"->{
                 if(args.length<2){CoreUtil.error(sender,"Usage: /voidworld create <name>");return true;}
@@ -416,7 +435,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                      *  Follows the conventions the rest of /ashfall uses: a verb as args[1], the subject as
                      *  args[2], every branch answers the sender, and every verb is offered by tab complete.
                      *  `enter` is player-only because it moves somebody; the rest work from console. */
-                    if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete> [name]");return true;}
+                    if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close> [name]");return true;}
                     String verb=args[1].toLowerCase(Locale.ROOT);
                     if(verb.equals("list")){
                         java.util.List<String> labels=voidWorlds.labels();
@@ -443,13 +462,19 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                             String problem=voidWorlds.enter(vp,label);
                             if(problem!=null)CoreUtil.error(vp,problem);
                         }
+                        case"open","close"->{
+                            if(voidWorlds.find(label)==null){CoreUtil.error(sender,"No void world called '"+label+"'.");return true;}
+                            voidWorlds.setOpen(label,verb.equals("open"));
+                            CoreUtil.msg(sender,"Event world '"+label+"' is now "+(verb.equals("open")?"OPEN -- anyone may enter.":"CLOSED -- administrators only."));
+                            db.history("SERVER",null,"VOIDWORLD","The temporary event world '"+label+"' was "+verb+"ed.");
+                        }
                         case"delete"->{
                             String problem=voidWorlds.delete(label);
                             if(problem!=null)CoreUtil.error(sender,problem);
                             else{CoreUtil.msg(sender,"Void world '"+label+"' deleted; everyone inside was returned.");
                                 db.history("SERVER",null,"VOIDWORLD","The temporary event world '"+label+"' was deleted.");}
                         }
-                        default->CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete> [name]");
+                        default->CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close> [name]");
                     }
                     return true;
                 }
@@ -993,7 +1018,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String claimInfo=claim==null?"none":claim.size()+"x"+claim.size()+" | center "+((claim.minX()+claim.maxX())/2)+", "+((claim.minZ()+claim.maxZ())/2)+" | bounds X "+claim.minX()+".."+claim.maxX()+", Z "+claim.minZ()+".."+claim.maxZ();
         CoreUtil.msg(s,target.name()+" — "+f.name()+" ["+f.tag()+"] | members="+String.join(",",db.factionMembers(f.id()))+" | bank="+CoreUtil.money(f.balance())+" | claim="+claimInfo+" | net-worth="+CoreUtil.money(netWorth.value(f.id())));
     }
-    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
+    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
 
     /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
     /** /duels -- where each piece of a duel kit sits when the match starts. A standing preference, so it
@@ -1075,7 +1100,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         /** Only the verbs this sender may actually run, and only the worlds that actually exist. */
         if(name.equals("voidworld")){
             if(args.length==1)return filter(args[0],voidVerbs(sender));
-            if(args.length==2&&(args[0].equalsIgnoreCase("enter")||args[0].equalsIgnoreCase("delete")))
+            if(args.length==2&&List.of("enter","delete","open","close").contains(args[0].toLowerCase(Locale.ROOT)))
                 return filter(args[1],voidWorlds.labels());
             return List.of();
         }
@@ -1165,7 +1190,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));
                 case"elite"->filter(args[1],List.of("stats","uncommon","rare","epic","legendary","miniboss"));
                 case"event"->filter(args[1],List.of("resource","elitehunt","taskmaster","worldboss","stop"));
-                case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete"));
+                case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete","open","close"));
                 case"hopper"->filter(args[1],List.of("verify","livesuite","live","watch","create","rig","count"));
                 case"economy"->filter(args[1],List.of("report"));
                 case"feedback"->filter(args[1],List.of("notify","list","view","done","reopen","delete"));
@@ -1204,7 +1229,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("boss")&&Set.of("spawn","here").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],List.of("ashen","iron","piglin"));
         /** enter and delete operate on worlds that already exist, so they suggest the real ones. */
         if(name.equals("ashfall")&&args[0].equalsIgnoreCase("voidworld")&&args.length==3
-                &&(args[1].equalsIgnoreCase("enter")||args[1].equalsIgnoreCase("delete")))
+                &&List.of("enter","delete","open","close").contains(args[1].toLowerCase(Locale.ROOT)))
             return filter(args[2],voidWorlds.labels());
         if(name.equals("ashfall")&&args[0].equalsIgnoreCase("elite")&&List.of("uncommon","rare","epic","legendary","miniboss").contains(args[1].toLowerCase(Locale.ROOT))){if(args.length==3)return filter(args[2],ELITE_MOBS);if(args.length==4&&parseMobType(args[2])!=null)return filter(args[3],List.of("here"));}
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("relic")&&args[1].equalsIgnoreCase("give"))return filter(args[3],new ArrayList<>(relics.keys()));

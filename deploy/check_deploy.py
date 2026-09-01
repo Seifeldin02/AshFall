@@ -47,13 +47,33 @@ def snapshot_shape(d: Path) -> dict:
     return out
 
 
-def same(a: Path, b: Path) -> bool:
-    """YAML by parsed value where possible; otherwise text, ignoring line endings."""
+def drop_key(tree, dotted: str) -> None:
+    """Remove one dotted key from a parsed YAML tree, in place. Missing keys are not an error."""
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        if not isinstance(tree, dict) or part not in tree:
+            return
+        tree = tree[part]
+    if isinstance(tree, dict):
+        tree.pop(parts[-1], None)
+
+
+def same(a: Path, b: Path, ignore_keys: list[str] | None = None) -> bool:
+    """YAML by parsed value where possible; otherwise text, ignoring line endings.
+
+    ignore_keys names dotted paths that are EXPECTED to differ inside an otherwise-synced file, so one
+    intentionally per-server value does not mask a real drift in the rest of it. Used by spigot.yml, whose
+    restart-script must be each server's own absolute path.
+    """
     if a.is_dir() or b.is_dir():
         return a.is_dir() and b.is_dir() and snapshot_shape(a) == snapshot_shape(b)
     if a.suffix in (".yml", ".yaml"):
         try:
-            return yaml.safe_load(read(a)) == yaml.safe_load(read(b))
+            left, right = yaml.safe_load(read(a)), yaml.safe_load(read(b))
+            for key in ignore_keys or []:
+                drop_key(left, key)
+                drop_key(right, key)
+            return left == right
         except yaml.YAMLError:
             pass  # malformed YAML: fall through to a text compare rather than crashing the check
     return read(a) == read(b)
@@ -106,7 +126,7 @@ def main() -> int:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 copy_entry(s, p)
                 rows[-1] = (INFO, rel, "COPIED to production" + note)
-        elif not same(s, p):
+        elif not same(s, p, entry.get("ignore_keys")):
             detail = "differs from staging"
             if s.is_dir():
                 detail += f" (staging {snapshot_shape(s)} vs production {snapshot_shape(p)})"
@@ -132,6 +152,19 @@ def main() -> int:
             if got != str(want):
                 bad.append(f"{key}={got!r} expected {want!r}")
         rows.append((DIFF, rel, "; ".join(bad)) if bad else (OK, rel, "production values intact"))
+
+    # --- staging-only artifacts -------------------------------------------------
+    # Present on staging, deliberately absent on production. Checking these the other way round is the
+    # point: a staging launcher that has gone missing is a real fault, while its absence on production is
+    # the correct state and must not be reported as one.
+    for entry in man.get("staging_only", []):
+        rel = entry["path"]
+        if not (stag / rel).exists():
+            rows.append((MISSING, rel, "absent on STAGING (staging-only artifact)"))
+        elif (prod / rel).exists():
+            rows.append((DIFF, rel, "present on PRODUCTION but is staging-only - should not have been copied"))
+        else:
+            rows.append((OK, rel, "staging-only, correctly absent from production"))
 
     # --- required plugin jars ---------------------------------------------------
     have = {f.name for f in (prod / "plugins").glob("*.jar")}

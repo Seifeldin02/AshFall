@@ -505,8 +505,10 @@ final class IndustrialHopperService implements Listener {
         Bay destination = bayOf(event.getDestination());
         if (destination == null) return;
         event.setCancelled(true);
-        if (feedsFromAbove(event.getSource(), destination)) return;
-        pullLater(destination, event.getSource());
+        if (sweepDrains(event.getSource(), destination)) return;
+        /** Exactly what vanilla was about to move, which is settings.hopper-amount -- never the bay's own
+         *  nine. The buff belongs to the Industrial Hopper, not to whatever is feeding it. */
+        pullLater(destination, event.getSource(), Math.max(1, event.getItem().getAmount()));
     }
 
     /** Every block position that backs an inventory.
@@ -534,8 +536,27 @@ final class IndustrialHopperService implements Listener {
         }
     }
 
-    /** True when this inventory is (or includes) the block sitting directly on top of the bay, which the
-     *  sweep already drains through pullFromAbove at the full nine-item rate. */
+    /*  Which of the two transfer paths owns this link -- and it must be exactly one of them.
+     *
+     *  Every inbound link is drained either by the sweep's pullFromAbove or by the deferred pull this event
+     *  schedules, never by both (that would double the rate) and never by neither. The container directly
+     *  overhead is normally the sweep's, which is why the event handler steps aside for it.
+     *
+     *  A PLAIN hopper overhead is the exception, and getting it wrong is a stand-off rather than a bug you
+     *  can see in a stack trace: pullFromAbove deliberately leaves a plain hopper alone so it keeps moving
+     *  at its own rate, so if the event handler also steps aside, nobody moves anything at all and the
+     *  hopper silently fills to its five slots and stops. Found exactly that way -- 33 items parked in a
+     *  vanilla hopper with an empty Industrial Hopper underneath it. An INDUSTRIAL hopper overhead is not
+     *  the exception: it pushes into us from its own sweep, which is a path no event is involved in. */
+    private boolean sweepDrains(Inventory source, Bay bay) {
+        if (!feedsFromAbove(source, bay)) return false;
+        Block above = bay.at.getBlock().getRelative(BlockFace.UP);
+        if (above.getType() != Material.HOPPER) return true;
+        if (bays.containsKey(key(above.getLocation()))) return true;
+        return !(above.getBlockData() instanceof Directional facing) || facing.getFacing() != BlockFace.DOWN;
+    }
+
+    /** True when this inventory is (or includes) the block sitting directly on top of the bay. */
     private boolean feedsFromAbove(Inventory source, Bay bay) {
         for (Location at : anchors(source)) {
             World world;
@@ -561,7 +582,7 @@ final class IndustrialHopperService implements Listener {
      *  neither. Cancelling costs the pusher one tick, which is what a vanilla hopper spends anyway when a
      *  destination refuses it, and the dropper case behaves as a momentarily-full container -- it keeps its
      *  item and we take it on the next tick instead of it being pushed. */
-    private void pullLater(Bay bay, Inventory source) {
+    private void pullLater(Bay bay, Inventory source, int amount) {
         List<Location> where = anchors(source);
         Location anchor = where.isEmpty() ? null : where.getFirst();
         String token = bay.id + " <- " + (anchor == null ? "inv" + System.identityHashCode(source)
@@ -590,8 +611,7 @@ final class IndustrialHopperService implements Listener {
                 if (!(in.getBlockAt(fx, fy, fz).getState(false) instanceof Container container)) return;
                 from = container.getInventory();
             }
-            int budget = Math.max(1, plugin.getConfig().getInt("industrial-hopper.items-per-tick", 9));
-            int moved = move(from, live.inv, budget, live.at);
+            int moved = move(from, live.inv, amount, live.at);
             if (moved > 0) live.dirty = true;
             if (tracing()) plugin.getLogger().info("[IH-move] deferred inbound pull " + token + " moved " + moved);
         });
@@ -1049,6 +1069,22 @@ final class IndustrialHopperService implements Listener {
             if (above.getBlockData() instanceof Directional facing && facing.getFacing() == BlockFace.DOWN) return;
             if (move(upper.inv, bay.inv, budget, above.getLocation()) > 0) { upper.dirty = true; bay.dirty = true; }
             return;
+        }
+        /*  A plain hopper overhead is not a container to be drained nine at a time.
+         *
+         *  Reported live: "Normal Hopper -> Industrial Hopper makes the Normal Hopper magically move nine
+         *  items at once". It did, because pullFromAbove treats anything above with an inventory as a source
+         *  and pulls at the bay's own rate -- so the buff leaked onto the block feeding it. A plain hopper
+         *  has to keep moving at a plain hopper's amount and cadence whichever side it feeds from.
+         *
+         *  Facing down into us it is already pushing, and that push is cancelled and re-performed at
+         *  settings.hopper-amount by moveItem, so pulling as well would just double the rate on that link --
+         *  the same reasoning that already applies to an Industrial Hopper overhead. Facing anywhere else it
+         *  never pushes, so we do pull, but only ever a plain hopper's worth per cycle. */
+        boolean plainHopper = above.getType() == Material.HOPPER;
+        if (plainHopper) {
+            if (above.getBlockData() instanceof Directional facing && facing.getFacing() == BlockFace.DOWN) return;
+            budget = Math.max(1, plugin.getConfig().getInt("industrial-hopper.vanilla-hopper-amount", 1));
         }
         if (above.getState(false) instanceof Container source) {
             Inventory from = source.getInventory();

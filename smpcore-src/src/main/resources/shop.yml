@@ -209,7 +209,96 @@ items:
   # like a creeper farm's scale, so the tear is priced as the strictly rarer of the two.
   GHAST_TEAR: {buy: 260, sell: 52, daily-full: 256, category: MOB_DROPS}
 
+  # ---- MOB-DROP AUDIT 2026-09-01 ----
+  # Every item reachable from a vanilla entity loot table in this Paper build that the shop did not already
+  # price. Extracted from data/minecraft/loot_table/entities/*.json rather than from memory, following the
+  # loot_table references (a guardian's rare pool rolls the fishing table, a sheep's colour tables, and so
+  # on) so nothing that only appears one level down was missed. Nothing already priced was touched.
+  #
+  # Two of the thirty-three are deliberately not commodity entries:
+  #   TIPPED_ARROW  -- its identity IS its potion data, so the shop's ordinary-item rule rejects every real
+  #                    one and a bought one would be a blank arrow with no effect. Priced would be a lie.
+  #   WET_SPONGE    -- SPONGE is an existing 25,000 buy-only luxury and a wet sponge is one furnace slot
+  #                    away from a dry one, so it is listed as a luxury at the same price instead of being
+  #                    made freely sellable. Pricing it as a commodity would have gutted an entry the owner
+  #                    set deliberately.
+
+  # Sheep, all sixteen colours at one price. Dyeing is then never an arbitrage: white costs 7.00 to buy and
+  # every colour sells for 1.40, so no amount of dye turns a profit. Well under the 4 string a wool crafts
+  # from (64.00 to buy), which is what stops a spider farm minting wool.
+  WHITE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  ORANGE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  MAGENTA_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  LIGHT_BLUE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  YELLOW_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  LIME_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  PINK_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  GRAY_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  LIGHT_GRAY_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  CYAN_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  PURPLE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  BLUE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  BROWN_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  GREEN_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  RED_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  BLACK_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+
+  # Fish drop bone meal directly; three of them come out of one bone (8.00 to buy, 1.62 to sell as meal).
+  BONE_MEAL: {buy: 2.7, sell: 0.54, daily-full: 8192, category: FARMING}
+  # Turtles. Seagrass is turtle food and decoration; the bowl is four to three planks.
+  SEAGRASS: {buy: 1.5, sell: 0.3, daily-full: 8192, category: FARMING}
+  BOWL: {buy: 1.8, sell: 0.36, daily-full: 4096, category: WOOD}
+  # Rabbit had no entry at all, raw or cooked -- and a rabbit killed by fire drops the cooked one, so both
+  # are needed. Between chicken and mutton: rabbits breed readily but drop nought or one.
+  RABBIT: {buy: 7.5, sell: 1.5, daily-full: 2048, category: ANIMALS}
+  COOKED_RABBIT: {buy: 8.45, sell: 1.69, daily-full: 2048, category: ANIMALS}
+  # Ravagers, and the only other sources are chests and fishing. Uncraftable at any price.
+  SADDLE: {buy: 200, sell: 40, daily-full: 256, category: MOB_DROPS}
+  # Pillager patrols under Bad Omen.
+  OMINOUS_BOTTLE: {buy: 175, sell: 35, daily-full: 256, category: MOB_DROPS}
+  # A frog eating a magma cube, one light at a time, and only the frog variant that matches.
+  OCHRE_FROGLIGHT: {buy: 250, sell: 50, daily-full: 256, category: MOB_DROPS}
+  PEARLESCENT_FROGLIGHT: {buy: 250, sell: 50, daily-full: 256, category: MOB_DROPS}
+  VERDANT_FROGLIGHT: {buy: 250, sell: 50, daily-full: 256, category: MOB_DROPS}
+  # Breeze rods are trial-chamber gated with no conventional farm, so above the ghast tear.
+  # NOTE: four wind charges craft from one rod, which undercuts the 5,000 WIND_CHARGE luxury. Left as it is
+  # rather than silently repricing an entry the owner set; say the word and either can move.
+  BREEZE_ROD: {buy: 500, sell: 100, daily-full: 512, category: MOB_DROPS}
+  # Zombies and ghasts drop these two discs. Collectible rather than useful.
+  MUSIC_DISC_LAVA_CHICKEN: {buy: 1250, sell: 250, daily-full: 64, category: MOB_DROPS}
+  MUSIC_DISC_TEARS: {buy: 1250, sell: 250, daily-full: 64, category: MOB_DROPS}
+  # Elder guardian, roughly one in five, behind an ocean monument.
+  TIDE_ARMOR_TRIM_SMITHING_TEMPLATE: {buy: 4000, sell: 800, daily-full: 64, category: MOB_DROPS}
+  # A 2.5% drop behind a nether fortress farm; three make a wither.
+  # NOTE: three skulls at 6,000 is far cheaper than the 500,000 NETHER_STAR luxury. Same call as the breeze
+  # rod -- priced on its own merits and reported rather than bent to protect the luxury.
+  WITHER_SKELETON_SKULL: {buy: 6000, sell: 1200, daily-full: 64, category: MOB_DROPS}
+  # The warden. Not farmable in any meaningful sense, and killing one is an achievement in itself.
+  SCULK_CATALYST: {buy: 2000, sell: 400, daily-full: 64, category: MOB_DROPS}
+
+  # ---- THE BOW AND WHAT IT IS MADE OF ----
+  # A stick is an eighth of a log: one log makes four planks makes eight sticks, so 1.90 / 8.
+  STICK: {buy: 1.2, sell: 0.24, daily-full: 8192, category: WOOD}
+  # Priced from the recipe, as asked: three string (9.60) plus three sticks (0.72) is 10.32, and a 20%
+  # crafting premium -- the middle of the 15-25% band -- makes 12.38.
+  #
+  # The premium is chosen to sit in the middle for a reason beyond splitting the difference: it puts the
+  # bow's BUY price at 61.90, comfortably above the 51.60 those same ingredients cost to buy, so crafting
+  # remains the cheaper way to obtain a bow. Below about 15% the two cross over and the shop starts
+  # undercutting the crafting table.
+  #
+  # No profit loop exists in either direction: buying the ingredients costs 51.60 and the finished bow sells
+  # for 12.38, and buying a finished bow at 61.90 to sell at 12.38 is worse still.
+  #
+  # allow-damaged is what makes a skeleton's bow sellable at all. It forgives durability and NOTHING else --
+  # an enchanted bow keeps its enchantments when the damage is cleared and is refused, as are named bows,
+  # relics and anything carrying custom data.
+  BOW: {buy: 61.9, sell: 12.38, daily-full: 512, category: MOB_DROPS, allow-damaged: true}
+
 luxuries:
+  WET_SPONGE:
+    buy: 25000
+    display: Waterlogged Architect's Sponge
   NAME_TAG:
     buy: 10000
     display: Name Tag

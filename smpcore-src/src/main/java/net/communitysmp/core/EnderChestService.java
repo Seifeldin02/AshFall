@@ -165,8 +165,17 @@ final class EnderChestService implements Listener {
             String targetId=CoreUtil.id(args[1]);
             Player target=plugin.getServer().getPlayerExact(args[1]);
             if(target==null){
-                if(db.player(targetId)==null){CoreUtil.error(player,"That player has not joined this server.");return true;}
-                target=loadOffline(targetId,args[1]);
+                Database.PlayerRow known=db.player(targetId);
+                if(known==null){CoreUtil.error(player,"That player has not joined this server.");return true;}
+                /*  The STORED name, not the typed one.
+                 *
+                 *  Offline lookup goes through Bukkit's OfflinePlayer, and on an offline-mode server that
+                 *  derives a UUID by hashing the exact string it is given -- so "xfpu" and "xFPu" are two
+                 *  different players to it, and only one of them has a data file. The account row was found
+                 *  case-insensitively a line above (ids are lowercased), so the canonical spelling is
+                 *  already in hand; using it makes /ec inspect resolve the same account whatever case the
+                 *  admin typed. Still an exact full-name match -- nothing here matches partial names. */
+                target=loadOffline(targetId,known.name());
                 if(target==null){CoreUtil.error(player,"That player is offline, and OpenInv (required for offline Ender Storage inspection) is unavailable.");return true;}
             }
             openForAdmin(player,target);return true;

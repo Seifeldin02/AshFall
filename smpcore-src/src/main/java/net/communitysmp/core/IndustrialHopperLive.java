@@ -80,6 +80,7 @@ final class IndustrialHopperLive {
         chain("double chest with a chunk unload and reload mid-flight", Pairing.LEFT,
                 List.of(new ItemStack(Material.CHEST, 64)), 0, true);
         sidePusher();
+        plainHopperAbove();
         queue.add(this::finish);
         next();
     }
@@ -318,6 +319,60 @@ final class IndustrialHopperLive {
             ((Container) feeder.getState(false)).getInventory().addItem(new ItemStack(Material.STONE, 64));
             sampleSide("vanilla hopper pushing in from the side", x, y, z, 64);
         });
+    }
+
+    /*  A plain hopper sitting directly on top of an Industrial Hopper.
+     *
+     *  Two separate things have to hold here and they pull in opposite directions. Everything must arrive --
+     *  the reported failure mode for this geometry was nothing arriving at all, because the sweep and the
+     *  event handler each assumed the other owned the link. And it must arrive at a PLAIN hopper's rate:
+     *  the nine-item transfer is the Industrial Hopper's own buff, and the owner's report was that a normal
+     *  hopper feeding one "magically moves nine items at once". So the case asserts the count AND the pace.
+     */
+    private void plainHopperAbove() {
+        queue.add(() -> {
+            int x = baseX + (column++ * 4), y = baseY, z = baseZ;
+            clear(x, z);
+            Block feeder = world.getBlockAt(x, y + 2, z);
+            Block plain = world.getBlockAt(x, y + 1, z);
+            Block target = world.getBlockAt(x, y, z);
+            Block below = world.getBlockAt(x, y - 1, z);
+            feeder.setType(Material.CHEST, false);
+            below.setType(Material.CHEST, false);
+            plain.setType(Material.HOPPER, false);
+            Hopper data = (Hopper) plain.getBlockData();
+            data.setFacing(BlockFace.DOWN);
+            data.setEnabled(true);
+            plain.setBlockData(data, false);
+            industrial(target);
+            ((Container) feeder.getState(false)).getInventory().addItem(new ItemStack(Material.STONE, 64));
+            samplePlainAbove("plain hopper feeding an Industrial Hopper from above", x, y, z, 64);
+        });
+    }
+
+    private void samplePlainAbove(String label, int x, int y, int z, int total) {
+        int[] ticks = {0};
+        Bukkit.getScheduler().runTaskTimer(plugin, task -> {
+            ticks[0]++;
+            int seen = census(x, y, z);
+            if (seen != total) {
+                task.cancel();
+                fail(label, "conservation broke on tick " + ticks[0] + ": counted " + seen + ", expected " + total);
+                return;
+            }
+            int arrived = hoppers.countAt(world.getBlockAt(x, y - 1, z));
+            if (arrived < total && ticks[0] < 2000) return;
+            task.cancel();
+            if (arrived < total) { fail(label, "only " + arrived + " of " + total + " arrived in " + ticks[0] + " ticks -- the sweep and the event handler are both standing aside"); return; }
+            /** A plain hopper moves one item per eight-tick cooldown. Anything much faster means the
+             *  Industrial Hopper's nine-item buff has leaked onto the block feeding it, which is the thing
+             *  this case exists to catch; the floor is generous enough not to be flaky. */
+            double perTick = (double) total / ticks[0];
+            if (perTick > 0.5) { fail(label, "arrived far too fast: " + total + " in " + ticks[0]
+                    + " ticks (" + String.format("%.2f", perTick) + "/tick) -- a plain hopper is moving more than its own amount"); return; }
+            pass(label, "all " + total + " arrived in " + ticks[0] + " ticks ("
+                    + String.format("%.0f", ticks[0] / (double) total) + " ticks per item, plain hopper pace)");
+        }, 1L, 1L);
     }
 
     private void sampleSide(String label, int x, int y, int z, int total) {
