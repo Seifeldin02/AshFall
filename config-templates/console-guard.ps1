@@ -53,21 +53,14 @@ public static extern bool SetConsoleMode(IntPtr handle, uint mode);
 
 $api = Add-Type -MemberDefinition $signature -Name ConsoleGuardApi -Namespace Ashfall -PassThru
 
-# One guard per server directory. Restarts are frequent here and each one launches a guard, so without this
-# they accumulate: harmless individually, but leftover processes are exactly the kind of mess that makes it
-# hard to tell which console belongs to which server. If a live guard already holds the lock, stand down.
-$pidFile = Join-Path $logDir 'console-guard.pid'
-if (Test-Path $pidFile) {
-    $existing = (Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if ($existing -match '^\d+$') {
-        $other = Get-CimInstance Win32_Process -Filter "ProcessId=$existing" -ErrorAction SilentlyContinue
-        if ($other -and $other.CommandLine -like '*console-guard*') {
-            Write-Guard "another guard is already running as pid $existing; standing down."
-            exit 0
-        }
-    }
-}
-Set-Content -Path $pidFile -Value $PID -Encoding ascii
+# Deliberately NOT one guard per directory.
+#
+# The first version took a pidfile lock so restarts could not pile up guards. That was wrong, and the
+# external probe caught it: a guard belongs to a CONSOLE, not to a folder, so a guard still alive on an
+# older console made the new one stand down and left the live console at mode 0x9 -- QuickEdit bit clear
+# but EXTENDED_FLAGS clear too, which means the console falls back to the registry default and is not
+# actually protected. One guard per console, each exiting when its own console goes away (the
+# GetConsoleMode failure below), is the correct scope.
 
 # Windows PowerShell 5.1 parses 0xC0000000 as a signed Int32 and hands CreateFileW a negative number,
 # which fails to convert and takes the whole guard down before it logs anything. Pinned to uint32.
