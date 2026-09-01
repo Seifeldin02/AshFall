@@ -165,8 +165,17 @@ final class EnderChestService implements Listener {
             String targetId=CoreUtil.id(args[1]);
             Player target=plugin.getServer().getPlayerExact(args[1]);
             if(target==null){
-                if(db.player(targetId)==null){CoreUtil.error(player,"That player has not joined this server.");return true;}
-                target=loadOffline(targetId,args[1]);
+                Database.PlayerRow known=db.player(targetId);
+                if(known==null){CoreUtil.error(player,"That player has not joined this server.");return true;}
+                /*  The STORED name, not the typed one.
+                 *
+                 *  Offline lookup goes through Bukkit's OfflinePlayer, and on an offline-mode server that
+                 *  derives a UUID by hashing the exact string it is given -- so "xfpu" and "xFPu" are two
+                 *  different players to it, and only one of them has a data file. The account row was found
+                 *  case-insensitively a line above (ids are lowercased), so the canonical spelling is
+                 *  already in hand; using it makes /ec inspect resolve the same account whatever case the
+                 *  admin typed. Still an exact full-name match -- nothing here matches partial names. */
+                target=loadOffline(targetId,known.name());
                 if(target==null){CoreUtil.error(player,"That player is offline, and OpenInv (required for offline Ender Storage inspection) is unavailable.");return true;}
             }
             openForAdmin(player,target);return true;
@@ -458,7 +467,7 @@ final class EnderChestService implements Listener {
         int current=tier(player);
         if(current>=MAX_TIER){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");return;}
         int next=current+1;
-        double cost=tierPrice(next);
+        double cost=tierPrice(next)*plugin.bank().buyFactor();
         Inventory inventory=plugin.getServer().createInventory(new UpgradeHolder(CoreUtil.id(player),returnPage),27,
                 Component.text("Ender Storage Upgrade",NamedTextColor.DARK_PURPLE));
         inventory.setItem(11,CoreUtil.named(Material.LIME_CONCRETE,"Confirm",List.of(CoreUtil.money(cost),tierCapacity(next)+" slots total")));
@@ -470,7 +479,7 @@ final class EnderChestService implements Listener {
         int current=tier(player);
         if(current>=MAX_TIER){CoreUtil.msg(player,"Ender Storage is fully expanded at "+capacity(player)+" slots.");openPage(player,returnPage);return;}
         int next=current+1;
-        double cost=tierPrice(next);
+        double cost=tierPrice(next)*plugin.bank().buyFactor();
         if(cost<=0){CoreUtil.error(player,"That storage expansion is not configured.");openPage(player,returnPage);return;}
         if(!plugin.bank().allowNonessential(player,"Ender Storage upgrades")){openPage(player,returnPage);return;}
         if(!plugin.bank().payServer(player,cost,"SINK","ENDER_STORAGE_TIER_"+next)){CoreUtil.error(player,"You cannot afford this upgrade.");openPage(player,returnPage);return;}

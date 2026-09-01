@@ -93,6 +93,18 @@ final class ShardService implements Listener {
     }
 
     ItemStack displayItem(Stock stock){return createReward(stock);}
+    /** Every special tool the shard shop sells. A boss roll that succeeds picks uniformly from these
+     *  instead of always minting a pickaxe; the TOTAL chance to win a tool is unchanged. */
+    java.util.List<String> specialToolKeys(){
+        java.util.List<String> keys=plugin.getConfig().getStringList("special-tools.keys");
+        return keys.isEmpty()?java.util.List.of("fortune_excavator","silk_excavator","fortune_shovel","silk_shovel","feller_axe","market_axe"):keys;}
+    ItemStack randomSpecialTool(){
+        java.util.List<String> keys=specialToolKeys();
+        for(int attempt=0;attempt<keys.size();attempt++){
+            Stock pick=stock(keys.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(keys.size())));
+            if(pick!=null){ItemStack made=displayItem(pick);if(made!=null)return made;}
+        }
+        return excavatorPickaxe(Math.random()<.5);}
     ItemStack excavatorPickaxe(boolean fortune){return tool(Material.NETHERITE_PICKAXE,"EXCAVATOR",fortune?Map.of(Enchantment.EFFICIENCY,5,Enchantment.FORTUNE,3,Enchantment.UNBREAKING,3,Enchantment.MENDING,1):Map.of(Enchantment.EFFICIENCY,5,Enchantment.SILK_TOUCH,1,Enchantment.UNBREAKING,3,Enchantment.MENDING,1));}
     private ItemStack create(Player player,Stock stock){ItemStack item=createReward(stock);if(item!=null)bind(item,player,stock.key());return item;}
     private ItemStack createReward(Stock stock){
@@ -217,7 +229,7 @@ final class ShardService implements Listener {
         String description=switch(function){
             case"EXCAVATOR"->"Breaks a careful 3 × 3 area.";
             case"FELLER"->"Fells connected logs.";
-            case"MARKET"->"Right-click to open the Sell Basket.";
+            case"MARKET"->"Right-click a chest to instantly sell its contents.";
             default->"Drink for Haste II (24 hours).";
         };
         meta.lore(List.of(Component.text(description,NamedTextColor.GRAY)));
@@ -227,6 +239,18 @@ final class ShardService implements Listener {
     private ItemStack cosmeticToken(Stock stock){ItemStack item=CoreUtil.named(stock.icon(),stock.name(),List.of("Right-click to unlock and equip."));ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(cosmeticTokenKey,PersistentDataType.STRING,stock.key().substring("cosmetic_".length()));item.setItemMeta(meta);return item;}
     private void bind(ItemStack item,Player player,String stock){ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(boundKey,PersistentDataType.STRING,CoreUtil.id(player));meta.getPersistentDataContainer().set(stockKey,PersistentDataType.STRING,stock);item.setItemMeta(meta);}
     boolean bound(ItemStack item){return item!=null&&item.hasItemMeta()&&item.getItemMeta().getPersistentDataContainer().has(boundKey,PersistentDataType.STRING);}
+    /** Whether right-clicking with this item runs a shard-tool action of its own.
+     *
+     *  When it does, the click belongs to that action and nothing else should also treat it as an ordinary
+     *  interaction with whatever was clicked. Vanilla containers get this for free because the handler
+     *  cancels the event; anything that opens its own screen has to ask. */
+    boolean hasRightClickAction(Player player,ItemStack item){
+        if(item==null||!item.hasItemMeta()||!belongsTo(player,item))return false;
+        var pdc=item.getItemMeta().getPersistentDataContainer();
+        String function=pdc.get(toolKey,PersistentDataType.STRING);
+        return pdc.has(cosmeticTokenKey,PersistentDataType.STRING)||"MARKET".equals(function)||"HASTE_24H".equals(function);
+    }
+
     boolean belongsTo(Player player,ItemStack item){return !bound(item)||CoreUtil.id(player).equals(item.getItemMeta().getPersistentDataContainer().get(boundKey,PersistentDataType.STRING));}
     /** Re-assigns a Shard-bound item's ownership tag to a new player, keeping its stock/source tag as-is.
      *  Used only by the one sanctioned bound-item transfer path — looting it from a defeated player's PvP
@@ -296,7 +320,7 @@ final class ShardService implements Listener {
     @EventHandler public void interact(PlayerInteractEvent event){
         Player player=event.getPlayer();activity(player);ItemStack item=event.getItem();if(item==null||!belongsTo(player,item))return;
         ItemMeta meta=item.getItemMeta();String function=meta.getPersistentDataContainer().get(toolKey,PersistentDataType.STRING);
-        if(event.getAction().isRightClick()&&"MARKET".equals(function)){event.setCancelled(true);plugin.marketplace().openSellBasket(player,false);return;}
+        if(event.getAction().isRightClick()&&"MARKET".equals(function)){event.setCancelled(true);plugin.shop().sellAllChest(player);return;}
         if(event.getAction().isRightClick()&&"HASTE_24H".equals(function)){event.setCancelled(true);consumeOne(player,event.getHand(),item);long expiry=Math.max(System.currentTimeMillis(),parseLong(db.state("shard_haste:"+CoreUtil.id(player))))+86400000L;db.state("shard_haste:"+CoreUtil.id(player),Long.toString(expiry));CoreUtil.msg(player,"Haste II active for 24 hours.");return;}
         String cosmetic=meta.getPersistentDataContainer().get(cosmeticTokenKey,PersistentDataType.STRING);
         if(event.getAction().isRightClick()&&cosmetic!=null){event.setCancelled(true);if(db.unlockCosmetic(CoreUtil.id(player),cosmetic)){consumeOne(player,event.getHand(),item);db.activateCosmetic(CoreUtil.id(player),cosmetic);CoreUtil.msg(player,CoreUtil.pretty(cosmetic)+" unlocked and equipped.");}else CoreUtil.msg(player,"You already own this cosmetic.");}
@@ -319,6 +343,24 @@ final class ShardService implements Listener {
     private boolean safeToolBlock(Player player,Block block){if(block.getType().isAir()||Set.of(Material.BEDROCK,Material.BARRIER,Material.SPAWNER).contains(block.getType())||block.getState() instanceof org.bukkit.block.Container)return false;if(plugin.spawnClaims().contains(block.getLocation())&&!plugin.isAdmin(player))return false;FactionService.Claim claim=plugin.factions().claimAt(block.getLocation());return claim==null||plugin.factions().isMember(player,claim.faction());}
 
     @EventHandler public void drop(PlayerDropItemEvent event){if(bound(event.getItemDrop().getItemStack())){event.setCancelled(true);CoreUtil.error(event.getPlayer(),"Shard rewards are account-bound.");}}
+    /** AxTrade (and any other GUI-mediated hand-off) moves a Shard-bound tool between two online players without
+     *  ever firing a drop or pickup event, so its ownership tag stayed pointed at the giver -- which is exactly
+     *  why a traded Excavator's 3x3 mining stopped working for the player who received it (belongsTo() saw the
+     *  old owner and refused). Re-scanning the closer's own inventory one tick after ANY inventory closes
+     *  re-binds any bound tool they now physically hold to them, generically, with no compile-time dependency on
+     *  the trade plugin. This mirrors RelicService.reconcileOnInventoryClose; there is only ever one physical
+     *  copy, so re-binding it to its new holder cannot duplicate anything. */
+    @EventHandler public void reconcileOnInventoryClose(org.bukkit.event.inventory.InventoryCloseEvent event){
+        if(!(event.getPlayer() instanceof Player player))return;
+        plugin.getServer().getScheduler().runTask(plugin,()->{
+            if(!player.isOnline())return;
+            String id=CoreUtil.id(player);
+            for(ItemStack item:player.getInventory().getContents()){
+                if(!bound(item))continue;
+                if(!id.equals(item.getItemMeta().getPersistentDataContainer().get(boundKey,PersistentDataType.STRING)))transferBinding(item,player);
+            }
+        });
+    }
     @EventHandler public void pickup(EntityPickupItemEvent event){
         if(!(event.getEntity() instanceof Player player))return;
         ItemStack stack=event.getItem().getItemStack();
@@ -355,8 +397,50 @@ final class ShardService implements Listener {
         }
         ItemStack current=event.getCurrentItem(),cursor=event.getCursor();
         if(bound(current)&&!belongsTo(player,current)||bound(cursor)&&!belongsTo(player,cursor)){event.setCancelled(true);CoreUtil.error(player,"That Shard reward belongs to another player.");return;}
-        boolean movingBound=bound(cursor)&&event.getRawSlot()<event.getView().getTopInventory().getSize()||event.isShiftClick()&&event.getRawSlot()>=event.getView().getTopInventory().getSize()&&bound(current);
-        if(movingBound){event.setCancelled(true);CoreUtil.error(player,"Shard rewards cannot be transferred into shared storage.");}
+        /** The player's own inventory screen has a CRAFTING top inventory and no container at all, so there
+         *  is nowhere for an item to GO except back into their own pockets. Every click there is fine.
+         *  The old rule blocked it, which is why a bound pickaxe could not even be shift-clicked between the
+         *  hotbar and the main inventory -- an item you own, moving inside your own bag, refused. */
+        if(topType==org.bukkit.event.inventory.InventoryType.CRAFTING||topType==org.bukkit.event.inventory.InventoryType.CREATIVE)return;
+        if(intoForeignStorage(player,event,current,cursor)){event.setCancelled(true);CoreUtil.error(player,"Shard rewards cannot be moved into shared storage.");}
+    }
+
+    /** Does this click put a bound item into a container that is not the owner's own storage?
+     *
+     *  The old test only knew about the CURSOR and about shift-clicks, which left the simplest possible
+     *  bypass wide open: hover the destination slot and press a hotbar number. That is a swap, not a
+     *  cursor placement and not a shift-click, so nothing matched and the bound item walked straight into
+     *  shared storage. Reported live, and trivially repeatable. Offhand swap (F) had the same hole, and
+     *  dragging was not covered at all -- see drag() below.
+     *
+     *  Every route an item can take INTO the top inventory is now enumerated explicitly. */
+    private boolean intoForeignStorage(Player player,InventoryClickEvent event,ItemStack current,ItemStack cursor){
+        int topSize=event.getView().getTopInventory().getSize();
+        if(event.getRawSlot()<0)return false;
+        if(event.getRawSlot()<topSize){
+            if(bound(cursor))return true;
+            if(event.getClick()==org.bukkit.event.inventory.ClickType.NUMBER_KEY&&event.getHotbarButton()>=0
+                    &&bound(player.getInventory().getItem(event.getHotbarButton())))return true;
+            if(event.getClick()==org.bukkit.event.inventory.ClickType.SWAP_OFFHAND
+                    &&bound(player.getInventory().getItemInOffHand()))return true;
+            return false;
+        }
+        return event.isShiftClick()&&bound(current);
+    }
+
+    /** Dragging a bound item across container slots was never checked at all. */
+    @EventHandler(ignoreCancelled=true) public void drag(org.bukkit.event.inventory.InventoryDragEvent event){
+        if(!(event.getWhoClicked() instanceof Player player))return;
+        if(!bound(event.getOldCursor()))return;
+        Inventory top=event.getView().getTopInventory();
+        org.bukkit.event.inventory.InventoryType type=top.getType();
+        if(type==org.bukkit.event.inventory.InventoryType.CRAFTING||type==org.bukkit.event.inventory.InventoryType.CREATIVE
+                ||type==org.bukkit.event.inventory.InventoryType.ANVIL
+                ||plugin.enderChests().isPersonalStorage(top,player))return;
+        if(event.getRawSlots().stream().anyMatch(slot->slot<top.getSize())){
+            event.setCancelled(true);
+            CoreUtil.error(player,"Shard rewards cannot be moved into shared storage.");
+        }
     }
     /** Admin-inspection ownership transfer for /inv (OpenInv) and /enderchest inspect: a bound item taken OUT
      *  of someone else's storage during an authorized inspection immediately rebinds to the admin who took

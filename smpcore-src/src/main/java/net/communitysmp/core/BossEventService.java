@@ -93,10 +93,41 @@ final class BossEventService {
      *  map. Cleared on every new event start, reported to each participant once the event ends. */
     private final Map<String, Double> eventEarnings = new HashMap<>();
     private UUID worldBossId; private long bossSpawnedAt, nextHintAt; private int hintStage,worldBossActiveCount=1;private double worldBossBaseHealth;private Origin worldBossOrigin=Origin.NATURAL;private WorldBossKind worldBossKind=WorldBossKind.ASHEN_KNIGHT;
+    /** The Elite Hunt target: once it is dead or otherwise gone the event must end rather than idle until its
+     *  timer. eliteHuntLast is its last-known live position, used to tell "genuinely gone" from "chunk not
+     *  ticking right now" so a brief unload never ends a live hunt. */
+    private UUID eliteHuntId; private Location eliteHuntLast;
     private World forcedBossWorld;private int forcedBossChunkX,forcedBossChunkZ;private boolean forcedBossChunkSet;
     private BukkitTask ticker, visuals, motionTask;
 
+    /** Force-load a chunk on behalf of an event, recording ownership so it can always be found again. */
+    void ownForceLoad(World world,int cx,int cz,String owner){
+        if(world==null)return;
+        world.setChunkForceLoaded(cx,cz,true);
+        db.addForcedChunk(world.getName(),cx,cz,owner);}
+    /** Release a chunk ONLY if this plugin owns it. An admin rectangle is never recorded, so it is never
+     *  cleared here even when an event happens to run inside one. */
+    void ownRelease(World world,int cx,int cz){
+        if(world==null)return;
+        boolean owned=false;
+        for(int[] c:db.forcedChunkCoords(world.getName()))if(c[0]==cx&&c[1]==cz){owned=true;break;}
+        if(!owned)return;
+        world.setChunkForceLoaded(cx,cz,false);
+        db.removeForcedChunk(world.getName(),cx,cz);}
+    /** Startup/shutdown reconciliation: release every chunk still recorded as plugin-owned. After a clean
+     *  stop this finds nothing; after a crash it clears exactly the tickets the plugin leaked. */
+    int reconcileForcedChunks(){
+        int cleared=0;
+        for(String name:db.forcedChunkWorlds()){
+            World world=plugin.getServer().getWorld(name);
+            for(int[] c:db.forcedChunkCoords(name)){
+                if(world!=null)world.setChunkForceLoaded(c[0],c[1],false);
+                db.removeForcedChunk(name,c[0],c[1]);cleared++;}}
+        if(cleared>0)plugin.getLogger().info("[chunks] released "+cleared+" stale plugin-owned force-loaded chunk(s)");
+        return cleared;}
+
     BossEventService(SMPCore plugin, FactionService factions, RelicService relics) {
+        plugin.getServer().getScheduler().runTaskLater(plugin,this::reconcileForcedChunks,60L);
         this.plugin = plugin; this.db = plugin.db(); this.factions = factions; this.relics = relics;
         bossAddKey = new NamespacedKey(plugin, "world_boss_add");
         tierKey = new NamespacedKey(plugin, "elite_tier"); spawnerKey = new NamespacedKey(plugin, "spawner_mob"); phaseKey = new NamespacedKey(plugin, "boss_phase"); treasureKey = new NamespacedKey(plugin, "event_treasure"); abilityKey = new NamespacedKey(plugin, "elite_ability"); curerKey = new NamespacedKey(plugin, "zombie_curer"); eventEliteKey = new NamespacedKey(plugin, "event_elite"); burstKey = new NamespacedKey(plugin, "elite_burst");originKey=new NamespacedKey(plugin,"boss_origin");summonKey=new NamespacedKey(plugin,"sealed_omen");eliteSpawnedAtKey=new NamespacedKey(plugin,"elite_spawned_at");sharedBaseHealthKey=new NamespacedKey(plugin,"shared_boss_base_health");sharedActiveCountKey=new NamespacedKey(plugin,"shared_boss_active_count");legendaryLootKey=new NamespacedKey(plugin,"legendary_loot");movementScaledKey=new NamespacedKey(plugin,"elite_movement_scaled");summonKindKey=new NamespacedKey(plugin,"summon_kind");
@@ -323,7 +354,7 @@ final class BossEventService {
         double epic=bosses.getDouble("natural-elites.epic-chance",.00006)*dimension;
         double legendary=bosses.getDouble("natural-elites.legendary-chance",.0000015)*dimension;
         if(roll<legendary)tier="legendary";else if(roll<legendary+epic)tier="epic";else if(roll<legendary+epic+rare)tier="rare";else if(roll<legendary+epic+rare+uncommon)tier="uncommon";
-        if (tier != null) {makeElite(mob, tier);db.recordEliteSpawn(tier,true);}
+        if (tier != null && plugin.settings().elitesAllowedAt(mob.getLocation())) {makeElite(mob, tier);mob.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,"NATURAL");db.recordEliteSpawn(tier,true);}
     }
 
     private void makeElite(LivingEntity mob, String tier) {
@@ -356,8 +387,74 @@ final class BossEventService {
     }
     private ItemStack special(Material material, String name, Enchantment enchantment, int level) { ItemStack item = new ItemStack(material); item.addUnsafeEnchantment(enchantment, level); item.addUnsafeEnchantment(Enchantment.UNBREAKING, Math.min(3, level)); return item; }
 
-    LivingEntity spawnElite(String tier, Location preferred) { World world = preferred!=null&&preferred.getWorld()!=null?preferred.getWorld():overworld(); if (world == null) return null; Location loc = preferred == null ? randomSafe(world, 400, 2500) : preferred; if (loc == null) loc = world.getSpawnLocation(); Class<? extends LivingEntity> type=eliteType(tier,world.getEnvironment());LivingEntity mob = world.spawn(loc, type, CreatureSpawnEvent.SpawnReason.CUSTOM); makeElite(mob, tier);db.recordEliteSpawn(tier,false); return mob; }
-    private Class<? extends LivingEntity> eliteType(String tier,World.Environment environment){if(environment==World.Environment.THE_END)return Enderman.class;if(environment==World.Environment.NETHER)return tier.equals("legendary")||tier.equals("miniboss")?WitherSkeleton.class:Piglin.class;return switch(tier){case"legendary"->WitherSkeleton.class;case"epic","rare"->Skeleton.class;default->Zombie.class;};}
+    /** Event path (elite hunt). Stamped EVENT_SPAWNED so event elites stay exempt from the environmental
+     *  loot rules that natural and admin-spawned ordinary elites follow. */
+    LivingEntity spawnElite(String tier, Location preferred) { LivingEntity mob = spawnElite(tier, preferred, null); if (mob != null) mob.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,"EVENT_SPAWNED"); return mob; }
+    /** Admin variant: forcedType (a spawnable Mob) overrides the tier default mob; null keeps the
+     *  environment-based default. Preferred location null = random safe spot. */
+    LivingEntity spawnElite(String tier, Location preferred, org.bukkit.entity.EntityType forcedType) { World world = preferred!=null&&preferred.getWorld()!=null?preferred.getWorld():overworld(); if (world == null) return null; Location loc = preferred == null ? randomSafe(world, 400, 2500) : preferred; if (loc == null) loc = world.getSpawnLocation(); Class<? extends LivingEntity> type; if(forcedType!=null&&forcedType.getEntityClass()!=null&&LivingEntity.class.isAssignableFrom(forcedType.getEntityClass())) type=forcedType.getEntityClass().asSubclass(LivingEntity.class); else type=eliteType(tier,world.getEnvironment()); LivingEntity mob = world.spawn(loc, type, CreatureSpawnEvent.SpawnReason.CUSTOM); makeElite(mob, tier);mob.getPersistentDataContainer().set(originKey,PersistentDataType.STRING,"ADMIN_SPAWNED");db.recordEliteSpawn(tier,false); return mob; }
+    /** Where a PLAYER-summoned boss appears. A manual summon is never relocated through the Nether
+     *  ceiling or dumped far below the summoner: above the roof, the roof itself is valid footing
+     *  (bedrock included) as long as the mob fits, and if it does not fit we refuse instead of moving
+     *  it. Below the ceiling, and for every natural/event spawn, the stricter terrain search is kept. */
+    private Location summonSpot(Player player){
+        World world=player.getWorld();Location at=player.getLocation();
+        /** "On the nether roof" means standing ON the bedrock ceiling, which is y=128 upward -- NOT within
+         *  eight blocks of the world's build limit. The old test (maxHeight-8, i.e. y>=248) was never true
+         *  for a player on the roof, so a manually-used seal there fell through to findSafeAny, which either
+         *  found nothing or found the real floor a hundred blocks below and was rejected by the depth guard
+         *  on the next line -- reported as "No clear footing here for the seal".
+         *
+         *  This is the MANUAL seal path only (it takes a Player). Automatic world-boss placement uses its own
+         *  location picker and is deliberately untouched: automatic Cinder Warlords still never go to the
+         *  roof. */
+        boolean aboveCeiling=world.getEnvironment()==World.Environment.NETHER
+                &&(at.getBlockY()>=netherRoofY(world)||at.getBlockY()>=world.getMaxHeight()-8);
+        if(aboveCeiling)return roofSpot(world,at);
+        Location found=CoreUtil.findSafeAny(world,at.getBlockX(),at.getBlockZ());
+        if(found!=null&&world.getEnvironment()==World.Environment.NETHER&&found.getBlockY()<at.getBlockY()-24)return null;
+        return found;}
+    /** The first y ABOVE the Nether's bedrock ceiling. Found by looking for the ceiling rather than assuming
+     *  128, so a world with a non-standard height still resolves correctly. */
+    private int netherRoofY(World world){
+        int max=Math.min(world.getMaxHeight()-1,world.getMinHeight()+127);
+        for(int y=max;y>world.getMinHeight();y--)
+            if(world.getBlockAt(0,y,0).getType()==org.bukkit.Material.BEDROCK)return y+1;
+        return world.getMinHeight()+128;
+    }
+
+    /** Solid footing plus a clear 3x3x3 for the boss body, with bedrock accepted as floor. */
+    private Location roofSpot(World world,Location at){
+        int x=at.getBlockX(),y=at.getBlockY(),z=at.getBlockZ();
+        for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++){
+            if(!world.getBlockAt(x+dx,y-1,z+dz).getType().isSolid())return null;
+            for(int dy=0;dy<=2;dy++)if(!world.getBlockAt(x+dx,y+dy,z+dz).isPassable())return null;}
+        return new Location(world,x+.5,y,z+.5,at.getYaw(),0);}
+    /** Which creature an elite of this tier turns out to be.
+     *
+     *  This used to be a hardcoded switch, and every legendary in the Overworld was a Wither Skeleton --
+     *  every single Elite Hunt, for ever. The tier is meant to say how DANGEROUS the thing is, not what it
+     *  is; a hunt is a lot less interesting when you already know what you are walking towards.
+     *
+     *  Now a weighted-free random pick from a per-dimension, per-tier pool in bosses.yml, so the roster can
+     *  be retuned without a build. Entries that are not spawnable living types are skipped rather than
+     *  crashing the spawn, and an empty or entirely invalid list falls back to the original behaviour, so a
+     *  bad edit degrades to "boring" instead of "broken". */
+    private Class<? extends LivingEntity> eliteType(String tier,World.Environment environment){
+        String dimension=switch(environment){case NETHER->"nether";case THE_END->"the_end";default->"overworld";};
+        List<Class<? extends LivingEntity>> pool=new ArrayList<>();
+        for(String name:bosses.getStringList("elite-types."+dimension+"."+tier)){
+            try{
+                EntityType type=EntityType.valueOf(name.trim().toUpperCase(Locale.ROOT));
+                if(type.getEntityClass()==null||!LivingEntity.class.isAssignableFrom(type.getEntityClass()))continue;
+                pool.add(type.getEntityClass().asSubclass(LivingEntity.class));
+            }catch(IllegalArgumentException ignored){}
+        }
+        if(!pool.isEmpty())return pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+        if(environment==World.Environment.THE_END)return Enderman.class;
+        if(environment==World.Environment.NETHER)return tier.equals("legendary")||tier.equals("miniboss")?WitherSkeleton.class:Piglin.class;
+        return switch(tier){case"legendary"->WitherSkeleton.class;case"epic","rare"->Skeleton.class;default->Zombie.class;};
+    }
     private LivingEntity bossVictim(Entity entity){if(entity instanceof EnderDragonPart part)return part.getParent();return entity instanceof LivingEntity living?living:null;}
     private boolean isVanillaBoss(LivingEntity entity){List<String> types=bosses.getStringList("boss-participation.vanilla-types");if(types.isEmpty())types=List.of("ENDER_DRAGON","WITHER");return types.stream().anyMatch(type->type.equalsIgnoreCase(entity.getType().name()));}
     void rarityReport(CommandSender sender){CoreUtil.msg(sender,"Elite spawn telemetry (since this update):");Map<String,Database.EliteSpawnRow> counts=new HashMap<>();for(Database.EliteSpawnRow row:db.eliteSpawnCounts())counts.put(row.tier(),row);for(String tier:List.of("uncommon","rare","epic","legendary")){double chance=bosses.getDouble("natural-elites."+tier+"-chance",0);Database.EliteSpawnRow row=counts.get(tier);String odds=chance<=0?"disabled":"1 in "+Math.round(1/chance);CoreUtil.msg(sender,CoreUtil.pretty(tier)+": "+odds+" base | natural "+(row==null?0:row.natural())+" | custom "+(row==null?0:row.custom()));}CoreUtil.msg(sender,"Nether and End apply the configured dimension multiplier equally to every tier.");}
@@ -384,7 +481,12 @@ final class BossEventService {
         if(loc==null||!loc.getWorld().equals(world)||protectedEventLocation(loc))return null;
         LivingEntity boss = null;
         try {
-            boss = spawnBossEntity(world, loc, kind); double rawHp = bosses.getDouble(prefix+".health", 18000); double hp = clampHealth(rawHp); boss.getAttribute(Attribute.MAX_HEALTH).setBaseValue(hp); boss.setHealth(hp); if(boss.getAttribute(Attribute.ATTACK_DAMAGE)!=null)boss.getAttribute(Attribute.ATTACK_DAMAGE).setBaseValue(bosses.getDouble(prefix+".damage", 18)); if(kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)boss.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, Integer.MAX_VALUE, 0, false, false));
+            boss = spawnBossEntity(world, loc, kind);
+            /** Stamped FIRST, before health, equipment or names. The damage listener keys off this and drops
+             *  any hit that arrives while it is missing, so every statement between the spawn and the stamp
+             *  was a window in which a player's damage went unrecorded. */
+            boss.getPersistentDataContainer().set(tierKey, PersistentDataType.STRING, tierFor(kind));
+            double rawHp = bosses.getDouble(prefix+".health", 18000); double hp = clampHealth(rawHp); boss.getAttribute(Attribute.MAX_HEALTH).setBaseValue(hp); boss.setHealth(hp); if(boss.getAttribute(Attribute.ATTACK_DAMAGE)!=null)boss.getAttribute(Attribute.ATTACK_DAMAGE).setBaseValue(bosses.getDouble(prefix+".damage", 18)); if(kind==WorldBossKind.ASHEN_KNIGHT||kind==WorldBossKind.PIGLIN_BRUTE)boss.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, Integer.MAX_VALUE, 0, false, false));
             if(boss.getAttribute(Attribute.FOLLOW_RANGE)!=null)boss.getAttribute(Attribute.FOLLOW_RANGE).setBaseValue(bosses.getDouble("world-boss-targeting.range",50));
             if(boss.getAttribute(Attribute.KNOCKBACK_RESISTANCE)!=null){
                 /** Per-boss knockback footing. The Warlord is the mobile, in-your-face boss, so being punted
@@ -481,17 +583,32 @@ final class BossEventService {
         lore.add(summonReadyLine());
         return lore;
     }
-    /** "Cooldown" here is simply whether an encounter is currently active — a Summoning Paper, like a
-     *  natural random world-boss event, can never start a second encounter while one is already running
-     *  (see the worldBoss()!=null||eventType!=null guard below). This is unrelated to the natural event
-     *  system's own RARE-tier interval timer (activeTierNextDelay/eventRemaining in startEvent()), which
-     *  is set ONLY when origin==Origin.NATURAL — a player-summoned encounter never starts, resets, or
-     *  blocks that timer, and vice versa; they are genuinely separate cooldowns. */
+    /** Exactly one thing stops a Sealed Omen being used: another WORLD BOSS. Nothing else does.
+     *
+     *  This line must mirror useSummonScroll's guard (worldBoss()!=null || eventType==WORLD_BOSS) and
+     *  nothing else, because it is the only thing a player can see before spending the scroll. It used to
+     *  refuse on `eventType != null`, i.e. on ANY event at all -- so a Resource Rush, an Elite Hunt or a
+     *  Task Master ticking away somewhere made every Sealed Omen on the server advertise a cooldown that
+     *  did not exist. Right-clicking would have worked the whole time: startEvent's standaloneBoss branch
+     *  exists precisely so a paid summon runs ALONGSIDE an ordinary event. Reported twice from live as
+     *  "the scrolls say an event is ongoing when there isn't one"; the earlier fix only handled the stale-
+     *  field case and left the real one, which is this.
+     *
+     *  Still unrelated to the natural event system's own per-tier interval timer (activeTierNextDelay /
+     *  eventRemaining), which is set ONLY when origin==Origin.NATURAL: a player summon never starts,
+     *  reads, resets or is blocked by it. */
     private String summonReadyLine(){
-        if(worldBoss()==null&&eventType==null)return"Ready to summon.";
-        long remaining=Math.max(0,eventEnds-System.currentTimeMillis());
+        LivingEntity active=worldBoss();
+        if(active==null&&eventType!=EventType.WORLD_BOSS)return"Ready to summon.";
+        /** A boss summoned alongside another event carries its OWN end time; eventEnds in that case
+         *  belongs to whatever else is running and would be the wrong number to count down. */
+        long ends=eventType==EventType.WORLD_BOSS?eventEnds:standaloneBossEnds;
+        long remaining=ends-System.currentTimeMillis();
+        /** A window that has expired with nothing left alive is over, whatever the field still says. */
+        if(remaining<=0&&active==null)return"Ready to summon.";
+        if(remaining<=0)return"Unavailable — a world boss is still active.";
         long minutes=remaining/60000,seconds=(remaining%60000)/1000;
-        return"On cooldown — an encounter is already active (~"+minutes+"m "+seconds+"s remaining).";
+        return"Unavailable — a world boss is already active (~"+minutes+"m "+seconds+"s remaining).";
     }
     /** Keeps any Sealed Omen already sitting in an online player's inventory showing live state, without
      *  needing to reopen the shop or attempt a summon to find out. getContents() returns live references
@@ -536,8 +653,9 @@ final class BossEventService {
         if(kind!=null&&!sameWorld){CoreUtil.error(player,resolved==WorldBossKind.PIGLIN_BRUTE?"The Cinder Warlord's seal only stirs within the Nether.":"This seal needs Overworld wilderness.");return false;}
         Location loc=null;
         if(sameWorld){
-            loc=CoreUtil.findSafeAny(player.getWorld(),player.getLocation().getBlockX(),player.getLocation().getBlockZ());
-            if(loc==null||protectedEventLocation(loc)){CoreUtil.error(player,"The seal needs wilderness at least "+eventProtectionRadius()+" blocks from protected land.");return false;}
+            loc=summonSpot(player);
+            if(loc==null){CoreUtil.error(player,"No clear footing here for the seal. Stand somewhere open and try again.");return false;}
+            if(protectedEventLocation(loc)){CoreUtil.error(player,"The seal needs wilderness at least "+eventProtectionRadius()+" blocks from protected land.");return false;}
         }
         /** Only another WORLD BOSS blocks a summon; an ordinary event running alongside is fine. */
         if(worldBoss()!=null||eventType==EventType.WORLD_BOSS){CoreUtil.error(player,"A world boss is already active.");return false;}
@@ -595,6 +713,17 @@ final class BossEventService {
             org.bukkit.entity.Entity raw=e.getDamager();
             if(raw instanceof Projectile shot&&shot.getShooter() instanceof LivingEntity shooter)raw=shooter;
             if(raw instanceof LivingEntity attacker&&!attacker.equals(victim))noteMobAttacker(victim,attacker);
+        }
+        /** Indirect damage (crystals, TNT) is credited here and only here: the block below is the combat
+         *  path and deliberately still requires a direct damager. */
+        if (damager == null) {
+            Player responsible = responsibleFor(e);
+            if (responsible != null) {
+                String indirectId = CoreUtil.id(responsible);
+                double indirect = Math.min(victim.getHealth(), Math.max(0, e.getFinalDamage()));
+                damage.computeIfAbsent(victim.getUniqueId(), x -> new HashMap<>()).merge(indirectId, indirect, Double::sum);
+                lastContribution.computeIfAbsent(victim.getUniqueId(), x -> new HashMap<>()).put(indirectId, System.currentTimeMillis());
+            }
         }
         if (damager != null) {
             double toughness=toughnessFor(victim,tier);if(exposedUntil.getOrDefault(victim.getUniqueId(),0L)>System.currentTimeMillis())toughness/=1.5;if(toughness>1)e.setDamage(e.getDamage()/toughness);
@@ -662,6 +791,25 @@ final class BossEventService {
     }
     private Player playerDamager(Entity damager) { if (damager instanceof Player p) return p; if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player p) return p; if (damager instanceof Tameable tame && tame.getOwner() instanceof Player p) return p; return null; }
 
+    /** The player ULTIMATELY behind a hit, which is not always the entity that landed it.
+     *
+     *  playerDamager() understands direct hits, projectiles and pets. End Crystal (and TNT) damage arrives
+     *  with the crystal as the damager, so crystal PvE was credited for the KILL -- the death message names
+     *  the player -- while contributing precisely nothing to the damage table the reward split is built on.
+     *  Solo that was hidden by the "no participants" fallback; in a group it meant the person doing the
+     *  damage got none of the pool. DamageSource#getCausingEntity is Bukkit's own answer to "who is behind
+     *  this".
+     *
+     *  Used for ACCOUNTING ONLY. Toughness scaling, relic multipliers and boss targeting all still key off a
+     *  direct damager, so this changes who gets PAID and never how hard the fight is. */
+    private Player responsibleFor(EntityDamageByEntityEvent e) {
+        Player direct = playerDamager(e.getDamager());
+        if (direct != null) return direct;
+        org.bukkit.damage.DamageSource source = e.getDamageSource();
+        Entity cause = source == null ? null : source.getCausingEntity();
+        return cause instanceof Player player ? player : null;
+    }
+
     void onDeath(EntityDeathEvent e) {
         LivingEntity mob = e.getEntity(); Player killer = mob.getKiller(); String tier = mob.getPersistentDataContainer().get(tierKey, PersistentDataType.STRING); eliteIds.remove(mob.getUniqueId()); abilityCooldown.remove(mob.getUniqueId());catchupCooldown.remove(mob.getUniqueId());lastEngaged.remove(mob.getUniqueId());lastTarget.remove(mob.getUniqueId());rangedHits.remove(mob.getUniqueId());bossMechanicAt.remove(mob.getUniqueId());blockedSince.remove(mob.getUniqueId());lastMobHit.remove(mob.getUniqueId());lastNearbyAt.remove(mob.getUniqueId());specialAbilityAt.remove(mob.getUniqueId());exposedUntil.remove(mob.getUniqueId());enraged.remove(mob.getUniqueId());enrageStageApplied.remove(mob.getUniqueId());bossFirstEngagedAt.remove(mob.getUniqueId());eliteLastPlayerNear.remove(mob.getUniqueId());bossTargetSince.remove(mob.getUniqueId());bossMobAttackers.remove(mob.getUniqueId());bossTargetOutOfRangeSince.remove(mob.getUniqueId());bossUnreachableSince.remove(mob.getUniqueId());bossLeapCooldown.remove(mob.getUniqueId());bossRepathAt.remove(mob.getUniqueId());bossSlamAt.remove(mob.getUniqueId());bossLavaLungeAt.remove(mob.getUniqueId());removeHealthBar(mob.getUniqueId());boolean spawner = mob.getPersistentDataContainer().has(spawnerKey);
         if (tier != null) { rewardElite(e, killer, tier); return; }
@@ -694,11 +842,69 @@ final class BossEventService {
              *  reach the step a hundred times slower than an unstacked one for identical income. A stack
              *  that straddles the boundary is split, so the step never lands mid-kill as a cliff. */
             double reducedShare=plugin.getConfig().getDouble("mob-money.spawner-reduced-share",.25);
-            int threshold=plugin.getConfig().getInt("mob-money.spawner-daily-threshold",10000);
-            int before=db.addSpawnerKills(CoreUtil.id(killer),mob.getType().name(),CoreUtil.riyadhDay(),virtual);
-            int atFull=Math.max(0,Math.min(virtual,threshold-before));
-            amount=roll*(atFull*spawnerShare+(virtual-atFull)*reducedShare);
+            String day=CoreUtil.riyadhDay();
+            if(mob.getType()==EntityType.IRON_GOLEM){
+                /** Golem spawners are the flagship 50m purchase, so they pay a flat configured rate per
+                 *  represented golem and their full-rate allowance is granted PER REPRESENTED SPAWNER --
+                 *  a x10 stack earns ten times the allowance rather than sharing one. The purchase price
+                 *  is the inflation control; the allowance only exists as a ceiling on a farm run around
+                 *  the clock. Past it, the ordinary reduced spawner payout resumes. */
+                java.util.List<String> ids=plugin.spawners().sourceIdentities(mob);
+                int perSpawner=plugin.getConfig().getInt("mob-money.golem-daily-allowance-per-spawner",2200);
+                /** Golems already alive from before this build carry no source stamp. They are metered
+                 *  against the killer instead so they can never draw an untracked full rate; the stamp
+                 *  arrives on the spawner's next cycle and normal per-spawner metering resumes. */
+                int atFull;
+                if(ids.isEmpty()){
+                    int used=db.addSpawnerKills(CoreUtil.id(killer),"IRON_GOLEM_UNSTAMPED",day,virtual);
+                    atFull=Math.max(0,Math.min(virtual,perSpawner-used));
+                }else{
+                    /*  Each spawner carries its OWN daily allowance; they are not a shared pool.
+                     *
+                     *  It used to sum every spawner's allowance into one number and subtract the total spent
+                     *  across all of them. Arithmetically similar while the stack is unchanged, but it makes
+                     *  ADDING a spawner useless for the rest of the day: a third spawner raised the pool by
+                     *  2200 while inheriting the two older spawners' entire overdraft, so it paid nothing
+                     *  until the next reset. Measured live -- a third spawner added after 7,521 kills against
+                     *  a 4,400 pool contributed exactly zero.
+                     *
+                     *  Charging each spawner separately means a spawner that has not spent its own allowance
+                     *  still has it, whatever its neighbours have done. Usage fills the spawners with
+                     *  headroom first, so nothing is wasted topping up one that is already exhausted. */
+                    java.util.Map<String,Integer> headroom=new java.util.LinkedHashMap<>();
+                    int available=0;
+                    for(String id:ids){
+                        int free=Math.max(0,perSpawner-db.spawnerAllowanceUsed(java.util.List.of(id),day));
+                        headroom.put(id,free);available+=free;
+                    }
+                    atFull=Math.max(0,Math.min(virtual,available));
+                    java.util.Map<String,Integer> charge=new java.util.LinkedHashMap<>();
+                    int remaining=virtual;
+                    for(var entry:headroom.entrySet()){
+                        if(remaining<=0)break;
+                        int take=Math.min(remaining,entry.getValue());
+                        if(take>0){charge.merge(entry.getKey(),take,Integer::sum);remaining-=take;}
+                    }
+                    /** Anything past every spawner's allowance still has to be recorded somewhere, or the
+                     *  overdraft would vanish and the next kill would look like fresh headroom. */
+                    if(remaining>0)charge.merge(ids.get(0),remaining,Integer::sum);
+                    for(var entry:charge.entrySet())db.addSpawnerAllowance(java.util.List.of(entry.getKey()),day,entry.getValue());
+                }
+                double fullRate=plugin.getConfig().getDouble("mob-money.golem-full-rate",270);
+                amount=atFull*fullRate+(virtual-atFull)*roll*reducedShare;
+                db.recordGolemDaily(day,virtual,amount);
+            }else{
+                int threshold=plugin.getConfig().getInt("mob-money.spawner-daily-threshold",10000);
+                int before=db.addSpawnerKills(CoreUtil.id(killer),mob.getType().name(),day,virtual);
+                int atFull=Math.max(0,Math.min(virtual,threshold-before));
+                amount=roll*(atFull*spawnerShare+(virtual-atFull)*reducedShare);
+            }
         }else{
+            /** Village and player-built Iron Golem farms pay no SMPCore money at all. mob-rewards is keyed
+             *  by mob TYPE, so before this a free village farm earned the FULL rate while the 50m spawner
+             *  earned only the reduced spawner share -- the golem spawner was competing with, and losing
+             *  to, an iron farm that costs nothing. Golem income is now exclusive to purchased spawners. */
+            if(mob.getType()==EntityType.IRON_GOLEM)return;
             double factor=farmFactor(killer,mob.getType());
             if(factor<=0)return;
             amount=roll*factor*virtual;
@@ -726,7 +932,12 @@ final class BossEventService {
     }
     private void rewardVanillaBoss(EntityDeathEvent event,LivingEntity boss,Player killer){
         UUID id=boss.getUniqueId();Map<String,Double> raw=damage.remove(id);Map<String,Long> hits=lastContribution.remove(id);sharedBossIds.remove(id);Map<String,Double> participants=meaningfulParticipants(boss,raw,hits);
-        if(participants.isEmpty()&&killer!=null)participants=Map.of(CoreUtil.id(killer),Math.max(1,boss.getAttribute(Attribute.MAX_HEALTH).getValue()));
+        if(participants.isEmpty()&&killer!=null){
+            participants=Map.of(CoreUtil.id(killer),Math.max(1,boss.getAttribute(Attribute.MAX_HEALTH).getValue()));
+            plugin.getLogger().warning("[BossDamage] "+boss.getType()+" died with NO recorded damage; crediting "
+                    +killer.getName()+" by fallback. A hit that lands before the boss is stamped with its tier"
+                    +" key is discarded by the damage listener, which is how this happens.");
+        }
         sendDamageRecap(boss,participants);
         boolean weeklyKill=boss instanceof EnderDragon&&plugin.weeklyDragon().isWeekly(boss);
         /** Vanilla only ever grants the real first-kill reward (dragon egg + 12000 XP instead of the
@@ -752,6 +963,10 @@ final class BossEventService {
          *  happens to be nearest, handing them the entire encounter's XP alone (confirmed: one player jumped
          *  50 levels from it) instead of letting every nearby participant collect a fair share. */
         if(boss instanceof EnderDragon dragon){
+            /** If the fight never got tagged (nobody reached the End before the spawn poll gave up, which is
+             *  how 2026-08-21 lost its egg and XP), adopt this kill for the armed occurrence rather than
+             *  paying nothing. */
+            if(!weeklyKill&&plugin.weeklyDragon().adoptUntaggedKill(dragon))weeklyKill=true;
             plugin.getLogger().info("[WeeklyDragon] death: weeklyKill="+weeklyKill+" participants="+participants.size()+" killer="+(killer==null?"null":killer.getName()));
             if(weeklyKill){
                 World endWorld=dragon.getWorld();
@@ -774,7 +989,16 @@ final class BossEventService {
             }
             plugin.weeklyDragon().defeated(dragon);
         }
-        if(participants.isEmpty())return;List<Double> range=bosses.getDoubleList("mob-rewards."+boss.getType().name());if(range.size()<2)return;
+        if(participants.isEmpty())return;
+        /** A player-respawned dragon pays its OWN, much smaller range. The weekly Dragon is a scheduled event
+         *  that happens once and is worth turning up for; a respawned one costs four end crystals and can be
+         *  done as many times as somebody feels like, so paying both the same made the weekly event's headline
+         *  reward into a farmable loop. Falls back to the shared range if the key is absent, so removing it
+         *  from config restores the old single-rate behaviour. */
+        String rewardKey=boss.getType().name();
+        if(boss.getType()==EntityType.ENDER_DRAGON&&!weeklyKill
+                &&bosses.getDoubleList("mob-rewards.ENDER_DRAGON_RESPAWNED").size()>=2)rewardKey="ENDER_DRAGON_RESPAWNED";
+        List<Double> range=bosses.getDoubleList("mob-rewards."+rewardKey);if(range.size()<2)return;
         double pool=random(range.get(0),range.get(1))*participantRewardMultiplier(participants.size());double total=participants.values().stream().mapToDouble(Double::doubleValue).sum();
         for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double share=pool*entry.getValue()/Math.max(1,total);boolean firstDragonKiller=boss.getType()==EntityType.ENDER_DRAGON&&killer!=null&&killer.getUniqueId().equals(player.getUniqueId())&&weeklyKill&&!db.hasMilestone(entry.getKey(),"DEFEAT_DRAGON");boolean full=majorRewardAvailable(entry.getKey(),boss.getType());if(!full)share*=bosses.getDouble("major-rewards."+boss.getType().name()+".repeat-multiplier",.1);if(firstDragonKiller)share=Math.max(share,bosses.getDouble("major-rewards.ENDER_DRAGON.first-killer-reward",100000));share*=plugin.progress().mobIncomeMultiplier(player);share=Math.round(share*100)/100.0;
             if(share>0){plugin.creditEarned(entry.getKey(),share,"BOSS_"+boss.getType().name());db.recordEconomy(entry.getKey(),"BOSS",share,boss.getType().name());CoreUtil.msg(player,"Your boss participation earned "+CoreUtil.money(share)+".");}
@@ -812,52 +1036,145 @@ final class BossEventService {
         if(eligible.isEmpty())raw.entrySet().stream().max(Map.Entry.comparingByValue()).ifPresent(entry->{Player player=find(entry.getKey());if(player!=null&&player.getWorld().equals(boss.getWorld())&&player.getLocation().distanceSquared(boss.getLocation())<=radiusSq)eligible.put(entry.getKey(),entry.getValue());});return eligible;
     }
     private void giveParticipationLoot(Player player,String encounter){List<String> configured=bosses.getStringList("boss-participation.loot."+encounter);for(String value:configured){String[] parts=value.split(":",2);Material material=Material.matchMaterial(parts[0]);if(material==null)continue;int amount=1;if(parts.length>1)try{amount=Math.max(1,Math.min(64,Integer.parseInt(parts[1])));}catch(NumberFormatException ignored){}CoreUtil.give(player,new ItemStack(material,amount));}}
-    private double friendlyPenalty(LivingEntity mob){if((mob instanceof Wolf||mob instanceof Cat||mob instanceof Parrot)&&(!(mob instanceof Tameable tame)||!tame.isTamed()))return 0;return bosses.getDouble("mob-penalties."+mob.getType().name(),0);}
+    private double friendlyPenalty(LivingEntity mob){return bosses.getDouble("mob-penalties."+mob.getType().name(),0);}
     private double farmFactor(Player p, EntityType type) { String key = CoreUtil.id(p) + ":" + type.name(); Deque<Long> queue = farmKills.computeIfAbsent(key, x -> new ArrayDeque<>()); long cutoff = System.currentTimeMillis() - plugin.getConfig().getLong("mob-money.anti-farm-window-minutes", 10) * 60000L; while (!queue.isEmpty() && queue.peekFirst() < cutoff) queue.removeFirst(); queue.addLast(System.currentTimeMillis()); double n=queue.size()*plugin.getConfig().getDouble("mob-money.farm-weights."+type.name(),1);int full=plugin.getConfig().getInt("mob-money.full-reward-kills",20),soft=plugin.getConfig().getInt("mob-money.soft-reward-kills",50),hard=plugin.getConfig().getInt("mob-money.hard-reward-kills",100);double softFloor=plugin.getConfig().getDouble("mob-money.soft-multiplier",.35),floor=plugin.getConfig().getDouble("mob-money.minimum-multiplier",.05);if(n<=full)return 1;if(n<=soft)return 1-(1-softFloor)*(n-full)/Math.max(1,soft-full);if(n<=hard)return softFloor-(softFloor-floor)*(n-soft)/Math.max(1,hard-soft);return floor; }
     private void rewardElite(EntityDeathEvent e, Player killer, String tier) {
         LivingEntity mob = e.getEntity(); boolean worldBoss = isWorldBossTier(tier); WorldBossKind bossKind = worldBoss ? kindFromTier(tier) : null;
-        Map<String,Double> raw=damage.remove(mob.getUniqueId());Map<String,Long> hits=lastContribution.remove(mob.getUniqueId());Map<String,Double> participants=meaningfulParticipants(mob,raw,hits);sharedBossIds.remove(mob.getUniqueId());if(participants.isEmpty()&&killer!=null)participants=Map.of(CoreUtil.id(killer),1.0);
+        Map<String,Double> raw=damage.remove(mob.getUniqueId());Map<String,Long> hits=lastContribution.remove(mob.getUniqueId());Map<String,Double> participants=meaningfulParticipants(mob,raw,hits);sharedBossIds.remove(mob.getUniqueId());
+        /*  The literal 1.0 that produced "it said I dealt 1 damage".
+         *
+         *  This fallback fires when NOTHING was recorded for the mob, and it credited the killer with a
+         *  hard-coded 1.0 -- which is then what the damage recap prints and what the share maths divides by.
+         *  It is not a measurement of anything; the boss did not have 1 HP. It is the placeholder for "no
+         *  damage was captured at all".
+         *
+         *  Damage goes unrecorded when a hit lands before the entity carries its tier key: the listener
+         *  reads the key first and returns early if it is absent, and the world-boss spawn path sets health
+         *  and equipment for ten-odd statements before stamping it. One-shotting something the instant it
+         *  appears lands squarely in that window, which is exactly what was reported twice.
+         *
+         *  Crediting max health instead makes the recap read as the one-shot it was, and matches what the
+         *  world-boss path already does. The warning gives the next occurrence a timestamp to check. */
+        if(participants.isEmpty()&&killer!=null){
+            participants=Map.of(CoreUtil.id(killer),Math.max(1,mob.getAttribute(Attribute.MAX_HEALTH).getValue()));
+            plugin.getLogger().warning("[BossDamage] elite "+mob.getType()+" died with NO recorded damage; crediting "
+                    +killer.getName()+" with its max health rather than the old placeholder of 1.");
+        }
         if (participants.isEmpty()) {
             if (worldBoss && worldBossId != null && worldBossId.equals(mob.getUniqueId())) {
                 db.deleteBossState(worldBossId.toString());
                 worldBossId = null;
                 broadcastNotice(Component.text(displayName(bossKind)+" has faded without a victor.", NamedTextColor.DARK_GRAY));
+            } else if (!worldBoss && !"miniboss".equals(tier)
+                    && !mob.getPersistentDataContainer().has(eventEliteKey)
+                    && envLootOrigin(mob.getPersistentDataContainer().get(originKey, PersistentDataType.STRING))) {
+                /** A NATURALLY-spawned ordinary elite that died to the environment with no player contribution
+                 *  still drops its ITEM loot -- but every individual CHANCE-based entry is halved (100% entries
+                 *  and vanilla/enhanced drops are unchanged; no per-entry blanket roll). No money/shards/
+                 *  progression (there is no participant). Minibosses, world bosses and event/summoned elites are
+                 *  exempt (their origin is not NATURAL / tier is miniboss) and drop nothing here. */
+                lootMult = 0.5;
+                try { thematicLoot(e, tier); capsuleDrop(e, tier); } finally { lootMult = 1.0; }
             }
             return;
         }
         if (worldBoss) { boolean persisted = worldBossId != null && worldBossId.equals(mob.getUniqueId()); if (persisted && !db.claimBossReward(worldBossId.toString())) return; }
+        /** The recap belongs here, on the shared world-boss path -- it previously only ran for vanilla
+         *  dragon/wither deaths, so the Ashen/Colossus/Cinder fights players actually do never showed one. */
+        if (worldBoss) sendDamageRecap(mob, participants);
         String path = worldBoss ? configPrefix(bossKind) : "tiers." + tier; double amount = random(bosses.getDouble(path + ".reward-min"), bosses.getDouble(path + ".reward-max"));if(worldBoss)amount*=1+bosses.getDouble(path+".reward-extra-player-factor",.35)*Math.sqrt(Math.max(0,participants.size()-1));else if(tier.equals("miniboss"))amount*=participantRewardMultiplier(participants.size());else if(mob.getWorld().getEnvironment()==World.Environment.NETHER)amount*=bosses.getDouble("dimension-content.nether.reward-multiplier",1.2);else if(mob.getWorld().getEnvironment()==World.Environment.THE_END)amount*=bosses.getDouble("dimension-content.end.reward-multiplier",1.4);splitReward(participants,amount,worldBoss?"world boss":"elite");
         Player credited=killer;if(credited==null){String top=participants.entrySet().stream().max(Map.Entry.comparingByValue()).orElseThrow().getKey();credited=find(top);}
         for(String participant:participants.keySet()){Player player=find(participant);if(player==null)continue;if(tier.equals("epic")||tier.equals("legendary"))plugin.progress().eliteParticipation(player,tier);plugin.shards().rewardElite(player,tier);if(worldBoss||tier.equals("miniboss")){db.incrementStat(participant,"boss_kills");plugin.progress().bossKill(player,worldBoss?displayName(bossKind):CoreUtil.pretty(mob.getType().name())+" Miniboss",worldBoss,!worldBoss);giveParticipationLoot(player,worldBoss?tier:"miniboss");}}
         if (worldBoss) rewardWorldBoss(e, credited, participants, bossKind); else { thematicLoot(e, tier);capsuleDrop(e,tier);if(tier.equals("legendary")){String victor=credited==null?"unknown hunters":plugin.nicknames().displayName(credited);broadcastNotice(Component.text("✦ The legendary "+CoreUtil.pretty(mob.getType().name())+" was defeated by "+victor+".",NamedTextColor.GOLD));for(Player player:plugin.getServer().getOnlinePlayers())if(plugin.settings().sounds(player))player.playSound(player.getLocation(),Sound.UI_TOAST_CHALLENGE_COMPLETE,.7f,.8f);} if (credited!=null&&eventType == EventType.ELITE_HUNT && mob.getPersistentDataContainer().has(eventEliteKey)) { plugin.progress().eventWon(credited, "Elite Hunt"); finishEvent(true); } }
     }
-    private void splitReward(Map<String,Double> participants,double pool,String label){double eligibleDamage=participants.values().stream().mapToDouble(Double::doubleValue).sum();for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double base=pool*entry.getValue()/Math.max(1,eligibleDamage),share=Math.round(base*plugin.progress().mobIncomeMultiplier(player)*100)/100.0;plugin.creditEarned(entry.getKey(),share,label.toUpperCase(Locale.ROOT).replace(' ','_'));db.recordEconomy(entry.getKey(),label.equals("world boss")?"BOSS":"ELITE",share,label);CoreUtil.msg(player,"Your "+label+" damage earned "+CoreUtil.money(share)+".");}}
-    private void thematicLoot(EntityDeathEvent e, String tier) { LivingEntity mob = e.getEntity();if(tier.equals("legendary")){legendaryLoot(e);return;} int bonus=switch(tier){case"epic"->3;case"miniboss"->2;case"rare"->1;default->0;}; if (mob instanceof Creeper) { e.getDrops().add(new ItemStack(Material.TNT, 5 + bonus * 2)); e.getDrops().add(new ItemStack(Material.GUNPOWDER, 4 + bonus * 3)); } else if (mob instanceof Spider) { e.getDrops().add(spiderPotion()); e.getDrops().add(new ItemStack(Material.FERMENTED_SPIDER_EYE, 1 + bonus)); if (Math.random() < .35 + bonus * .1) e.getDrops().add(new ItemStack(Material.COBWEB, 1 + bonus)); } else if (mob instanceof Enderman) { if (Math.random() < .72 + bonus * .05) e.getDrops().add(new ItemStack(Material.ENDER_EYE)); e.getDrops().add(new ItemStack(Material.ENDER_PEARL, 2 + bonus * 2)); } else if (mob instanceof AbstractSkeleton) { e.getDrops().add(new ItemStack(Material.SPECTRAL_ARROW, 8 + bonus * 8)); } else if (mob instanceof Zombie) { e.getDrops().add(new ItemStack(Material.IRON_INGOT, 2 + bonus * 2)); if (Math.random() < .25 + bonus * .1) e.getDrops().add(new ItemStack(Material.GOLDEN_APPLE)); }
-        if(mob.getWorld().getEnvironment()==World.Environment.NETHER){e.getDrops().add(new ItemStack(Material.MAGMA_CREAM,1+bonus));if(Math.random()<.08+bonus*.06)e.getDrops().add(new ItemStack(Material.ANCIENT_DEBRIS));}else if(mob.getWorld().getEnvironment()==World.Environment.THE_END){e.getDrops().add(new ItemStack(Material.ENDER_PEARL,3+bonus*2));if(Math.random()<.06+bonus*.08)e.getDrops().add(new ItemStack(Material.SHULKER_SHELL));}
-        double sigilChance=tier.equals("epic")?.5:tier.equals("miniboss")?.35:tier.equals("rare")?.15:.05;if(Math.random()<sigilChance)e.getDrops().add(sigil());
-        if(tier.equals("legendary")&&Math.random()<bosses.getDouble("legendary-sigil-drop-chance",.08))e.getDrops().add(legendarySigil());
+    /** Splits a boss/elite pool by damage share.
+     *
+     *  The divisor used to be Math.max(1, totalDamage), meant as a divide-by-zero guard. It is not one: it
+     *  is a silent MULTIPLIER whenever the recorded total falls below 1.0. A sole participant credited with
+     *  0.07 damage got pool * 0.07 / 1 instead of the whole pool -- a 45,710 payout on a Warded Colossus
+     *  whose floor is 664,453. Observed live twice in one evening (45,710 and 204,913 against a normal
+     *  700k-1.27M), and it is also what produced the 455,480 weekly dragon flagged earlier.
+     *
+     *  Sub-1.0 totals are not exotic. Damage is recorded as min(remainingHealth, finalDamage), so ANY hit
+     *  that lands on a nearly-dead boss is credited as a fraction -- and with End Crystals doing the real
+     *  damage untracked (see below), that sliver could be the only thing in the table.
+     *
+     *  Shares are now a true proportion of whatever was actually recorded, so one participant always
+     *  receives 100% of the pool no matter how the absolute numbers happen to fall, and a genuinely empty
+     *  table splits evenly rather than paying nothing. */
+    private void splitReward(Map<String,Double> participants,double pool,String label){double eligibleDamage=participants.values().stream().mapToDouble(value->Math.max(0,value)).sum();for(var entry:participants.entrySet()){Player player=find(entry.getKey());if(player==null)continue;double base=pool*rewardFraction(entry.getValue(),eligibleDamage,participants.size()),share=Math.round(base*plugin.progress().mobIncomeMultiplier(player)*100)/100.0;plugin.creditEarned(entry.getKey(),share,label.toUpperCase(Locale.ROOT).replace(' ','_'));db.recordEconomy(entry.getKey(),label.equals("world boss")?"BOSS":"ELITE",share,label);CoreUtil.msg(player,"Your "+label+" damage earned "+CoreUtil.money(share)+".");}}
+    /** One participant's share of a pool. Pure arithmetic, extracted from splitReward so the self-test can
+     *  pin it -- this is the exact expression that was wrong, and it is worth a test rather than a comment. */
+    static double rewardFraction(double own,double total,int participants){
+        if(total>0)return Math.max(0,own)/total;
+        /** Nothing recorded at all: split evenly rather than paying nobody. */
+        return 1.0/Math.max(1,participants);
+    }
+
+    /** Pins the property that actually broke: a single participant receives the WHOLE pool regardless of how
+     *  large or small the recorded damage number happens to be. The old divisor, Math.max(1, total), quietly
+     *  paid pool * 0.07 for a solo kill credited with 0.07 damage. */
+    boolean rewardSplitSelfTest(){
+        double solo=rewardFraction(0.0688,0.0688,1),soloBig=rewardFraction(6300,6300,1);
+        double a=rewardFraction(30,100,2),b=rewardFraction(70,100,2);
+        double empty=rewardFraction(0,0,4),negative=rewardFraction(-5,100,2);
+        return Math.abs(solo-1)<1e-9&&Math.abs(soloBig-1)<1e-9
+                &&Math.abs(a-.3)<1e-9&&Math.abs(b-.7)<1e-9&&Math.abs(a+b-1)<1e-9
+                &&Math.abs(empty-.25)<1e-9&&negative==0;
+    }
+
+    private void thematicLoot(EntityDeathEvent e, String tier) { LivingEntity mob = e.getEntity();if(tier.equals("legendary")){legendaryLoot(e);return;} int bonus=switch(tier){case"epic"->3;case"miniboss"->2;case"rare"->1;default->0;}; if (mob instanceof Creeper) { e.getDrops().add(new ItemStack(Material.TNT, 5 + bonus * 2)); e.getDrops().add(new ItemStack(Material.GUNPOWDER, 4 + bonus * 3)); } else if (mob instanceof Spider) { e.getDrops().add(spiderPotion()); e.getDrops().add(new ItemStack(Material.FERMENTED_SPIDER_EYE, 1 + bonus)); if (chance(.35 + bonus * .1)) e.getDrops().add(new ItemStack(Material.COBWEB, 1 + bonus)); } else if (mob instanceof Enderman) { if (chance(.72 + bonus * .05)) e.getDrops().add(new ItemStack(Material.ENDER_EYE)); e.getDrops().add(new ItemStack(Material.ENDER_PEARL, 2 + bonus * 2)); } else if (mob instanceof AbstractSkeleton) { e.getDrops().add(new ItemStack(Material.SPECTRAL_ARROW, 8 + bonus * 8)); } else if (mob instanceof Zombie) { e.getDrops().add(new ItemStack(Material.IRON_INGOT, 2 + bonus * 2)); if (chance(.25 + bonus * .1)) e.getDrops().add(new ItemStack(Material.GOLDEN_APPLE)); }
+        if(mob.getWorld().getEnvironment()==World.Environment.NETHER){e.getDrops().add(new ItemStack(Material.MAGMA_CREAM,1+bonus));if(chance(.08+bonus*.06))e.getDrops().add(new ItemStack(Material.ANCIENT_DEBRIS));}else if(mob.getWorld().getEnvironment()==World.Environment.THE_END){e.getDrops().add(new ItemStack(Material.ENDER_PEARL,3+bonus*2));if(chance(.06+bonus*.08))e.getDrops().add(new ItemStack(Material.SHULKER_SHELL));}
+        /** Elite Endermen carry the End with them: an Eye of Ender on every elite kill, scaling with tier, and
+         *  an End Crystal on the higher tiers -- uncommon enough to feel like a find, common enough that
+         *  hunting elite Endermen is a real way to get one. Epic ~6%, miniboss ~12%; rare tiers get neither
+         *  crystal nor a second eye. */
+        if(mob instanceof Enderman){
+            e.getDrops().add(new ItemStack(Material.ENDER_EYE,1+bonus));
+            double crystal=switch(tier){case"miniboss"->.12;case"epic"->.06;default->0;};
+            if(crystal>0&&chance(crystal*lootMult))e.getDrops().add(new ItemStack(Material.END_CRYSTAL));
+        }
+        dropTierSigils(e,tier);
     }
     private ItemStack legendarySigil(){ItemStack item=CoreUtil.named(Material.NETHER_STAR,"Legendary Sigil",List.of("A rarer offering to the Keeper of Omens."));ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(new NamespacedKey(plugin,"legendary_sigil"),PersistentDataType.BYTE,(byte)1);item.setItemMeta(meta);return item;}
     private void legendaryLoot(EntityDeathEvent event){
         LivingEntity mob=event.getEntity();List<ItemStack> drops=event.getDrops();
-        if(mob instanceof Enderman enderman){drops.add(legendaryShulkerBox(mob));drops.add(new ItemStack(Material.ENDER_PEARL,24));/** The block it was visibly carrying drops here instead of being placeable in the world — it can be
+        dropTierSigils(event,"legendary");
+        if(mob instanceof Enderman enderman){drops.add(legendaryShulkerBox(mob));drops.add(new ItemStack(Material.ENDER_PEARL,24));drops.add(new ItemStack(Material.ENDER_EYE,6));/** Top tier: the crystal is a certainty rather than a roll. */drops.add(new ItemStack(Material.END_CRYSTAL));/** The block it was visibly carrying drops here instead of being placeable in the world — it can be
          *  looted, just never used to grief a farm (see endermanBlockChange). */
         if(enderman.getCarriedBlock()!=null&&!enderman.getCarriedBlock().getMaterial().isAir())drops.add(new ItemStack(enderman.getCarriedBlock().getMaterial()));return;}
-        if(mob instanceof Creeper){drops.add(new ItemStack(Material.TNT,32));drops.add(new ItemStack(Material.GUNPOWDER,32));drops.add(new ItemStack(Material.END_CRYSTAL,4));drops.add(strongBook());if(Math.random()<.20)drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
-        if(mob instanceof Spider){drops.add(legendarySpiderPotion());drops.add(legendarySpiderPotion());drops.add(new ItemStack(Material.COBWEB,16));drops.add(new ItemStack(Material.FERMENTED_SPIDER_EYE,8));drops.add(special(Material.DIAMOND_BOOTS,"Silkstrider Boots",Enchantment.FEATHER_FALLING,4));if(Math.random()<.35)drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
-        if(mob instanceof AbstractSkeleton){drops.add(new ItemStack(Material.SPECTRAL_ARROW,64));drops.add(strongBook());drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));if(Math.random()<.45)drops.add(new ItemStack(Material.NETHERITE_SCRAP,2));return;}
+        if(mob instanceof Creeper){drops.add(new ItemStack(Material.TNT,32));drops.add(new ItemStack(Material.GUNPOWDER,32));drops.add(new ItemStack(Material.END_CRYSTAL,4));drops.add(strongBook());if(chance(.20))drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
+        if(mob instanceof Spider){drops.add(legendarySpiderPotion());drops.add(legendarySpiderPotion());drops.add(new ItemStack(Material.COBWEB,16));drops.add(new ItemStack(Material.FERMENTED_SPIDER_EYE,8));drops.add(special(Material.DIAMOND_BOOTS,"Silkstrider Boots",Enchantment.FEATHER_FALLING,4));if(chance(.35))drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));return;}
+        if(mob instanceof AbstractSkeleton){drops.add(new ItemStack(Material.SPECTRAL_ARROW,64));drops.add(strongBook());drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));if(chance(.45))drops.add(new ItemStack(Material.NETHERITE_SCRAP,2));return;}
         if(mob instanceof Piglin||mob instanceof Hoglin){drops.add(new ItemStack(Material.GOLD_BLOCK,8));drops.add(new ItemStack(Material.NETHERITE_SCRAP,ThreadLocalRandom.current().nextInt(2,5)));drops.add(new ItemStack(Material.GOLDEN_APPLE,4));drops.add(strongBook());return;}
-        drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));drops.add(new ItemStack(Material.NETHERITE_SCRAP,ThreadLocalRandom.current().nextInt(1,4)));drops.add(new ItemStack(Material.GOLDEN_APPLE,3));drops.add(strongBook());if(Math.random()<.12)drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));
+        drops.add(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)));drops.add(new ItemStack(Material.NETHERITE_SCRAP,ThreadLocalRandom.current().nextInt(1,4)));drops.add(new ItemStack(Material.GOLDEN_APPLE,3));drops.add(strongBook());if(chance(.12))drops.add(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));
     }
     private Material randomShulkerMaterial(){List<Material> boxes=List.of(Material.WHITE_SHULKER_BOX,Material.ORANGE_SHULKER_BOX,Material.MAGENTA_SHULKER_BOX,Material.LIGHT_BLUE_SHULKER_BOX,Material.YELLOW_SHULKER_BOX,Material.LIME_SHULKER_BOX,Material.PINK_SHULKER_BOX,Material.GRAY_SHULKER_BOX,Material.LIGHT_GRAY_SHULKER_BOX,Material.CYAN_SHULKER_BOX,Material.PURPLE_SHULKER_BOX,Material.BLUE_SHULKER_BOX,Material.BROWN_SHULKER_BOX,Material.GREEN_SHULKER_BOX,Material.RED_SHULKER_BOX,Material.BLACK_SHULKER_BOX);return boxes.get(ThreadLocalRandom.current().nextInt(boxes.size()));}
     private ItemStack legendaryShulkerBox(LivingEntity mob){
         String stored=mob.getPersistentDataContainer().get(legendaryLootKey,PersistentDataType.STRING);Material material=stored==null?randomShulkerMaterial():Material.matchMaterial(stored);if(material==null||!material.name().endsWith("SHULKER_BOX"))material=randomShulkerMaterial();
-        ItemStack item=new ItemStack(material);BlockStateMeta meta=(BlockStateMeta)item.getItemMeta();if(meta.getBlockState() instanceof ShulkerBox box){box.getInventory().addItem(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)),strongBook(),new ItemStack(Material.GOLDEN_APPLE,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.SHULKER_SHELL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.END_CRYSTAL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.CHORUS_FRUIT,16),new ItemStack(Material.EXPERIENCE_BOTTLE,ThreadLocalRandom.current().nextInt(16,33)));if(Math.random()<.50)box.getInventory().addItem(highQualityGear());if(Math.random()<.12)box.getInventory().addItem(new ItemStack(Material.TOTEM_OF_UNDYING));if(Math.random()<.05)box.getInventory().addItem(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));meta.setBlockState(box);}item.setItemMeta(meta);return item;
+        ItemStack item=new ItemStack(material);BlockStateMeta meta=(BlockStateMeta)item.getItemMeta();if(meta.getBlockState() instanceof ShulkerBox box){box.getInventory().addItem(new ItemStack(Material.DIAMOND,ThreadLocalRandom.current().nextInt(5,10)),strongBook(),new ItemStack(Material.GOLDEN_APPLE,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.SHULKER_SHELL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.END_CRYSTAL,ThreadLocalRandom.current().nextInt(2,5)),new ItemStack(Material.CHORUS_FRUIT,16),new ItemStack(Material.EXPERIENCE_BOTTLE,ThreadLocalRandom.current().nextInt(16,33)));if(chance(.50))box.getInventory().addItem(highQualityGear());if(chance(.12))box.getInventory().addItem(new ItemStack(Material.TOTEM_OF_UNDYING));if(chance(.05))box.getInventory().addItem(new ItemStack(Material.ENCHANTED_GOLDEN_APPLE));meta.setBlockState(box);}item.setItemMeta(meta);return item;
     }
     private ItemStack strongBook(){ItemStack book=new ItemStack(Material.ENCHANTED_BOOK);EnchantmentStorageMeta meta=(EnchantmentStorageMeta)book.getItemMeta();List<Map.Entry<Enchantment,Integer>> options=List.of(Map.entry(Enchantment.MENDING,1),Map.entry(Enchantment.PROTECTION,4),Map.entry(Enchantment.SHARPNESS,5),Map.entry(Enchantment.POWER,5),Map.entry(Enchantment.UNBREAKING,3));Map.Entry<Enchantment,Integer> selected=options.get(ThreadLocalRandom.current().nextInt(options.size()));meta.addStoredEnchant(selected.getKey(),selected.getValue(),true);book.setItemMeta(meta);return book;}
     private ItemStack highQualityGear(){Material material=List.of(Material.DIAMOND_SWORD,Material.DIAMOND_PICKAXE,Material.DIAMOND_CHESTPLATE,Material.DIAMOND_BOOTS).get(ThreadLocalRandom.current().nextInt(4));Enchantment enchant=material==Material.DIAMOND_SWORD?Enchantment.SHARPNESS:material==Material.DIAMOND_PICKAXE?Enchantment.EFFICIENCY:material==Material.DIAMOND_BOOTS?Enchantment.FEATHER_FALLING:Enchantment.PROTECTION;return special(material,"",enchant,material==Material.DIAMOND_SWORD?5:4);}
     private ItemStack sigil(){ItemStack item=CoreUtil.named(Material.ECHO_SHARD,"Elite Sigil",List.of("Accepted by the Keeper of Omens."));ItemMeta meta=item.getItemMeta();meta.getPersistentDataContainer().set(new NamespacedKey(plugin,"elite_sigil"),PersistentDataType.BYTE,(byte)1);item.setItemMeta(meta);return item;}
-    private void capsuleDrop(EntityDeathEvent event,String tier){VillagerCapsuleService service=plugin.capsules();if(service==null)return;double disposable=bosses.getDouble("capsule-drops."+tier+".disposable",isWorldBossTier(tier)?.15:tier.equals("legendary")?.08:tier.equals("miniboss")?.04:0),reusable=bosses.getDouble("capsule-drops."+tier+".reusable",isWorldBossTier(tier)?.01:tier.equals("legendary")?.006:tier.equals("miniboss")?.002:0);double roll=Math.random();if(roll<reusable)event.getDrops().add(service.empty(true));else if(roll<reusable+disposable)event.getDrops().add(service.empty(false));}
+    private double lootMult = 1.0;
+    /** Ordinary elites that follow the environmental-death loot rules: naturally spawned, and admin-spawned
+     *  via /ashfall elite (so admins can test the real behaviour). Event elites, minibosses and world bosses
+     *  are excluded by their own origin/tier checks and give nothing on a purely environmental death. */
+    private boolean envLootOrigin(String origin){ return "NATURAL".equals(origin) || "ADMIN_SPAWNED".equals(origin); }
+    /** Loot-roll multiplier: 1.0 normally; 0.5 for a naturally-spawned ordinary elite that died to the
+     *  environment with no participant -- halves each individual chance without touching 100% entries. */
+    private boolean chance(double p){ return Math.random() < p * lootMult; }
+    /** Per-tier sigil matrix: each elite independently rolls an Elite Sigil (echo shard) and a Legendary Sigil
+     *  (nether star). Config-tunable per tier (sigil-drops.<tier>.elite / .legendary), read live on reload;
+     *  higher tiers lean legendary, lower tiers keep their elite chance plus a lottery-tier legendary shot. */
+    private void dropTierSigils(EntityDeathEvent e, String tier){
+        double elite=bosses.getDouble("sigil-drops."+tier+".elite", switch(tier){case"epic"->.50;case"miniboss"->.35;case"rare"->.15;case"legendary"->.25;default->.05;});
+        double legend=bosses.getDouble("sigil-drops."+tier+".legendary", switch(tier){case"legendary"->.50;case"epic"->.01;case"miniboss"->.005;case"rare"->.0001;default->.00001;});
+        if(chance(elite))e.getDrops().add(sigil());
+        if(chance(legend))e.getDrops().add(legendarySigil());
+    }
+    private void capsuleDrop(EntityDeathEvent event,String tier){VillagerCapsuleService service=plugin.capsules();if(service==null)return;double disposable=bosses.getDouble("capsule-drops."+tier+".disposable",isWorldBossTier(tier)?.15:tier.equals("legendary")?.08:tier.equals("miniboss")?.04:0),reusable=bosses.getDouble("capsule-drops."+tier+".reusable",isWorldBossTier(tier)?.005:tier.equals("legendary")?.003:tier.equals("miniboss")?.001:0);double roll=Math.random();if(roll<reusable*lootMult)event.getDrops().add(service.empty(true));else if(roll<(reusable+disposable)*lootMult)event.getDrops().add(service.empty(false));}
     private ItemStack legendarySpiderPotion(){ItemStack potion=spiderPotion();PotionMeta meta=(PotionMeta)potion.getItemMeta();meta.addCustomEffect(new PotionEffect(PotionEffectType.RESISTANCE,2400,0),true);potion.setItemMeta(meta);return potion;}
     private ItemStack spiderPotion() { ItemStack potion = new ItemStack(Material.POTION); PotionMeta meta = (PotionMeta) potion.getItemMeta(); meta.displayName(Component.text("Silkstep Draught", NamedTextColor.LIGHT_PURPLE)); meta.addCustomEffect(new PotionEffect(PotionEffectType.SPEED, 3600, 1), true); meta.addCustomEffect(new PotionEffect(PotionEffectType.NIGHT_VISION, 3600, 0), true); potion.setItemMeta(meta); return potion; }
     private void rewardWorldBoss(EntityDeathEvent e, Player killer, Map<String,Double> participants, WorldBossKind kind) {
@@ -875,8 +1192,8 @@ final class BossEventService {
             }
             case PIGLIN_BRUTE -> {
                 e.getDrops().add(new ItemStack(Material.GOLD_BLOCK, bosses.getInt("piglin-brute-boss.reward-gold-blocks", 10))); e.getDrops().add(CoreUtil.named(Material.GOLDEN_HELMET, "Warlord's Trophy Helm", List.of("Proof of victory over the Cinder Warlord.")));capsuleDrop(e,tier);
-                double axeChance=bosses.getDouble("piglin-brute-boss.excavator-drop-chance",.18);
-                for(String participant:participants.keySet()){Player player=find(participant);if(player==null)continue;if(Math.random()<axeChance)CoreUtil.give(player,plugin.shards().excavatorPickaxe(Math.random()<.5));}
+                double axeChance=bosses.getDouble("piglin-brute-boss.excavator-drop-chance",.005);
+                for(String participant:participants.keySet()){Player player=find(participant);if(player==null)continue;if(Math.random()<axeChance)CoreUtil.give(player,plugin.shards().randomSpecialTool());}
                 mintSignatureRelic(killer,participants,"warlords_ember");
             }
         }
@@ -954,14 +1271,14 @@ final class BossEventService {
         switch (type) { case WORLD_BOSS -> { LivingEntity boss = spawnWorldBoss(eventCenter,origin,kind); if (boss == null){clearFailedEvent();return false;}eventCenter = boss.getLocation(); } case ELITE_HUNT -> { /** Elite Hunt is now a straight 90/10 epic-to-legendary roll regardless of event tier: the tiered
                   *  ladder meant most hunts produced a merely "rare" mob, which is not worth tracking across
                   *  the map. Both tiers spawn in the overworld, which is where the hunt marker sends people. */
-                 String eliteTier=ThreadLocalRandom.current().nextDouble()<bosses.getDouble("elite-hunt.legendary-chance",0.10)?"legendary":"epic";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere.");  case TASK_MASTER -> { Location placed=plugin.taskMaster().begin(eventCenter,eventEnds); if(placed!=null)eventCenter=placed; broadcastWorldEvent("✦ WORLD EVENT • TASK MASTER","A courier is taking contracts nearby. He is invisible -- look for the telltale swirl.","Destination: X "+eventCenter.getBlockX()+", Y "+eventCenter.getBlockY()+", Z "+eventCenter.getBlockZ()); } default -> { } }
+                 String eliteTier=ThreadLocalRandom.current().nextDouble()<bosses.getDouble("elite-hunt.legendary-chance",0.10)?"legendary":"epic";LivingEntity elite = spawnElite(eliteTier, eventCenter); if (elite != null) { elite.getPersistentDataContainer().set(eventEliteKey, PersistentDataType.BYTE, (byte) 1); eventCenter = elite.getLocation(); eliteHuntId = elite.getUniqueId(); eliteHuntLast = elite.getLocation(); } broadcastWorldEvent("⚔ WORLD EVENT • ELITE HUNT", "Track down and defeat the marked "+CoreUtil.pretty(eliteTier)+".", locationLine()); } case RESOURCE_RUSH -> broadcastWorldEvent("⛏ WORLD EVENT • RESOURCE RUSH", "Mine ores to earn money during the event!", "Qualifying natural ores count anywhere.");  case TASK_MASTER -> { Location placed=plugin.taskMaster().begin(eventCenter,eventEnds); if(placed!=null)eventCenter=placed; broadcastWorldEvent("✦ WORLD EVENT • TASK MASTER","A courier is taking contracts nearby. He is invisible -- look for the telltale swirl.","Destination: X "+eventCenter.getBlockX()+", Y "+eventCenter.getBlockY()+", Z "+eventCenter.getBlockZ()); } default -> { } }
         if(origin==Origin.NATURAL){rememberNatural(type);scheduledEvents.put(selectedTier,chooseNatural(selectedTier));}
         for (Player p : plugin.getServer().getOnlinePlayers()) if(plugin.settings().bossNotifications(p))CoreUtil.msg(p, "Use /events for instructions or /events track off to disable navigation."); persistEvent();persistEventTimers(); return true;
     }
     private EventTier defaultTier(EventType type){return type==EventType.WORLD_BOSS?EventTier.RARE:EventTier.MAJOR;}
     private int eventInt(String path,int fallback){return events.getInt("tiers."+eventTier.name().toLowerCase(Locale.ROOT)+"."+path,events.getInt(path,fallback));}
     private double eventDouble(String path,double fallback){return events.getDouble("tiers."+eventTier.name().toLowerCase(Locale.ROOT)+"."+path,events.getDouble(path,fallback));}
-    private void clearFailedEvent(){eventType=null;eventCenter=null;eventEnds=0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventOrigin=Origin.NATURAL;db.state("current_event","");}
+    private void clearFailedEvent(){eventType=null;eventCenter=null;eventEnds=0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventOrigin=Origin.NATURAL;eliteHuntId=null;eliteHuntLast=null;db.state("current_event","");}
     private String locationLine() { return "Destination: X " + eventCenter.getBlockX() + ", Z " + eventCenter.getBlockZ(); }
     /** Every event's coordinate origin — deliberately never a player's location. Anchoring on a random
      *  online player (the old randomSafeNearPlayer behavior for MICRO events) let repeated events
@@ -987,9 +1304,21 @@ final class BossEventService {
             if(loc==null||protectedEventLocation(loc))continue;
             if(standoff>0&&(plugin.spawnClaims().near(loc,(int)standoff)||factions.nearClaim(loc,(int)standoff)))continue;
             if(!openBossTerrain(loc))continue;
+            if(!flatBossBiome(loc))continue;
             return loc;
         }
         return null;
+    }
+    /** A randomly PLACED world boss may only land in a genuinely flat biome, so it never spawns wedged into a
+     *  mountainside/jungle where players cannot reach it. Only the random-placement path calls this -- an admin or
+     *  player who summons at an explicit location bypasses randomSafeBossSpawn entirely. Nether/End keep their own
+     *  terrain gate (openBossTerrain) since "flat overworld biome" is meaningless there. */
+    private static final java.util.Set<String> FLAT_BOSS_BIOMES = java.util.Set.of(
+        "plains","sunflower_plains","savanna","savanna_plateau","windswept_savanna","desert","snowy_plains","ice_spikes",
+        "meadow","beach","snowy_beach","stony_shore","swamp","mangrove_swamp","mushroom_fields");
+    private boolean flatBossBiome(Location loc){
+        if(loc.getWorld()==null||loc.getWorld().getEnvironment()!=org.bukkit.World.Environment.NORMAL)return true;
+        return FLAT_BOSS_BIOMES.contains(loc.getBlock().getBiome().getKey().getKey());
     }
     /** Solid ground underfoot plus continuous clear air above -- rejects caves and cramped pockets. */
     private boolean openBossTerrain(Location loc){
@@ -1047,7 +1376,24 @@ final class BossEventService {
         }
         if(worldBossId==null&&forcedBossChunkSet)releaseBossChunk();
         if(eventType==EventType.WORLD_BOSS&&worldBoss()==null&&worldBossChunkObservedEmpty()){plugin.getLogger().warning("World boss event had no boss entity; recovering event state.");finishEvent(false);return;}
-        if(eventType!=null){if(now>=eventEnds)finishEvent(false);else if(eventType==EventType.TASK_MASTER)plugin.taskMaster().tick();return;}
+        if(eventType!=null){
+            /** Elite Hunt ends the moment its elite is dead or gone, not when the timer runs out. A credited
+             *  kill already ends it in rewardElite; this covers every other way it can leave the world (killed
+             *  with no participant credit, void, /kill, plugin removal). The chunk-loaded guard distinguishes
+             *  "genuinely gone" from "its chunk simply isn't ticking right now" so a brief unload never ends a
+             *  live hunt -- the same false-positive that once made world bosses look like they had vanished. */
+            if(eventType==EventType.ELITE_HUNT&&eliteHuntId!=null){
+                org.bukkit.entity.Entity elite=plugin.getServer().getEntity(eliteHuntId);
+                if(elite!=null){
+                    if(elite.isDead()){finishEvent(false);return;}
+                    eliteHuntLast=elite.getLocation();
+                } else {
+                    boolean chunkLoaded=eliteHuntLast!=null&&eliteHuntLast.getWorld()!=null
+                            &&eliteHuntLast.getWorld().isChunkLoaded(eliteHuntLast.getBlockX()>>4,eliteHuntLast.getBlockZ()>>4);
+                    if(chunkLoaded){finishEvent(false);return;}
+                }
+            }
+            if(now>=eventEnds)finishEvent(false);else if(eventType==EventType.TASK_MASTER)plugin.taskMaster().tick();return;}
         if(!plugin.getConfig().getBoolean("events.automatic",true))return;
         for(EventTier tier:List.of(EventTier.RARE,EventTier.MAJOR,EventTier.MICRO)){
             if(eventRemaining.getOrDefault(tier,Long.MAX_VALUE)>0||!enoughPlayers(tier))continue;
@@ -1157,24 +1503,11 @@ final class BossEventService {
         if(stuckFor<(long)(bosses.getDouble("world-boss-unreachable.seconds",3)*1000))return;
         if(now-bossLeapCooldown.getOrDefault(id,0L)<(long)(bosses.getDouble("world-boss-unreachable.action-cooldown-seconds",2)*1000))return;
         bossLeapCooldown.put(id,now);
-        /** Last resort for the pit problem, and it applies to all three bosses.
-         *
-         *  A boss that has been unable to reach anybody for this long is not going to path its way out. It
-         *  is almost always a hole -- a ravine, a cave, or a pit a player dug -- where clearing blocks above
-         *  it just drops it back in and the leap has nothing to leap onto. Rather than inventing another
-         *  movement trick, put it on solid ground at the player it is chasing. Gated well behind the
-         *  ordinary recovery, so ordinary terrain scuffles never reach it. */
-        long teleportAfter=(long)(bosses.getDouble("world-boss-unreachable.teleport-seconds",20)*1000);
-        if(stuckFor>=teleportAfter){
-            Location rescue=CoreUtil.findSafeAny(target.getWorld(),target.getLocation().getBlockX(),target.getLocation().getBlockZ());
-            if(rescue!=null){
-                bossUnreachableSince.remove(id);
-                boss.getWorld().spawnParticle(Particle.PORTAL,boss.getLocation().add(0,1,0),40,.6,1,.6,.1);
-                boss.teleport(rescue);
-                boss.getWorld().spawnParticle(Particle.PORTAL,rescue.clone().add(0,1,0),40,.6,1,.6,.1);
-                return;
-            }
-        }
+        /** No teleport-to-target rescue. It was removed deliberately: a boss that warps to whoever it is
+         *  chasing -- potentially to their base -- is worse than a boss stuck in a hole, and it made the
+         *  fight feel unfair. A boss falling into a pit is now intentional design; the intended fix is for
+         *  players to fight it on open ground or in an arena they build. The leap and block-clearing below
+         *  still handle ordinary terrain snags. */
         WorldBossKind kind=kindFromTier(tier);
         double dy=target.getLocation().getY()-boss.getLocation().getY();
         double horizontal=Math.hypot(target.getLocation().getX()-boss.getLocation().getX(),target.getLocation().getZ()-boss.getLocation().getZ());
@@ -1895,7 +2228,7 @@ final class BossEventService {
         boss.setInvisible(true);boss.setInvulnerable(true);boss.setAI(false);boss.setSilent(true);
         Location center=boss.getLocation().clone();UUID id=boss.getUniqueId();int totalTicks=140;Particle particle=summoningParticle(kind);
         World world=center.getWorld();int chunkX=center.getBlockX()>>4,chunkZ=center.getBlockZ()>>4;
-        world.setChunkForceLoaded(chunkX,chunkZ,true);
+        ownForceLoad(world,chunkX,chunkZ,"BOSS");
         for(int tick=0;tick<=totalTicks;tick+=5){
             int t=tick;double progress=t/(double)totalTicks;
             plugin.getServer().getScheduler().runTaskLater(plugin,()->{
@@ -1929,7 +2262,7 @@ final class BossEventService {
                  *  never happening. That is exactly the phantom Cinder Warlord enrage seen with no boss active.
                  *  Tear the whole thing down instead of leaving it half-born. */
                 plugin.getLogger().warning("World boss "+id+" could not be revealed after summoning — its chunk never became resolvable; cleaning it up rather than leaving a hidden, unfightable boss and a stuck event.");
-                world.setChunkForceLoaded(chunkX,chunkZ,false);
+                ownRelease(world,chunkX,chunkZ);
                 Entity stuck=plugin.getServer().getEntity(id);
                 if(stuck!=null)try{stuck.remove();}catch(Throwable ignored){}
                 eliteIds.remove(id);damage.remove(id);lastContribution.remove(id);enrageStageApplied.remove(id);bossFirstEngagedAt.remove(id);eliteLastPlayerNear.remove(id);bossTargetSince.remove(id);bossMobAttackers.remove(id);bossMeleeAt.remove(id);bossImpulseUntil.remove(id);bossImpulseRank.remove(id);bossImpulseReason.remove(id);bossRetaliating.remove(id);bossRetaliatingUntil.remove(id);bossTargetOutOfRangeSince.remove(id);bossUnreachableSince.remove(id);bossLeapCooldown.remove(id);bossRepathAt.remove(id);bossSlamAt.remove(id);bossLavaLungeAt.remove(id);lastEngaged.remove(id);removeHealthBar(id);
@@ -2006,7 +2339,7 @@ final class BossEventService {
         /** King of the Hill retired; nothing to award here any more. */
         if (!success && finished != EventType.WORLD_BOSS && finished != EventType.HUNT) broadcastNotice(Component.text("The world event has ended.", NamedTextColor.GRAY));
         if(finished==EventType.RESOURCE_RUSH)for(var entry:eventEarnings.entrySet()){Player earner=find(entry.getKey());if(earner!=null&&entry.getValue()>=.01)CoreUtil.msg(earner,"You made "+CoreUtil.money(entry.getValue())+" during Resource Rush!");}
-        EventTier finishedTier=eventTier;Origin finishedOrigin=eventOrigin;long nextDelay=activeTierNextDelay;eventType = null;eventCenter = null;eventEnds = 0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventEarnings.clear();db.state("current_event", "");
+        EventTier finishedTier=eventTier;Origin finishedOrigin=eventOrigin;long nextDelay=activeTierNextDelay;eventType = null;eventCenter = null;eventEnds = 0;activeTierNextDelay=0;eventScores.clear();eventParticipants.clear();eventEarnings.clear();eliteHuntId=null;eliteHuntLast=null;db.state("current_event", "");
         if(finishedOrigin==Origin.NATURAL){eventRemaining.put(finishedTier,nextDelay>0?nextDelay:randomRemaining(finishedTier));scheduledEvents.computeIfAbsent(finishedTier,this::chooseNatural);persistEventTimers();}
         // A player/admin-summoned event borrows this tier's "only one event at a time" slot without
         // resetting its own independent natural timer. If that timer happened to run out while the summoned
@@ -2106,10 +2439,10 @@ final class BossEventService {
         World world=location.getWorld();if(world==null)return;
         int cx=location.getBlockX()>>4,cz=location.getBlockZ()>>4;
         if(forcedBossChunkSet&&forcedBossWorld==world&&cx==forcedBossChunkX&&cz==forcedBossChunkZ)return;
-        if(forcedBossChunkSet&&forcedBossWorld!=null)forcedBossWorld.setChunkForceLoaded(forcedBossChunkX,forcedBossChunkZ,false);
-        world.setChunkForceLoaded(cx,cz,true);forcedBossWorld=world;forcedBossChunkX=cx;forcedBossChunkZ=cz;forcedBossChunkSet=true;
+        if(forcedBossChunkSet&&forcedBossWorld!=null)ownRelease(forcedBossWorld,forcedBossChunkX,forcedBossChunkZ);
+        ownForceLoad(world,cx,cz,"BOSS");forcedBossWorld=world;forcedBossChunkX=cx;forcedBossChunkZ=cz;forcedBossChunkSet=true;
     }
-    private void releaseBossChunk(){if(forcedBossChunkSet&&forcedBossWorld!=null)forcedBossWorld.setChunkForceLoaded(forcedBossChunkX,forcedBossChunkZ,false);forcedBossChunkSet=false;forcedBossWorld=null;}
+    private void releaseBossChunk(){if(forcedBossChunkSet&&forcedBossWorld!=null)ownRelease(forcedBossWorld,forcedBossChunkX,forcedBossChunkZ);forcedBossChunkSet=false;forcedBossWorld=null;}
     /** An unloaded chunk makes the boss entity briefly unresolvable even though it still exists (e.g. no
      *  player has reached it yet). Only treat the event as genuinely stale when its last known chunk is
      *  loaded and still shows no boss there, so a distant, un-visited boss is never cancelled by mistake. */

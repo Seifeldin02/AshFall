@@ -5,6 +5,11 @@ lifecycle:
   # entirely; for an expired-and-uncollected listing the clock starts no earlier than the expiry, and
   # any later login still resets it, same as a normally-held relic.
   reclaim-after-real-days: 7
+  # A relic that no longer exists anywhere. last_confirmed is set every time a copy is actually SEEN, so if
+  # the owner has been logging in well after the last sighting, the copy is gone and the relic should return
+  # to the world. The reclaim clock above is anchored on the owner's last LOGIN and therefore never fires for
+  # an active player -- which is how a destroyed relic stayed permanently missing.
+  presumed-destroyed-after-real-days: 2
   # Real days after a reclaim before the relic becomes eligible to resurface.
   resurface-after-real-days: 2
 
@@ -84,10 +89,73 @@ buffs:
     boss-knockback: 2.6
     stagger-seconds: 5.0
   skyward-anchor:
+    # A slam, not a jump. Right-click launches you AND arms it; it discharges on the first of: touching an
+    # entity on the way down, touching the ground, or landing a mace hit.
+    #
     # Roughly how many blocks the launch reaches. Velocity is derived from this (v = sqrt(2*g*h)) rather
     # than hardcoded, so changing the height here actually lands where it says.
-    height: 12
-    cooldown-seconds: 10
+    height: 20
+    cooldown-seconds: 20
+    # Half-width of the damage cube, so 1.5 is the 3x3x3 the relic is described by.
+    aoe-radius: 1.5
+    # Damage is this fraction of a MAXIMUM-DENSITY mace for the same drop. Below 1.0 on purpose: this is
+    # area damage that is very hard to miss, so it should lose a straight trade against a mace.
+    mace-scale: 0.9
+    # How centred the target was under you. Only HORIZONTAL offset counts -- the box is a cube and vertical
+    # position inside it is not a skill expression.
+    centre-multiplier: 1.5
+    edge-multiplier: 0.5
+    # Wind burst. Each target hit adds this many blocks of launch height, so two targets is twice the
+    # height. Capped only to stop an absurd stack from throwing somebody into the void.
+    #
+    # 2.5 was roughly a plain mace's hop and read as "that is not a wind burst". Six is a genuine
+    # Wind Burst II-sized launch, and it still multiplies per target.
+    burst-height-per-hit: 6.0
+    max-burst-hits: 8
+    # Elytra: measured from straight down, so 0 is a vertical dive and 90 is level flight. Past this angle
+    # the accumulated drop is surrendered -- but the relic stays armed, because you did pay for the charge.
+    elytra-max-dive-angle: 40
+    # How long an armed anchor survives without discharging.
+    arm-seconds: 30
+    # Mace combo: weapon damage multiplier on the entity you actually hit. The wind burst is doubled
+    # separately, and the mace hit gains the relic's own area damage.
+    mace-combo-multiplier: 2.0
+    # Landing behaviour (2026-08-24 rework).
+    #
+    # The relic now resolves ONLY on landing -- there is no mid-air "you touched a mob" trigger, because it
+    # fired before you could ever swing and made the mace combo unreachable. Fall, swing whenever you like,
+    # and the slam happens when you arrive.
+    #
+    # Immunity granted the instant a slam CONNECTS, so committing to a big dive is not suicide in PvP.
+    # Deliberately not granted on a miss: missing still costs the full fall.
+    landing-invulnerability-ticks: 10
+    # The descent from a wind burst is not charged to the player -- a six-per-target launch reaches twenty
+    # blocks easily and would otherwise have the relic killing its own user. Cleared on the first landing.
+    burst-fall-grace-seconds: 12
+    # Hard ceiling on launch height however many targets were struck.
+    max-burst-height: 70
+    # The mace combo gets its own launch rather than a doubled slam: a Wind Burst VI-sized throw, still
+    # multiplied per target struck.
+    # Heights here are what is ACTUALLY reached -- the velocity is solved against the game's real
+    # per-tick drag, not the vacuum formula, which was under-delivering by a third at this size.
+    mace-combo-burst-height: 45
+    # Combo launch height by the Wind Burst level of the mace that landed the hit. Index 0 = no Wind Burst,
+    # which gets the relic's ordinary launch: the combo is still worth landing for the damage, it just does
+    # not throw you across the sky. III reaches the full height.
+    mace-combo-burst-by-level: [20.0, 28.0, 36.0, 45.0]
+    # How long an elytra descent must stay shallow before the accumulated drop is surrendered. Without this
+    # a single shallow tick wiped a whole dive, and an ordinary glide is shallow nearly the entire way down.
+    elytra-level-flight-grace-ms: 1500
+    # Logs every combo hit: tracked drop, vanilla fallDistance, whether gliding, the mace base damage, what
+    # was applied and the final damage after armour and boss toughness. On while the damage complaint is
+    # being chased -- it is one line per combo, not per hit.
+    log-combo: true
+    # The slam staggers what it lands on, scaled like the damage: dead centre is the full duration, the edge
+    # of the box is the minimum. Duration scales, not amplitude -- a glancing hit that still froze the target
+    # solid would make position irrelevant.
+    slow-level: 5
+    slow-max-seconds: 3.0
+    slow-min-seconds: 0.5
 
   warlords-ember:
     # Identity: aggressive mobility that OPENS a combo rather than being a movement toy. The dash keeps its

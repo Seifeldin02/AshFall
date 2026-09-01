@@ -1,0 +1,11 @@
+@echo off
+rem Launches the visible server console. Kept as the single entry point so restart-server.bat, a desktop
+rem shortcut and a person double-clicking all take the same path.
+rem
+rem Every path is ABSOLUTE and derived from %~dp0. The relative form ("conhost.exe cmd.exe /c start.bat")
+rem worked for years from a normal console and then failed silently when restart-server.bat called it: the
+rem watchdog's child inherits the JVM's environment, and NoDefaultCurrentDirectoryInExePath alone makes cmd
+rem refuse to run a script from the current directory -- "not recognized", with the file sitting right
+rem there. A recovery path must not depend on the environment it is recovered from.
+cd /d "%~dp0."
+conhost.exe cmd.exe /c "%~dp0start.bat  (staging uses start-staging.bat)"

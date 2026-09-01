@@ -28,9 +28,10 @@ final class NetWorthService implements Listener {
     private record Holder(long factionId,String page,int pageIndex) implements InventoryHolder{@Override public Inventory getInventory(){return null;}}
     private record VillagerEntry(boolean counted,String name,String detail,Location location,double value,List<String> trades){}
     private record ContainerRef(String key,Location location,Inventory inventory){}
-    private final SMPCore plugin;private final Database db;private final FactionService factions;private final ShopService shop;private final SpawnerService spawners;private final NamespacedKey relicKey;private BukkitTask task,scanTask;private final Deque<Chunk> scanQueue=new ArrayDeque<>();private volatile List<Row> rankingCache=List.of();private volatile long rankingCachedAt;
+    private final SMPCore plugin;private final Database db;private final FactionService factions;private final ShopService shop;private final SpawnerService spawners;private final NamespacedKey relicKey;
+    private final NamespacedKey eliteSigilValueKey,legendarySigilValueKey;private BukkitTask task,scanTask;private final Deque<Chunk> scanQueue=new ArrayDeque<>();private volatile List<Row> rankingCache=List.of();private volatile long rankingCachedAt;
 
-    NetWorthService(SMPCore plugin,FactionService factions,ShopService shop,SpawnerService spawners){this.plugin=plugin;this.db=plugin.db();this.factions=factions;this.shop=shop;this.spawners=spawners;this.relicKey=new NamespacedKey(plugin,"relic");long period=Math.max(1,plugin.getConfig().getLong("net-worth.recalculate-minutes",2))*1200L;task=plugin.getServer().getScheduler().runTaskTimer(plugin,this::recalculateLoaded,200L,period);}
+    NetWorthService(SMPCore plugin,FactionService factions,ShopService shop,SpawnerService spawners){this.plugin=plugin;this.db=plugin.db();this.factions=factions;this.shop=shop;this.spawners=spawners;this.relicKey=new NamespacedKey(plugin,"relic");eliteSigilValueKey=new NamespacedKey(plugin,"elite_sigil");legendarySigilValueKey=new NamespacedKey(plugin,"legendary_sigil");long period=Math.max(1,plugin.getConfig().getLong("net-worth.recalculate-minutes",2))*1200L;task=plugin.getServer().getScheduler().runTaskTimer(plugin,this::recalculateLoaded,200L,period);}
     void shutdown(){if(task!=null)task.cancel();if(scanTask!=null)scanTask.cancel();}
 
     List<Row> rankings(){long now=System.currentTimeMillis();if(now-rankingCachedAt<10_000&&!rankingCache.isEmpty())return rankingCache;List<Row> rows=new ArrayList<>();for(Database.FactionRow faction:db.factions())rows.add(new Row(faction.id(),faction.name(),value(faction.id())));rows.sort(java.util.Comparator.comparingDouble(Row::value).reversed().thenComparing(Row::name,String.CASE_INSENSITIVE_ORDER));rankingCache=List.copyOf(rows);rankingCachedAt=now;return rankingCache;}
@@ -77,7 +78,12 @@ final class NetWorthService implements Listener {
         if(holdings==null)holdings=ref.inventory().getStorageContents();
         for(ItemStack item:holdings)if(item!=null&&!item.getType().isAir()&&(plugin.shards()==null||!plugin.shards().bound(item))){double captured=plugin.capsules()==null?0:plugin.capsules().capturedValue(item);villagers+=captured*item.getAmount();value+=captured>0?0:itemValue(item);}if(value<=0)db.deleteAsset(ref.key());else db.saveAsset(new Database.AssetRow(claim.faction().id(),ref.key(),"CONTAINER","MIXED",Math.round(value*100)/100.0,System.currentTimeMillis()));if(villagers<=0)db.deleteAsset(villagerKey);else db.saveAsset(new Database.AssetRow(claim.faction().id(),villagerKey,"VILLAGER","CAPSULE",Math.round(villagers*100)/100.0,System.currentTimeMillis()));invalidate();}
     void blockChanged(Block block){
-        BlockState state=block.getState();String key=blockKey(block,state instanceof CreatureSpawner?"spawner":"container");db.deleteAsset(key);
+        BlockState state=block.getState();
+        /** Fast path: the vast majority of block changes (piston moves of slime/redstone, ordinary placements)
+         *  are not trackable assets. Skipping them here avoids per-block DB writes -- the flood a TNT duper or
+         *  flying-machine quarry was generating thousands of times a second on the main thread. */
+        if(!(state instanceof Container)&&!(state instanceof CreatureSpawner)&&block.getType()!=Material.DRAGON_EGG)return;
+        String key=blockKey(block,state instanceof CreatureSpawner?"spawner":"container");db.deleteAsset(key);
         if(state instanceof Container container){
             if(container instanceof Chest chest&&chest.getInventory().getHolder() instanceof DoubleChest doubleChest)for(InventoryHolder side:List.of(doubleChest.getLeftSide(),doubleChest.getRightSide()))if(side instanceof Chest half){db.deleteAsset(blockKey(half.getBlock(),"container"));db.deleteAsset(blockKey(half.getBlock(),"container")+":villagers");}
             containerChanged(container.getInventory());
@@ -86,7 +92,7 @@ final class NetWorthService implements Listener {
         else db.deleteAsset(blockKey(block,"dragonegg"));
         invalidate();
     }
-    void removed(Block block){db.deleteAsset(blockKey(block,"ihopper"));db.deleteAsset(blockKey(block,"container"));db.deleteAsset(blockKey(block,"container")+":villagers");db.deleteAsset(blockKey(block,"spawner"));db.deleteAsset(blockKey(block,"dragonegg"));if(block.getState() instanceof Chest chest&&chest.getInventory().getHolder() instanceof DoubleChest doubleChest){for(InventoryHolder side:List.of(doubleChest.getLeftSide(),doubleChest.getRightSide()))if(side instanceof Chest half){db.deleteAsset(blockKey(half.getBlock(),"container"));db.deleteAsset(blockKey(half.getBlock(),"container")+":villagers");}}invalidate();}
+    void removed(Block block){Material t=block.getType();if(t!=Material.SPAWNER&&t!=Material.DRAGON_EGG&&!(block.getState() instanceof Container))return;db.deleteAsset(blockKey(block,"ihopper"));db.deleteAsset(blockKey(block,"container"));db.deleteAsset(blockKey(block,"container")+":villagers");db.deleteAsset(blockKey(block,"spawner"));db.deleteAsset(blockKey(block,"dragonegg"));if(block.getState() instanceof Chest chest&&chest.getInventory().getHolder() instanceof DoubleChest doubleChest){for(InventoryHolder side:List.of(doubleChest.getLeftSide(),doubleChest.getRightSide()))if(side instanceof Chest half){db.deleteAsset(blockKey(half.getBlock(),"container"));db.deleteAsset(blockKey(half.getBlock(),"container")+":villagers");}}invalidate();}
     /** A placed Industrial Hopper is itself worth something to the faction, on top of whatever is inside
      *  it. One row per block position, so ten hoppers are ten rows, the same hopper can never be counted
      *  twice, and the row disappears with the block exactly like every other asset. */
@@ -118,6 +124,11 @@ final class NetWorthService implements Listener {
     private double itemValue(ItemStack item){
         if(plugin.graves()!=null&&plugin.graves().isCompass(item)||plugin.shards()!=null&&plugin.shards().bound(item))return 0;
         ItemMeta meta=item.getItemMeta();if(meta.getPersistentDataContainer().has(relicKey))return plugin.getConfig().getDouble("net-worth.relic-value",500000)*item.getAmount();
+        /** Sigils are the currency of boss summons, so they are valued off what a summon costs rather than
+         *  off their material. Two Legendary Sigils buy a summon outright; eight Elite Sigils buy one only
+         *  alongside a 250,000 coin payment, which is what puts a Legendary well above an Elite. */
+        if(meta.getPersistentDataContainer().has(legendarySigilValueKey))return plugin.getConfig().getDouble("net-worth.legendary-sigil-value",400000)*item.getAmount();
+        if(meta.getPersistentDataContainer().has(eliteSigilValueKey))return plugin.getConfig().getDouble("net-worth.elite-sigil-value",75000)*item.getAmount();
         double shulkerBonus=shulkerDragonEggBonus(item,meta);
         double base=marketOrBase(item.getType());
         if(base<=0)return shulkerBonus;

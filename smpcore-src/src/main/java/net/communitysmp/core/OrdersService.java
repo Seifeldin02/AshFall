@@ -61,10 +61,10 @@ import java.util.function.Consumer;
  *  so a restart, a logout or a crash resumes from the same state. */
 final class OrdersService implements Listener {
 
-    private static final String VANILLA = "vanilla:", SPAWNER = "smpcore:spawner/", BOOK = "vanilla:ENCHANTED_BOOK/";
+    private static final String VANILLA = "vanilla:", SPAWNER = "smpcore:spawner/", BOOK = "vanilla:ENCHANTED_BOOK/", ENCHANTED = "enchanted:";
 
     /** Which screen an inventory belongs to, so one click handler can serve them all. */
-    private enum Screen { PUBLIC, MINE, PICK, CONFIRM, STASH, DELIVER }
+    private enum Screen { HUB, PUBLIC, MINE, HISTORY, CATEGORY, PICK, CONFIRM, STASH, DELIVER, ENCHANT }
     /** Insertable area of the delivery screen: the top three rows, and nothing else. */
     private static final int DELIVER_SLOTS = 27;
 
@@ -78,6 +78,7 @@ final class OrdersService implements Listener {
          *  or item-moving can happen by accident. Cleared whenever the screen is repainted. */
         private long armedAt;
         private int armedSlot = -1;
+        private String category;
         private Holder(Screen screen, int page, String search, long orderId) {
             this.screen = screen; this.page = page; this.search = search; this.orderId = orderId;
         }
@@ -91,11 +92,18 @@ final class OrdersService implements Listener {
         private double unit;
     }
 
+    /** A base item plus the custom enchantments being chosen for it, before the amount/price prompts. */
+    private static final class EnchantDraft {
+        private Material base;
+        private final Map<Enchantment, Integer> enchants = new LinkedHashMap<>();
+    }
+
     private final SMPCore plugin;
     private final Database db;
     /** Chat prompts in flight. Cleared on use, on cancel and on quit; nothing else depends on them. */
     private final Map<UUID, Consumer<String>> prompts = new LinkedHashMap<>();
     private final Map<UUID, Draft> drafts = new LinkedHashMap<>();
+    private final Map<UUID, EnchantDraft> enchantDrafts = new LinkedHashMap<>();
     private List<String> catalogue = List.of();
     private BukkitTask expiryTask;
 
@@ -147,6 +155,13 @@ final class OrdersService implements Listener {
             book.setItemMeta(meta);
             return book;
         }
+        if (key.startsWith(ENCHANTED)) {
+            Material material = enchantedMaterial(key);
+            if (material == null || !material.isItem()) return null;
+            ItemStack item = new ItemStack(material);
+            for (Map.Entry<Enchantment, Integer> entry : enchantedEnchants(key).entrySet()) item.addUnsafeEnchantment(entry.getKey(), entry.getValue());
+            return item;
+        }
         if (key.startsWith(VANILLA)) {
             Material material = Material.matchMaterial(key.substring(VANILLA.length()));
             return material == null || !material.isItem() ? null : new ItemStack(material);
@@ -160,6 +175,160 @@ final class OrdersService implements Listener {
 
     private EntityType entityType(String name) {
         try { return EntityType.valueOf(name); } catch (IllegalArgumentException error) { return null; }
+    }
+
+    // ------------------------------------------------------------------ enchanted-item orders
+    private Material enchantedMaterial(String key) {
+        String body = key.substring(ENCHANTED.length());
+        int slash = body.indexOf('/');
+        return Material.matchMaterial(slash < 0 ? body : body.substring(0, slash));
+    }
+
+    private Map<Enchantment, Integer> enchantedEnchants(String key) {
+        Map<Enchantment, Integer> map = new LinkedHashMap<>();
+        String[] parts = key.substring(ENCHANTED.length()).split("/");
+        for (int i = 1; i + 1 < parts.length; i += 2) {
+            Enchantment enchantment = enchantment(parts[i]);
+            int level;
+            try { level = Integer.parseInt(parts[i + 1]); } catch (NumberFormatException error) { continue; }
+            if (enchantment != null) map.put(enchantment, level);
+        }
+        return map;
+    }
+
+    /** Exactly the ordered TYPE carrying EXACTLY the ordered enchantments -- display name and lore are ignored
+     *  (a renamed item still counts), but any custom persistent data (relics, bound items, custom spawners) is
+     *  rejected, and a damaged item is refused so the buyer gets what they paid for. */
+    private boolean matchesEnchanted(String key, ItemStack stack) {
+        Material material = enchantedMaterial(key);
+        if (material == null || stack.getType() != material) return false;
+        if (!stack.getEnchantments().equals(enchantedEnchants(key))) return false;
+        ItemMeta meta = stack.getItemMeta();
+        if (meta == null || !meta.getPersistentDataContainer().getKeys().isEmpty()) return false;
+        return !(meta instanceof org.bukkit.inventory.meta.Damageable damage && damage.hasDamage());
+    }
+
+    /** A base item is enchantable if the vanilla rules allow at least one enchantment on it -- the same realism
+     *  filter the picker uses, so unrealistic enchants (Efficiency on a sword, Sharpness on a pickaxe) can never
+     *  be chosen. Books are excluded; enchanted books have their own order type. */
+    private boolean isEnchantableBase(Material material) {
+        if (material == null || material == Material.ENCHANTED_BOOK || material == Material.BOOK) return false;
+        ItemStack probe = new ItemStack(material);
+        for (Enchantment enchantment : org.bukkit.Registry.ENCHANTMENT) if (enchantment.canEnchantItem(probe)) return true;
+        return false;
+    }
+
+    private List<Enchantment> applicableEnchants(Material material) {
+        ItemStack probe = new ItemStack(material);
+        List<Enchantment> list = new ArrayList<>();
+        for (Enchantment enchantment : org.bukkit.Registry.ENCHANTMENT) if (enchantment.canEnchantItem(probe)) list.add(enchantment);
+        list.sort(java.util.Comparator.comparing(enchantment -> enchantment.getKey().getKey()));
+        return list;
+    }
+
+    private boolean conflictsWithSelected(Enchantment candidate, Map<Enchantment, Integer> selected) {
+        for (Enchantment other : selected.keySet())
+            if (!other.equals(candidate) && (candidate.conflictsWith(other) || other.conflictsWith(candidate))) return true;
+        return false;
+    }
+
+    /** Canonical, sorted key so the same enchant set always produces the same identity string. */
+    private String composeEnchantedKey(Material material, Map<Enchantment, Integer> enchants) {
+        List<Enchantment> ordered = new ArrayList<>(enchants.keySet());
+        ordered.sort(java.util.Comparator.comparing(enchantment -> enchantment.getKey().getKey()));
+        StringBuilder sb = new StringBuilder(ENCHANTED).append(material.name());
+        for (Enchantment enchantment : ordered)
+            sb.append('/').append(enchantment.getKey().getKey().toUpperCase(Locale.ROOT)).append('/').append(enchants.get(enchantment));
+        return sb.toString();
+    }
+
+    private static String roman(int n) {
+        return switch (n) {
+            case 1 -> "I"; case 2 -> "II"; case 3 -> "III"; case 4 -> "IV"; case 5 -> "V";
+            case 6 -> "VI"; case 7 -> "VII"; case 8 -> "VIII"; case 9 -> "IX"; case 10 -> "X";
+            default -> String.valueOf(n);
+        };
+    }
+
+    /** From the item picker: a plain enchantable base opens the enchant chooser first; everything else goes
+     *  straight to the amount/price prompts. */
+    private void startOrderFor(Player player, String key) {
+        if (key.startsWith(VANILLA)) {
+            Material material = Material.matchMaterial(key.substring(VANILLA.length()));
+            if (isEnchantableBase(material)) {
+                EnchantDraft draft = new EnchantDraft();
+                draft.base = material;
+                enchantDrafts.put(player.getUniqueId(), draft);
+                openEnchantPicker(player);
+                return;
+            }
+        }
+        beginDraft(player, key);
+    }
+
+    /** The enchant chooser: one book per enchantment the item can legally take. Left-click raises the level,
+     *  right-click lowers/removes it, and an enchant that conflicts with a chosen one locks out. Confirming with
+     *  none selected simply orders the item plain. */
+    private void openEnchantPicker(Player player) {
+        EnchantDraft draft = enchantDrafts.get(player.getUniqueId());
+        if (draft == null || draft.base == null) { openPick(player, 1, null); return; }
+        Holder holder = new Holder(Screen.ENCHANT, 1, null, 0);
+        holder.inv = plugin.getServer().createInventory(holder, 54, Component.text("Enchant " + CoreUtil.pretty(draft.base.name()), NamedTextColor.DARK_AQUA));
+        List<Enchantment> applicable = applicableEnchants(draft.base);
+        for (int i = 0; i < applicable.size() && i < 45; i++) {
+            Enchantment enchantment = applicable.get(i);
+            int level = draft.enchants.getOrDefault(enchantment, 0);
+            boolean blocked = level == 0 && conflictsWithSelected(enchantment, draft.enchants);
+            String name = CoreUtil.pretty(enchantment.getKey().getKey());
+            Material icon = level > 0 ? Material.ENCHANTED_BOOK : (blocked ? Material.GRAY_DYE : Material.BOOK);
+            List<String> lore = new ArrayList<>();
+            if (blocked) lore.add("Conflicts with a chosen enchant");
+            else if (level > 0) { lore.add("Selected: " + roman(level) + "  (max " + roman(enchantment.getMaxLevel()) + ")"); lore.add("Left-click: raise   Right-click: lower"); }
+            else { lore.add("Not selected  (max " + roman(enchantment.getMaxLevel()) + ")"); lore.add("Left-click to add"); }
+            holder.inv.setItem(i, CoreUtil.named(icon, name + (level > 0 ? " " + roman(level) : ""), lore));
+        }
+        for (int slot = 45; slot < 54; slot++) holder.inv.setItem(slot, filler());
+        holder.inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Item picker")));
+        holder.inv.setItem(48, CoreUtil.named(Material.CHEST, "Order it plain", List.of("No enchantments")));
+        String composed = draft.enchants.isEmpty() ? VANILLA + draft.base.name() : composeEnchantedKey(draft.base, draft.enchants);
+        ItemStack preview = canonical(composed);
+        if (preview == null) preview = new ItemStack(draft.base);
+        ItemMeta pm = preview.getItemMeta();
+        if (pm != null) {
+            pm.displayName(Component.text(display(composed), NamedTextColor.GOLD));
+            pm.lore(List.of(Component.text(draft.enchants.size() + " enchantment(s) chosen", NamedTextColor.GRAY)));
+            preview.setItemMeta(pm);
+        }
+        holder.inv.setItem(49, preview);
+        holder.inv.setItem(50, CoreUtil.named(Material.LIME_CONCRETE, "Confirm & set amount",
+                List.of(draft.enchants.isEmpty() ? "No enchants — orders it plain" : draft.enchants.size() + " enchant(s) chosen", "Then choose amount and price")));
+        player.openInventory(holder.inv);
+    }
+
+    private void handleEnchantClick(Player player, InventoryClickEvent event, int slot) {
+        EnchantDraft draft = enchantDrafts.get(player.getUniqueId());
+        if (draft == null || draft.base == null) { openPick(player, 1, null); return; }
+        if (slot == 45) { enchantDrafts.remove(player.getUniqueId()); openPick(player, 1, null); return; }
+        if (slot == 48) { enchantDrafts.remove(player.getUniqueId()); beginDraft(player, VANILLA + draft.base.name()); return; }
+        if (slot == 50) {
+            String key = draft.enchants.isEmpty() ? VANILLA + draft.base.name() : composeEnchantedKey(draft.base, draft.enchants);
+            enchantDrafts.remove(player.getUniqueId());
+            beginDraft(player, key);
+            return;
+        }
+        if (slot >= 45) return;
+        List<Enchantment> applicable = applicableEnchants(draft.base);
+        if (slot >= applicable.size()) return;
+        Enchantment enchantment = applicable.get(slot);
+        int level = draft.enchants.getOrDefault(enchantment, 0);
+        if (event.isRightClick()) {
+            if (level <= 1) draft.enchants.remove(enchantment); else draft.enchants.put(enchantment, level - 1);
+        } else if (level == 0) {
+            if (conflictsWithSelected(enchantment, draft.enchants)) { CoreUtil.error(player, CoreUtil.pretty(enchantment.getKey().getKey()) + " conflicts with an enchant you already chose."); return; }
+            draft.enchants.put(enchantment, 1);
+        } else if (level < enchantment.getMaxLevel()) draft.enchants.put(enchantment, level + 1);
+        else { CoreUtil.error(player, CoreUtil.pretty(enchantment.getKey().getKey()) + " is already at its maximum (" + roman(enchantment.getMaxLevel()) + ")."); return; }
+        openEnchantPicker(player);
     }
 
     /** Does this stack satisfy that order?
@@ -176,8 +345,86 @@ final class OrdersService implements Listener {
         }
         /** A spawner must never satisfy a plain vanilla:SPAWNER order either. */
         if (stack.getType() == Material.SPAWNER && plugin.spawners().typeOf(stack) != null) return false;
+        if (key.startsWith(ENCHANTED)) return matchesEnchanted(key, stack);
         ItemStack want = canonical(key);
         return want != null && stack.isSimilar(want);
+    }
+
+    /** Marketplace categories, so the create picker is organised instead of dumping the whole registry. */
+    enum Cat {
+        SPAWNERS("Spawners", Material.SPAWNER), BOOKS("Enchanted Books", Material.ENCHANTED_BOOK),
+        ORES("Ores & Minerals", Material.DIAMOND), COMBAT("Combat & Tools", Material.DIAMOND_SWORD),
+        FOOD("Food & Farming", Material.BREAD), REDSTONE("Redstone & Mechanisms", Material.REDSTONE),
+        BLOCKS("Blocks", Material.BRICKS), MISC("Everything Else", Material.CHEST);
+        final String label; final Material icon;
+        Cat(String label, Material icon) { this.label = label; this.icon = icon; }
+    }
+
+    Cat categoryOf(String key) {
+        if (key.startsWith(ENCHANTED)) { Material m = enchantedMaterial(key); return m == null ? Cat.MISC : categoryOf(VANILLA + m.name()); }
+        if (key.startsWith(SPAWNER)) return Cat.SPAWNERS;
+        if (key.startsWith(BOOK)) return Cat.BOOKS;
+        Material m = Material.matchMaterial(key.substring(VANILLA.length()));
+        if (m == null) return Cat.MISC;
+        String n = m.name();
+        if (n.contains("ORE") || n.contains("INGOT") || n.contains("NUGGET") || n.startsWith("RAW_")
+                || n.equals("DIAMOND") || n.equals("EMERALD") || n.equals("COAL") || n.equals("REDSTONE")
+                || n.equals("LAPIS_LAZULI") || n.equals("QUARTZ") || n.contains("AMETHYST") || n.contains("ANCIENT_DEBRIS")
+                || n.contains("NETHERITE_SCRAP")) return Cat.ORES;
+        if (n.endsWith("SWORD") || n.endsWith("_AXE") || n.endsWith("PICKAXE") || n.endsWith("SHOVEL") || n.endsWith("_HOE")
+                || n.endsWith("HELMET") || n.endsWith("CHESTPLATE") || n.endsWith("LEGGINGS") || n.endsWith("BOOTS")
+                || n.contains("BOW") || n.equals("ARROW") || n.contains("SHIELD") || n.contains("TRIDENT")
+                || n.equals("MACE") || n.contains("TOTEM") || n.contains("SHELL")) return Cat.COMBAT;
+        if (m.isEdible() || n.contains("SEED") || n.contains("WHEAT") || n.contains("CARROT") || n.contains("POTATO")
+                || n.contains("BEETROOT") || n.contains("MELON") || n.contains("PUMPKIN") || n.contains("SUGAR")
+                || n.contains("CANE") || n.contains("KELP") || n.contains("COCOA") || n.contains("BERR")
+                || n.contains("APPLE") || n.contains("BREAD") || n.contains("EGG") || n.contains("SAPLING")
+                || n.contains("MUSHROOM")) return Cat.FOOD;
+        if (n.contains("REDSTONE") || n.contains("PISTON") || n.contains("REPEATER") || n.contains("COMPARATOR")
+                || n.contains("OBSERVER") || n.contains("HOPPER") || n.contains("DISPENSER") || n.contains("DROPPER")
+                || n.contains("LEVER") || n.contains("BUTTON") || n.contains("PRESSURE_PLATE") || n.contains("RAIL")
+                || n.equals("TARGET") || n.contains("TNT") || n.contains("DAYLIGHT")) return Cat.REDSTONE;
+        if (m.isBlock()) return Cat.BLOCKS;
+        return Cat.MISC;
+    }
+
+    private List<String> inCategory(Cat cat, String search) {
+        List<String> out = new ArrayList<>();
+        String needle = search == null ? null : search.toLowerCase(Locale.ROOT);
+        for (String key : catalogue) {
+            if (categoryOf(key) != cat) continue;
+            if (needle != null && !display(key).toLowerCase(Locale.ROOT).contains(needle)) continue;
+            out.add(key);
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------ marketplace hub + sections
+    void openHub(Player player) {
+        Holder holder = new Holder(Screen.HUB, 1, null, 0);
+        holder.inv = plugin.getServer().createInventory(holder, 27, Component.text("Orders • Marketplace", NamedTextColor.DARK_AQUA));
+        for (int i = 0; i < 27; i++) holder.inv.setItem(i, filler());
+        int active = (int) db.ordersOf(CoreUtil.id(player)).stream().filter(r -> r.status().equals("ACTIVE")).count();
+        holder.inv.setItem(10, CoreUtil.named(Material.COMPASS, "Browse & fulfil orders", List.of("See every open buy order", "Deliver items and get paid")));
+        holder.inv.setItem(11, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order", "Browse by category")));
+        holder.inv.setItem(13, CoreUtil.named(Material.CHEST, "My active orders", List.of(active + " active", "Cancel and refund")));
+        holder.inv.setItem(15, CoreUtil.named(Material.ENDER_CHEST, "Claim deliveries", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting", "Collect what sellers delivered")));
+        holder.inv.setItem(16, CoreUtil.named(Material.BOOK, "Order history", List.of("Completed, cancelled, expired", "Hide entries you are done with")));
+        player.openInventory(holder.inv);
+    }
+
+    void openCategories(Player player) {
+        Holder holder = new Holder(Screen.CATEGORY, 1, null, 0);
+        holder.inv = plugin.getServer().createInventory(holder, 45, Component.text("Create • Pick a category", NamedTextColor.DARK_AQUA));
+        for (int i = 36; i < 45; i++) holder.inv.setItem(i, filler());
+        int[] slots = {10, 11, 12, 13, 14, 15, 16, 19};
+        Cat[] cats = Cat.values();
+        for (int i = 0; i < cats.length && i < slots.length; i++) {
+            int count = inCategory(cats[i], null).size();
+            holder.inv.setItem(slots[i], CoreUtil.named(cats[i].icon, cats[i].label, List.of(count + " item(s)", "Click to browse")));
+        }
+        holder.inv.setItem(40, CoreUtil.named(Material.ARROW, "Back", List.of("Marketplace")));
+        player.openInventory(holder.inv);
     }
 
     String display(String key) {
@@ -186,6 +433,17 @@ final class OrdersService implements Listener {
         if (key.startsWith(BOOK)) {
             String[] parts = key.substring(BOOK.length()).split("/");
             return CoreUtil.pretty(parts[0]) + " " + (parts.length > 1 ? parts[1] : "") + " Book";
+        }
+        if (key.startsWith(ENCHANTED)) {
+            Material material = enchantedMaterial(key);
+            StringBuilder sb = new StringBuilder(material == null ? "?" : CoreUtil.pretty(material.name()));
+            boolean first = true;
+            for (Map.Entry<Enchantment, Integer> entry : enchantedEnchants(key).entrySet()) {
+                sb.append(first ? " (" : ", "); first = false;
+                sb.append(CoreUtil.pretty(entry.getKey().getKey().getKey())).append(' ').append(roman(entry.getValue()));
+            }
+            if (!first) sb.append(')');
+            return sb.toString();
         }
         return CoreUtil.pretty(key.substring(key.indexOf(':') + 1));
     }
@@ -202,32 +460,74 @@ final class OrdersService implements Listener {
     void openPublic(Player player, int page, String search) {
         List<Database.OrderRow> rows = db.ordersActive(search);
         Inventory inv = open(player, Screen.PUBLIC, page, search, 0, "Orders • Buying", 54);
-        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, true)));
-        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, true, player)));
+        for (int slot = 45; slot < 54; slot++) inv.setItem(slot, filler());
         inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Showing everything" : "Showing: " + search, "Click to search")));
-        inv.setItem(46, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order")));
-        inv.setItem(47, CoreUtil.named(Material.CHEST, "Your orders", List.of("Active orders and history")));
-        inv.setItem(48, CoreUtil.named(Material.ENDER_CHEST, "Collect stash", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting")));
-        inv.setItem(49, CoreUtil.named(Material.PAPER, "Page " + page, List.of(rows.size() + " open order(s)")));
-        navigation(inv, page, rows.size());
+        inv.setItem(47, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order")));
+        inv.setItem(49, CoreUtil.named(Material.CHEST, "Your orders", List.of("Active orders and history")));
+        inv.setItem(51, CoreUtil.named(Material.ENDER_CHEST, "Claim deliveries", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting")));
+        inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(rows.size() + " open order(s)")));
+        pageNav(inv, page, rows.size());
         player.openInventory(inv);
     }
 
     void openMine(Player player, int page) {
         List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player));
         Inventory inv = open(player, Screen.MINE, page, null, 0, "Orders • Yours", 54);
-        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false)));
+        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false, player)));
         for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
-        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
-        inv.setItem(49, CoreUtil.named(Material.PAPER, "Page " + page,
-                List.of(rows.size() + " order(s)", "Active ones cancel and refund", "Finished ones can be removed")));
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Orders")));
+        inv.setItem(53, CoreUtil.named(Material.PAPER, "Your orders", List.of(rows.size() + " order(s)", "Active: cancel & refund", "Finished: click to hide")));
+        pageNav(inv, page, rows.size());
+        player.openInventory(inv);
+    }
+
+    void openHistory(Player player, int page) {
+        List<Database.OrderRow> rows = db.ordersOf(CoreUtil.id(player)).stream().filter(r -> !r.status().equals("ACTIVE")).toList();
+        Inventory inv = open(player, Screen.HISTORY, page, null, 0, "Orders • History", 54);
+        paint(inv, rows, page, (row, slot) -> inv.setItem(slot, orderIcon(row, false, player)));
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Marketplace")));
+        inv.setItem(49, CoreUtil.named(Material.PAPER, "Order history", List.of(rows.size() + " past order(s)", "Click one to hide it")));
         navigation(inv, page, rows.size());
         player.openInventory(inv);
     }
 
-    void openPick(Player player, int page, String search) {
-        List<String> keys = filtered(search);
-        Inventory inv = open(player, Screen.PICK, page, search, 0, "Orders • Choose an item", 54);
+    void openCategoryItems(Player player, Cat cat, int page, String search) {
+        List<String> keys = inCategory(cat, search);
+        Holder holder = new Holder(Screen.PICK, page, search, 0);
+        holder.category = cat.name();
+        holder.inv = plugin.getServer().createInventory(holder, 54, Component.text(cat.label + (search == null ? "" : " • " + search), NamedTextColor.DARK_AQUA));
+        int from = (page - 1) * 45;
+        for (int i = 0; i < 45 && from + i < keys.size(); i++) {
+            String key = keys.get(from + i);
+            ItemStack ico = canonical(key);
+            if (ico == null) continue;
+            ItemMeta meta = ico.getItemMeta();
+            meta.displayName(Component.text(display(key), NamedTextColor.GOLD));
+            meta.lore(List.of(Component.text("Click to order this", NamedTextColor.GRAY)));
+            ico.setItemMeta(meta);
+            holder.inv.setItem(i, ico);
+        }
+        for (int slot = 45; slot < 54; slot++) holder.inv.setItem(slot, filler());
+        holder.inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Search this category" : "Showing: " + search)));
+        holder.inv.setItem(49, CoreUtil.named(Material.ARROW, "Back", List.of("Categories")));
+        holder.inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(keys.size() + " item(s)")));
+        navigation(holder.inv, page, keys.size());
+        player.openInventory(holder.inv);
+    }
+
+    void openPick(Player player, int page, String search) { openPick(player, page, search, null); }
+
+    /** The create picker: EVERY orderable item by default. Category is an optional FILTER (cycled with the
+     *  filter button), not a separate screen -- clearing it (All) shows the whole catalogue again. */
+    void openPick(Player player, int page, String search, String catName) {
+        List<String> keys = catName == null ? filtered(search) : inCategory(Cat.valueOf(catName), search);
+        Holder holder = new Holder(Screen.PICK, page, search, 0);
+        holder.category = catName;
+        holder.inv = plugin.getServer().createInventory(holder, 54,
+                Component.text("Order \u2022 Choose an item", NamedTextColor.DARK_AQUA));
         int from = (page - 1) * 45;
         for (int i = 0; i < 45 && from + i < keys.size(); i++) {
             String key = keys.get(from + i);
@@ -235,16 +535,30 @@ final class OrdersService implements Listener {
             if (icon == null) continue;
             ItemMeta meta = icon.getItemMeta();
             meta.displayName(Component.text(display(key), NamedTextColor.GOLD));
-            meta.lore(List.of(Component.text(key, NamedTextColor.DARK_GRAY),
-                    Component.text("Click to order this", NamedTextColor.GRAY)));
+            meta.lore(List.of(Component.text("Click to order this", NamedTextColor.GRAY)));
             icon.setItemMeta(meta);
-            inv.setItem(i, icon);
+            holder.inv.setItem(i, icon);
         }
-        inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Click to search" : "Showing: " + search)));
-        inv.setItem(49, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
-        inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(keys.size() + " items")));
-        navigation(inv, page, keys.size());
-        player.openInventory(inv);
+        for (int slot = 45; slot < 54; slot++) holder.inv.setItem(slot, filler());
+        holder.inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Click to search" : "Showing: " + search)));
+        holder.inv.setItem(47, CoreUtil.named(Material.HOPPER, "Filter: " + (catName == null ? "All items" : Cat.valueOf(catName).label), List.of("Click to cycle category filter")));
+        holder.inv.setItem(49, CoreUtil.named(Material.ARROW, "Back", List.of("Orders")));
+        holder.inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(keys.size() + " item(s)")));
+        pageNav(holder.inv, page, keys.size());
+        player.openInventory(holder.inv);
+    }
+
+    private String nextCategory(String current) {
+        Cat[] cats = Cat.values();
+        if (current == null) return cats[0].name();
+        for (int i = 0; i < cats.length; i++) if (cats[i].name().equals(current)) return i + 1 < cats.length ? cats[i + 1].name() : null;
+        return null;
+    }
+
+    /** Pagination arrows at 46 (prev) / 52 (next), keeping them clear of the spaced action buttons. */
+    private void pageNav(Inventory inv, int page, int total) {
+        if (page > 1) inv.setItem(46, CoreUtil.named(Material.SPECTRAL_ARROW, "Previous page", List.of()));
+        if (page * 45 < total) inv.setItem(52, CoreUtil.named(Material.SPECTRAL_ARROW, "Next page", List.of()));
     }
 
     private List<String> filtered(String search) {
@@ -267,26 +581,51 @@ final class OrdersService implements Listener {
         if (page * 45 < total) inv.setItem(51, CoreUtil.named(Material.SPECTRAL_ARROW, "Next page", List.of()));
     }
 
-    private ItemStack orderIcon(Database.OrderRow row, boolean forSeller) {
+    private ItemStack orderIcon(Database.OrderRow row, boolean forSeller, Player viewer) {
         ItemStack icon = canonical(row.itemKey());
         if (icon == null) icon = new ItemStack(Material.BARRIER);
         icon = icon.clone();
         ItemMeta meta = icon.getItemMeta();
-        meta.displayName(Component.text(display(row.itemKey()), NamedTextColor.GOLD));
+        boolean active = row.status().equals("ACTIVE");
+        int remaining = row.amount() - row.filled();
+        meta.displayName(Component.text(remaining + "x " + display(row.itemKey()), active ? NamedTextColor.GOLD : NamedTextColor.GRAY));
         List<Component> lore = new ArrayList<>();
         lore.add(Component.text("Buyer: " + row.buyerName(), NamedTextColor.GRAY));
-        lore.add(Component.text("Wants: " + (row.amount() - row.filled()) + " more of " + row.amount(), NamedTextColor.GRAY));
-        lore.add(Component.text("Pays: " + CoreUtil.money(row.unit()) + " each", NamedTextColor.YELLOW));
-        lore.add(Component.text("Escrow held: " + CoreUtil.money(row.escrow()), NamedTextColor.DARK_GRAY));
-        lore.add(Component.text("Status: " + row.status(), NamedTextColor.DARK_GRAY));
+        lore.add(Component.text("Filled " + row.filled() + " / " + row.amount(), NamedTextColor.GRAY));
+        lore.add(Component.text("Unit price: " + CoreUtil.money(row.unit()), NamedTextColor.YELLOW));
+        lore.add(Component.text("Value left: " + CoreUtil.money(remaining * row.unit()), NamedTextColor.YELLOW));
+        NamedTextColor statusColour = active ? NamedTextColor.GREEN
+                : row.status().equals("COMPLETED") ? NamedTextColor.AQUA : NamedTextColor.RED;
+        lore.add(Component.text("Status: " + row.status()
+                + (active ? "  (expires " + ago(row.expiresAt()) + ")" : ""), statusColour));
         lore.add(Component.empty());
-        lore.add(Component.text(forSeller ? "Click to deliver what you are carrying" : "Click to cancel and refund",
-                forSeller ? NamedTextColor.GREEN : NamedTextColor.RED));
+        if (forSeller && active) {
+            int carried = viewer == null ? 0 : count(viewer, row.itemKey());
+            int fill = Math.min(carried, remaining);
+            lore.add(Component.text(carried > 0 ? "You are carrying " + carried + " — can fill " + fill : "You are carrying none",
+                    carried > 0 ? NamedTextColor.GREEN : NamedTextColor.DARK_GRAY));
+            lore.add(Component.text("Click to open the delivery basket", NamedTextColor.GREEN));
+        } else if (!forSeller && active) {
+            lore.add(Component.text("Escrow held: " + CoreUtil.money(row.escrow()), NamedTextColor.DARK_GRAY));
+            lore.add(Component.text("Click to cancel and refund", NamedTextColor.RED));
+        } else if (!forSeller) {
+            lore.add(Component.text("Click to remove from your history", NamedTextColor.DARK_GRAY));
+        }
         meta.lore(lore);
         meta.getPersistentDataContainer().set(new NamespacedKey(plugin, "order_id"),
                 org.bukkit.persistence.PersistentDataType.LONG, row.id());
         icon.setItemMeta(meta);
         return icon;
+    }
+
+    /** Relative time, for order expiry. Future = "in 3d", past = "expired". */
+    private String ago(long at) {
+        long delta = at - System.currentTimeMillis();
+        if (delta <= 0) return "any moment";
+        long hours = delta / 3600000L;
+        if (hours >= 48) return "in " + (hours / 24) + "d";
+        if (hours >= 1) return "in " + hours + "h";
+        return "in " + Math.max(1, delta / 60000L) + "m";
     }
 
     /** The delivery screen. The player PUTS items in; nothing is ever pulled out of their inventory for
@@ -309,7 +648,7 @@ final class OrdersService implements Listener {
         int needed = row.amount() - row.filled();
         int deliverable = Math.min(inserted, needed);
         double gross = Math.round(deliverable * row.unit() * 100) / 100.0;
-        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) * plugin.bank().feeFactor() / 100.0;
         double net = Math.round(gross * (1 - tax) * 100) / 100.0;
         for (int slot = 27; slot < 54; slot++) inv.setItem(slot, filler());
         inv.setItem(31, CoreUtil.named(Material.PAPER, "Order #" + row.id(),
@@ -381,7 +720,7 @@ final class OrdersService implements Listener {
             remaining -= take;
         }
         if (remaining > 0) { db.orderUnreserve(holder.orderId, qty, cost); CoreUtil.error(seller, "Delivery came up short; nothing was charged."); return; }
-        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) * plugin.bank().feeFactor() / 100.0;
         double fee = Math.round(cost * tax * 100) / 100.0, net = cost - fee;
         db.changeBalance(CoreUtil.id(seller), net);
         if (fee > 0) plugin.bank().creditFee(fee, CoreUtil.id(seller), "ORDER_TAX");
@@ -400,22 +739,36 @@ final class OrdersService implements Listener {
         List<ItemStack> stash = db.stashOf(CoreUtil.id(player));
         Inventory inv = open(player, Screen.STASH, 1, null, 0, "Orders • Stash", 54);
         for (int i = 0; i < Math.min(45, stash.size()); i++) inv.setItem(i, stash.get(i));
+        for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
+        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
         inv.setItem(49, CoreUtil.named(Material.HOPPER, "Collect everything", List.of(stash.size() + " stack(s)")));
         player.openInventory(inv);
     }
 
     // ------------------------------------------------------------------ clicks
+    /** A slot worth making a noise for: something is there, and it is not the grey filler furniture. */
+    private static boolean isButton(org.bukkit.inventory.ItemStack clicked) {
+        return clicked != null && !clicked.getType().isAir()
+                && clicked.getType() != Material.GRAY_STAINED_GLASS_PANE
+                && clicked.getType() != Material.BLACK_STAINED_GLASS_PANE;
+    }
+
     @EventHandler
     public void click(InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof Holder holder)) return;
         if (!(event.getWhoClicked() instanceof Player player)) return;
+        /** Button feedback, on the same shared vocabulary the duel screens use. Only real buttons make a
+         *  noise: filler glass and empty slots are furniture, and the deliver screen's own item area is a
+         *  container the player is meant to move items in and out of freely. */
+        if (holder.screen != Screen.DELIVER && isButton(event.getCurrentItem()) && event.getRawSlot() < event.getInventory().getSize())
+            plugin.settings().uiSound(player, "select");
         if (holder.screen == Screen.DELIVER) {
             int raw = event.getRawSlot();
             /** The top three rows and the player's own inventory stay fully interactive -- that is the whole
              *  point of the screen. Everything else is furniture and is refused. */
             if (raw >= DELIVER_SLOTS && raw < 54) {
                 event.setCancelled(true);
-                if (raw == 45) { player.closeInventory(); return; }
+                if (raw == 45) { player.closeInventory(); Bukkit.getScheduler().runTask(plugin, () -> openPublic(player)); return; }
                 if (raw == 49) {
                     Database.OrderRow row = db.order(holder.orderId);
                     if (row == null) { player.closeInventory(); return; }
@@ -433,34 +786,56 @@ final class OrdersService implements Listener {
         event.setCancelled(true);
         int slot = event.getRawSlot();
         if (slot < 0 || slot >= event.getInventory().getSize()) return;
-
-        if (slot == 45 && (holder.screen == Screen.PUBLIC || holder.screen == Screen.PICK)) {
-            askSearch(player, holder.screen);
-            return;
-        }
-        if (slot == 46 && holder.screen == Screen.PUBLIC) { openPick(player, 1, null); return; }
-        if (slot == 47 && holder.screen == Screen.PUBLIC) { openMine(player, 1); return; }
-        if (slot == 48 && holder.screen == Screen.PUBLIC) { openStash(player); return; }
-        if (slot == 49 && holder.screen == Screen.STASH) { collect(player); return; }
-        if (slot == 49 && (holder.screen == Screen.MINE || holder.screen == Screen.PICK)) { openPublic(player); return; }
-        if (slot == 50) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
-        if (slot == 51) { reopen(player, holder, holder.page + 1); return; }
-        if (slot >= 45) return;
-
         ItemStack clicked = event.getCurrentItem();
-        if (clicked == null || clicked.getType().isAir()) return;
-        if (holder.screen == Screen.PICK) {
-            List<String> keys = filtered(holder.search);
-            int index = (holder.page - 1) * 45 + slot;
-            if (index >= keys.size()) return;
-            beginDraft(player, keys.get(index));
-            return;
+
+        switch (holder.screen) {
+            case PUBLIC -> {
+                switch (slot) {
+                    case 45 -> { askSearch(player, holder); return; }
+                    case 47 -> { openPick(player, 1, null); return; }
+                    case 49 -> { openMine(player, 1); return; }
+                    case 51 -> { openStash(player); return; }
+                    case 46 -> { openPublic(player, Math.max(1, holder.page - 1), holder.search); return; }
+                    case 52 -> { openPublic(player, holder.page + 1, holder.search); return; }
+                    default -> { }
+                }
+            }
+            case PICK -> {
+                switch (slot) {
+                    case 45 -> { askSearch(player, holder); return; }
+                    case 47 -> { openPick(player, 1, holder.search, nextCategory(holder.category)); return; }
+                    case 49 -> { openPublic(player); return; }
+                    case 46 -> { openPick(player, Math.max(1, holder.page - 1), holder.search, holder.category); return; }
+                    case 52 -> { openPick(player, holder.page + 1, holder.search, holder.category); return; }
+                    default -> { }
+                }
+                if (slot < 45) {
+                    if (clicked == null || clicked.getType().isAir()) return;
+                    List<String> keys = holder.category == null ? filtered(holder.search) : inCategory(Cat.valueOf(holder.category), holder.search);
+                    int index = (holder.page - 1) * 45 + slot;
+                    if (index < keys.size()) startOrderFor(player, keys.get(index));
+                }
+                return;
+            }
+            case ENCHANT -> { handleEnchantClick(player, event, slot); return; }
+            case STASH -> {
+                if (slot == 45) { openPublic(player); return; }
+                if (slot == 49) { collect(player); return; }
+            }
+            case MINE, HISTORY -> {
+                if (slot == 45) { openPublic(player); return; }
+                if (slot == 46) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
+                if (slot == 52) { reopen(player, holder, holder.page + 1); return; }
+            }
+            default -> { }
         }
+        if (slot >= 45) return;
+        if (clicked == null || clicked.getType().isAir()) return;
         Long id = clicked.hasItemMeta() ? clicked.getItemMeta().getPersistentDataContainer()
                 .get(new NamespacedKey(plugin, "order_id"), org.bukkit.persistence.PersistentDataType.LONG) : null;
         if (id == null) return;
         if (holder.screen == Screen.PUBLIC) { openDeliver(player, id); return; }
-        if (holder.screen != Screen.MINE) return;
+        if (holder.screen != Screen.MINE && holder.screen != Screen.HISTORY) return;
         Database.OrderRow row = db.order(id);
         if (row == null) return;
         if (!row.status().equals("ACTIVE")) {
@@ -486,18 +861,28 @@ final class OrdersService implements Listener {
         switch (holder.screen) {
             case PUBLIC -> openPublic(player, page, holder.search);
             case MINE -> openMine(player, page);
-            case PICK -> openPick(player, page, holder.search);
+            case HISTORY -> openHistory(player, page);
+            case PICK -> openPick(player, page, holder.search, holder.category);
             default -> { }
         }
     }
 
+    private String plainName(ItemStack item) {
+        if (item == null || !item.hasItemMeta() || !item.getItemMeta().hasDisplayName()) return null;
+        return net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(item.getItemMeta().displayName());
+    }
+
     // ------------------------------------------------------------------ chat prompts
-    private void askSearch(Player player, Screen screen) {
+    private void askSearch(Player player, Holder holder) {
         player.closeInventory();
-        CoreUtil.msg(player, "Type what you are looking for in chat, or 'cancel'.");
+        CoreUtil.msg(player, "Type what you are looking for in chat, or 'all' to clear.");
+        Screen screen = holder.screen;
+        String category = holder.category;
         prompts.put(player.getUniqueId(), text -> {
             String search = text.equalsIgnoreCase("all") ? null : text;
-            if (screen == Screen.PICK) openPick(player, 1, search); else openPublic(player, 1, search);
+            if (screen == Screen.PICK && category != null) openCategoryItems(player, Cat.valueOf(category), 1, search);
+            else if (screen == Screen.PICK) openPick(player, 1, search);
+            else openPublic(player, 1, search);
         });
     }
 
@@ -611,7 +996,7 @@ final class OrdersService implements Listener {
             CoreUtil.error(seller, "Delivery came up short and nothing was charged.");
             return;
         }
-        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) / 100.0;
+        double tax = Math.max(0, plugin.getConfig().getDouble("orders.tax-percent", 2.5)) * plugin.bank().feeFactor() / 100.0;
         double fee = Math.round(cost * tax * 100) / 100.0, net = cost - fee;
         db.changeBalance(CoreUtil.id(seller), net);
         if (fee > 0) plugin.bank().creditFee(fee, CoreUtil.id(seller), "ORDER_TAX");

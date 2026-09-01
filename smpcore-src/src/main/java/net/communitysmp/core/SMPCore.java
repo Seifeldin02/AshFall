@@ -19,14 +19,18 @@ import java.time.Instant;
 import java.util.*;
 
 public final class SMPCore extends JavaPlugin implements CommandExecutor,TabCompleter {
-    private Database db;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private DiscardedVaultService vault;private PacketNametagService packetNametags;
+    private Database db;private DuelMapService duelMaps;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private VoidWorldService voidWorlds;private DiscardedVaultService vault;private ArenaService arena;private SpawnerShopService spawnerShop;private SpectacleService spectacle;private PacketNametagService packetNametags;
     private final Map<UUID,Long> feedbackCooldowns=new HashMap<>();
     Database db(){return db;} UIService ui(){return ui;} ProgressService progress(){return progress;} TeleportService teleports(){return teleports;} SpawnClaimService spawnClaims(){return spawnClaims;}EnderChestService enderChests(){return enderChests;}NetWorthService netWorth(){return netWorth;}BankService bank(){return bank;}VillagerCapsuleService capsules(){return capsules;}FactionService factions(){return factions;}BossEventService bosses(){return bosses;}MessagingService messaging(){return messaging;}GraveService graves(){return graves;}BulletinService bulletin(){return bulletin;}SettingsService settings(){return settings;}AccountService account(){return account;}RegistrationService registration(){return registration;}ConfirmationService confirmations(){return confirmations;}ShardService shards(){return shards;}MarketplaceService marketplace(){return marketplace;}WeeklyDragonService weeklyDragon(){return weeklyDragon;}VillagerDiscountService villagerDiscounts(){return villagerDiscounts;}SpawnerService spawners(){return spawners;}NicknameService nicknames(){return nicknames;}TabIntegration tab(){return tabIntegration;}AfkService afk(){return afk;}RelicService relics(){return relics;}AdminToolsService adminTools(){return adminTools;}PunishmentService punishments(){return punishments;}ReplayIntegration replay(){return replay;}TrustedAdminService trustedAdmins(){return trustedAdmins;}IpBanService ipBans(){return ipBans;}ModerationService moderation(){return moderation;}PacketNametagService packetNametags(){return packetNametags;}
     OrdersService orders(){return ordersService;}
     TaskMasterService taskMaster(){return taskMaster;}
     IndustrialHopperService industrialHoppers(){return industrialHoppers;}
+    VoidWorldService voidWorlds(){return voidWorlds;}
+
     DiscardedVaultService vault(){return vault;}
-    ShopService shop(){return shop;}
+    ArenaService arena(){return arena;}
+    DuelMapService duelMaps(){return duelMaps;}
+    ShopService shop(){return shop;} SpawnerShopService spawnerShop(){return spawnerShop;} SpectacleService spectacle(){return spectacle;}
     double creditEarned(String player,double amount,String detail){if(amount<=0)return 0;if(bank==null){db.changeBalance(player,amount);return amount;}return bank.creditEarned(player,amount,detail);}
     boolean isAdmin(Player p){return trustedAdmins!=null&&trustedAdmins.isAdmin(p);}
     boolean privileged(Player p){return isAdmin(p)&&(p.getGameMode()==GameMode.CREATIVE||p.getGameMode()==GameMode.SPECTATOR);}
@@ -61,7 +65,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         bounties=new BountyService(this,factions);spawners=new SpawnerService(this,factions);netWorth=new NetWorthService(this,factions,shop,spawners);
         merchants=new MerchantService(this,shop,auctions,bosses,bank);capsules=new VillagerCapsuleService(this,factions,spawnClaims,merchants);
         settings=new SettingsService(this);account=new AccountService(this);registration=new RegistrationService(this);confirmations=new ConfirmationService(this);shards=new ShardService(this);marketplace=new MarketplaceService(this,shop,auctions,shards);
-        tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
+        spectacle=new SpectacleService(this);tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);spawnerShop=new SpawnerShopService(this);getServer().getPluginManager().registerEvents(spawnerShop,this);duelMaps=new DuelMapService(this);getServer().getPluginManager().registerEvents(duelMaps,this);arena=new ArenaService(this);getServer().getPluginManager().registerEvents(arena,this);voidWorlds=new VoidWorldService(this);getServer().getPluginManager().registerEvents(voidWorlds,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
         villagerDiscounts=new VillagerDiscountService(this);
         worldBorders=new WorldBorderService(this);
         for(World world:getServer().getWorlds())try{world.setGameRule(GameRule.LOCATOR_BAR,false);}catch(Throwable ignored){}
@@ -86,11 +90,94 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         for(String name:List.of("f","balance","pay","home","sethome","delhome","renamehome","homes","buyhome","tpa","tpahere","tpaccept","tpdeny","spawn","rtp","back","msg","reply","shop","luxuryshop","shardshop","settings","ah","bounty","bounties","events","relics","leaderboards","guide","smphelp","role","sidebar","feedback","stats","progress","history","graves","enderchest","ashfall","nickname","discord","admin","shout","afk","myorders")){
             PluginCommand command=getCommand(name);if(command!=null){command.setExecutor(this);command.setTabCompleter(this);}
         }
+        applyCommandFeedbackPolicy();
         getLogger().info("SMPCore 1.7.0 enabled: marketplace, accessibility settings, shards, faction relations and weekly Dragon are ready.");
     }
-    @Override public void onDisable(){if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
+    @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(voidWorlds!=null)voidWorlds.shutdown();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(spectacle!=null)spectacle.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
 
-    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
+    /*  The player-facing half of the temporary event worlds.
+     *
+     *  /ashfall voidworld is the admin surface and is gated on the ADMIN account alone, which is fine for
+     *  creating and deleting them and wrong for everything a participant needs: a player who logs into an
+     *  event and wants out again cannot be made to wait for an administrator, and "there is no way out" is
+     *  the stranding this system is specifically supposed to prevent.
+     *
+     *  So the verbs are split by permission rather than by command. exit and list are open to everyone,
+     *  enter is a normal permission that defaults to allowed (the gate on a private event is simply not
+     *  creating the world until it is wanted), and create and delete stay with the administrators. Tab
+     *  completion offers exactly the verbs the sender may actually run. */
+    private java.util.List<String> voidVerbs(CommandSender sender){
+        java.util.List<String> verbs=new ArrayList<>(List.of("list","exit"));
+        if(sender.hasPermission("smpcore.voidworld.enter"))verbs.add("enter");
+        if(sender.hasPermission("smpcore.voidworld.manage")||(sender instanceof Player vp&&isAdmin(vp))||!(sender instanceof Player)){
+            verbs.add("create");verbs.add("delete");verbs.add("open");verbs.add("close");
+        }
+        return verbs;
+    }
+
+    /** The name may be omitted while exactly one event world exists, which is the normal case for a live
+     *  event -- "/voidworld open" should not need an argument to state the obvious. */
+    private String soleVoidWorld(){
+        java.util.List<String> labels=voidWorlds.labels();
+        return labels.size()==1?labels.getFirst():null;
+    }
+
+    private boolean voidWorldCommand(CommandSender sender,String[] args){
+        java.util.List<String> allowed=voidVerbs(sender);
+        if(args.length==0){
+            CoreUtil.msg(sender,"Event worlds: /voidworld "+String.join(" | ",allowed));
+            return true;
+        }
+        String verb=args[0].toLowerCase(Locale.ROOT);
+        if(!allowed.contains(verb)){CoreUtil.error(sender,"You cannot use /voidworld "+verb+".");return true;}
+        switch(verb){
+            case"list"->{
+                java.util.List<String> labels=voidWorlds.labels();
+                if(labels.isEmpty()){CoreUtil.msg(sender,"Event worlds: none");return true;}
+                java.util.List<String> shown=new ArrayList<>();
+                for(String each:labels)shown.add(each+(voidWorlds.isOpen(each)?" (open)":" (closed)"));
+                CoreUtil.msg(sender,"Event worlds: "+String.join(", ",shown));
+            }
+            case"exit"->{
+                if(!(sender instanceof Player ep)){CoreUtil.error(sender,"That is a player command.");return true;}
+                String problem=voidWorlds.exit(ep);
+                if(problem!=null)CoreUtil.error(ep,problem);
+            }
+            case"enter"->{
+                if(!(sender instanceof Player np)){CoreUtil.error(sender,"That is a player command.");return true;}
+                if(args.length<2){CoreUtil.error(sender,"Usage: /voidworld enter <name>");return true;}
+                String problem=voidWorlds.enter(np,args[1]);
+                if(problem!=null)CoreUtil.error(np,problem);
+            }
+            case"open",  "close"->{
+                boolean open=verb.equals("open");
+                String target=args.length>=2?args[1]:soleVoidWorld();
+                if(target==null){CoreUtil.error(sender,"Usage: /voidworld "+verb+" <name>");return true;}
+                if(voidWorlds.find(target)==null){CoreUtil.error(sender,"No void world called '"+target+"'.");return true;}
+                voidWorlds.setOpen(target,open);
+                CoreUtil.msg(sender,"Event world '"+target+"' is now "+(open?"OPEN -- anyone may enter.":"CLOSED -- administrators only."));
+                db.history("SERVER",null,"VOIDWORLD","The temporary event world '"+target+"' was "+(open?"opened":"closed")+".");
+            }
+            case"create"->{
+                if(args.length<2){CoreUtil.error(sender,"Usage: /voidworld create <name>");return true;}
+                org.bukkit.World made=voidWorlds.create(args[1]);
+                if(made==null)CoreUtil.error(sender,"Could not create a void world called '"+args[1]+"'.");
+                else{CoreUtil.msg(sender,"Void world '"+args[1]+"' is ready ("+made.getName()+").");
+                    db.history("SERVER",null,"VOIDWORLD","A temporary event world '"+args[1]+"' was created.");}
+            }
+            case"delete"->{
+                if(args.length<2){CoreUtil.error(sender,"Usage: /voidworld delete <name>");return true;}
+                String problem=voidWorlds.delete(args[1]);
+                if(problem!=null)CoreUtil.error(sender,problem);
+                else{CoreUtil.msg(sender,"Void world '"+args[1]+"' deleted; everyone inside was returned.");
+                    db.history("SERVER",null,"VOIDWORLD","The temporary event world '"+args[1]+"' was deleted.");}
+            }
+            default->CoreUtil.error(sender,"Unknown verb.");
+        }
+        return true;
+    }
+
+    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("fly"))return flyCommand(sender,args);if(name.equals("flyspeed"))return flySpeedCommand(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(name.equals("voidworld"))return voidWorldCommand(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"duel"->duel(p,args);case"duels"->duels(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"spawnershop"->{spawnerShop.open(p);yield true;}case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
                 if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /kit.");yield true;}
                 if(args.length<1||!args[0].equalsIgnoreCase("test")){CoreUtil.error(p,"Usage: /kit test [player]");yield true;}
                 /** Admin-only in both forms; the optional target lets staff outfit someone else for a
@@ -114,7 +201,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
          *  Bank. Taking the tax from the amount is what makes it impossible for the sum to drift -- net and
          *  tax are defined so that they add back to the amount already withdrawn, so no rounding remainder
          *  can be created or lost. Same Math.round(amount*percent)/100 shape the bounty fee already uses. */
-        double taxPercent=Math.max(0,getConfig().getDouble("pay.tax-percent",1.0));
+        /** Tripled while the Central Bank is in deficit -- see BankService.feeFactor(). */
+        double taxPercent=Math.max(0,getConfig().getDouble("pay.tax-percent",1.0))*bank.feeFactor();
         double tax=Math.round(amount*taxPercent)/100.0,net=Math.round((amount-tax)*100)/100.0;
         tax=Math.round((amount-net)*100)/100.0;
         db.ensurePlayer(CoreUtil.id(target),target.getName(),getConfig().getDouble("starting-balance",250));
@@ -341,16 +429,101 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(args[0].equalsIgnoreCase("help")){if(args.length==1)adminHelp(sender);else adminSectionHelp(sender,args[1]);return true;}
         try{
             switch(args[0].toLowerCase(Locale.ROOT)){
-                case"hopper"->{if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
+                case"voidworld"->{
+                    /*  Temporary event worlds. Nothing goes in, nothing comes out.
+                     *
+                     *  Follows the conventions the rest of /ashfall uses: a verb as args[1], the subject as
+                     *  args[2], every branch answers the sender, and every verb is offered by tab complete.
+                     *  `enter` is player-only because it moves somebody; the rest work from console. */
+                    if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close> [name]");return true;}
+                    String verb=args[1].toLowerCase(Locale.ROOT);
+                    if(verb.equals("list")){
+                        java.util.List<String> labels=voidWorlds.labels();
+                        CoreUtil.msg(sender,"Void worlds: "+(labels.isEmpty()?"none":String.join(", ",labels)));
+                        return true;
+                    }
+                    if(verb.equals("exit")){
+                        if(!(sender instanceof Player vp)){CoreUtil.error(sender,"That is a player command.");return true;}
+                        String problem=voidWorlds.exit(vp);
+                        if(problem!=null)CoreUtil.error(vp,problem);
+                        return true;
+                    }
+                    if(args.length<3){CoreUtil.error(sender,"Usage: /ashfall voidworld "+verb+" <name>");return true;}
+                    String label=args[2];
+                    switch(verb){
+                        case"create"->{
+                            org.bukkit.World made=voidWorlds.create(label);
+                            if(made==null)CoreUtil.error(sender,"Could not create a void world called '"+label+"'.");
+                            else{CoreUtil.msg(sender,"Void world '"+label+"' is ready ("+made.getName()+").");
+                                db.history("SERVER",null,"VOIDWORLD","A temporary event world '"+label+"' was created.");}
+                        }
+                        case"enter"->{
+                            if(!(sender instanceof Player vp)){CoreUtil.error(sender,"That is a player command.");return true;}
+                            String problem=voidWorlds.enter(vp,label);
+                            if(problem!=null)CoreUtil.error(vp,problem);
+                        }
+                        case"open","close"->{
+                            if(voidWorlds.find(label)==null){CoreUtil.error(sender,"No void world called '"+label+"'.");return true;}
+                            voidWorlds.setOpen(label,verb.equals("open"));
+                            CoreUtil.msg(sender,"Event world '"+label+"' is now "+(verb.equals("open")?"OPEN -- anyone may enter.":"CLOSED -- administrators only."));
+                            db.history("SERVER",null,"VOIDWORLD","The temporary event world '"+label+"' was "+verb+"ed.");
+                        }
+                        case"delete"->{
+                            String problem=voidWorlds.delete(label);
+                            if(problem!=null)CoreUtil.error(sender,problem);
+                            else{CoreUtil.msg(sender,"Void world '"+label+"' deleted; everyone inside was returned.");
+                                db.history("SERVER",null,"VOIDWORLD","The temporary event world '"+label+"' was deleted.");}
+                        }
+                        default->CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close> [name]");
+                    }
+                    return true;
+                }
+                case"hopper"->{if(args.length>=2&&args[1].equalsIgnoreCase("livesuite")){
+                    /** Console-runnable: the suite has to be able to prove itself with nobody standing in
+                     *  the world, so it falls back to the main world's spawn. */
+                    org.bukkit.World sw=sender instanceof Player sp?sp.getWorld():getServer().getWorlds().getFirst();
+                    org.bukkit.Location sat=sender instanceof Player sp2?sp2.getLocation():sw.getSpawnLocation();
+                    int sx=args.length>=5?Integer.parseInt(args[2]):sat.getBlockX()+6;
+                    int sy=args.length>=5?Integer.parseInt(args[3]):Math.max(sat.getBlockY()+3,72);
+                    int sz=args.length>=5?Integer.parseInt(args[4]):sat.getBlockZ();
+                    CoreUtil.msg(sender,"Live Industrial Hopper conservation suite (real ticking blocks):");
+                    new IndustrialHopperLive(this,industrialHoppers,sw,sx,sy,sz,
+                            line->{CoreUtil.msg(sender,"  "+line);getLogger().info("[IH-live] "+line);}).run();
+                    return true;
+                }
+                if(args.length>=6&&args[1].equalsIgnoreCase("watch")){
+                    org.bukkit.World ww=args.length>=7?getServer().getWorld(args[6]):(sender instanceof Player wp?wp.getWorld():getServer().getWorlds().getFirst());
+                    if(ww==null){CoreUtil.error(sender,"Unknown world.");return true;}
+                    industrialHoppers.watch(ww,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4]),
+                            Integer.parseInt(args[5]),args.length>=8?Integer.parseInt(args[7]):30,
+                            line->{CoreUtil.msg(sender,"  "+line);getLogger().info("[IH-watch] "+line);});
+                    return true;
+                }
+                if(args.length>=2&&args[1].equalsIgnoreCase("live")){
+                    /** Console-runnable on purpose: this is the rig that has to prove itself without a
+                     *  human standing in the world, so it falls back to the main world spawn. */
+                    org.bukkit.World lw=sender instanceof Player lp?lp.getWorld():getServer().getWorlds().getFirst();
+                    org.bukkit.Location at=sender instanceof Player lp2?lp2.getLocation():lw.getSpawnLocation();
+                    int amount=args.length>=3?Math.max(1,Math.min(64,Integer.parseInt(args[2]))):64;
+                    CoreUtil.msg(sender,"Building a live chest/hopper/chest/hopper/chest rig with real ticking blocks:");
+                    org.bukkit.Material what=args.length>=4?org.bukkit.Material.matchMaterial(args[3]):Material.STONE;
+                    if(what==null||!what.isItem()){CoreUtil.error(sender,"Unknown item: "+args[3]);return true;}
+                    industrialHoppers.liveChain(lw,at.getBlockX()+3,Math.max(at.getBlockY()+2,70),at.getBlockZ(),amount,what,
+                            line->{CoreUtil.msg(sender,"  "+line);getLogger().info("[IH-live] "+line);});
+                    return true;
+                }
+                if(args.length>=2&&args[1].equalsIgnoreCase("verify")){CoreUtil.msg(sender,"Verifying Industrial Hopper parity against a live rig:");for(String line:new IndustrialHopperVerify(this,industrialHoppers).run())CoreUtil.msg(sender,"  "+line);return true;}if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
                 case"vault"->{int page=1;if(args.length>1)try{page=Math.max(1,Integer.parseInt(args[1]));}catch(NumberFormatException ignored){}CoreUtil.msg(sender,vault.summaryLine());vault.show(sender,page);}
                 case"balance"->adminBalance(sender,args);
                 case"boss"->adminBoss(sender,args);
+                case"duelmap"->adminDuelMap(sender,args);case"spawnershop"->CoreUtil.msg(sender,spawnerShop.describeStock());
                 case"elite"->adminElite(sender,args);
                 case"event"->adminEvent(sender,args);
                 case"merchant"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run merchant commands in game.");return true;}merchants.command(p,args);}
                 case"bulletin"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run bulletin commands in game.");return true;}bulletin.command(p,args);}
                 case"feedback"->adminFeedback(sender,args);
                 case"economy"->economyReport(sender,args);
+                case"bank"->adminBank(sender,args);
                 case"spawnclaim"->spawnClaims.command(sender,args);
                 case"setspawn"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run this in game.");return true;}teleports.setSpawn(p.getLocation());CoreUtil.msg(sender,"Central spawn set.");}
                 case"relic"->adminRelic(sender,args);
@@ -394,7 +567,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
 
     private void adminHelp(CommandSender s){
         s.sendMessage(ChatColor.GOLD+""+ChatColor.BOLD+"ASHFALL ADMIN");
-        adminCategory(s,"Economy","/ashfall balance, /ashfall economy report, /ashfall shard");
+        adminCategory(s,"Economy","/ashfall balance, /ashfall bank, /ashfall economy report, /ashfall shard");
         adminCategory(s,"Events & Bosses","/ashfall event, /ashfall boss, /ashfall elite");
         adminCategory(s,"Factions & Spawn","/ashfall faction, /ashfall spawnclaim");
         adminCategory(s,"Merchants","/ashfall merchant");
@@ -412,7 +585,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     private void adminCommands(CommandSender s,String title,String... commands){s.sendMessage(ChatColor.GOLD+""+ChatColor.BOLD+title+":");for(String command:commands)s.sendMessage(ChatColor.GRAY+"  "+ChatColor.WHITE+command);}
     private void adminSectionHelp(CommandSender s,String section){
         switch(section.toLowerCase(Locale.ROOT)){
-            case"economy","balance"->adminCommands(s,"Economy","/ashfall economy report","/ashfall balance set <player> <amount>","/ashfall balance add <player> <amount>","/ashfall balance take <player> <amount>","/ashfall shard <give|remove|set> <player> <amount>");
+            case"economy","balance","bank"->adminCommands(s,"Economy","/ashfall economy report","/ashfall balance set <player> <amount>","/ashfall balance add <player> <amount>","/ashfall balance take <player> <amount>","/ashfall bank <add|remove|set> <amount>","/ashfall shard <give|remove|set> <player> <amount>");
             case"moderation"->adminCommands(s,"Moderation","/ashfall vanish","/ashfall spectate <player>","/ashfall unspectate","/ashfall audit [count]","/ashfall ipban ban|unban|duration|list","/ashfall monument ...","/warn <player> (time) <reason> (PunisherX)","/ban, /mute, /kick, /history, /check (PunisherX)","/openinv <player> (OpenInv, live)","/openender <player> (OpenInv, live)");
             case"repair"->adminCommands(s,"Player Repair","/ashfall progressrepair <player>","/ashfall cooldowns <player> <rtp|teleport>");
             case"events"->{adminCommands(s,"Events & Bosses","/ashfall event","/ashfall boss","/ashfall elite");}
@@ -432,7 +605,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     }
     private void eventHelp(CommandSender s){adminCommands(s,"Events","/ashfall event resource","/ashfall event elitehunt","/ashfall event taskmaster","/ashfall event worldboss","/ashfall event stop");}
     private void bossHelp(CommandSender s){adminCommands(s,"World Boss","/ashfall boss spawn [ashen|iron|piglin]","/ashfall boss here [ashen|iron|piglin]","/ashfall boss despawn");}
-    private void eliteHelp(CommandSender s){adminCommands(s,"Powered Mobs","/ashfall elite stats","/ashfall elite uncommon","/ashfall elite rare","/ashfall elite epic","/ashfall elite legendary","/ashfall elite miniboss", "Add 'here' to spawn at your location.");}
+    private void eliteHelp(CommandSender s){adminCommands(s,"Powered Mobs","/ashfall elite <uncommon|rare|epic|legendary|miniboss> [mob] [here | <x> <y> <z>]","  mob optional (e.g. wither_skeleton, blaze); location optional -> random if omitted","/ashfall elite legendary blaze here","/ashfall elite epic 100 64 -200","/ashfall elite stats");}
     private void feedbackHelp(CommandSender s){adminCommands(s,"Feedback","/ashfall feedback notify <on|off>","/ashfall feedback list [open|done|all]","/ashfall feedback view <id>","/ashfall feedback done <id>","/ashfall feedback reopen <id>","/ashfall feedback delete <id>");}
     private void factionHelp(CommandSender s){adminCommands(s,"Factions","/ashfall faction inspect <name>","/ashfall faction resize <name> <tier>","/ashfall faction resetclaim <name>","/ashfall faction recalc");}
     private void merchantHelp(CommandSender s){adminCommands(s,"Spawn Merchants","/ashfall merchant spawn <boss|event|shop|auction|banker>","/ashfall merchant remove <nearest|id>");}
@@ -458,6 +631,23 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     }
     private void adminBalance(CommandSender s,String[] args){if(args.length<2){adminSectionHelp(s,"balance");return;}if(args.length<4){CoreUtil.error(s,"Usage: /smp balance "+args[1]+" <player> <amount>");return;}String id=CoreUtil.id(args[2]);db.ensurePlayer(id,args[2],getConfig().getDouble("starting-balance",250));double amount=CoreUtil.parseMoney(args[3]);if(amount<0){CoreUtil.error(s,"Invalid amount.");return;}if(args[1].equalsIgnoreCase("set"))db.setBalance(id,amount);else if(args[1].equalsIgnoreCase("add"))db.changeBalance(id,amount);else if(args[1].equalsIgnoreCase("take"))db.takeUpTo(id,amount);else{CoreUtil.error(s,"Unknown balance action. Use /smp balance for options.");return;}db.logAudit(adminName(s),"BALANCE_"+args[1].toUpperCase(Locale.ROOT),"player="+args[2]+" amount="+CoreUtil.money(amount));CoreUtil.msg(s,args[2]+" balance: "+CoreUtil.money(db.player(id).balance()));}
     private String adminName(CommandSender s){return s instanceof Player p?p.getName():"CONSOLE";}
+    private void adminBank(CommandSender s,String[] args){
+        double balance=bank.treasury().balance();
+        if(args.length<2){CoreUtil.msg(s,"Central Bank balance: "+CoreUtil.money(balance));CoreUtil.msg(s,ChatColor.GRAY+"Manage it with /ashfall bank <add|remove|set> <amount>.");return;}
+        String action=args[1].toLowerCase(Locale.ROOT);
+        if(!Set.of("add","remove","take","set").contains(action)){CoreUtil.error(s,"Unknown bank action. Use add, remove, or set.");return;}
+        if(args.length<3){CoreUtil.error(s,"Usage: /ashfall bank "+action+" <amount>");return;}
+        double amount=CoreUtil.parseMoney(args[2]);
+        if(amount<=0){CoreUtil.error(s,"Amount must be a positive number (e.g. 500000 or 1m).");return;}
+        switch(action){
+            case"add"->bank.adminAdjust(amount);
+            case"remove","take"->bank.adminAdjust(-amount);
+            default->bank.adminAdjust(amount-balance);
+        }
+        double now=bank.treasury().balance();
+        db.logAudit(adminName(s),"BANK_"+action.toUpperCase(Locale.ROOT),"amount="+amount+" balance="+now);
+        CoreUtil.msg(s,"Central Bank "+(action.equals("set")?"set to "+CoreUtil.money(now):(action.equals("add")?"increased by "+CoreUtil.money(amount):"decreased by "+CoreUtil.money(amount)))+". New balance: "+CoreUtil.money(now)+".");
+    }
     private void adminShard(CommandSender s,String[] args){
         if(args.length<3){CoreUtil.error(s,"Usage: /ashfall shard <give|remove|set> <player> <amount>");return;}
         String action=args[1].toLowerCase(Locale.ROOT);if(!Set.of("give","remove","set").contains(action)){CoreUtil.error(s,"Unknown shard action. Use give, remove, or set.");return;}
@@ -510,7 +700,244 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             error->{getLogger().warning("[ReplayDebug] search failed: "+error);CoreUtil.error(s,"Replay search failed: "+error.getMessage());}
         );
     }
-    private void adminElite(CommandSender s,String[] args){if(args.length<2){eliteHelp(s);return;}String tier=args[1].toLowerCase(Locale.ROOT);if(tier.equals("stats")||tier.equals("report")){bosses.rarityReport(s);return;}if(!List.of("uncommon","rare","epic","legendary","miniboss").contains(tier)){CoreUtil.error(s,"Unknown tier. Use /smp elite for options.");return;}boolean here=args.length>2&&args[2].equalsIgnoreCase("here");if(here&&!(s instanceof Player)){CoreUtil.error(s,"The 'here' option must be used in game.");return;}Location loc=here?((Player)s).getLocation():null;LivingEntity elite=bosses.spawnElite(tier,loc);if(elite!=null)CoreUtil.msg(s,CoreUtil.pretty(tier)+" mob spawned.");else CoreUtil.error(s,"No safe elite spawn was found.");}
+    /** Derived from the SAME predicate the command validates with, rather than hand-listed beside it.
+     *
+     *  The hand-written list had drifted: `guardian` was spawnable and worked perfectly, it simply was not
+     *  offered, and so were a dozen others. Generating it from parseMobType means the suggestions and the
+     *  accepted values can never disagree again. */
+    /*  Hiding console/RCON command messages from in-game admins.
+     *
+     *  `broadcast-console-to-ops` and `broadcast-rcon-to-ops` are ALREADY false on both servers, so the
+     *  usual answer is not the answer here -- whatever the owner is seeing survives both. The remaining
+     *  vanilla mechanism is the sendCommandFeedback gamerule, which is what actually governs whether a
+     *  command's success message is echoed to operators.
+     *
+     *  It is config-gated and OFF by default on purpose: the same gamerule also suppresses the feedback a
+     *  PLAYER gets from their own commands, which the owner explicitly asked not to break. Turn it on, see
+     *  whether the message disappears, and we will know which mechanism produced it. Commands keep being
+     *  written to the server log either way, so the audit trail is untouched. */
+    void applyCommandFeedbackPolicy(){
+        if(!getConfig().getBoolean("admin.hide-console-command-feedback",false))return;
+        for(org.bukkit.World world:getServer().getWorlds())
+            world.setGameRule(org.bukkit.GameRule.SEND_COMMAND_FEEDBACK,false);
+        getLogger().info("[Admin] sendCommandFeedback disabled on all worlds (admin.hide-console-command-feedback).");
+    }
+
+    private static final List<String> ELITE_MOBS=buildEliteMobs();
+    private static List<String> buildEliteMobs(){
+        List<String> out=new ArrayList<>();out.add("here");
+        for(org.bukkit.entity.EntityType type:org.bukkit.entity.EntityType.values()){
+            String name=type.name().toLowerCase(Locale.ROOT);
+            if(parseMobType(name)!=null)out.add(name);
+        }
+        return List.copyOf(out);
+    }
+    private static org.bukkit.entity.EntityType parseMobType(String value){try{org.bukkit.entity.EntityType type=org.bukkit.entity.EntityType.valueOf(value.toUpperCase(Locale.ROOT));Class<?> cls=type.getEntityClass();if(cls!=null&&org.bukkit.entity.Mob.class.isAssignableFrom(cls)&&type.isSpawnable())return type;}catch(IllegalArgumentException ignored){}return null;}
+    private static Double parseCoord(String value){try{return Double.parseDouble(value);}catch(NumberFormatException e){return null;}}
+
+    // ------------------------------------------------------------------ duel map templates
+    private final Map<String,org.bukkit.Location> duelMapReturn=new java.util.concurrent.ConcurrentHashMap<>();
+    /** Every /ashfall duelmap subcommand, in the order the help prints them. Single source of truth for the
+     *  help text, the tab completion and the "unknown subcommand" reply, so they cannot drift apart. */
+    private static final List<String> DUELMAP_SUBS=List.of("list","snapshots","create","enter","exit","build","import",
+        "save","setspawn","test","dryrun","drop","orphans","reload","loot","canary","verify");
+
+    /** Registered map ids, straight from the live registry. */
+    private List<String> duelMapKeys(){return duelMaps==null?List.of():duelMaps.maps().stream().map(DuelMapService.DuelMap::key).toList();}
+
+    /** Concise usage plus the values that would actually have worked -- an admin should never have to guess
+     *  a map id or go and read the source to find out what a subcommand wanted. */
+    private void duelMapUsage(CommandSender sender,String sub,String what){
+        CoreUtil.error(sender,"Usage: /ashfall duelmap "+sub+" <"+what+">");
+        if(what.equals("map"))CoreUtil.msg(sender,"Maps: "+String.join(", ",duelMapKeys()));
+        else if(what.equals("instance-world")){
+            List<String> live=duelMaps==null?List.of():duelMaps.instanceNames();
+            CoreUtil.msg(sender,"Live instances: "+(live.isEmpty()?"none":String.join(", ",live)));
+        }
+    }
+
+    private static double round2(double v){return Math.round(v*100)/100.0;}
+    private static String fmt(org.bukkit.Location at){return round2(at.getX())+", "+round2(at.getY())+", "+round2(at.getZ());}
+    /** Which duel maps a match could actually be sent to right now. A map with no committed snapshot is not
+     *  a failure -- it just has not been built yet -- but it is the single most useful thing to see in a
+     *  selftest, because it is exactly what stops the duel flow reaching a player. */
+    private String duelMapSnapshotStatus(){
+        if(duelMaps==null)return "unavailable";
+        List<String> missing=new ArrayList<>();
+        int total=0;
+        for(DuelMapService.DuelMap m:duelMaps.maps()){total++;if(!duelMaps.hasSnapshot(m))missing.add(m.key());}
+        return (total-missing.size())+"/"+total+(missing.isEmpty()?" (all playable)":" - not yet built: "+String.join(", ",missing));
+    }
+    /** /ashfall duelmap ... -- template maintenance without touching the filesystem. Templates are private
+     *  build worlds; instances are the disposable clones matches actually run in. */
+    private void adminDuelMap(CommandSender sender,String[] args){
+        DuelMapService svc=duelMaps;
+        if(svc==null){CoreUtil.error(sender,"Duel maps are unavailable.");return;}
+        String sub=args.length>1?args[1].toLowerCase(Locale.ROOT):"list";
+        switch(sub){
+            case"list"->{
+                CoreUtil.msg(sender,"Duel templates:");
+                for(DuelMapService.DuelMap m:svc.maps())
+                    CoreUtil.msg(sender,"  "+m.key()+" - "+m.name()+" ["+m.rule()+"] world="+m.templateWorld()
+                        +(getServer().getWorld(m.templateWorld())!=null?" (loaded)":" (not loaded)")
+                        +(svc.hasSnapshot(m)?" [committed]":" [NOT COMMITTED]"));
+                List<String> live=svc.instanceNames();
+                CoreUtil.msg(sender,"Live instances: "+(live.isEmpty()?"none":String.join(", ",live)));
+            }
+            case"enter"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"enter","map");return;}
+                CoreUtil.msg(p,"Opening the "+m.name()+" workspace - this can take a few seconds on a big map...");
+                org.bukkit.World w=svc.workspace(m,line->CoreUtil.msg(p,"  "+line));
+                if(w==null){CoreUtil.error(sender,"Could not open that workspace. Check /ashfall duelmap snapshots.");return;}
+                /** Never drop an admin into an empty void and call it a template: if the arena is not there
+                 *  after the workspace has been opened (and, if needed, rebuilt from the snapshot), say so
+                 *  instead of teleporting them somewhere that looks broken. */
+                if(!svc.holdsArena(w,m)){
+                    CoreUtil.error(sender,m.name()+" has no arena in its workspace and no committed snapshot to rebuild it from.");
+                    CoreUtil.msg(sender,"Build it (/ashfall duelmap build "+m.key()+") or import it, then /ashfall duelmap save "+m.key()+".");
+                    return;
+                }
+                duelMapReturn.put(p.getUniqueId().toString(),p.getLocation());
+                p.teleport(svc.workspaceSpawn(w,m));
+                p.setGameMode(org.bukkit.GameMode.CREATIVE);
+                CoreUtil.msg(p,"Editing "+m.name()+" ("+svc.arenaRegionName(m)+" present). /ashfall duelmap save "+m.key()+" commits it; /ashfall duelmap exit returns you.");
+            }
+            case"exit"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                org.bukkit.Location back=duelMapReturn.remove(p.getUniqueId().toString());
+                p.teleport(back!=null?back:getServer().getWorlds().get(0).getSpawnLocation());
+                CoreUtil.msg(p,"Left the template.");
+            }
+            case"save"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"save","map");return;}
+                CoreUtil.msg(sender,svc.commitTemplate(m));
+            }
+            case"import"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"import","map");return;}
+                if(!DuelMapImporter.available()){CoreUtil.error(sender,"WorldEdit is not installed on this server, so an import cannot run here.");return;}
+                new DuelMapImporter(this,svc).run(sender,m);
+            }
+            case"build"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"build","arena50|arena100");return;}
+                int size=m.key().equals("arena100")?100:m.key().equals("arena50")?50:0;
+                if(size==0){CoreUtil.error(sender,"Only the two flat arenas are built from code; the rest are imported.");return;}
+                CoreUtil.msg(sender,"Building "+m.name()+" ("+size+"x"+size+"). This takes a few seconds.");
+                svc.buildFlatArena(m,size,()->CoreUtil.msg(sender,svc.commitTemplate(m)));
+            }
+            case"verify"->{
+                CoreUtil.msg(sender,"Verifying the duel arena pipeline end to end:");
+                for(String line:new DuelMapVerify(this,svc).run())CoreUtil.msg(sender,"  "+line);
+            }
+            case"dryrun"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"dryrun","map");return;}
+                long began=System.currentTimeMillis();
+                CoreUtil.msg(sender,"Preparing "+m.name()+" exactly as a match would (async clone + sliced chunk load)...");
+                /** The result arrives a few ticks later, by which time an RCON caller has already been
+                 *  disconnected -- so every line goes to the log as well as to whoever asked. */
+                java.util.function.Consumer<String> say=line->{CoreUtil.msg(sender,line);getLogger().info("[duel-maps] dryrun "+m.key()+": "+line);};
+                svc.prepareInstance(m,world->{
+                    if(world==null){say.accept("Match preparation FAILED for "+m.key()+".");return;}
+                    org.bukkit.Location p1=m.p1(world),p2=m.p2(world);
+                    int[] census=svc.chestCensus(world);
+                    say.accept("ready in "+(System.currentTimeMillis()-began)+" ms: "+world.getName());
+                    say.accept("p1 "+fmt(p1)+" yaw "+Math.round(p1.getYaw())+" on "+m.footing(world,p1));
+                    say.accept("p2 "+fmt(p2)+" yaw "+Math.round(p2.getYaw())+" on "+m.footing(world,p2));
+                    say.accept("facing each other: "+DuelMapService.facesEachOther(m)
+                        +" | chests filled: "+(census[0]+census[1])+" | living mobs: "+world.getLivingEntities().size()
+                        +" | mob spawning: "+world.getGameRuleValue(org.bukkit.GameRule.DO_MOB_SPAWNING));
+                    svc.destroyInstance(world,null);
+                    say.accept("instance dropped; world unloaded: "+(getServer().getWorld(world.getName())==null));
+                });
+            }
+            case"canary"->{
+                CoreUtil.msg(sender,"Duel template persistence canary - building, saving, unloading, reloading and cloning:");
+                for(String line:new DuelMapCanary(this,svc).run())CoreUtil.msg(sender,"  "+line);
+            }
+            case"loot"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"loot","map");return;}
+                org.bukkit.World probe=svc.createInstance(m);
+                if(probe==null){CoreUtil.error(sender,"Could not clone that map to count its chests.");return;}
+                CoreUtil.msg(sender,svc.lootReport(m,probe));
+                svc.destroyInstance(probe,null);
+            }
+            case"snapshots"->{
+                CoreUtil.msg(sender,"Committed snapshots in "+svc.snapshotRoot().getAbsolutePath()+":");
+                for(DuelMapService.DuelMap m:svc.maps())
+                    CoreUtil.msg(sender,"  "+m.key()+": "+(svc.hasSnapshot(m)?"committed":"NOT COMMITTED - matches cannot use this map"));
+                CoreUtil.msg(sender,"Custom worlds live in "+svc.customWorldDir().getAbsolutePath());
+            }
+            case"create"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"create","map");return;}
+                org.bukkit.World w=svc.template(m);
+                CoreUtil.msg(sender,w==null?"Could not create that template world.":"Template world "+w.getName()+" is ready.");
+            }
+            case"test"->{
+                DuelMapService.DuelMap m=args.length>2?svc.map(args[2]):null;
+                if(m==null){duelMapUsage(sender,"test","map");return;}
+                org.bukkit.World inst=svc.createInstance(m);
+                if(inst==null){CoreUtil.error(sender,"Could not create an instance.");return;}
+                if(sender instanceof Player p){
+                    duelMapReturn.putIfAbsent(p.getUniqueId().toString(),p.getLocation());
+                    p.teleport(new org.bukkit.Location(inst,m.p1x(),m.p1y(),m.p1z(),m.yawP1(),0));
+                }
+                CoreUtil.msg(sender,"Test instance "+inst.getName()+" created. /ashfall duelmap drop "+inst.getName()+" removes it.");
+            }
+            case"drop"->{
+                if(args.length<3){duelMapUsage(sender,"drop","instance-world");return;}
+                org.bukkit.World w=getServer().getWorld(args[2]);
+                if(w==null||!w.getName().startsWith(DuelMapService.INSTANCE_PREFIX)){duelMapUsage(sender,"drop","instance-world");return;}
+                svc.destroyInstance(w,sender instanceof Player p?duelMapReturn.remove(p.getUniqueId().toString()):null);
+                CoreUtil.msg(sender,"Instance removed.");
+            }
+            case"orphans"->CoreUtil.msg(sender,"Removed "+svc.cleanupOrphans()+" orphaned instance world(s).");
+            case"setspawn"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                if(args.length<4){duelMapUsage(sender,"setspawn","map> <p1|p2|spectator");return;}
+                DuelMapService.DuelMap m=svc.map(args[2]);
+                if(m==null){duelMapUsage(sender,"setspawn","map");return;}
+                String which=args[3].toLowerCase(Locale.ROOT);
+                if(!which.equals("p1")&&!which.equals("p2")&&!which.equals("spectator")){duelMapUsage(sender,"setspawn","map> <p1|p2|spectator");return;}
+                org.bukkit.Location at=p.getLocation();
+                getConfig().set("duel-maps."+m.key()+"."+which,List.of(round2(at.getX()),round2(at.getY()),round2(at.getZ())));
+                saveConfig(); svc.reload();
+                CoreUtil.msg(p,"Set "+which+" for "+m.name()+" to "+round2(at.getX())+", "+round2(at.getY())+", "+round2(at.getZ())+".");
+            }
+            case"reload"->{svc.reload();CoreUtil.msg(sender,"Duel map registry reloaded.");}
+            default->{
+                if(args.length>1)CoreUtil.error(sender,"Unknown subcommand '"+args[1]+"'.");
+                CoreUtil.msg(sender,"DUEL MAPS - /ashfall duelmap <"+String.join("|",DUELMAP_SUBS)+">");
+                CoreUtil.msg(sender,"  build/import/save commit a template; test/dryrun/loot clone one; drop removes an instance.");
+                CoreUtil.msg(sender,"  canary = template persistence proof, verify = full pipeline. Maps: "+String.join(", ",duelMapKeys()));
+            }
+        }
+    }
+
+    private void adminElite(CommandSender s,String[] args){
+        if(args.length<2){eliteHelp(s);return;}
+        String tier=args[1].toLowerCase(Locale.ROOT);
+        if(tier.equals("stats")||tier.equals("report")){bosses.rarityReport(s);return;}
+        if(!List.of("uncommon","rare","epic","legendary","miniboss").contains(tier)){CoreUtil.error(s,"Unknown rarity. Use uncommon, rare, epic, legendary, or miniboss.");return;}
+        int idx=2;org.bukkit.entity.EntityType mobType=null;
+        if(args.length>idx){org.bukkit.entity.EntityType parsed=parseMobType(args[idx]);if(parsed!=null){mobType=parsed;idx++;}}
+        org.bukkit.Location loc=null;
+        if(args.length>idx){
+            if(args[idx].equalsIgnoreCase("here")){if(!(s instanceof Player p)){CoreUtil.error(s,"The 'here' option must be used in game.");return;}loc=p.getLocation();}
+            else if(args.length>=idx+3){Double x=parseCoord(args[idx]),y=parseCoord(args[idx+1]),z=parseCoord(args[idx+2]);if(x==null||y==null||z==null){CoreUtil.error(s,"Coordinates must be numbers. Usage: /ashfall elite <rarity> [mob] [here | <x> <y> <z>]");return;}org.bukkit.World w=s instanceof Player p?p.getWorld():getServer().getWorlds().get(0);loc=new org.bukkit.Location(w,x,y,z);}
+            else{CoreUtil.error(s,"Unrecognized '"+args[idx]+"'. Usage: /ashfall elite <rarity> [mob] [here | <x> <y> <z>]");return;}
+        }
+        LivingEntity elite=bosses.spawnElite(tier,loc,mobType);
+        if(elite==null){CoreUtil.error(s,"Could not spawn -- invalid mob for this world, or no safe location found.");return;}
+        db.logAudit(adminName(s),"ELITE_SPAWN",tier+" "+elite.getType().name()+(loc!=null?" @"+loc.getBlockX()+","+loc.getBlockY()+","+loc.getBlockZ():" random"));
+        CoreUtil.msg(s,CoreUtil.pretty(tier)+" "+CoreUtil.pretty(elite.getType().name())+" spawned"+(loc!=null?" at "+loc.getBlockX()+", "+loc.getBlockY()+", "+loc.getBlockZ():" at a random location")+".");
+    }
     private void adminEvent(CommandSender s,String[] args){if(args.length<2){eventHelp(s);return;}if(args[1].equalsIgnoreCase("stop")){boolean stopped=bosses.forceStopEvent();db.logAudit(adminName(s),"EVENT_STOP",stopped?"stopped active event":"nothing was active");CoreUtil.msg(s,stopped?"Active event stopped and cleaned up.":"No event was active.");return;}BossEventService.EventType type=switch(args[1].toLowerCase(Locale.ROOT)){case"resource"->BossEventService.EventType.RESOURCE_RUSH;case"elitehunt"->BossEventService.EventType.ELITE_HUNT;case"taskmaster","task"->BossEventService.EventType.TASK_MASTER;case"worldboss","hunt"->BossEventService.EventType.WORLD_BOSS;default->{CoreUtil.error(s,"Unknown event. Use /smp event for options.");yield null;}};if(type==null)return;if(bosses.startEvent(type,null,BossEventService.Origin.ADMIN_SUMMONED))CoreUtil.msg(s,"Event started.");else CoreUtil.error(s,"A conflicting event is already active.");}
     private void adminFeedback(CommandSender s,String[] args){if(args.length<2){feedbackHelp(s);return;}String action=args[1].toLowerCase(Locale.ROOT);if(action.equals("notify")){if(!(s instanceof Player p)||args.length<3||!List.of("on","off").contains(args[2].toLowerCase(Locale.ROOT))){CoreUtil.error(s,"Usage: /smp feedback notify <on|off>");return;}boolean enabled=args[2].equalsIgnoreCase("on");db.preference(CoreUtil.id(p),"feedback_notify",Boolean.toString(enabled));CoreUtil.msg(s,"Feedback notifications "+(enabled?"enabled":"disabled")+".");return;}if(action.equals("list")){String status=args.length>2&&!args[2].equalsIgnoreCase("all")?args[2].toUpperCase(Locale.ROOT):"";for(Database.FeedbackRow row:db.feedback(status,20))CoreUtil.msg(s,"#"+row.id()+" ["+row.status()+"] "+row.playerName()+" • "+trim(row.message(),70));return;}if(!List.of("view","done","reopen","delete").contains(action)){CoreUtil.error(s,"Unknown feedback action. Use /smp feedback for options.");return;}if(args.length<3){CoreUtil.error(s,"Feedback ID required for '"+action+"'.");return;}long id=Long.parseLong(args[2]);Database.FeedbackRow row=db.feedback(id);if(row==null){CoreUtil.error(s,"Feedback not found.");return;}switch(action){case"view"->{CoreUtil.msg(s,"#"+row.id()+" ["+row.status()+"] "+row.playerName()+" • "+Instant.ofEpochMilli(row.createdAt()));s.sendMessage(row.message());}case"done"->{db.feedbackStatus(id,"DONE");CoreUtil.msg(s,"Feedback #"+id+" marked DONE.");}case"reopen"->{db.feedbackStatus(id,"OPEN");CoreUtil.msg(s,"Feedback #"+id+" reopened.");}case"delete"->{db.deleteFeedback(id);CoreUtil.msg(s,"Feedback #"+id+" permanently deleted.");}}}
 
@@ -591,11 +1018,99 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String claimInfo=claim==null?"none":claim.size()+"x"+claim.size()+" | center "+((claim.minX()+claim.maxX())/2)+", "+((claim.minZ()+claim.maxZ())/2)+" | bounds X "+claim.minX()+".."+claim.maxX()+", Z "+claim.minZ()+".."+claim.maxZ();
         CoreUtil.msg(s,target.name()+" — "+f.name()+" ["+f.tag()+"] | members="+String.join(",",db.factionMembers(f.id()))+" | bank="+CoreUtil.money(f.balance())+" | claim="+claimInfo+" | net-worth="+CoreUtil.money(netWorth.value(f.id())));
     }
-    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
+    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
 
+    /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
+    /** /duels -- where each piece of a duel kit sits when the match starts. A standing preference, so it
+     *  is deliberately reachable outside a match; /duels <kit> jumps straight to one. */
+    private boolean duels(Player p,String[] args){
+        if(args.length>0){
+            try{arena.openKitLayout(p,ArenaService.Kit.valueOf(args[0].toUpperCase(Locale.ROOT)));return true;}
+            catch(IllegalArgumentException unknown){CoreUtil.error(p,"Kits: mace, sword, axe, spear.");return true;}
+        }
+        arena.openKitLayoutPicker(p);
+        return true;
+    }
+
+    private boolean duel(Player p,String[] args){
+        if(args.length==0){arena.openHub(p);return true;}
+        String sub=args[0].toLowerCase(Locale.ROOT);
+        return switch(sub){
+            case"accept"->arena.accept(p);
+            case"decline"->arena.decline(p);
+            case"confirm"->arena.confirm(p);
+            case"back"->arena.back(p);
+            case"map"->{if(args.length<2){CoreUtil.error(p,"Usage: /duel map <map>");yield true;}yield arena.setMap(p,args[1]);}
+            case"forfeit","cancel"->arena.forfeit(p);
+            case"status"->{CoreUtil.msg(p,arena.status(p));yield true;}
+            case"kit"->{if(args.length<2){CoreUtil.error(p,"Kits: mace, sword, axe, spear.");yield true;}yield arena.setKit(p,args[1]);}
+            case"series"->{if(args.length<2){CoreUtil.error(p,"Best of 1 or 3.");yield true;}try{yield arena.setSeries(p,Integer.parseInt(args[1]));}catch(NumberFormatException e){CoreUtil.error(p,"Best of 1 or 3.");yield true;}}
+            case"stake"->{if(args.length<2){CoreUtil.error(p,"Usage: /duel stake <amount>");yield true;}yield arena.setStake(p,CoreUtil.parseMoney(args[1]));}
+            case"watch"->{if(args.length<2){CoreUtil.error(p,"Usage: /duel watch <match id>");yield true;}try{yield arena.watch(p,Integer.parseInt(args[1]));}catch(NumberFormatException e){CoreUtil.error(p,"Match id must be a number.");yield true;}}
+            case"bet"->{if(args.length<4){CoreUtil.error(p,"Usage: /duel bet <match id> <player> <amount>");yield true;}try{yield arena.bet(p,Integer.parseInt(args[1]),args[2],CoreUtil.parseMoney(args[3]));}catch(NumberFormatException e){CoreUtil.error(p,"Match id must be a number.");yield true;}}
+            default->arena.challenge(p,args[0]);
+        };
+    }
     private String plugin_kitNotice(Player from){return from.getName()+" gave you the staff test kit.";}
+
+    // ------------------------------------------------------------------ admin flight
+    private static final String FLY_PERM="smpcore.fly";
+    private boolean mayFly(CommandSender sender){return !(sender instanceof Player p)||p.hasPermission(FLY_PERM)||isAdmin(p);}
+    /** Resolves the target: an explicit name, otherwise the sender when they are a player. Console MUST name
+     *  somebody, since there is nobody to default to. */
+    private Player flyTarget(CommandSender sender,String named){
+        if(named!=null){Player found=getServer().getPlayerExact(named);if(found==null)CoreUtil.error(sender,"No player named "+named+" is online.");return found;}
+        if(sender instanceof Player self)return self;
+        CoreUtil.error(sender,"From console you must name a player.");return null;}
+
+    /** /fly [player] [on|off] -- omitting on/off toggles. */
+    private boolean flyCommand(CommandSender sender,String[] args){
+        if(!mayFly(sender)){CoreUtil.error(sender,"You may not use /fly.");return true;}
+        String named=null,state=null;
+        for(String arg:args){
+            String low=arg.toLowerCase(Locale.ROOT);
+            if(low.equals("on")||low.equals("off")||low.equals("true")||low.equals("false")||low.equals("toggle"))state=low;else named=arg;}
+        Player target=flyTarget(sender,named);
+        if(target==null)return true;
+        boolean on=state==null||state.equals("toggle")?!target.getAllowFlight():state.equals("on")||state.equals("true");
+        target.setAllowFlight(on);
+        if(!on)target.setFlying(false);
+        CoreUtil.msg(sender,"Flight "+(on?"enabled":"disabled")+" for "+target.getName()+".");
+        if(!target.equals(sender))CoreUtil.msg(target,"Flight "+(on?"enabled":"disabled")+" by staff.");
+        return true;}
+
+    /** /flyspeed [player] <1-10> -- 1 is vanilla flight speed, mapped onto Bukkit's 0-1 scale. */
+    private boolean flySpeedCommand(CommandSender sender,String[] args){
+        if(!mayFly(sender)){CoreUtil.error(sender,"You may not use /flyspeed.");return true;}
+        if(args.length==0){CoreUtil.error(sender,"Usage: /flyspeed [player] <1-10>");return true;}
+        String named=args.length>1?args[0]:null,raw=args[args.length-1];
+        double scale;
+        try{scale=Double.parseDouble(raw);}catch(NumberFormatException e){CoreUtil.error(sender,"'"+raw+"' is not a number. Usage: /flyspeed [player] <1-10>");return true;}
+        if(scale<0.1||scale>10){CoreUtil.error(sender,"Speed must be between 0.1 and 10 (1 = normal).");return true;}
+        Player target=flyTarget(sender,named);
+        if(target==null)return true;
+        float speed=(float)Math.max(0.01,Math.min(1.0,scale/10.0));
+        target.setFlySpeed(speed);
+        CoreUtil.msg(sender,"Fly speed for "+target.getName()+" set to "+scale+" ("+String.format(Locale.ROOT,"%.2f",speed)+").");
+        if(!target.equals(sender))CoreUtil.msg(target,"Your fly speed was set to "+scale+" by staff.");
+        return true;}
+
     @Override public List<String> onTabComplete(CommandSender sender,Command command,String alias,String[] args){
         String name=command.getName().toLowerCase(Locale.ROOT);
+        /** Only the verbs this sender may actually run, and only the worlds that actually exist. */
+        if(name.equals("voidworld")){
+            if(args.length==1)return filter(args[0],voidVerbs(sender));
+            if(args.length==2&&List.of("enter","delete","open","close").contains(args[0].toLowerCase(Locale.ROOT)))
+                return filter(args[1],voidWorlds.labels());
+            return List.of();
+        }
+        if(name.equals("fly")||name.equals("flyspeed")){
+            if(!mayFly(sender))return List.of();
+            List<String> names=getServer().getOnlinePlayers().stream().map(Player::getName).collect(java.util.stream.Collectors.toList());
+            if(args.length==1){List<String> out=new ArrayList<>(names);out.addAll(name.equals("fly")?List.of("on","off"):List.of("1","2","5","10"));
+                return out.stream().filter(s->s.toLowerCase(Locale.ROOT).startsWith(args[0].toLowerCase(Locale.ROOT))).collect(java.util.stream.Collectors.toList());}
+            if(args.length==2)return (name.equals("fly")?List.of("on","off"):List.of("1","2","5","10")).stream().filter(s->s.startsWith(args[1].toLowerCase(Locale.ROOT))).collect(java.util.stream.Collectors.toList());
+            return List.of();}
         if(name.equals("ashfall")&&sender instanceof Player player&&!isAdmin(player))return List.of();
         if(name.equals("admin")&&!(sender instanceof ConsoleCommandSender)&&!(sender instanceof RemoteConsoleCommandSender))return List.of();
         /** /kit is staff-only, so it offers no suggestions at all to normal players -- the command's
@@ -610,6 +1125,37 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(args.length==1&&name.equals("msg")){List<String> options=new ArrayList<>(publicOnlineNames(sender,""));options.addAll(List.of("block","unblock"));return filter(args[0],options);}
         if(args.length==2&&name.equals("msg")&&(args[0].equalsIgnoreCase("block")||args[0].equalsIgnoreCase("unblock")))return publicOnlineNames(sender,args[1]);
         if(args.length==1&&name.equals("rtp"))return filter(args[0],List.of("queue"));
+        if(name.equals("duels")&&args.length==1)return filter(args[0],List.of("mace","sword","axe","spear"));
+        if(name.equals("duel")&&sender instanceof Player duelPlayer){
+            List<String> subs=List.of("accept","decline","kit","series","stake","confirm","bet","watch","status","forfeit","cancel");
+            if(args.length==1){List<String> options=new ArrayList<>(arena.onlineChallengeable(duelPlayer));options.addAll(subs);return filter(args[0],options);}
+            String s0=args[0].toLowerCase(Locale.ROOT);
+            if(args.length==2&&s0.equals("kit"))return filter(args[1],List.of("mace","sword","axe","spear"));
+            if(args.length==2&&s0.equals("series"))return filter(args[1],List.of("1","3"));
+            if(args.length==2&&s0.equals("stake"))return filter(args[1],List.of("0","1000","10000","100000"));
+            if(args.length==2&&(s0.equals("watch")||s0.equals("bet")))return filter(args[1],arena.liveMatchIds());
+            if(args.length==3&&s0.equals("bet")){try{return filter(args[2],arena.duellistNames(Integer.parseInt(args[1])));}catch(NumberFormatException e){return List.of();}}
+            return List.of();
+        }
+        /** /ashfall duelmap ... completes from the LIVE registry and world list, so an admin can maintain
+         *  maps without having to remember keys or copy instance world names out of a log. The whole
+         *  /ashfall tree is already gated above (players who are not admins get nothing at all), so simply
+         *  being here means the sender is allowed to run these. */
+        if(name.equals("ashfall")&&args.length>=2&&args[0].equalsIgnoreCase("duelmap")){
+            if(duelMaps==null)return List.of();
+            if(args.length==2)return filter(args[1],DUELMAP_SUBS);
+            String sub=args[1].toLowerCase(Locale.ROOT);
+            if(args.length==3)return switch(sub){
+                case"create","enter","save","test","import","loot","dryrun","setspawn"->filter(args[2],duelMapKeys());
+                case"build"->filter(args[2],duelMaps.maps().stream().map(DuelMapService.DuelMap::key).filter(k->k.startsWith("arena")).toList());
+                case"drop"->filter(args[2],duelMaps.instanceNames());
+                default->List.of();
+            };
+            if(args.length==4&&sub.equals("setspawn"))return filter(args[3],List.of("p1","p2","spectator"));
+            return List.of();
+        }
+        if(name.equals("ashfall")&&args.length==2&&args[0].equalsIgnoreCase("hopper"))
+            return filter(args[1],List.of("verify","rig","count","create"));
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("invite"))return publicOnlineNames(sender,args[1]);
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("locate")&&sender instanceof Player p)return filter(args[1],getServer().getOnlinePlayers().stream().filter(target->!target.equals(p)&&factions.friendly(p,target)).map(nicknames::displayName).toList());
         if(name.equals("f")&&args.length==2&&Set.of("ally","truce","storage","info").contains(args[0].toLowerCase(Locale.ROOT))){
@@ -626,7 +1172,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("buyhome")&&args.length==1)return filter(args[0],List.of("confirm"));
         if(name.equals("homes")&&args.length==1)return filter(args[0],List.of("locate"));
         if(name.equals("relics")&&args.length==2&&args[0].equalsIgnoreCase("trace")&&sender instanceof Player p)return filter(args[1],db.relicLifecycles().stream().filter(row->"ACTIVE".equals(row.status())&&row.owner().equals(CoreUtil.id(p))).map(Database.RelicLifecycleRow::key).toList());
-        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
+        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper","duelmap","spawnershop","voidworld"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
         if(name.equals("shop")&&args.length==2&&(args[0].equalsIgnoreCase("buy")||args[0].equalsIgnoreCase("sell")))return shop.itemNames(args[0].equalsIgnoreCase("sell"),args[1]);
         if(name.equals("shop")&&args.length==2&&args[0].equalsIgnoreCase("sellall"))return filter(args[1],List.of("chest"));
         if(name.equals("f")&&args.length==2&&(args[0].equalsIgnoreCase("home")||args[0].equalsIgnoreCase("delhome"))&&sender instanceof Player p){Database.FactionRow faction=db.factionOf(CoreUtil.id(p));return faction==null?List.of():filter(args[1],db.homes(Long.toString(faction.id()),"FACTION").stream().map(Database.HomeRow::name).toList());}
@@ -640,9 +1186,12 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             return switch(args[0].toLowerCase(Locale.ROOT)){
                 case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","maintenance"));
                 case"balance"->filter(args[1],List.of("set","add","take"));
+                case"bank"->filter(args[1],List.of("add","remove","set"));
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));
                 case"elite"->filter(args[1],List.of("stats","uncommon","rare","epic","legendary","miniboss"));
                 case"event"->filter(args[1],List.of("resource","elitehunt","taskmaster","worldboss","stop"));
+                case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete","open","close"));
+                case"hopper"->filter(args[1],List.of("verify","livesuite","live","watch","create","rig","count"));
                 case"economy"->filter(args[1],List.of("report"));
                 case"feedback"->filter(args[1],List.of("notify","list","view","done","reopen","delete"));
                 case"faction"->filter(args[1],List.of("inspect","resize","resetclaim","recalc"));
@@ -678,7 +1227,11 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("replay"))return onlineNames(sender,args[2]);
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("merchant")){if(args[1].equalsIgnoreCase("spawn"))return filter(args[2],List.of("boss","event","shop","auction","banker"));if(args[1].equalsIgnoreCase("remove"))return filter(args[2],List.of("nearest"));}
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("boss")&&Set.of("spawn","here").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],List.of("ashen","iron","piglin"));
-        if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("elite")&&List.of("uncommon","rare","epic","legendary","miniboss").contains(args[1].toLowerCase(Locale.ROOT)))return filter(args[2],List.of("here"));
+        /** enter and delete operate on worlds that already exist, so they suggest the real ones. */
+        if(name.equals("ashfall")&&args[0].equalsIgnoreCase("voidworld")&&args.length==3
+                &&List.of("enter","delete","open","close").contains(args[1].toLowerCase(Locale.ROOT)))
+            return filter(args[2],voidWorlds.labels());
+        if(name.equals("ashfall")&&args[0].equalsIgnoreCase("elite")&&List.of("uncommon","rare","epic","legendary","miniboss").contains(args[1].toLowerCase(Locale.ROOT))){if(args.length==3)return filter(args[2],ELITE_MOBS);if(args.length==4&&parseMobType(args[2])!=null)return filter(args[3],List.of("here"));}
         if(name.equals("ashfall")&&args.length==4&&args[0].equalsIgnoreCase("relic")&&args[1].equalsIgnoreCase("give"))return filter(args[3],new ArrayList<>(relics.keys()));
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("relic")&&args[1].equalsIgnoreCase("remove"))return filter(args[2],new ArrayList<>(relics.keys()));
         if(name.equals("ashfall")&&args.length==3&&args[0].equalsIgnoreCase("relic")&&args[1].equalsIgnoreCase("forcerespawn"))return filter(args[2],new ArrayList<>(relics.keys()));

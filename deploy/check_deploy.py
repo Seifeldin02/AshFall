@@ -29,11 +29,51 @@ def read(p: Path) -> str:
     return p.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
 
 
-def same(a: Path, b: Path) -> bool:
-    """YAML by parsed value where possible; otherwise text, ignoring line endings."""
+def snapshot_shape(d: Path) -> dict:
+    """A duel-map snapshot directory's shape: which maps it holds and how big each one's region set is.
+
+    Deliberately not a byte comparison. A snapshot is world data -- tens of megabytes of .mca -- and the two
+    servers legitimately differ in mtimes and in region padding. What must match is that production has the
+    same set of committed maps, each with the same number of non-empty region files; anything else means a
+    map was missed or a copy was truncated. `__canary` is a test artefact and is ignored on both sides.
+    """
+    out = {}
+    for child in sorted(d.iterdir()):
+        if not child.is_dir() or child.name.startswith("__") or child.suffix in (".tmp", ".old"):
+            continue
+        region = child / "region"
+        files = [f for f in region.glob("*.mca") if f.stat().st_size > 0] if region.is_dir() else []
+        out[child.name] = len(files)
+    return out
+
+
+def drop_key(tree, dotted: str) -> None:
+    """Remove one dotted key from a parsed YAML tree, in place. Missing keys are not an error."""
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        if not isinstance(tree, dict) or part not in tree:
+            return
+        tree = tree[part]
+    if isinstance(tree, dict):
+        tree.pop(parts[-1], None)
+
+
+def same(a: Path, b: Path, ignore_keys: list[str] | None = None) -> bool:
+    """YAML by parsed value where possible; otherwise text, ignoring line endings.
+
+    ignore_keys names dotted paths that are EXPECTED to differ inside an otherwise-synced file, so one
+    intentionally per-server value does not mask a real drift in the rest of it. Used by spigot.yml, whose
+    restart-script must be each server's own absolute path.
+    """
+    if a.is_dir() or b.is_dir():
+        return a.is_dir() and b.is_dir() and snapshot_shape(a) == snapshot_shape(b)
     if a.suffix in (".yml", ".yaml"):
         try:
-            return yaml.safe_load(read(a)) == yaml.safe_load(read(b))
+            left, right = yaml.safe_load(read(a)), yaml.safe_load(read(b))
+            for key in ignore_keys or []:
+                drop_key(left, key)
+                drop_key(right, key)
+            return left == right
         except yaml.YAMLError:
             pass  # malformed YAML: fall through to a text compare rather than crashing the check
     return read(a) == read(b)
@@ -46,6 +86,20 @@ def props(p: Path) -> dict[str, str]:
             k, _, v = line.partition("=")
             out[k.strip()] = v.strip()
     return out
+
+
+def copy_entry(s: Path, p: Path) -> None:
+    """Copy a manifest entry, which may be a file or a whole snapshot directory."""
+    if s.is_dir():
+        for child in s.iterdir():
+            if not child.is_dir() or child.name.startswith("__") or child.suffix in (".tmp", ".old"):
+                continue
+            target = p / child.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(child, target)
+    else:
+        shutil.copyfile(s, p)
 
 
 def main() -> int:
@@ -70,12 +124,20 @@ def main() -> int:
             rows.append((MISSING, rel, "absent on PRODUCTION" + note))
             if args.fix:
                 p.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(s, p)
+                copy_entry(s, p)
                 rows[-1] = (INFO, rel, "COPIED to production" + note)
-        elif not same(s, p):
-            rows.append((DIFF, rel, "differs from staging" + note))
-            if args.fix:
-                shutil.copyfile(s, p)
+        elif not same(s, p, entry.get("ignore_keys")):
+            detail = "differs from staging"
+            if s.is_dir():
+                detail += f" (staging {snapshot_shape(s)} vs production {snapshot_shape(p)})"
+            rows.append((DIFF, rel, detail + note))
+            if args.fix and entry.get("do_not_autofix"):
+                # Some files are a mix of shared settings and per-server secrets, so a wholesale copy is
+                # never right even though the diff is real. Report and skip rather than silently promoting
+                # a staging-only key into production, which is precisely what happened on 2026-09-02.
+                rows[-1] = (DIFF, rel, "differs, and is marked do_not_autofix - promote the changed keys BY HAND" + note)
+            elif args.fix:
+                copy_entry(s, p)
                 rows[-1] = (INFO, rel, "COPIED to production" + note)
         else:
             rows.append((OK, rel, "matches staging"))
@@ -96,6 +158,19 @@ def main() -> int:
                 bad.append(f"{key}={got!r} expected {want!r}")
         rows.append((DIFF, rel, "; ".join(bad)) if bad else (OK, rel, "production values intact"))
 
+    # --- staging-only artifacts -------------------------------------------------
+    # Present on staging, deliberately absent on production. Checking these the other way round is the
+    # point: a staging launcher that has gone missing is a real fault, while its absence on production is
+    # the correct state and must not be reported as one.
+    for entry in man.get("staging_only", []):
+        rel = entry["path"]
+        if not (stag / rel).exists():
+            rows.append((MISSING, rel, "absent on STAGING (staging-only artifact)"))
+        elif (prod / rel).exists():
+            rows.append((DIFF, rel, "present on PRODUCTION but is staging-only - should not have been copied"))
+        else:
+            rows.append((OK, rel, "staging-only, correctly absent from production"))
+
     # --- required plugin jars ---------------------------------------------------
     have = {f.name for f in (prod / "plugins").glob("*.jar")}
     for jar in man.get("plugins", []):
@@ -107,7 +182,11 @@ def main() -> int:
 
     # --- values production must hold, independent of the staging comparison -----
     for entry in man.get("yaml_asserts", []):
-        rel, keypath, want = entry["path"], entry["key"], entry["contains"]
+        # `contains` is a membership test (a list entry, a substring); `equals` pins the whole value, which
+        # is what a plain boolean flag needs -- "contains True" is meaningless against a bool.
+        rel, keypath = entry["path"], entry["key"]
+        exact = "equals" in entry
+        want = entry["equals"] if exact else entry["contains"]
         p_file = prod / rel
         if not p_file.exists():
             rows.append((MISSING, rel, "absent on PRODUCTION"))
@@ -115,9 +194,9 @@ def main() -> int:
         node = yaml.safe_load(read(p_file))
         for part in keypath.split("."):
             node = (node or {}).get(part) if isinstance(node, dict) else None
-        present = (want in node) if isinstance(node, (list, str)) else (node == want)
-        rows.append((OK, f"{rel}:{keypath}", f"contains {want!r}") if present
-                    else (DIFF, f"{rel}:{keypath}", f"MISSING {want!r} - got {node!r}"))
+        present = (node == want) if exact else ((want in node) if isinstance(node, (list, str)) else (node == want))
+        rows.append((OK, f"{rel}:{keypath}", f"{'is' if exact else 'contains'} {want!r}") if present
+                    else (DIFF, f"{rel}:{keypath}", f"expected {want!r} - got {node!r}"))
 
     # --- jars whose version lives inside the file, not in its name --------------
     import zipfile

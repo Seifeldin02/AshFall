@@ -70,19 +70,61 @@ final class TrustedAdminService implements Listener {
     public void requirePassword(RestoreSessionEvent event){
         Player player=event.getPlayer();
         if(!realAccount(player))return;
-        if(plugin.getConfig().getBoolean("trusted-admin.same-machine-autologin",false)&&isThisMachine(player)){
+        /** STAGING ONLY. staging-session-persistence lets an admin account keep AuthMe's OWN same-IP session
+         *  -- the exact 30-minute persistence every non-admin already gets unconditionally -- regardless of
+         *  which machine they connect from. This is what an admin like MacoCT, who connects remotely rather
+         *  than from the server box, actually needs: same-machine-autologin below only ever helped somebody
+         *  physically on this machine (an admin on the server's own LAN IP), so a remote admin was still
+         *  forced to /login after every restart. Kept a separate, broader flag rather than widening
+         *  same-machine-autologin, so the narrow same-machine behaviour stays available on its own.
+         *  Deliberately absent from the shipped config resource and never copied by a deploy script, so
+         *  production admins still authenticate with a real password every time. */
+        /** Admin login persistence: skip the /login password across restarts/reconnects via AuthMe's session
+         *  restore. session-persistence is the master switch; require-same-ip (default true) constrains it to
+         *  connections from the SAME IP as the server (its own machine / LAN IP / loopback) -- turn that off only
+         *  when the server moves to external hosting and admins connect from a different IP. Legacy flags are
+         *  still honored: staging-session-persistence = persistence with no IP constraint, same-machine-autologin
+         *  = persistence constrained to this machine. Everything defaults off, so a stock config stays locked. */
+        boolean persist=plugin.getConfig().getBoolean("trusted-admin.session-persistence",false);
+        boolean requireSameIp=plugin.getConfig().getBoolean("trusted-admin.require-same-ip",true);
+        if(!persist){
+            if(plugin.getConfig().getBoolean("trusted-admin.staging-session-persistence",false)){persist=true;requireSameIp=false;}
+            else if(plugin.getConfig().getBoolean("trusted-admin.same-machine-autologin",false)){persist=true;requireSameIp=true;}
+        }
+        if(persist&&(!requireSameIp||isThisMachine(player))){
             authenticated.add(player.getUniqueId());
             player.setOp(true);
             grantGamemode(player);
-            plugin.getLogger().info("Administrator auto-logged in via same-machine session: "+player.getName()+".");
+            plugin.getLogger().info("Administrator session restored for "+player.getName()+" from "
+                    +describeAddress(player)+" (AuthMe session"+(requireSameIp?" + same machine":"")+").");
             player.updateCommands();
             return;
         }
+        /** Silence was the whole problem: persistence simply did not happen and there was no way to tell
+         *  whether the switch was off or the same-machine check had refused. Say which, and say what address
+         *  was seen.
+         *
+         *  Worth being clear about what require-same-ip actually is, because the name reads like the IP check
+         *  and it is not: AuthMe has ALREADY verified the session against the player's own previous address
+         *  and its 30-minute timeout before RestoreSessionEvent is ever fired. This flag is a SECOND,
+         *  stricter constraint on top -- "and also, only from the server box itself". Turning it off does not
+         *  mean any address may restore a session; it means admins get exactly the same same-IP session that
+         *  every other player already gets. */
+        if(persist)plugin.getLogger().info("Administrator session NOT restored for "+player.getName()
+                +" from "+describeAddress(player)+": AuthMe approved the session, but trusted-admin."
+                +"require-same-ip is on and that address is not this machine.");
         event.setCancelled(true);
         authenticated.remove(player.getUniqueId());
         player.setOp(false);
         revokeGamemode(player);
     }
+
+    private String describeAddress(Player player){
+        if(!(player.getAddress() instanceof java.net.InetSocketAddress socket))return "an unknown address";
+        java.net.InetAddress address=socket.getAddress();
+        return address==null?"an unknown address":address.getHostAddress();
+    }
+
     private boolean isThisMachine(Player player){
         if(!(player.getAddress() instanceof java.net.InetSocketAddress socket))return false;
         java.net.InetAddress address=socket.getAddress();

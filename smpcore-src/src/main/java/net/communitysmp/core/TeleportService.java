@@ -271,6 +271,7 @@ final class TeleportService {
     private long remainingCooldown(Map<UUID,Long> source,long seconds,UUID player){long remaining=seconds*1000L-(System.currentTimeMillis()-source.getOrDefault(player,0L));return remaining<=0?0:Math.max(1,(remaining+999)/1000);}
     private void link(UUID first,UUID second,long until){pvpLinks.computeIfAbsent(first,id->new ConcurrentHashMap<>()).put(second,until);pvpLinks.computeIfAbsent(second,id->new ConcurrentHashMap<>()).put(first,until);}
     private long combatRemaining(UUID player,long now){Map<UUID,Long> opponents=pvpLinks.get(player);if(opponents==null)return 0;opponents.entrySet().removeIf(entry->entry.getValue()<=now);if(opponents.isEmpty()){pvpLinks.remove(player);return 0;}long latest=opponents.values().stream().mapToLong(Long::longValue).max().orElse(now);return Math.max(1,(latest-now+999)/1000);}
+    void clearCombat(Player player){clearCombat(player.getUniqueId());}
     private void clearCombat(UUID player){pvpLinks.remove(player);for(var entry:pvpLinks.entrySet())entry.getValue().remove(player);pvpLinks.entrySet().removeIf(entry->entry.getValue().isEmpty());}
     boolean combatSelfTest(){long now=System.currentTimeMillis();UUID a=UUID.randomUUID(),b=UUID.randomUUID(),c=UUID.randomUUID();link(a,b,now+60000);link(a,c,now+60000);clearCombat(b);boolean partial=combatRemaining(a,now)>0&&combatRemaining(b,now)==0;clearCombat(c);boolean cleared=combatRemaining(a,now)==0;clearCombat(a);return partial&&cleared;}
 
@@ -289,6 +290,16 @@ final class TeleportService {
          *  split. Both still apply to /tpa AND /tpahere identically; only auto-accept below distinguishes
          *  between the two. */
         boolean sameFaction=plugin.factions().sameFaction(from,target);
+        /** The Auto-TPA allowlist is an explicit, per-person invitation, so it BYPASSES the general TPA
+         *  Requests switch entirely: somebody who turns requests off to stop strangers asking still wants the
+         *  three friends they named to come straight through. Checked before the gate for that reason, and
+         *  still /tpa only -- never /tpahere. */
+        if(!here&&plugin.settings().autoTpaAllows(target,from)){
+            CoreUtil.msg(from,"Teleport request to "+plugin.nicknames().displayName(target)+" was auto-accepted (Auto-TPA).");
+            CoreUtil.msg(target,plugin.nicknames().displayName(from)+"'s teleport request was auto-accepted (Auto-TPA).");
+            warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
+            return true;
+        }
         if(!(sameFaction?plugin.settings().factionTpaRequests(target):plugin.settings().tpaRequests(target))){CoreUtil.error(from,plugin.nicknames().displayName(target)+" is not accepting teleport requests.");return true;}
         /** Auto-Accept only ever fires for /tpa (never /tpahere) from an actual faction-mate, and
          *  tpaAutoAcceptFaction() itself re-checks factionTpaRequests() — so this can't fire in a state the
@@ -300,7 +311,7 @@ final class TeleportService {
             warmup(from,target.getLocation(),plugin.nicknames().displayName(target),target);
             return true;
         }
-        if(plugin.afk().isAfk(target))CoreUtil.msg(from,plugin.nicknames().displayName(target)+" is currently AFK; the request may sit unanswered for a while.");
+        plugin.afk().notifyIfAfk(from,target);
         long seconds=Math.max(1,plugin.getConfig().getLong("teleport.request-seconds",60)),expiry=System.currentTimeMillis()+seconds*1000L;
         String targetId=CoreUtil.id(target);Request request=new Request(CoreUtil.id(from),expiry,here);requests.put(targetId,request);
         CoreUtil.msg(from,"Teleport"+(here?" here":"")+" request sent to "+plugin.nicknames().displayName(target)+". It expires in "+seconds+" seconds.");
@@ -332,7 +343,7 @@ final class TeleportService {
     boolean renamePersonalHome(Player p,String oldName,String newName){if(!newName.matches("[A-Za-z0-9_]{1,16}")){CoreUtil.error(p,"Home names use 1-16 letters, numbers, or underscores.");return true;}String owner=CoreUtil.id(p);Database.HomeRow old=db.home(owner,"PERSONAL",oldName);if(old==null){CoreUtil.error(p,"Home '"+oldName+"' does not exist.");return true;}if(!oldName.equalsIgnoreCase(newName)&&db.home(owner,"PERSONAL",newName)!=null){CoreUtil.error(p,"Home '"+newName+"' already exists.");return true;}if(!db.renameHome(owner,"PERSONAL",oldName,newName)){CoreUtil.error(p,"That home could not be renamed.");return true;}CoreUtil.msg(p,"Renamed home '"+old.name()+"' to '"+newName+"'.");return true;}
     boolean listPersonalHomes(Player p) { return listPersonalHomes(p,false); }
     boolean listPersonalHomes(Player p,boolean coords) { Database.PlayerRow row = db.player(CoreUtil.id(p)); List<Database.HomeRow> homes=db.homes(CoreUtil.id(p),"PERSONAL");CoreUtil.msg(p,"Personal homes ("+homes.size()+"/"+row.personalSlots()+")");if(homes.isEmpty()){CoreUtil.msg(p,"None set. Use /home set <name>.");return true;}for(Database.HomeRow home:homes){Location loc=home.location();String where=loc.getWorld()==null?"unknown world":CoreUtil.pretty(loc.getWorld().getEnvironment().name());if(coords&&loc.getWorld()!=null)where+=" — X "+loc.getBlockX()+", Y "+loc.getBlockY()+", Z "+loc.getBlockZ();CoreUtil.msg(p,"• "+home.name()+" — "+where);}CoreUtil.msg(p,"Teleport with /home <name>.");return true; }
-    boolean buyPersonalHome(Player p, boolean confirm) { Database.PlayerRow row = db.player(CoreUtil.id(p)); if (row.personalSlots() >= 10) { CoreUtil.msg(p, "You already have all 10 personal home slots."); return true; } int next = row.personalSlots() + 1, cost = plugin.getConfig().getInt("homes.personal.upgrades." + next); CoreUtil.msg(p, "Personal home slot " + next + " costs " + CoreUtil.money(cost) + ". Balance: " + CoreUtil.money(row.balance())); if (!confirm) { CoreUtil.msg(p, "Purchase with /home buy confirm."); return true; } if(!plugin.bank().allowNonessential(p,"extra home slots"))return true;if (!plugin.bank().payServer(p,cost,"SINK","PERSONAL_HOME_"+next)) { CoreUtil.error(p, "You cannot afford this slot."); return true; }db.recordEconomy(CoreUtil.id(p),"UPGRADE_SINK",-cost,"PERSONAL_HOME_"+next); db.setPersonalSlots(CoreUtil.id(p), next); CoreUtil.msg(p, "Personal home slot " + next + " unlocked."); return true; }
+    boolean buyPersonalHome(Player p, boolean confirm) { Database.PlayerRow row = db.player(CoreUtil.id(p)); if (row.personalSlots() >= 10) { CoreUtil.msg(p, "You already have all 10 personal home slots."); return true; } int next = row.personalSlots() + 1; double cost = plugin.getConfig().getInt("homes.personal.upgrades." + next) * plugin.bank().buyFactor(); CoreUtil.msg(p, "Personal home slot " + next + " costs " + CoreUtil.money(cost) + ". Balance: " + CoreUtil.money(row.balance())); if (!confirm) { CoreUtil.msg(p, "Purchase with /home buy confirm."); return true; } if(!plugin.bank().allowNonessential(p,"extra home slots"))return true;if (!plugin.bank().payServer(p,cost,"SINK","PERSONAL_HOME_"+next)) { CoreUtil.error(p, "You cannot afford this slot."); return true; }db.recordEconomy(CoreUtil.id(p),"UPGRADE_SINK",-cost,"PERSONAL_HOME_"+next); db.setPersonalSlots(CoreUtil.id(p), next); CoreUtil.msg(p, "Personal home slot " + next + " unlocked."); return true; }
 
     Location spawn() { String raw = db.state("server_spawn"); if (raw != null) { String[] a = raw.split(",", 6); World w = plugin.getServer().getWorld(a[0]); if (w != null) try { return new Location(w, Double.parseDouble(a[1]), Double.parseDouble(a[2]), Double.parseDouble(a[3]), Float.parseFloat(a[4]), Float.parseFloat(a[5])); } catch (Exception ignored) {} } World world = plugin.getServer().getWorld(plugin.getConfig().getString("claims.world", "world")); return world == null ? plugin.getServer().getWorlds().getFirst().getSpawnLocation() : world.getSpawnLocation(); }
     void setSpawn(Location location) { db.state("server_spawn", String.join(",", location.getWorld().getName(), Double.toString(location.getX()), Double.toString(location.getY()), Double.toString(location.getZ()), Float.toString(location.getYaw()), Float.toString(location.getPitch()))); }

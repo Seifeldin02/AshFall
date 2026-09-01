@@ -21,6 +21,14 @@ roles:
 
 trusted-admin:
   accounts: [MacoCT, Asserto]
+  # Keep admins logged in across restarts/reconnects (skip the /login password) via AuthMe's session restore.
+  # OFF by default so a stock server stays fully password-locked.
+  session-persistence: false
+  # When session-persistence is on, only apply it if the admin connects from the SAME IP as the server (its own
+  # machine / LAN IP / loopback). Turn OFF for external hosting where admins connect from a different IP than the
+  # server. (Legacy flags staging-session-persistence [no IP constraint] and same-machine-autologin [IP
+  # constraint] are still honored.)
+  require-same-ip: true
 
 nickname:
   random-names:
@@ -104,6 +112,11 @@ spawner-breaking:
   relocated-durability-cost: 512
 
 spawners:
+  # Stacks of this many represented mobs or more resolve straight to money and experience instead of
+  # spawning drops and orbs. The sale goes through the ordinary shop path -- same prices, daily threshold,
+  # reduced rate, treasury check and loan garnish -- and anything the shop does not buy is handed to the
+  # killer as items. Inclusive: a stack of exactly this size is resolved. Set very high to disable.
+  bulk-resolve-threshold: 1000
   max-stack: 10
   # Placed spawners only -- natural world spawners keep vanilla behaviour entirely.
   # 5-10 second cycle (100-200 ticks).
@@ -118,12 +131,30 @@ spawners:
   # Virtual stacking: a placed spawner keeps only a few real entities and folds further spawns into them
   # as an internal count (rendered "Blaze x50"). A new representative appears only once the current one
   # reaches the cap. Throughput is limited by the CYCLE alone -- never by how many mobs are already there.
-  virtual-stack-cap: 100
+  # 100,000 per representative. The old 100 meant a busy golem farm reached the entity cap and started
+  # cramming long before the daily money allowance was spent -- so more spawners bought LESS afk time, which
+  # is backwards. A huge per-entity count keeps the ENTITY total flat however many spawners are stacked:
+  # extra spawners fill the same representatives faster instead of spawning more of them.
+  virtual-stack-cap: 100000
   # Larger than the spawn range on purpose: representatives drift (Blazes fly), and a farm should settle
   # into as few entities as the cap allows rather than leaving stacks stranded side by side.
   virtual-merge-radius: 12
   # How often stacked representatives are consolidated, in ticks.
   consolidate-interval-ticks: 40
+
+# Big-spend celebration. Purely cosmetic: particles, per-listener sounds, a title, and (legendary only) a
+# server announcement. No fireworks entities, so nothing here can damage or knock anybody about.
+celebrations:
+  enabled: true
+  # Local show: helix, expanding rings, firework bursts.
+  grand-threshold: 10000000
+  # Everything above, taken much further, plus a column of light visible across the base.
+  legendary-threshold: 50000000
+  broadcast-legendary: true
+  # How long each show runs. Long enough to feel earned, short enough to leave you alone afterwards.
+  grand-seconds: 8
+  legendary-seconds: 25
+  broadcast-grand: false
 
 graves:
   lifetime-hours: 48
@@ -156,15 +187,15 @@ teleport:
   request-seconds: 60
 
 rtp:
-  radius: 5000
+  radius: 10000
   request-throttle-seconds: 4
   warmup-seconds: 3
   protected-distance: 1000
   attempts: 32
   radii:
-    overworld: 5000
-    nether: 4000
-    end: 5000
+    overworld: 10000
+    nether: 8000
+    end: 10000
 
 bounties:
   minimum: 100
@@ -172,7 +203,10 @@ bounties:
   repeat-pair-days: 7
   placement-fee-percent: 2.0
   claim-tax-percent: 3.0
-  admin-approval-threshold: 10000
+  # Bounties below this pay out automatically. Manual review is for the genuinely large ones only -- the
+  # anti-abuse checks that actually matter (same IP, same faction, repeat pairs, the treasury cap) run on
+  # every bounty regardless and are untouched by this number.
+  admin-approval-threshold: 500000
   auto:
     window-hours: 72
     distinct-victims-threshold: 4
@@ -211,6 +245,9 @@ auctions:
   minimum-price: 10
 
 bank:
+  # Central Bank income: this much is minted into the bank for every emerald a completed player->villager
+  # trade actually consumes (after reputation discount and demand). Player gets nothing.
+  villager-trade-income-per-emerald: 100
   overdue-high-value-threshold: 25000
   shop:
     nonsellable-margin-percent: 10
@@ -224,11 +261,47 @@ bank:
     base-limit: 1000
     per-milestone-limit: 1500
     maximum-limit: 0
+    # Hidden credit rating. The loan limit is a fraction of the CURRENT treasury, and the fraction is
+    # earned: 55% the Coin Counter economic score from /progress, 20% repayment record (minus a penalty
+    # per overdue loan), 15% play hours, 10% milestones. The old flat formula is kept as a floor, so no
+    # limit can go down. At a 300M treasury this is ~150k at the bottom and ~6M at the top.
+    credit:
+      economic-target: 5000000
+      repaid-target: 6
+      overdue-penalty: 0.25
+      tenure-hours: 120
+      milestone-target: 12
+      treasury-fraction-min: 0.0005
+      treasury-fraction-max: 0.02
     daily-interest-percent: 1.0
     maximum-interest-percent: 25.0
     due-days: 7
     overdue-garnish-percent: 25.0
     input-timeout-seconds: 30
+
+# One-time repair of Legendary Sigils minted before the item carried its PDC tag. Detection at the shop is
+# ALWAYS tag-based; this never adds a name/lore rule at runtime. It matches the single verified legacy
+# signature for the listed accounts only, then records a persistent flag and disables itself. Safe to
+# delete this whole block once the log reports success.
+migrations:
+  legacy-legendary-sigil:
+    enabled: true
+    uuids:
+    - 54c7d8e0-5bf7-3112-8cd0-ec69b6180904   # osjad
+    name: Legendary Sigil
+    lore: A trophy from a powered creature.
+
+# Destroyed-goods vault: every commodity that leaves the world is audited, and the ones the shop trades
+# return to its finite stock so destruction feeds supply instead of vanishing.
+discarded-vault:
+  flush-seconds: 15
+  cache-seconds: 30
+  record-destroyed-blocks: true
+  # Commodities destroyed by fire or an explosion return to shop stock, exactly like a despawned item.
+  # A burnt block never drops, so it credits directly. An exploded block credits only the portion that
+  # failed to drop -- anything that survived as an item is left alone and credits later, once, when that
+  # item despawns or burns. Set false to go back to audit-only for destroyed blocks.
+  recycle-destroyed-blocks: true
 
 mob-money:
   # Share of the equivalent natural mob's money paid for a mob from a PLAYER-PLACED spawner. Flat: the
@@ -239,6 +312,15 @@ mob-money:
   # rather than being paid entirely at one rate.
   spawner-reduced-share: 0.25
   spawner-daily-threshold: 10000
+  # ---- Golem spawners (the flagship 50,000,000 purchase) ----
+  # Flat money per REPRESENTED golem at the full rate, paid only for golems from a purchased spawner.
+  # Village and player-built golem farms earn nothing, so this rate cannot leak to a free iron farm.
+  golem-full-rate: 270
+  # Full-rate allowance is granted PER REPRESENTED SPAWNER, not per player: a x1 gets this many represented
+  # kills per reward day, a x10 stack gets ten times it. Charged against the spawner identities that travel
+  # with the item, so breaking, moving or splitting a stack never resets it. Past the allowance the
+  # ordinary reduced spawner payout resumes. Resets at 12:00 Asia/Riyadh with every other daily allowance.
+  golem-daily-allowance-per-spawner: 2200
   # Neutral mobs that still count as combat income: they get the progression money multiplier and the
   # anti-farm kill accounting, exactly like hostile mobs. Iron Golems are here because they fight back and
   # are farmed deliberately, but are classed Golem rather than Enemy, so they were silently paying base
@@ -267,7 +349,7 @@ merchants:
   boss-sigil-count: 8
   boss-sigil-price: 250000
   boss-legendary-sigil-count: 2
-  boss-chosen-price: 2000000
+  boss-chosen-price: 1500000
   event-cooldowns-minutes:
     micro: 30
     major: 180
@@ -291,6 +373,11 @@ merchants:
   auction-fee-multiplier: 0.5
 
 net-worth:
+  # Sigil faction value. Priced from the summon they buy: 2 Legendary = one summon outright;
+  # 8 Elite = one summon only with 250,000 coin alongside. Consumables, so both sit below the
+  # 500,000 Golem Spawner per unit and ten Legendary Sigils are needed to match one 4m Dragon Egg.
+  elite-sigil-value: 75000
+  legendary-sigil-value: 400000
   recalculate-minutes: 2
   reconcile-chunks-per-tick: 4
   relic-value: 500000
@@ -333,7 +420,7 @@ net-worth:
     ELYTRA: 250000
     TOTEM_OF_UNDYING: 50000
     ENCHANTED_GOLDEN_APPLE: 100000
-    DRAGON_EGG: 1000000
+    DRAGON_EGG: 4000000
     NETHER_STAR: 30000
     WITHER_SKELETON_SKULL: 15000
     BEACON: 60000
@@ -345,8 +432,8 @@ net-worth:
     ECHO_SHARD: 5000
   spawners:
     # Virtual stacking made placed spawners a genuine income engine rather than decoration, so the highest
-    # earners are valued accordingly. IRON_GOLEM matches the Dragon Egg at 1,000,000 as the flagship buy.
-    IRON_GOLEM: 1000000
+    # earners are valued accordingly. IRON_GOLEM is the flagship spawner buy; the Dragon Egg is a 2,000,000 cosmetic.
+    IRON_GOLEM: 500000
     default: 25000
     ZOMBIE: 30000
     SKELETON: 40000
@@ -453,6 +540,124 @@ progression:
     CONQUEROR: 150000
     VANGUARD: 250000
 
+arena:
+  # A void world built by us rather than a downloaded map, so there is no third-party world to vet.
+  world: ashfall_arena
+  # How long a disconnected duellist has to come back before forfeiting the round.
+  reconnect-grace-seconds: 10
+  # How many duels can run at once, each in its own isolated arena slot.
+  max-concurrent-duels: 6
+  # Cooldown between challenges, like a trade request, so invites cannot be spammed.
+  challenge-cooldown-seconds: 15
+  # How long spectators may bet after a round starts. Betting is also open before the match and during any
+  # ready-gate; this is the window that guarantees a bet is possible even when both duellists ready instantly.
+  # A spectator who arrives mid-round gets their own window of the same length from when they arrived.
+  betting-window-seconds: 10
+  # How long one setup stage (Kit, Map, Final Options) may sit untouched before the duel is called off.
+  # The clock resets whenever the pair move between stages, so a slow but active setup is never cut short.
+  setup-timeout-seconds: 180
+
+# Duel maps. Each has a private template world (duel_tpl_<key>) that admins build in, and every match runs
+# in a disposable clone of it (duel_inst_<key>_...). Spawns are stored in template-world coordinates; the
+# imported maps keep their original source coordinates so a build is never shifted underfoot. Yaw is derived
+# from the spawn pair at runtime so the two duellists always face each other. `spectator` is optional --
+# when unset, spectators appear above the midpoint of the two spawns.
+duel-maps:
+  # bounds is the playable cuboid: the area imported from the source world, the only area a duellist may
+  # break or build in, and the chunks an instance loads. break-rule placed-only means only blocks placed
+  # during that match may be broken (terrain resists players AND explosions); full means the terrain inside
+  # bounds is fully breakable including by explosions, with barriers/bedrock/command blocks always protected.
+  # Every kit can use every map -- nothing here is kit-specific.
+  arena100:
+    name: "Flat 100x100"
+    break-rule: placed-only
+    p1: [0.5, 65.0, -45.5]
+    p2: [0.5, 65.0, 45.5]
+    bounds: [-50, 64, -50, 49, 319, 49]
+  arena50:
+    name: "Flat 50x50"
+    break-rule: placed-only
+    p1: [0.5, 65.0, -20.5]
+    p2: [0.5, 65.0, 20.5]
+    bounds: [-25, 64, -25, 24, 319, 24]
+  temple_of_tides:
+    name: "Temple of Tides"
+    break-rule: full
+    p1: [8930.5, 232.0, 11153.5]
+    p2: [8930.5, 232.0, 11276.5]
+    bounds: [8852, 226, 11125, 9026, 320, 11297]
+    source-world: world
+  cinder_crucible:
+    name: "Cinder Crucible"
+    break-rule: full
+    p1: [9153.5, 232.0, 11260.5]
+    p2: [9153.5, 232.0, 11157.5]
+    bounds: [9063, 227, 11120, 9238, 320, 11297]
+    source-world: world
+  deepstone_mines:
+    name: "Deepstone Mines"
+    break-rule: full
+    p1: [8924.5, 248.0, 11018.5]
+    p2: [8924.5, 248.0, 11007.5]
+    bounds: [8845, 210, 10909, 9022, 320, 11083]
+    source-world: world
+  skyroot_village:
+    name: "Skyroot Village"
+    break-rule: full
+    p1: [9186.5, 232.0, 11022.5]
+    p2: [9186.5, 232.0, 10980.5]
+    bounds: [9040, -64, 10903, 9243, 320, 11085]
+    source-world: world
+
+# How many chunk columns /ashfall duelmap import copies per tick. Higher finishes sooner but each tick
+# does more work; 2 keeps an import invisible to anybody else on the server.
+duel-maps-import:
+  columns-per-tick: 2
+
+# Where spectators sit above the spawn midpoint when a map has no explicit spectator point.
+duel-spectator-fallback-height: 10
+
+# Duel chest loot. Rolled per INSTANCE, so templates stay untouched and every match gets fresh contents.
+# Entries are MATERIAL:min-max:chance. A connected double chest counts as one container, not two.
+duel-loot:
+  single:
+    rolls: 3
+    entries:
+    - "GOLDEN_APPLE:1-2:0.8"
+    - "COOKED_BEEF:6-12:0.9"
+    - "ARROW:8-16:0.6"
+    - "ENDER_PEARL:1-2:0.45"
+    - "OBSIDIAN:1-4:0.4"
+    - "WIND_CHARGE:2-6:0.4"
+    - "IRON_INGOT:2-5:0.5"
+    - "COBWEB:1-3:0.3"
+  double:
+    rolls: 6
+    entries:
+    - "GOLDEN_APPLE:1-3:0.9"
+    - "ENDER_PEARL:1-4:0.7"
+    - "COOKED_BEEF:8-16:0.9"
+    - "ARROW:16-32:0.6"
+    - "OBSIDIAN:2-6:0.5"
+    - "WIND_CHARGE:4-12:0.5"
+    - "DIAMOND:1-3:0.4"
+    - "IRON_BLOCK:1-2:0.35"
+    - "ENCHANTED_GOLDEN_APPLE:1-1:0.10"
+    - "TOTEM_OF_UNDYING:1-1:0.07"
+  # Only these maps may roll trial keys at all; ominous is the rarer of the two.
+  trial-key-maps:
+  - cinder_crucible
+  - deepstone_mines
+  trial-key-chance: 0.10
+  ominous-key-chance: 0.03
+  # Chunk radius around the spawn midpoint loaded when an instance is created, so its chests are found.
+  # Only used by maps that declare no bounds; a map WITH bounds loads exactly its bounds instead.
+  load-radius-chunks: 12
+  # How many of an instance's chunks are pulled in per tick while a match's arena is being prepared.
+  # An imported map is a couple of hundred chunks and loading them all in one tick is a visible freeze.
+  chunks-per-tick: 24
+
+
 orders:
   # Native buy orders. Escrow is taken from the buyer at creation and released per delivered unit; every
   # movement of it is a conditional UPDATE, so it cannot be paid or refunded twice.
@@ -463,7 +668,44 @@ orders:
   tax-percent: 2.5
   expiry-check-seconds: 60
 
+# ---- Spawner Shop --------------------------------------------------------------------------------------
+# Spawners that leave the world WITHOUT reaching a player's inventory -- blown up, burnt, or left on the
+# ground until they despawned -- become stock here instead of being lost, and can be bought back with
+# /spawnershop. A spawner somebody picks up never comes near this.
+#
+# Prices are derived from what a spawner actually EARNS, not picked by feel. For each mob:
+#   money per kill = mob-rewards midpoint x mob-money.spawner-share (0.5)
+#   drop value per kill = average vanilla drop count x that item's shop SELL price
+# Totals, and the resulting ratio against a zombie spawner:
+#   Blaze        5.75 + 6.00 (0.5 rod x 12)            = 11.75   3.83x
+#   Cave Spider  2.00 + 3.35                           =  5.35   1.74x
+#   Spider       1.50 + 3.35 (1 string x 3.2 + eye)    =  4.85   1.58x
+#   Skeleton     1.50 + 2.14 (bone 1.61 + arrow 0.53)  =  3.64   1.19x
+#   Zombie       1.50 + 1.57 (rotten flesh)            =  3.07   1.00x
+# Anchored on a 300,000 zombie spawner and rounded to the nearest 50,000.
+# Like every other shop, these are DOUBLED while the Central Bank treasury is in deficit.
+spawner-shop:
+  enabled: true
+  default-price: 250000
+  prices:
+    BLAZE: 1150000
+    CAVE_SPIDER: 500000
+    SPIDER: 450000
+    SKELETON: 350000
+    ZOMBIE: 300000
+
 industrial-hopper:
+  # How many items a PLAIN hopper may move into an Industrial Hopper per cycle. Match this to
+  # settings.hopper-amount in spigot.yml: the nine-item transfer is the Industrial Hopper's own buff and
+  # must not leak onto an ordinary hopper feeding it, from above or from the side.
+  vanilla-hopper-amount: 1
+  # Logs every hopper movement with the counts either side, for reproducing a reported item loss live.
+  # Noisy; leave off unless chasing something.
+  trace: false
+  # Keep the block's own five (otherwise unused) slots loaded with a calibration weight so an adjacent
+  # comparator reads the fill level of the real 27 slots. Turn this off only if some other plugin objects
+  # to the marker items; with it off, comparators read every Industrial Hopper as empty.
+  comparator-output: true
   # Items moved per hopper per tick. Vanilla moves one item every 8 ticks; this is the whole point of the
   # block, so it is deliberately far higher. Ticking is centralised, not one task per hopper.
   items-per-tick: 9
@@ -515,3 +757,9 @@ discord-reminder:
 
 database:
   file: smpcore.db
+
+admin:
+  # Suppresses the sendCommandFeedback gamerule so console/RCON command messages stop being echoed to
+  # in-game operators. OFF by default: it also suppresses a player's feedback from their own commands.
+  # Commands are still written to the server log regardless.
+  hide-console-command-feedback: false

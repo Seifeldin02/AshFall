@@ -212,7 +212,87 @@ final class WeeklyDragonService {
          *  is a bounded safety net, not the primary release path — the primary paths are defeated() (real
          *  success) and the two failure branches above (immediate, nothing left to protect). */
         releasePillarAreaLater(world);
-        pollForSpawnedDragon(battle,occurrence,0);
+        /** ARM the occurrence rather than start a three-minute poll.
+         *
+         *  Root cause of 2026-08-21 giving no egg and no bonus XP, read straight out of the production log:
+         *    16:03:19  WARN  respawn did not stabilise on a dragon entity after 3 minutes of polling
+         *    16:40:22  INFO  [WeeklyDragon] death: weeklyKill=false participants=1 killer=MacoCT
+         *  Vanilla's EnderDragonFight.tick() does nothing at all while no player is in the End, so the
+         *  dragon does not actually appear until somebody arrives. Nobody arrived within three minutes, the
+         *  poll gave up, and when the dragon finally spawned 37 minutes later there was nothing left
+         *  listening to tag it -- so the kill was not recognised as the weekly one.
+         *
+         *  An occurrence now stays armed until a dragon is actually tagged, is written to the database so it
+         *  survives a restart, and is picked up by a watcher that also ADOPTS a dragon the fight never told
+         *  us about. The reward can no longer be lost to how long it takes a player to walk to the End. */
+        db.state(ARMED,occurrence);
+        startArmedWatcher();
+    }
+
+    /** The key holding the occurrence that is waiting for its dragon. Empty/absent means nothing is armed. */
+    private static final String ARMED="weekly_dragon:armed";
+    private org.bukkit.scheduler.BukkitTask armedWatcher;
+
+    /** Resumes an armed occurrence after a restart. Called from the constructor's startup pass. */
+    void resumeArmedOccurrence(){ if(armedOccurrence()!=null) startArmedWatcher(); }
+
+    private String armedOccurrence(){ String value=db.state(ARMED); return value==null||value.isBlank()?null:value; }
+
+    /** Looks for the weekly dragon every five seconds for as long as an occurrence is armed.
+     *
+     *  Deliberately does NOT depend solely on battle.getEnderDragon(): that resolves the fight's own
+     *  dragonUUID, which is exactly the thing that was never set in the failure above. A live EnderDragon in
+     *  the End with no weekly tag is the weekly dragon regardless of what the fight thinks -- there is only
+     *  ever one. The two-second stability confirmation is kept, because a freshly reported dragon UUID can
+     *  still be transient. */
+    private void startArmedWatcher(){
+        if(armedWatcher!=null&&!armedWatcher.isCancelled())return;
+        armedWatcher=plugin.getServer().getScheduler().runTaskTimer(plugin,()->{
+            String occurrence=armedOccurrence();
+            if(occurrence==null){ stopArmedWatcher(); return; }
+            World world=endWorld();
+            if(world==null)return;
+            EnderDragon dragon=activeDragon(world);
+            if(dragon==null)return;
+            if(isWeekly(dragon)){ disarm(); return; }
+            UUID candidate=dragon.getUniqueId();
+            plugin.getServer().getScheduler().runTaskLater(plugin,()->{
+                World end=endWorld();
+                if(end==null||armedOccurrence()==null)return;
+                EnderDragon still=activeDragon(end);
+                if(still==null||!still.getUniqueId().equals(candidate))return;
+                tagAsWeekly(still,occurrence,"adopted by the armed watcher");
+            },40L);
+        },100L,100L);
+    }
+
+    private void stopArmedWatcher(){ if(armedWatcher!=null){armedWatcher.cancel();armedWatcher=null;} }
+
+    private void disarm(){ db.state(ARMED,""); spawning=false; stopArmedWatcher(); }
+
+    /** The single place a dragon becomes THE weekly dragon, so the poll, the watcher and any future path
+     *  cannot tag one differently. */
+    private void tagAsWeekly(EnderDragon dragon,String occurrence,String how){
+        dragon.setPersistent(true);
+        dragon.getPersistentDataContainer().set(weeklyKey,PersistentDataType.STRING,occurrence);
+        dragon.customName(Component.text("Ender Dragon",NamedTextColor.DARK_PURPLE));
+        dragon.setCustomNameVisible(true);
+        db.state("weekly_dragon:active",dragon.getUniqueId().toString());
+        db.history("SERVER",null,"DRAGON","The weekly Ender Dragon awakened.");
+        disarm();
+        plugin.getLogger().info("[WeeklyDragon] tagged "+dragon.getUniqueId()+" as weekly ("+how+").");
+    }
+
+    /** Last-resort backstop: a dragon died in the End while an occurrence was still armed, meaning it was
+     *  never tagged. That IS the weekly dragon -- there is only one -- so the occurrence is credited rather
+     *  than the reward being silently lost, which is exactly what happened on 2026-08-21. */
+    boolean adoptUntaggedKill(EnderDragon dragon){
+        String occurrence=armedOccurrence();
+        if(occurrence==null||isWeekly(dragon))return false;
+        dragon.getPersistentDataContainer().set(weeklyKey,PersistentDataType.STRING,occurrence);
+        plugin.getLogger().warning("[WeeklyDragon] a dragon died untagged while occurrence "+occurrence
+                +" was armed; crediting it as the weekly kill.");
+        return true;
     }
     private static java.lang.reflect.Field dragonFightHandleField;
     private static java.lang.reflect.Field dragonKilledField;
@@ -306,7 +386,9 @@ final class WeeklyDragonService {
      *  the top of pollForSpawnedDragon so it's re-evaluated on every cycle, including ones resumed after a
      *  failed confirmation. */
     private void pollForSpawnedDragon(DragonBattle battle,String occurrence,int attempt){
-        if(attempt>=360){spawning=false;plugin.getLogger().warning("Weekly Ender Dragon respawn did not stabilise on a dragon entity after 3 minutes of polling.");return;}
+        /** No longer a failure: the fast poll covers the common case where a player is already in the End,
+         *  and anything slower is handed to the armed watcher, which waits as long as it takes. */
+        if(attempt>=360){plugin.getLogger().info("[WeeklyDragon] no dragon within 3 minutes (normal when nobody is in the End yet); the armed watcher takes over.");return;}
         EnderDragon dragon=battle.getEnderDragon();
         if(dragon!=null&&!dragon.isDead()){
             UUID candidate=dragon.getUniqueId();
@@ -318,10 +400,7 @@ final class WeeklyDragonService {
     private void confirmAndTagDragon(DragonBattle battle,String occurrence,UUID candidate,int attempt){
         EnderDragon dragon=battle.getEnderDragon();
         if(dragon!=null&&!dragon.isDead()&&dragon.getUniqueId().equals(candidate)){
-            spawning=false;
-            dragon.setPersistent(true);dragon.getPersistentDataContainer().set(weeklyKey,PersistentDataType.STRING,occurrence);dragon.customName(Component.text("Ender Dragon",NamedTextColor.DARK_PURPLE));dragon.setCustomNameVisible(true);
-            db.state("weekly_dragon:active",dragon.getUniqueId().toString());db.history("SERVER",null,"DRAGON","The weekly Ender Dragon awakened.");
-            plugin.getLogger().info("[WeeklyDragon] tagged "+dragon.getUniqueId()+" as weekly (confirmed stable after 2s).");
+            tagAsWeekly(dragon,occurrence,"confirmed stable after 2s");
             return;
         }
         plugin.getLogger().info("[WeeklyDragon] candidate "+candidate+" was not stable (changed or vanished) — resuming poll.");
@@ -339,17 +418,17 @@ final class WeeklyDragonService {
      *  simply don't tick (no movement, no AI), which looks identical to "frozen in place" from a player's view. */
     private CompletableFuture<Void> loadPillarArea(World world){
         List<CompletableFuture<Chunk>> loads=new ArrayList<>();
-        for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++){world.setChunkForceLoaded(cx,cz,true);loads.add(world.getChunkAtAsync(cx,cz,true));}
+        for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++){plugin.bosses().ownForceLoad(world,cx,cz,"DRAGON");loads.add(world.getChunkAtAsync(cx,cz,true));}
         return CompletableFuture.allOf(loads.toArray(new CompletableFuture[0]));
     }
-    private void releasePillarArea(World world){for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++)world.setChunkForceLoaded(cx,cz,false);}
+    private void releasePillarArea(World world){for(int cx=-8;cx<=8;cx++)for(int cz=-8;cz<=8;cz++)plugin.bosses().ownRelease(world,cx,cz);}
     /** Bounded safety net, not the normal release path (see attemptRespawn) — releases in 30 minutes unless a
      *  live weekly dragon is present, so a respawn nobody ever showed up for doesn't pin the arena forever. If a
      *  player arrives after this fires, tick() force-adds its own DRAGON chunk ticket the moment it sees them,
      *  so nothing is lost — the persisted respawn/dragon-killed state survives chunk unload just fine. */
     private void releasePillarAreaLater(World world){plugin.getServer().getScheduler().runTaskLater(plugin,()->{if(!active())releasePillarArea(world);},36000L);}
     void defeated(EnderDragon dragon){
-        if(!dragon.getPersistentDataContainer().has(weeklyKey))return;String occurrence=dragon.getPersistentDataContainer().get(weeklyKey,PersistentDataType.STRING);db.state("weekly_dragon:last_defeated",occurrence==null?"unknown":occurrence);db.state("weekly_dragon:active","");db.history("SERVER",null,"DRAGON","The weekly Ender Dragon was defeated.");
+        if(!dragon.getPersistentDataContainer().has(weeklyKey))return;String occurrence=dragon.getPersistentDataContainer().get(weeklyKey,PersistentDataType.STRING);disarm();db.state("weekly_dragon:last_defeated",occurrence==null?"unknown":occurrence);db.state("weekly_dragon:active","");db.history("SERVER",null,"DRAGON","The weekly Ender Dragon was defeated.");
         releasePillarArea(dragon.getWorld());
     }
     boolean isWeekly(Entity entity){return entity!=null&&entity.getPersistentDataContainer().has(weeklyKey);}

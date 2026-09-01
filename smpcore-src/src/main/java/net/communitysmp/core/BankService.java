@@ -48,7 +48,10 @@ final class BankService implements Listener {
         inv.setItem(10,icon(Material.WRITABLE_BOOK,"Your Debt",loan==null?"None":CoreUtil.money(loan.debt()),loan==null?"No active loan.":"Principal: "+CoreUtil.money(loan.principal())));
         inv.setItem(12,icon(Material.CLOCK,"Interest",loan==null?"—":CoreUtil.money(loan.interest()),formatPercent(plugin.getConfig().getDouble("bank.loans.daily-interest-percent",1))+" per day"));
         inv.setItem(14,icon(loan!=null&&loan.overdue()?Material.REDSTONE_TORCH:Material.LANTERN,"Due Status",dueLine(loan),loan!=null&&loan.overdue()?"Future income is partially garnished.":""));
-        inv.setItem(16,icon(Material.EMERALD,"Available Loan",CoreUtil.money(available),"Based on progress, history, and treasury funds."));
+        inv.setItem(16,icon(Material.EMERALD,"Available Loan",CoreUtil.money(available),
+                "Credit standing: "+creditBand(player),
+                "Grows with the economy you generate,",
+                "your repayment record, and treasury funds."));
         inv.setItem(21,icon(Material.EMERALD_BLOCK,"Borrow",available>0?"View available amounts":"Unavailable",loan!=null?"Repay the current loan first.":""));
         inv.setItem(23,icon(Material.GOLD_INGOT,"Repay",loan==null?"No active loan":"Choose a repayment amount","Payments return funds to the treasury."));
         player.openInventory(inv);
@@ -181,7 +184,14 @@ final class BankService implements Listener {
 
     void creditFee(double amount,String player,String detail){db.creditBankRevenue(amount,"FEE",player,detail);}
     void creditSink(double amount,String player,String detail){db.creditBankRevenue(amount,"SINK",player,detail);}
-    boolean payServer(Player player,double amount,String category,String detail){return db.serverPayment(CoreUtil.id(player),amount,category,detail);}
+    /** Single choke point for money paid TO the server: every shop, the Keeper of Omens, the spawner
+     *  shop, home and ender-chest upgrades and the auction listing fee all come through here, which is why
+     *  the big-spend celebration hangs off it rather than off each shop separately. */
+    boolean payServer(Player player,double amount,String category,String detail){
+        if(!db.serverPayment(CoreUtil.id(player),amount,category,detail))return false;
+        if(plugin.spectacle()!=null)plugin.spectacle().bigSpend(player,amount,detail);
+        return true;
+    }
     boolean refundServerPayment(Player player,double amount,String category,String detail){return db.refundServerPayment(CoreUtil.id(player),amount,category,detail);}
     boolean payFaction(long faction,double amount,String player,String detail){return db.factionServerPayment(faction,amount,player,detail);}
     boolean payShopSeller(Player player,double amount,String detail){
@@ -197,14 +207,98 @@ final class BankService implements Listener {
 
     boolean overdue(String player){Database.LoanRow loan=accrue(player);return loan!=null&&loan.overdue();}
     Database.BankRow treasury(){return db.bank();}
+    /** Admin-only Central Bank balance control (add/remove/set). Delta may push the balance negative, which
+     *  is intentional -- a negative treasury is what turns on the deficit surcharge. */
+    void adminAdjust(double delta){db.adjustBank(delta);}
+    /** The Central Bank deficit surcharge. While the treasury sits at or below zero, every player->bank payment
+     *  is charged at 2x and every shop payout is paid at 0.5x, until buys/fees/sinks pull the treasury back
+     *  above zero. This is the SINGLE source of truth so no price is ever hand-doubled at a call site.
+     *
+     *  The state is CACHED for 1s: buyFactor()/sellFactor() are called once per shop-GUI item (dozens per open),
+     *  and hitting the synchronized bank() SELECT each time was a needless query storm. A 1s staleness is
+     *  irrelevant for a treasury that moves on human timescales, and it keeps the hot shop paths query-free. */
+    private volatile boolean cachedDeficit; private volatile long deficitCheckedAt;
+    boolean deficit(){
+        long now = System.currentTimeMillis();
+        if (now - deficitCheckedAt > 1000L) { Database.BankRow row = db.bank(); cachedDeficit = row != null && row.balance() <= 0; deficitCheckedAt = now; }
+        return cachedDeficit;
+    }
+    double buyFactor(){ return deficit()?2.0:1.0; }
+    double sellFactor(){ return deficit()?0.5:1.0; }
+    /** Taxes and fees are the treasury's own recovery lever, so they bite HARDER than prices do: while the
+     *  Central Bank is in deficit every player->bank tax or fee is charged at 3x, against 2x for purchases
+     *  and sinks. The point is that the deficit closes itself -- the more the economy moves while the
+     *  treasury is under water, the faster it comes back up -- rather than the deficit becoming a permanent
+     *  background state nobody can shift. Same single source of truth as the other two factors: no call site
+     *  ever hand-multiplies. */
+    double feeFactor(){ return deficit()?3.0:1.0; }
 
     private Database.LoanRow accrue(Player player){return accrue(CoreUtil.id(player));}
     private Database.LoanRow accrue(String player){return db.accrueLoan(player,plugin.getConfig().getDouble("bank.loans.maximum-interest-percent",25));}
     private double available(Player player,Database.LoanRow loan,Database.BankRow bank){if(loan!=null||bank==null)return 0;return round(Math.min(limit(player),bank.balance()));}
+
+    /*  Loan limits used to ignore the treasury entirely.
+     *
+     *  The old formula was a sum of small flat terms -- a base, milestones, a slice of balance capped at
+     *  5,000, play hours capped at 5,000, and 1,000 per repaid loan. It topped out somewhere around twenty
+     *  thousand no matter what, so a treasury holding 300,000,000 and a player who had personally generated
+     *  millions still got offered pennies. `available()` then took min(limit, treasury), and the treasury
+     *  side of that min has never once been the binding constraint.
+     *
+     *  So the limit is now a FRACTION OF THE TREASURY, and the fraction is what the player has earned. That
+     *  makes both halves of the owner's complaint work: a rich bank lends more, and someone who has driven a
+     *  lot of the economy borrows a bigger share of it than someone who has not.
+     *
+     *  Rating inputs, weighted. Nothing here is shown as a number -- the GUI shows a band -- because it is
+     *  meant to be a hidden credit score, not a stat to farm:
+     *
+     *    55%  economic contribution. Straight off the Coin Counter metric in /progress
+     *         (ProgressMetrics.economicScore = gameplay income + server contributions), which is already the
+     *         server's own definition of "money this person generated" and is the owner's suggested basis.
+     *    20%  repayment history, minus a penalty for every loan that went overdue. Credit is about whether
+     *         you pay it back, so this is the only term that can move DOWN.
+     *    15%  tenure in play hours.
+     *    10%  progression milestones.
+     *
+     *  A brand new player still gets the configured minimum; the old formula is kept as a FLOOR so nobody's
+     *  limit can drop as a result of this change. */
+    double creditRating(Player player){
+        String id=CoreUtil.id(player);
+        Database.StatsRow stats=db.stats(id);
+        double hours=stats==null?0:stats.playSeconds()/3600.0;
+        Database.ProgressMetrics metrics=db.progressMetrics(id);
+        double economicTarget=Math.max(1,plugin.getConfig().getDouble("bank.loans.credit.economic-target",5_000_000));
+        double economic=Math.min(1,(metrics==null?0:metrics.economicScore())/economicTarget);
+        int repaid=db.repaidLoanCount(id),overdue=db.overdueLoanCount(id);
+        double repayment=Math.max(0,Math.min(1,repaid/Math.max(1.0,plugin.getConfig().getDouble("bank.loans.credit.repaid-target",6))
+                -overdue*plugin.getConfig().getDouble("bank.loans.credit.overdue-penalty",.25)));
+        double tenure=Math.min(1,hours/Math.max(1,plugin.getConfig().getDouble("bank.loans.credit.tenure-hours",120)));
+        double milestones=Math.min(1,db.milestoneCount(id)/Math.max(1.0,plugin.getConfig().getDouble("bank.loans.credit.milestone-target",12)));
+        return Math.max(0,Math.min(1,.55*economic+.20*repayment+.15*tenure+.10*milestones));
+    }
+
+    /** The band shown to the player. Deliberately qualitative -- the rating itself stays hidden. */
+    String creditBand(Player player){
+        double rating=creditRating(player);
+        if(rating>=.80)return "Excellent";
+        if(rating>=.60)return "Strong";
+        if(rating>=.40)return "Good";
+        if(rating>=.20)return "Fair";
+        return "Building";
+    }
+
     private double limit(Player player){
         Database.StatsRow stats=db.stats(CoreUtil.id(player));double balance=stats==null?0:stats.balance(),hours=stats==null?0:stats.playSeconds()/3600.0;
-        double limit=plugin.getConfig().getDouble("bank.loans.base-limit",500)+db.milestoneCount(CoreUtil.id(player))*plugin.getConfig().getDouble("bank.loans.per-milestone-limit",750)+Math.min(5000,balance*.25)+Math.min(5000,hours*25)+db.repaidLoanCount(CoreUtil.id(player))*1000;
-        double maximum=plugin.getConfig().getDouble("bank.loans.maximum-limit",0),dynamic=Math.max(minimumLoan(),limit);
+        /** The old formula, kept only as a floor so this change can never lower anybody's limit. */
+        double legacy=plugin.getConfig().getDouble("bank.loans.base-limit",500)+db.milestoneCount(CoreUtil.id(player))*plugin.getConfig().getDouble("bank.loans.per-milestone-limit",750)+Math.min(5000,balance*.25)+Math.min(5000,hours*25)+db.repaidLoanCount(CoreUtil.id(player))*1000;
+        Database.BankRow bank=db.bank();
+        double treasury=bank==null?0:Math.max(0,bank.balance());
+        double low=plugin.getConfig().getDouble("bank.loans.credit.treasury-fraction-min",.0005);
+        double high=plugin.getConfig().getDouble("bank.loans.credit.treasury-fraction-max",.02);
+        double fraction=low+(high-low)*creditRating(player);
+        double earned=treasury*fraction;
+        double maximum=plugin.getConfig().getDouble("bank.loans.maximum-limit",0);
+        double dynamic=Math.max(minimumLoan(),Math.max(legacy,earned));
         return round(maximum>0?Math.min(maximum,dynamic):dynamic);
     }
     private double minimumLoan(){return plugin.getConfig().getDouble("bank.loans.minimum-amount",500);}

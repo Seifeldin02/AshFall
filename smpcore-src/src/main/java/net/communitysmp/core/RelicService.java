@@ -34,12 +34,41 @@ import java.io.File;
 import java.util.*;
 
 final class RelicService implements Listener {
-    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask;
-    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);}
+    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask,anchorTask;
+
+    /** One armed Skyward Anchor. `peak` is OUR OWN fall tracking rather than Player#getFallDistance,
+     *  because vanilla zeroes that constantly while gliding and we need the drop to survive an elytra
+     *  descent (and to be deliberately reset when the dive flattens out). */
+    private static final class Anchor {
+        double peak;
+        final long armedAt;
+        /** Has the holder actually LEFT the ground since arming?
+         *
+         *  Without this the relic killed itself on the tick after the right-click: Player#isOnGround reflects
+         *  the last movement packet the client sent, so it is still true for a tick or two after a launch,
+         *  the ground-contact branch fired immediately, and the anchor discharged into thin air with a fall
+         *  distance of zero. Damage was therefore 0.9 x 7 x 1.5 = about 9 -- which is exactly the "it does no
+         *  base damage" and "the buff doesn't seem active at all" that was reported, and it is also why the
+         *  mace combo never triggered: by the time you swung, there was nothing armed left to combo with. */
+        boolean airborne;
+        /** When the current elytra glide stopped being a dive; 0 while diving or not gliding. */
+        long shallowSince;
+        Anchor(double peak){this.peak=peak;this.armedAt=System.currentTimeMillis();}
+    }
+    private final Map<UUID,Anchor> anchors=new java.util.concurrent.ConcurrentHashMap<>();
+    /** Player -> tick deadline for the post-slam invulnerability window. */
+    private final Map<UUID,Long> slamGuard=new java.util.concurrent.ConcurrentHashMap<>();
+    /** Player -> deadline for "the fall you are in right now was caused by a wind burst".
+     *
+     *  A six-block-per-target launch happily reaches twenty-plus blocks, and landing from that unaided is
+     *  most of a health bar -- the relic would routinely kill its own user. This is also what was asked for
+     *  in so many words: a wind burst should not hand you the full fall back. */
+    private final Map<UUID,Long> burstGrace=new java.util.concurrent.ConcurrentHashMap<>();
+    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);anchorTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::anchorTick,1L,1L);}
     /** Test-only hook for /admin relictest — runs the real periodic lifecycle pass immediately instead of
      *  waiting up to 10 minutes for the next scheduled one. Not used by any normal game logic. */
     void debugForceLifecycleTick(){lifecycleTick();}
-    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();}
+    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();anchors.clear();slamGuard.clear();burstGrace.clear();}
     void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));}
     Set<String> keys(){ConfigurationSection section=config.getConfigurationSection("relics");return section==null?Set.of():section.getKeys(false);}
     String displayName(String relicKey){return config.getString("relics."+relicKey+".name",CoreUtil.pretty(relicKey));}
@@ -135,6 +164,8 @@ final class RelicService implements Listener {
      *  same vanilla container types placed in claimed territory) are blocked. */
     private boolean isPersistentStorage(Inventory inventory){
         if(inventory==null)return false;
+        /** The duel item-wager box is not storage -- relics staked there are escrowed and go to the winner. */
+        if(plugin.arena()!=null&&plugin.arena().isWagerBox(inventory))return false;
         InventoryType type=inventory.getType();
         if(type==InventoryType.CHEST||type==InventoryType.ENDER_CHEST||type==InventoryType.SHULKER_BOX||type==InventoryType.BARREL
                 ||type==InventoryType.DISPENSER||type==InventoryType.DROPPER||type==InventoryType.HOPPER
@@ -146,10 +177,26 @@ final class RelicService implements Listener {
         if(!(event.getWhoClicked() instanceof Player player))return;
         Inventory top=event.getView().getTopInventory();
         if(!isPersistentStorage(top))return;
-        int topSize=top.getSize();
-        boolean intoStorage=event.getRawSlot()<topSize&&keyOf(event.getCursor())!=null;
-        boolean shiftedIntoStorage=event.getClick().isShiftClick()&&event.getRawSlot()>=topSize&&keyOf(event.getCurrentItem())!=null;
-        if(intoStorage||shiftedIntoStorage){event.setCancelled(true);CoreUtil.error(player,"Relics cannot be stored — carry, drop, trade, or auction them instead.");}
+        if(relicEntersStorage(player,event)){event.setCancelled(true);CoreUtil.error(player,"Relics cannot be stored — carry, drop, trade, wager, or auction them instead.");}
+    }
+
+    /** Every route an item can take INTO the open container, not just the two obvious ones.
+     *
+     *  This only understood the CURSOR and shift-clicks, which left the same one-keystroke bypass the Shard
+     *  guard had: hover the destination slot and press the hotbar number the relic is on, and it goes
+     *  straight in. That is a SWAP, not a cursor placement and not a shift-click, so nothing matched.
+     *  Offhand swap (F) had the identical hole. Both are enumerated now. */
+    private boolean relicEntersStorage(Player player,InventoryClickEvent event){
+        int topSize=event.getView().getTopInventory().getSize();
+        if(event.getRawSlot()<0)return false;
+        if(event.getRawSlot()<topSize){
+            if(keyOf(event.getCursor())!=null)return true;
+            if(event.getClick()==org.bukkit.event.inventory.ClickType.NUMBER_KEY&&event.getHotbarButton()>=0
+                    &&keyOf(player.getInventory().getItem(event.getHotbarButton()))!=null)return true;
+            return event.getClick()==org.bukkit.event.inventory.ClickType.SWAP_OFFHAND
+                    &&keyOf(player.getInventory().getItemInOffHand())!=null;
+        }
+        return event.getClick().isShiftClick()&&keyOf(event.getCurrentItem())!=null;
     }
     @EventHandler(priority=EventPriority.HIGH) public void guardStorageDrag(InventoryDragEvent event){
         if(!(event.getWhoClicked() instanceof Player player))return;
@@ -225,6 +272,28 @@ final class RelicService implements Listener {
                      *  rather than guessing — it resolves itself the moment the tracked owner logs back in. */
                     case UNKNOWN -> plugin.getLogger().info("[RelicLifecycle] "+player.getName()+" holds "+relicKey+" tracked to the currently-offline "+row.ownerName()+"; deferring until that owner is online and it can be told apart from a duplicate.");
                 }
+                continue;
+            }
+            /*  Never delete a relic that its own tracked owner is holding.
+             *
+             *  If the ledger says LOST/ELIGIBLE and the tracked owner walks up carrying the thing, the
+             *  ledger is what is wrong -- that is the copy, coming back from wherever the sweep could not
+             *  see it. Deleting it was the second half of the destruction chain above: the sweep wrongly
+             *  declared it lost, then this guard destroyed the physical item when the duel returned it.
+             *  Reinstating costs nothing if the ledger was right, because a genuinely duplicated relic
+             *  cannot be held by the tracked owner while a different tracked copy also exists -- that case
+             *  is handled by the PRESENT branch further up, which is checked first. */
+            /** LOST only, never ELIGIBLE.
+             *
+             *  LOST means "we believe this was destroyed" -- if its own tracked owner is holding it, that
+             *  belief was simply wrong and the ledger should be corrected. ELIGIBLE is the opposite: the
+             *  relic was deliberately RECYCLED and released for anyone to re-find, so a stale physical copy
+             *  in the previous owner's hands is exactly what has to be removed. Reinstating on ELIGIBLE
+             *  would silently cancel the recycle and hand the relic straight back to whoever lost it. */
+            if("LOST".equals(row.status())&&CoreUtil.id(player).equals(row.owner())){
+                db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());
+                plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reappeared in its tracked owner's hands ("+player.getName()+", tracked status was "+row.status()+"); reinstating rather than removing it.");
+                db.history("SERVER",null,"RELIC",displayName(relicKey)+" was recovered by "+player.getName()+" after being wrongly recorded as lost.");
                 continue;
             }
             item.setAmount(0);
@@ -312,6 +381,18 @@ final class RelicService implements Listener {
             if(hasRelic(db.graveItems(grave.id()).toArray(new ItemStack[0]),relicKey)){missingStrikes.remove(relicKey);return;}
         for(World world:plugin.getServer().getWorlds())for(Entity entity:world.getEntities())
             if(entity instanceof Item dropped&&relicKey.equals(keyOf(dropped.getItemStack()))){missingStrikes.remove(relicKey);return;}
+        /*  The duel stash.
+         *
+         *  This is the location that was missing, and it is exactly how a relic was destroyed for real: a
+         *  duellist's whole inventory is serialised into arena_state for the length of the match, so a relic
+         *  carried into a duel is in none of the places above. Two passes later (~20 minutes -- easily one
+         *  long duel session) the sweep concluded it had been destroyed and marked it LOST. The match then
+         *  ended, the inventory came back, and the duplicate guard deleted the returning relic for not
+         *  matching a tracked copy that was by then recorded as lost. Confirmed in the production log at
+         *  02:22 and 02:23 on 2026-08-25. */
+        if(plugin.arena()!=null)
+            for(String stashOwner:plugin.arena().duelStashOwners())
+                if(hasRelic(plugin.arena().duelStash(stashOwner),relicKey)){missingStrikes.remove(relicKey);return;}
         if(missingStrikes.merge(relicKey,1,Integer::sum)<2)return;
         missingStrikes.remove(relicKey);
         plugin.getLogger().info("[RelicLifecycle] "+relicKey+" could not be found in any checkable location across two consecutive passes while its owner ("+row.ownerName()+") was online — treating it as destroyed.");
@@ -505,30 +586,501 @@ final class RelicService implements Listener {
             default->{}
         }
     }
-    /** Throws the holder straight up roughly a fixed number of blocks.
+    // ================================================================== Skyward Anchor
+    /*  A slam, not a jump.
      *
-     *  Usable in mid-air as well as on the ground; the 10-second cooldown is the only limit, which is what
-     *  keeps it from being free flight.
+     *  Right-click LAUNCHES you and ARMS the relic; it is not a hold-to-use effect, so you cannot simply
+     *  fall while holding it and expect a hit. Once armed, the drop is being measured, and the relic
+     *  discharges on the first of three things:
      *
-     *  The velocity is derived from the requested height rather than hardcoded: with vanilla player gravity
-     *  the apex of an upward throw is v^2 / (2g), so v = sqrt(2 * g * h). Tuning the height in config
-     *  therefore lands within about a block, instead of needing a magic velocity number retuned by hand. */
+     *    1. you physically touch an entity on the way down,
+     *    2. you touch the ground,
+     *    3. you land a MACE hit before either of the above -- the combo.
+     *
+     *  Damage is 0.9x what a maximum-Density mace would do for the same drop, then scaled by how centred
+     *  the target was under you: 1.5x dead centre, falling off to 0.5x at the edge of the 3x3x3. Only
+     *  HORIZONTAL offset matters, because the box is a cube and vertical position within it is not a skill
+     *  expression. Slightly worse than a mace on purpose -- it is area damage that is very hard to miss.
+     *
+     *  Every hit adds a wind burst, and the bursts MULTIPLY: two targets is twice the launch. Like a vanilla
+     *  wind burst the launch itself costs no fall damage, and a strike that connects with anybody cancels
+     *  the landing damage entirely even if nobody was directly beneath you. Miss everything and you take the
+     *  fall exactly as a mace user would.
+     *
+     *  Deliberately no boss-specific bonus. It is already among the strongest things to bring to a boss;
+     *  the one thing it does not do is get better at them.
+     */
+
+    /** What a maximum-Density mace would deal for this drop. Vanilla's own fall bonus curve (4/block for the
+     *  first three, 2/block to eight, 0.5/block after) plus Density V at 0.5/block/level, on the mace's base
+     *  attack damage. Kept as one function so the relic tracks any mace retuning by construction. */
+    private double maceEquivalent(double fall){
+        double drop=Math.max(0,fall);
+        double bonus=drop<=3?4*drop:drop<=8?12+2*(drop-3):22+.5*(drop-8);
+        return 7+bonus+2.5*drop;
+    }
+
+    /*  Launch heights, done against Minecraft's ACTUAL physics rather than a textbook parabola.
+     *
+     *  Every launch here derived its velocity from v = sqrt(2*g*h). That is the vacuum answer, and the game
+     *  is not a vacuum: a player's vertical motion is `y += vy; vy = (vy - 0.08) * 0.98` -- there is 2% drag
+     *  every tick. The error is small for a hop and enormous for a throw, because the drag compounds over
+     *  every tick of the ascent:
+     *
+     *      configured   actually reached
+     *          6              5.7
+     *         20             16.3
+     *         22             17.9      <- the mace combo, asking for 22 and delivering 18
+     *         70             47.6
+     *
+     *  So "mace-combo-burst-height: 22" was really "about eighteen blocks", which is exactly the reported
+     *  "still doesn't launch me insanely high".
+     *
+     *  apexHeight() is the closed form of that recurrence (terminal velocity 0.08*0.98/(1-0.98) = 3.92),
+     *  verified against a tick-by-tick simulation to within 0.01 blocks. launchVelocity() inverts it, so a
+     *  height in config is now the height genuinely reached. */
+    private static double apexHeight(double velocity){
+        if(velocity<=0)return 0;
+        double terminal=3.92;
+        double ticks=Math.log(terminal/(velocity+terminal))/Math.log(.98);
+        return 50*velocity-terminal*ticks;
+    }
+
+    /** The upward velocity that actually reaches this many blocks. */
+    private static double launchVelocity(double height){
+        double low=0,high=12;
+        for(int i=0;i<48;i++){double mid=(low+high)/2;if(apexHeight(mid)<height)low=mid;else high=mid;}
+        return (low+high)/2;
+    }
+
+    /** Wind Burst level on the mace that landed the combo, 0 when it has none. */
+    private int windBurstLevel(org.bukkit.inventory.ItemStack item){
+        if(item==null||item.getType()!=Material.MACE)return 0;
+        try{return Math.max(0,item.getEnchantmentLevel(Enchantment.WIND_BURST));}
+        catch(RuntimeException ignored){return 0;}
+    }
+
+    /** How far a combo throws, by the Wind Burst level of the mace used.
+     *
+     *  A mace with no Wind Burst gets the relic's ordinary launch -- the combo is still worth landing for
+     *  the damage, it just does not throw you across the sky. Each level adds to that, with III reaching the
+     *  full height. Configured as a list indexed by level so the whole curve is tunable without a build. */
+    private double comboBurstHeight(int level){
+        java.util.List<Double> curve=config.getDoubleList("buffs.skyward-anchor.mace-combo-burst-by-level");
+        if(curve.isEmpty())return config.getDouble("buffs.skyward-anchor.mace-combo-burst-height",45);
+        return curve.get(Math.max(0,Math.min(level,curve.size()-1)));
+    }
+
+    /** The slam staggers what it lands on, scaled the same way the damage is: a dead-centre hit is
+     *  Slowness V for three seconds, easing to half a second at the edge of the box. Applied to players,
+     *  mobs and bosses alike -- it is a body dropped on you from height, and it should not care what you
+     *  are. Deliberately duration-scaled rather than amplitude-scaled: a glancing hit that still froze the
+     *  target solid would make position irrelevant, which is the opposite of the point. */
+    /*  Why a 294 slam could land for nothing.
+     *
+     *  Vanilla gives an entity invulnerability frames after any hit, and inside that window a NEW hit only
+     *  deals `amount - lastDamage` -- nothing at all if the new hit is the smaller of the two. Land on a
+     *  boss dead centre and the mace swing and the slam arrive within the same handful of ticks, so the
+     *  slam is measured against the mace hit that just landed and is swallowed whole. Land slightly to the
+     *  side and the two separate enough in time to both count, which is exactly the reported "it works when
+     *  I hit from the side but not when I drop straight on top of him".
+     *
+     *  It also explains a boss recap crediting 200 one fight and 1100 the next for the same solo kill: the
+     *  slam was silently eaten by whichever hit happened to precede it.
+     *
+     *  The slam is a once-per-cooldown, fully committed strike, so it clears the window rather than
+     *  competing for it. lastDamage is reset too -- that, not the tick counter, is the number vanilla
+     *  actually subtracts. */
+    private void slamDamage(LivingEntity target,double damage,Player source){
+        target.setNoDamageTicks(0);
+        target.setLastDamage(0);
+        target.damage(damage,source);
+    }
+
+    private void slamSlow(LivingEntity target,double centring){
+        double edge=config.getDouble("buffs.skyward-anchor.edge-multiplier",.5);
+        double centre=config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5);
+        double span=Math.max(1e-6,centre-edge);
+        double howCentred=Math.max(0,Math.min(1,(centring-edge)/span));
+        double minSeconds=config.getDouble("buffs.skyward-anchor.slow-min-seconds",.5);
+        double maxSeconds=config.getDouble("buffs.skyward-anchor.slow-max-seconds",3);
+        int ticks=(int)Math.round((minSeconds+(maxSeconds-minSeconds)*howCentred)*20);
+        if(ticks<=0)return;
+        int amplifier=Math.max(0,config.getInt("buffs.skyward-anchor.slow-level",5)-1);
+        target.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS,ticks,amplifier,true,true,true));
+    }
+
+    private double anchorRadius(){return Math.max(.5,config.getDouble("buffs.skyward-anchor.aoe-radius",1.5));}
+
+    /** 1.5x directly underneath, easing to 0.5x at the edge of the box. Horizontal distance only. */
+    private double centringMultiplier(Location impact,Location target){
+        double radius=anchorRadius();
+        double dx=target.getX()-impact.getX(),dz=target.getZ()-impact.getZ();
+        double horizontal=Math.sqrt(dx*dx+dz*dz);
+        double centre=config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5);
+        double edge=config.getDouble("buffs.skyward-anchor.edge-multiplier",.5);
+        double t=Math.max(0,Math.min(1,horizontal/radius));
+        return centre+(edge-centre)*t;
+    }
+
     private void skywardLaunch(Player player,PlayerInteractEvent event){
         event.setCancelled(true);
-        if(onCooldown(player,"skyward_anchor",config.getLong("buffs.skyward-anchor.cooldown-seconds",10)*1000L))return;
-        double height=Math.max(1,config.getDouble("buffs.skyward-anchor.height",12));
-        double velocity=Math.sqrt(2*0.08*height);
-        player.setVelocity(player.getVelocity().setY(velocity));
-        /** Cancels the fall damage the launch itself would cause, without granting general fall immunity. */
-        player.setFallDistance(0);
+        if(onCooldown(player,"skyward_anchor",config.getLong("buffs.skyward-anchor.cooldown-seconds",20)*1000L))return;
+        /** Anything already inside the box eats the strike right now -- the relic does not politely wait for
+         *  you to come back down before noticing somebody standing on top of you. */
+        int hits=strike(player,player.getLocation(),0,false);
+        if(hits>0)windBurst(player,hits);
+        else{
+            double height=Math.max(1,config.getDouble("buffs.skyward-anchor.height",20));
+            player.setVelocity(player.getVelocity().setY(launchVelocity(height)));
+            player.setFallDistance(0);
+        }
+        anchors.put(player.getUniqueId(),new Anchor(player.getLocation().getY()));
         player.getWorld().playSound(player.getLocation(),Sound.ENTITY_BREEZE_JUMP,1f,.7f);
+        player.getWorld().playSound(player.getLocation(),Sound.ITEM_MACE_SMASH_AIR,.8f,1.4f);
+        player.getWorld().spawnParticle(Particle.GUST,player.getLocation(),1,0,0,0,0);
         player.getWorld().spawnParticle(Particle.CLOUD,player.getLocation(),25,.4,.1,.4,.02);
-        CoreUtil.msg(player,"The Skyward Anchor hurls you upward.");
+        CoreUtil.msg(player,hits>0?"The Skyward Anchor discharges as it lifts you.":"The Skyward Anchor hurls you skyward \u2014 come down hard.");
+    }
+
+    /** Launch upward, scaled by how many things were hit. Two targets is twice the HEIGHT, not twice the
+     *  velocity, which keeps the multiplication readable instead of exponential. Fall distance is cleared
+     *  the way a vanilla wind burst does, so the ride up is never what kills you. */
+    /** The launch. Tuned to read as a real Wind Burst rather than as a mace's little hop.
+     *
+     *  The first pass used 2.5 blocks per target, which is roughly what an unenchanted mace smash gives you
+     *  -- reported, correctly, as "the push is similar to a base mace push". The default is now a genuine
+     *  Wind Burst II-sized launch, and it still MULTIPLIES per target: two targets is twice the HEIGHT.
+     *  Height rather than velocity, because velocity would square the effect and put three targets in orbit.
+     *
+     *  Sound and particles are vanilla's own wind-burst pair, so it looks and sounds like the thing it is
+     *  imitating, and fall distance is cleared so the ride up is never what kills you. */
+    private void windBurst(Player player,int hits){
+        windBurst(player,hits,config.getDouble("buffs.skyward-anchor.burst-height-per-hit",6));
+    }
+
+    private void windBurst(Player player,int hits,double perHit){
+        int counted=Math.max(1,Math.min(hits,config.getInt("buffs.skyward-anchor.max-burst-hits",8)));
+        double height=Math.min(Math.max(.5,perHit)*counted,
+                Math.max(1,config.getDouble("buffs.skyward-anchor.max-burst-height",70)));
+        /** Horizontal motion is damped so the launch reads as vertical lift rather than as being swatted. */
+        Vector velocity=player.getVelocity();
+        player.setVelocity(new Vector(velocity.getX()*.4,launchVelocity(height),velocity.getZ()*.4));
+        player.setFallDistance(0);
+        /** The ride down from a launch this size is not the player's fault, so it is not charged to them.
+         *  Cleared the moment they land, so it only ever covers the one descent. */
+        burstGrace.put(player.getUniqueId(),System.currentTimeMillis()
+                +Math.max(1000,config.getLong("buffs.skyward-anchor.burst-fall-grace-seconds",12)*1000L));
+        Location at=player.getLocation();
+        player.getWorld().playSound(at,Sound.ENTITY_WIND_CHARGE_WIND_BURST,1.2f,counted>=2?.8f:1f);
+        player.getWorld().playSound(at,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1f,.9f);
+        player.getWorld().spawnParticle(Particle.GUST_EMITTER_LARGE,at,1,0,0,0,0);
+        player.getWorld().spawnParticle(Particle.GUST,at,counted,.6,.2,.6,0);
+    }
+
+    /** Applies the area damage. Returns how many valid targets were actually hit. */
+    private int strike(Player player,Location impact,double fall,boolean announce){
+        double radius=anchorRadius();
+        double scale=config.getDouble("buffs.skyward-anchor.mace-scale",.9);
+        int hits=0;
+        for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
+            if(!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
+            double centring=centringMultiplier(impact,target.getLocation());
+            double damage=scale*maceEquivalent(fall)*centring;
+            if(damage<=0)continue;
+            slamSlow(target,centring);
+            /** Attributed to the player, so kill credit, boss damage tracking, PvP logging and every
+             *  downstream reward path see it as their hit rather than as anonymous damage. */
+            slamDamage(target,damage,player);
+            hits++;
+        }
+        if(hits>0){
+            impact.getWorld().spawnParticle(Particle.EXPLOSION,impact,1,0,0,0,0);
+            impact.getWorld().spawnParticle(Particle.GUST,impact,1,0,0,0,0);
+            impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1f,1f);
+            /** Reports the actual numbers, so the damage can be checked against what it is supposed to be
+             *  instead of guessed at from a health bar. */
+            if(announce)player.sendActionBar(Component.text("\u2726 SLAM \u2014 ",NamedTextColor.GOLD)
+                    .append(Component.text(hits+(hits==1?" target":" targets"),NamedTextColor.WHITE))
+                    .append(Component.text(String.format(java.util.Locale.US," \u2022 %.0f block drop \u2022 up to %.1f dmg",
+                            fall,scale*maceEquivalent(fall)*config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5)),NamedTextColor.GRAY)));
+        }
+        return hits;
+    }
+
+    /** Discharges the armed relic against whatever is underneath. Returns hits so callers can decide about
+     *  fall damage. */
+    private int discharge(Player player){
+        Anchor anchor=anchors.remove(player.getUniqueId());
+        if(anchor==null)return 0;
+        double fall=Math.max(0,anchor.peak-player.getLocation().getY());
+        int hits=strike(player,player.getLocation(),fall,true);
+        if(hits>0){
+            windBurst(player,hits);
+            grantLandingGuard(player);
+        }
+        return hits;
+    }
+
+    /** A short window of immunity the instant a slam connects.
+     *
+     *  Committing to a twenty-block dive and then standing in the open for the recovery is how a big
+     *  telegraphed move becomes a liability rather than a threat, especially in PvP. Deliberately granted
+     *  ONLY on a slam that actually connected: missing still costs the full fall and gives nothing back, so
+     *  the risk of committing is real. */
+    private void grantLandingGuard(Player player){
+        long ticks=Math.max(0,config.getLong("buffs.skyward-anchor.landing-invulnerability-ticks",10));
+        if(ticks<=0)return;
+        slamGuard.put(player.getUniqueId(),System.currentTimeMillis()+ticks*50L);
+        player.getWorld().spawnParticle(Particle.ENCHANT,player.getLocation().add(0,1,0),18,.5,.8,.5,.4);
+    }
+
+    /** The landing window, and the wind burst's own descent. Void is never survivable by design. */
+    @EventHandler(priority=EventPriority.HIGHEST,ignoreCancelled=true)
+    public void anchorGuard(org.bukkit.event.entity.EntityDamageEvent event){
+        if(!(event.getEntity() instanceof Player player))return;
+        if(event.getCause()==org.bukkit.event.entity.EntityDamageEvent.DamageCause.VOID)return;
+        long now=System.currentTimeMillis();
+        Long guard=slamGuard.get(player.getUniqueId());
+        if(guard!=null&&now<guard){event.setCancelled(true);return;}
+        if(guard!=null)slamGuard.remove(player.getUniqueId());
+        if(event.getCause()!=org.bukkit.event.entity.EntityDamageEvent.DamageCause.FALL)return;
+        Long grace=burstGrace.remove(player.getUniqueId());
+        if(grace!=null&&now<grace)event.setCancelled(true);
+    }
+
+    /** Per-tick bookkeeping for everyone with the relic armed. */
+    private void anchorTick(){
+        heldRelicTick();
+        if(anchors.isEmpty())return;
+        double maxAngle=config.getDouble("buffs.skyward-anchor.elytra-max-dive-angle",40);
+        long life=Math.max(5,config.getLong("buffs.skyward-anchor.arm-seconds",30))*1000L;
+        for(Map.Entry<UUID,Anchor> entry:new ArrayList<>(anchors.entrySet())){
+            Player player=plugin.getServer().getPlayer(entry.getKey());
+            Anchor anchor=entry.getValue();
+            if(player==null||!player.isOnline()||player.isDead()){anchors.remove(entry.getKey());continue;}
+            if(System.currentTimeMillis()-anchor.armedAt>life){anchors.remove(entry.getKey());continue;}
+            Location at=player.getLocation();
+            anchor.peak=Math.max(anchor.peak,at.getY());
+
+            /** Elytra: a steep dive is a legitimate way to build the drop, a glide is not. Past the
+             *  configured angle from straight down the accumulated height is surrendered -- but the relic
+             *  stays armed, because the player did right-click for it and should not lose the charge for
+             *  levelling out. Angle is measured from vertical: 0 is straight down, 90 is level flight. */
+            /*  Elytra. A steep dive is a legitimate way to build the drop; cruising is not.
+             *
+             *  This used to surrender the whole accumulated drop the instant the angle went shallow for a
+             *  SINGLE tick -- and an ordinary elytra descent is shallow by that measure almost the whole
+             *  way down, so a dive from y=1500 arrived carrying a drop of nearly zero. Combined with vanilla
+             *  refusing the mace smash bonus while gliding, that is both halves of "it does no damage".
+             *
+             *  A dive now has to genuinely flatten out -- shallower than the threshold CONTINUOUSLY for the
+             *  grace period -- before the drop is surrendered. A wobble, a course correction, or the moment
+             *  of pulling into the dive no longer erases it. */
+            if(player.isGliding()){
+                Vector velocity=player.getVelocity();
+                double speed=velocity.length();
+                double angle=speed<=1e-4||velocity.getY()>=0?90:Math.toDegrees(Math.acos(Math.min(1,-velocity.getY()/speed)));
+                if(angle>maxAngle){
+                    if(anchor.shallowSince==0)anchor.shallowSince=System.currentTimeMillis();
+                    else if(System.currentTimeMillis()-anchor.shallowSince
+                            >=Math.max(200,config.getLong("buffs.skyward-anchor.elytra-level-flight-grace-ms",1500))){
+                        anchor.peak=at.getY();
+                    }
+                }else anchor.shallowSince=0;
+            }else anchor.shallowSince=0;
+
+            /** Armed feedback, deliberately restrained.
+             *
+             *  The first version put a GUST puff and a cloud burst at the feet every tick, which filled the
+             *  whole screen the moment you looked down -- i.e. exactly when you are lining up a slam. Now a
+             *  couple of small motes in a slow ring around the ankles every quarter second, plus an action
+             *  bar that also reports the drop being carried. The readout is the real feedback: it is
+             *  unmissable, costs no screen space, and lets the holder time the hit. */
+            if(player.getTicksLived()%5==0){
+                double spin=player.getTicksLived()*.35;
+                for(int i=0;i<2;i++){
+                    double angle=spin+i*Math.PI;
+                    player.getWorld().spawnParticle(Particle.CLOUD,
+                            at.clone().add(Math.cos(angle)*.32,.12,Math.sin(angle)*.32),1,0,0,0,0);
+                }
+            }
+            if(player.getTicksLived()%4==0){
+                double carried=Math.max(0,anchor.peak-at.getY());
+                player.sendActionBar(Component.text("\u2726 Skyward Anchor armed \u2014 ",NamedTextColor.AQUA)
+                        .append(Component.text(String.format(java.util.Locale.US,"%.0f block drop",carried),NamedTextColor.WHITE)));
+            }
+
+            /*  The drop has to be a CONTINUOUS fall, the same rule the mace plays by.
+             *
+             *  Vanilla clears its own fallDistance the moment a fall is interrupted -- water, a cobweb, a
+             *  ladder, a boat, slow falling, being knocked upward -- and the mace loses its smash bonus with
+             *  it. The relic now follows vanilla's own signal rather than a second opinion: if the game has
+             *  decided this is no longer a fall, the tracked drop restarts from here too. Ascending is
+             *  exempt, because fallDistance is legitimately zero on the way up and the peak is still rising. */
+            if(anchor.airborne&&player.getVelocity().getY()<0&&player.getFallDistance()<=.5&&!player.isGliding())
+                anchor.peak=at.getY();
+            if(!player.isOnGround())anchor.airborne=true;
+            else if(anchor.airborne){
+                /** Landing with no fall damage event of its own (a short drop) still discharges, so a
+                 *  ground touch always resolves the relic exactly as promised -- but only once the holder
+                 *  has genuinely been off the ground, or the launch tick itself would end it. */
+                discharge(player);
+                continue;
+            }
+            /** There is deliberately NO mid-air "you touched a mob" trigger any more.
+             *
+             *  It used to fire the instant you brushed a target on the way down, which left no window at all
+             *  to swing the mace first -- the combo was effectively unreachable. Landing is now the only
+             *  thing that resolves the relic, which makes the whole dive predictable: fall, swing whenever
+             *  you like, and the slam happens when you arrive. The cost is that a purely airborne target
+             *  (a phantom, somebody on an elytra) can no longer be slammed in mid-air; it has to be caught
+             *  where it meets the ground, or with the mace.
+             */
+        }
+    }
+
+    /** Landing damage. A strike that connected cancels it outright -- even if nobody was directly beneath,
+     *  which is the whole point of an area slam. Miss, and the fall lands on you exactly as it would on a
+     *  mace user who whiffed. */
+    @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true)
+    public void anchorFall(org.bukkit.event.entity.EntityDamageEvent event){
+        if(event.getCause()!=org.bukkit.event.entity.EntityDamageEvent.DamageCause.FALL)return;
+        if(!(event.getEntity() instanceof Player player)||!anchors.containsKey(player.getUniqueId()))return;
+        if(discharge(player)>0)event.setCancelled(true);
+    }
+
+    /** The combo: mace first, ground second.
+     *
+     *  Land a mace hit while the relic is armed and before it has discharged and the strike rides along with
+     *  it -- double weapon damage on the target you actually hit, the relic's own area damage to everything
+     *  else in the box, and a doubled wind burst. One relic, two ways to use it. */
+    @EventHandler(priority=EventPriority.HIGH,ignoreCancelled=true)
+    public void anchorMaceCombo(org.bukkit.event.entity.EntityDamageByEntityEvent event){
+        if(!(event.getDamager() instanceof Player player))return;
+        Anchor anchor=anchors.get(player.getUniqueId());
+        if(anchor==null)return;
+        if(player.getInventory().getItemInMainHand().getType()!=Material.MACE)return;
+        if(!relicEffectTarget(player,event.getEntity()))return;
+        anchors.remove(player.getUniqueId());
+        double fall=Math.max(0,anchor.peak-player.getLocation().getY());
+
+        /*  Why the combo could do LESS damage than not comboing at all.
+         *
+         *  Vanilla only grants the mace's smash bonus when `fallDistance > 1.5 && !isFallFlying()` --
+         *  read straight out of MaceItem.canSmashAttack in the running server jar. **While an elytra is
+         *  deployed there is no smash bonus whatsoever**, however far you have fallen. So a dive from y=1500
+         *  on an elytra arrives with a plain ~7 damage mace swing, and doubling seven is fourteen. It looked
+         *  like the relic was eating the damage; the damage was never there.
+         *
+         *  The relic's own drop went the same way at the same moment, because the elytra rule below reset
+         *  the tracked peak on any descent shallower than the dive threshold. Both halves collapsed
+         *  together, which is exactly "sometimes it does 0 damage from y = 1500".
+         *
+         *  So the combo no longer DEPENDS on vanilla having granted a smash. The struck target takes the
+         *  better of (multiplied mace hit) and (what the slam would have done to it anyway). When the mace
+         *  genuinely smashed, the multiplier is what applies and the combo is a straight upgrade; when
+         *  vanilla refused the smash, the relic still pays out on its own tracked drop. The combo can now
+         *  never be worse than simply landing the slam, which is the property that was broken. */
+        Location impact=event.getEntity().getLocation();
+        double original=event.getDamage();
+        double centre=config.getDouble("buffs.skyward-anchor.mace-scale",.9)*maceEquivalent(fall)
+                *centringMultiplier(impact,event.getEntity().getLocation());
+        double multiplied=original*Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2));
+        /** Non-decreasing BY CONSTRUCTION.
+         *
+         *  The reported behaviour was that comboing made the mace hit for LESS than not comboing, and I have
+         *  not been able to reproduce the mechanism. Rather than ship another theory, the handler is now
+         *  arithmetically incapable of lowering the number: whatever else is going on, the struck target
+         *  takes the largest of the untouched hit, the multiplied hit, and the slam this drop would have
+         *  dealt anyway. If damage still comes out low, the cause is upstream of this handler and the
+         *  telemetry below will say so with real numbers instead of a guess. */
+        double applied=Math.max(original,Math.max(multiplied,centre));
+        event.setDamage(applied);
+        /*  The rare "combo did nothing at all" case: invulnerability frames.
+         *
+         *  Read out of LivingEntity.hurtServer in paper-26.2.jar: when `invulnerableTime > 0` the hit is
+         *  still delivered to Bukkit, but vanilla fires it with the previous hit's `lastHurt` folded in, so
+         *  what the target actually takes is (this hit - the last one). Raising the base damage cannot
+         *  rescue that -- if the previous hit was bigger, the subtraction eats the entire swing and the
+         *  target takes literally zero.
+         *
+         *  This relic makes that collision routine rather than rare: it resolves its slam on landing, and
+         *  the mace swing that combos with it lands in the same half second, on the same target. Every
+         *  other damage path in this file already clears i-frames for exactly this reason (see slamDamage);
+         *  the combo was the one that did not.
+         *
+         *  Only the i-frame case is touched. A normal combo -- the overwhelming majority -- takes the
+         *  branch above and behaves precisely as before. */
+        if(event.getEntity() instanceof LivingEntity framed&&framed.getNoDamageTicks()>0&&framed.getLastDamage()>0){
+            event.setCancelled(true);
+            framed.setNoDamageTicks(0);
+            framed.setLastDamage(0);
+            /** Re-entrant by design and safe: the anchor was already removed above, so this handler returns
+             *  immediately on the way back in and cannot loop. */
+            framed.damage(applied,player);
+        }
+        /** The thing you actually landed on takes the FULL stagger, whatever the geometry says -- it was hit
+         *  directly, not caught in the blast. Only the surrounding area damage scales with distance. */
+        if(event.getEntity() instanceof LivingEntity struckTarget)
+            slamSlow(struckTarget,config.getDouble("buffs.skyward-anchor.centre-multiplier",1.5));
+        if(config.getBoolean("buffs.skyward-anchor.log-combo",true))
+            plugin.getLogger().info(String.format(java.util.Locale.US,
+                    "[anchor-combo] %s -> %s | tracked drop %.1f | vanilla fallDistance %.1f | gliding=%s"
+                    +" | mace base %.2f -> applied %.2f (x%.2f = %.2f, slam = %.2f) | final %.2f",
+                    player.getName(),event.getEntity().getType(),fall,player.getFallDistance(),player.isGliding(),
+                    original,applied,Math.max(1,config.getDouble("buffs.skyward-anchor.mace-combo-multiplier",2)),
+                    multiplied,centre,event.getFinalDamage()));
+        double radius=anchorRadius(),scale=config.getDouble("buffs.skyward-anchor.mace-scale",.9);
+        int extra=0;
+        for(Entity entity:impact.getWorld().getNearbyEntities(impact,radius,radius,radius)){
+            if(entity.equals(event.getEntity())||!relicEffectTarget(player,entity)||!(entity instanceof LivingEntity target))continue;
+            double comboCentring=centringMultiplier(impact,target.getLocation());
+            slamSlow(target,comboCentring);
+            slamDamage(target,scale*maceEquivalent(fall)*comboCentring,player);
+            extra++;
+        }
+        /** Unmistakable on purpose -- a combo you cannot tell fired is a combo nobody will use. */
+        impact.getWorld().spawnParticle(Particle.EXPLOSION_EMITTER,impact,1,0,0,0,0);
+        impact.getWorld().spawnParticle(Particle.GUST_EMITTER_LARGE,impact,1,0,0,0,0);
+        impact.getWorld().spawnParticle(Particle.FLASH,impact,1,0,0,0,0,Color.fromRGB(255,235,190));
+        impact.getWorld().playSound(impact,Sound.ITEM_MACE_SMASH_GROUND_HEAVY,1.3f,.7f);
+        impact.getWorld().playSound(impact,Sound.ENTITY_WIND_CHARGE_WIND_BURST,1.3f,.75f);
+        impact.getWorld().playSound(impact,Sound.ITEM_TOTEM_USE,.7f,1.5f);
+        /** The launch is scaled by the Wind Burst level on the mace that landed the hit, so the enchantment
+         *  the player actually invested in is what decides how far they go. */
+        int windLevel=windBurstLevel(player.getInventory().getItemInMainHand());
+        double comboHeight=comboBurstHeight(windLevel);
+        final int struck=extra+1;
+        /*  Deferred by a tick, deliberately.
+         *
+         *  This is inside the damage event, which vanilla is still in the middle of: immediately after
+         *  hurt() returns, Player.attack overwrites the attacker's motion (setDeltaMovement Y=0.01) and
+         *  calls resetFallDistance() for a smash. Setting velocity and fall distance from in here means
+         *  fighting vanilla for the same fields in the same tick, and the launch loses. One tick later the
+         *  attack is finished and the field is ours. */
+        plugin.getServer().getScheduler().runTask(plugin,()->{
+            if(!player.isOnline())return;
+            windBurst(player,struck,comboHeight);
+            grantLandingGuard(player);
+        });
+        player.showTitle(net.kyori.adventure.title.Title.title(
+                Component.text("\u2726 ANCHOR SLAM \u2726",NamedTextColor.LIGHT_PURPLE,net.kyori.adventure.text.format.TextDecoration.BOLD),
+                /** The drop, and nothing else. Targets, enchant level and launch height were noise on a
+                 *  title card -- the one number worth seeing at the moment of impact is how far you fell,
+                 *  because that is what the hit was made of. */
+                Component.text(String.format(java.util.Locale.US,"%,.0f blocks fallen",fall),NamedTextColor.WHITE),
+                net.kyori.adventure.title.Title.Times.times(java.time.Duration.ofMillis(80),java.time.Duration.ofMillis(1200),java.time.Duration.ofMillis(400))));
     }
     /** Cooldowns are bound to the relic itself (persisted in the state table), not the player holding
      *  it — so dropping, relogging, dying, trading, or a server restart can never reset or bypass one;
      *  the single unique artifact simply isn't ready again until real time has actually passed. */
     private boolean onCooldown(Player player,String relicKey,long cooldownMs){
+        /** Creative is for testing. Waiting out a twenty-second cooldown between attempts makes tuning a
+         *  relic miserable, and nothing in creative is a balance concern by definition. Deliberately does
+         *  not WRITE a cooldown either, so a creative test cannot lock the relic out for a survival player
+         *  afterwards -- these cooldowns are bound to the relic itself, not to whoever is holding it. */
+        if(player.getGameMode()==GameMode.CREATIVE)return false;
         long now=System.currentTimeMillis(),ready=parseLong(db.state("relic_cooldown:"+relicKey));
         if(now<ready){CoreUtil.error(player,displayName(relicKey)+" is not ready yet ("+((ready-now)/1000+1)+"s).");return true;}
         db.state("relic_cooldown:"+relicKey,Long.toString(now+cooldownMs));return false;
@@ -627,5 +1179,22 @@ final class RelicService implements Listener {
     double eliteOutgoingMultiplier(Player player){return activeItem(player.getInventory().getItemInMainHand(),"oathblade")?config.getDouble("buffs.oathblade.elite-damage-multiplier",1.25):1;}
     double eliteIncomingMultiplier(Player player){return activeItem(player.getInventory().getHelmet(),"crown_of_ash")?config.getDouble("buffs.crown-of-ash.elite-damage-multiplier",.8):1;}
     double oathbladeLifesteal(Player player){return activeItem(player.getInventory().getItemInMainHand(),"oathblade")?config.getDouble("buffs.oathblade.lifesteal-percent",10)/100.0:0;}
+    /** Held-relic readout: while a relic is in hand its state replaces the hotbar text, so its cooldown is
+     *  visible without opening anything or guessing. The Skyward Anchor's armed drop counter takes
+     *  precedence over this -- while it is armed, the drop is the more useful number. */
+    private void heldRelicTick(){
+        for(Player player:plugin.getServer().getOnlinePlayers()){
+            if(anchors.containsKey(player.getUniqueId()))continue;
+            String relicKey=keyOf(player.getInventory().getItemInMainHand());
+            if(relicKey==null||!isActive(relicKey))continue;
+            long ready=parseLong(db.state("relic_cooldown:"+relicKey)),now=System.currentTimeMillis();
+            boolean creative=player.getGameMode()==GameMode.CREATIVE;
+            Component state=creative||now>=ready
+                    ?Component.text("READY",NamedTextColor.GREEN,net.kyori.adventure.text.format.TextDecoration.BOLD)
+                    :Component.text(((ready-now)/1000+1)+"s",NamedTextColor.RED);
+            player.sendActionBar(Component.text(displayName(relicKey)+" \u2022 ",NamedTextColor.GOLD).append(state));
+        }
+    }
+
     private void buffTick(){for(Player player:plugin.getServer().getOnlinePlayers()){if(activeItem(player.getInventory().getHelmet(),"crown_of_ash")){player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.FIRE_RESISTANCE,100,0,true,false,true));player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.RESISTANCE,100,0,true,false,true));}boolean wayfinder=activeItem(player.getInventory().getItemInMainHand(),"wayfinder")||activeItem(player.getInventory().getItemInOffHand(),"wayfinder");if(wayfinder){player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.SPEED,100,0,true,false,true));player.addPotionEffect(new org.bukkit.potion.PotionEffect(org.bukkit.potion.PotionEffectType.NIGHT_VISION,260,0,true,false,true));}}}
 }

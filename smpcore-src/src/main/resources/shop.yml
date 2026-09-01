@@ -28,6 +28,12 @@ items:
   DIORITE: {buy: 1.5, sell: 0.3, daily-full: 8192, category: MINING}  # Cave mining byproduct
   GRANITE: {buy: 1.5, sell: 0.3, daily-full: 8192, category: MINING}  # Cave mining byproduct
   GOLD_NUGGET: {buy: 1.65, sell: 0.33, daily-full: 8192, category: MINING}  # Gold farm byproduct; nine to an ingot
+  # Nine nuggets to an ingot, so exactly a ninth of the ingot both ways -- crafting one into the other can
+  # never be an arbitrage. Sell stays buy/5 like every other entry.
+  IRON_NUGGET: {buy: 6.1, sell: 1.22, daily-full: 8192, category: MINING}  # Iron golem farm byproduct; nine to an ingot
+  # Deepslate mined at depth; the cobbled form is what a pickaxe without silk touch actually yields, so it
+  # is the one players have in bulk. Priced with plain deepslate rather than above it.
+  COBBLED_DEEPSLATE: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining; the no-silk-touch yield
   DEEPSLATE: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining byproduct
   TUFF: {buy: 1.75, sell: 0.35, daily-full: 8192, category: MINING}  # Deep cave mining byproduct
   BASALT: {buy: 1.85, sell: 0.37, daily-full: 8192, category: MINING}  # Basalt generator, fully AFK
@@ -66,14 +72,43 @@ items:
   IRON_INGOT: {buy: 55, sell: 11, daily-full: 8192, category: MINING}  # Iron golem farm; premium infrastructure
   OBSIDIAN: {buy: 70, sell: 14, daily-full: 1024, category: MINING}  # Diamond pickaxe and nine seconds a block
   EMERALD: {buy: 80, sell: 16, daily-full: 1536, category: MINING}  # Villager trading hall or raid farm; the trading economy
-  DIAMOND: {buy: 200, sell: 40, daily-full: 512, category: MINING}  # Still mined by hand; the benchmark of a survival economy
+  # INTENTIONAL (owner-set): 1000/200 is deliberate and must not be "restored" to the older 200/40.
+  DIAMOND: {buy: 1000, sell: 200, daily-full: 512, category: MINING}  # Still mined by hand; the benchmark of a survival economy
 
+  # ---- MINERAL BLOCKS (exactly 9x the base item) ----
+  COAL_BLOCK: {buy: 142.65, sell: 28.53, daily-full: 341, category: MINING}
+  COPPER_BLOCK: {buy: 72, sell: 14.4, daily-full: 455, category: MINING}
+  REDSTONE_BLOCK: {buy: 117, sell: 23.4, daily-full: 341, category: MINING}
+  LAPIS_BLOCK: {buy: 142.65, sell: 28.53, daily-full: 341, category: MINING}
+  GOLD_BLOCK: {buy: 160.65, sell: 32.13, daily-full: 341, category: MINING}
+  IRON_BLOCK: {buy: 495, sell: 99, daily-full: 910, category: MINING}
+  EMERALD_BLOCK: {buy: 720, sell: 144, daily-full: 171, category: MINING}
+  DIAMOND_BLOCK: {buy: 9000, sell: 1800, daily-full: 57, category: MINING}
+  # ---- CRAFTED UTILITY (priced from their own ingredients already sold here) ----
+  # TNT = (5 x gunpowder buy 130 + 4 x sand buy 10.55) x 1.05 = 726.81 ; sell = buy/5
+  TNT: {buy: 726.81, sell: 145.362, daily-full: 512, category: MINING}
+  # Glass bottle = 3 glass (15.4) /3 per craft -> 15.4 each
+  GLASS_BOTTLE: {buy: 15.4, sell: 3.08, daily-full: 2048, category: MINING}
+  # Torch = 1 coal (15.85) + 1 stick, 4 per craft -> ~4.25
+  TORCH: {buy: 4.25, sell: 0.85, daily-full: 4096, category: MINING}
+  # Ladder = 7 sticks / 3 per craft
+  LADDER: {buy: 3.5, sell: 0.7, daily-full: 4096, category: MINING}
+  # Paper = 3 sugar cane / 3 per craft ; book = 3 paper + 1 leather
+  PAPER: {buy: 4.5, sell: 0.9, daily-full: 4096, category: FARMING}
+  BOOK: {buy: 21.5, sell: 4.3, daily-full: 2048, category: FARMING}
+  # Stick = 2 planks / 4 per craft
+  STICK: {buy: 1.2, sell: 0.24, daily-full: 8192, category: WOOD}
+  # Bucket = 3 iron (55) -> 165
+  BUCKET: {buy: 165, sell: 33, daily-full: 512, category: MINING}
+  # Rail = 6 iron + 1 stick, 16 per craft
+  RAIL: {buy: 20.7, sell: 4.14, daily-full: 2048, category: MINING}
   # ---- FARMING ----
   WHEAT_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct of every wheat harvest
   BEETROOT_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
   MELON_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
   PUMPKIN_SEEDS: {buy: 0.65, sell: 0.13, daily-full: 8192, category: FARMING}  # Byproduct
   BAMBOO: {buy: 4.4, sell: 0.88, daily-full: 8192, category: FARMING}  # Bamboo farm; fastest-growing plant, fully AFK
+  KELP: {buy: 3.9, sell: 0.78, daily-full: 8192, category: FARMING}  # AFK kelp farm; raw, still needs smelting to be worth anything
   MELON_SLICE: {buy: 4.95, sell: 0.99, daily-full: 8192, category: FARMING}  # Melon farm; many slices per melon
   DRIED_KELP: {buy: 7.15, sell: 1.43, daily-full: 8192, category: FARMING}  # AFK kelp farm plus a smelter array
   VINE: {buy: 7.8, sell: 1.56, daily-full: 4096, category: FARMING}  # Jungle harvesting; no real farm
@@ -106,6 +141,23 @@ items:
   NETHER_WART: {buy: 55.1, sell: 11.02, daily-full: 1536, category: FARMING}  # Fortress/bastion gated; the whole brewing tree needs it
   APPLE: {buy: 65, sell: 13, daily-full: 1024, category: FARMING}  # Leaf decay only; no efficient apple farm exists
 
+  # ---- FLOWERS ----
+  POPPY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  DANDELION: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  BLUE_ORCHID: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  ALLIUM: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  AZURE_BLUET: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  RED_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  ORANGE_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  WHITE_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  PINK_TULIP: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  OXEYE_DAISY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  CORNFLOWER: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  LILY_OF_THE_VALLEY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  SUNFLOWER: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  LILAC: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  ROSE_BUSH: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
+  PEONY: {buy: 2.5, sell: 0.5, daily-full: 1024, category: FARMING}
   # ---- ANIMALS ----
   EGG: {buy: 1.4, sell: 0.28, daily-full: 4096, category: ANIMALS}  # Chicken farm, fully automatic
   FEATHER: {buy: 1.6, sell: 0.32, daily-full: 4096, category: ANIMALS}  # Chicken farm byproduct
@@ -120,6 +172,20 @@ items:
   COOKED_SALMON: {buy: 11, sell: 2.2, daily-full: 2048, category: ANIMALS}  # Fished
   COOKED_MUTTON: {buy: 12.95, sell: 2.59, daily-full: 2048, category: ANIMALS}  # Sheep breeder
   COOKED_PORKCHOP: {buy: 15, sell: 3, daily-full: 2048, category: ANIMALS}  # Pig breeder
+  # Raw meat and fish. Priced by the owner's crafting-tax rule read backwards: cooking is a craft, so the
+  # cooked price is the raw price plus the tax. At the 12.5% midpoint of the stated 10-15% band, raw is
+  # cooked / 1.125. Sell stays at the 20% of buy that every other food row here uses.
+  CHICKEN: {buy: 2.8, sell: 0.56, daily-full: 2048, category: ANIMALS}  # -> COOKED_CHICKEN 3.15
+  BEEF: {buy: 6.67, sell: 1.33, daily-full: 2048, category: ANIMALS}  # -> COOKED_BEEF 7.5
+  COD: {buy: 7.16, sell: 1.43, daily-full: 2048, category: ANIMALS}  # -> COOKED_COD 8.05
+  SALMON: {buy: 9.78, sell: 1.96, daily-full: 2048, category: ANIMALS}  # -> COOKED_SALMON 11
+  MUTTON: {buy: 11.51, sell: 2.3, daily-full: 2048, category: ANIMALS}  # -> COOKED_MUTTON 12.95
+  PORKCHOP: {buy: 13.33, sell: 2.67, daily-full: 2048, category: ANIMALS}  # -> COOKED_PORKCHOP 15
+  # Never cooked, so no cooked price to derive from. Placed against their nearest neighbours by use:
+  # tropical fish is axolotl food and decoration, pufferfish is the Water Breathing brewing ingredient and
+  # is priced alongside RABBIT_FOOT's brewing-demand logic rather than as food.
+  TROPICAL_FISH: {buy: 14, sell: 2.8, daily-full: 1024, category: ANIMALS}
+  PUFFERFISH: {buy: 20, sell: 4, daily-full: 512, category: ANIMALS}
   GLOW_INK_SAC: {buy: 20, sell: 4, daily-full: 2048, category: ANIMALS}  # Glow squid farm, deep cave
   RABBIT_FOOT: {buy: 45.45, sell: 9.09, daily-full: 512, category: ANIMALS}  # Uncommon rabbit drop; brewing demand
   TURTLE_SCUTE: {buy: 70, sell: 14, daily-full: 256, category: ANIMALS}  # One scute per growth cycle; painfully slow
@@ -139,9 +205,102 @@ items:
   PHANTOM_MEMBRANE: {buy: 90, sell: 18, daily-full: 512, category: MOB_DROPS}  # Cannot be farmed conventionally; elytra repair
   NAUTILUS_SHELL: {buy: 90, sell: 18, daily-full: 384, category: MOB_DROPS}  # Drowned drops and fishing; no reliable farm
   GUNPOWDER: {buy: 130, sell: 26, daily-full: 1024, category: MOB_DROPS}  # Creeper farm; no spawner exists, large dedicated build
-  GHAST_TEAR: {buy: 145, sell: 29, daily-full: 256, category: MOB_DROPS}  # Ghasts are awkward to farm and drop one at a time
+  # Owner-fixed 2026-08-22: exactly double gunpowder, both ways. Ghasts cannot be farmed on anything
+  # like a creeper farm's scale, so the tear is priced as the strictly rarer of the two.
+  GHAST_TEAR: {buy: 260, sell: 52, daily-full: 256, category: MOB_DROPS}
+
+  # ---- MOB-DROP AUDIT 2026-09-01 ----
+  # Every item reachable from a vanilla entity loot table in this Paper build that the shop did not already
+  # price. Extracted from data/minecraft/loot_table/entities/*.json rather than from memory, following the
+  # loot_table references (a guardian's rare pool rolls the fishing table, a sheep's colour tables, and so
+  # on) so nothing that only appears one level down was missed. Nothing already priced was touched.
+  #
+  # Two of the thirty-three are deliberately not commodity entries:
+  #   TIPPED_ARROW  -- its identity IS its potion data, so the shop's ordinary-item rule rejects every real
+  #                    one and a bought one would be a blank arrow with no effect. Priced would be a lie.
+  #   WET_SPONGE    -- SPONGE is an existing 25,000 buy-only luxury and a wet sponge is one furnace slot
+  #                    away from a dry one, so it is listed as a luxury at the same price instead of being
+  #                    made freely sellable. Pricing it as a commodity would have gutted an entry the owner
+  #                    set deliberately.
+
+  # Sheep, all sixteen colours at one price. Dyeing is then never an arbitrage: white costs 7.00 to buy and
+  # every colour sells for 1.40, so no amount of dye turns a profit. Well under the 4 string a wool crafts
+  # from (64.00 to buy), which is what stops a spider farm minting wool.
+  WHITE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  ORANGE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  MAGENTA_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  LIGHT_BLUE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  YELLOW_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  LIME_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  PINK_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  GRAY_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  LIGHT_GRAY_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  CYAN_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  PURPLE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  BLUE_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  BROWN_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  GREEN_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  RED_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+  BLACK_WOOL: {buy: 7.0, sell: 1.4, daily-full: 4096, category: ANIMALS}
+
+  # Fish drop bone meal directly; three of them come out of one bone (8.00 to buy, 1.62 to sell as meal).
+  BONE_MEAL: {buy: 2.7, sell: 0.54, daily-full: 8192, category: FARMING}
+  # Turtles. Seagrass is turtle food and decoration; the bowl is four to three planks.
+  SEAGRASS: {buy: 1.5, sell: 0.3, daily-full: 8192, category: FARMING}
+  BOWL: {buy: 1.8, sell: 0.36, daily-full: 4096, category: WOOD}
+  # Rabbit had no entry at all, raw or cooked -- and a rabbit killed by fire drops the cooked one, so both
+  # are needed. Between chicken and mutton: rabbits breed readily but drop nought or one.
+  RABBIT: {buy: 7.5, sell: 1.5, daily-full: 2048, category: ANIMALS}
+  COOKED_RABBIT: {buy: 8.45, sell: 1.69, daily-full: 2048, category: ANIMALS}
+  # Ravagers, and the only other sources are chests and fishing. Uncraftable at any price.
+  SADDLE: {buy: 200, sell: 40, daily-full: 256, category: MOB_DROPS}
+  # Pillager patrols under Bad Omen.
+  OMINOUS_BOTTLE: {buy: 175, sell: 35, daily-full: 256, category: MOB_DROPS}
+  # A frog eating a magma cube, one light at a time, and only the frog variant that matches.
+  OCHRE_FROGLIGHT: {buy: 250, sell: 50, daily-full: 256, category: MOB_DROPS}
+  PEARLESCENT_FROGLIGHT: {buy: 250, sell: 50, daily-full: 256, category: MOB_DROPS}
+  VERDANT_FROGLIGHT: {buy: 250, sell: 50, daily-full: 256, category: MOB_DROPS}
+  # Breeze rods are trial-chamber gated with no conventional farm, so above the ghast tear.
+  # NOTE: four wind charges craft from one rod, which undercuts the 5,000 WIND_CHARGE luxury. Left as it is
+  # rather than silently repricing an entry the owner set; say the word and either can move.
+  BREEZE_ROD: {buy: 500, sell: 100, daily-full: 512, category: MOB_DROPS}
+  # Zombies and ghasts drop these two discs. Collectible rather than useful.
+  MUSIC_DISC_LAVA_CHICKEN: {buy: 1250, sell: 250, daily-full: 64, category: MOB_DROPS}
+  MUSIC_DISC_TEARS: {buy: 1250, sell: 250, daily-full: 64, category: MOB_DROPS}
+  # Elder guardian, roughly one in five, behind an ocean monument.
+  TIDE_ARMOR_TRIM_SMITHING_TEMPLATE: {buy: 4000, sell: 800, daily-full: 64, category: MOB_DROPS}
+  # A 2.5% drop behind a nether fortress farm; three make a wither.
+  # NOTE: three skulls at 6,000 is far cheaper than the 500,000 NETHER_STAR luxury. Same call as the breeze
+  # rod -- priced on its own merits and reported rather than bent to protect the luxury.
+  WITHER_SKELETON_SKULL: {buy: 6000, sell: 1200, daily-full: 64, category: MOB_DROPS}
+  # The warden. Not farmable in any meaningful sense, and killing one is an achievement in itself.
+  SCULK_CATALYST: {buy: 2000, sell: 400, daily-full: 64, category: MOB_DROPS}
+
+  # ---- THE BOW AND WHAT IT IS MADE OF ----
+  # STICK was ALREADY priced further up this file (1.20 / 0.24, "Stick = 2 planks / 4 per craft") and adding
+  # it again here made a duplicate YAML key. Removed. Worth noting that the price derived independently for
+  # the bow -- a log is four planks is eight sticks, 1.90 / 8 -- landed on exactly the existing value, so the
+  # bow below is priced against the shop's own model rather than against a number invented for it.
+  # Priced from the recipe, as asked: three string (9.60) plus three sticks (0.72) is 10.32, and a 20%
+  # crafting premium -- the middle of the 15-25% band -- makes 12.38.
+  #
+  # The premium is chosen to sit in the middle for a reason beyond splitting the difference: it puts the
+  # bow's BUY price at 61.90, comfortably above the 51.60 those same ingredients cost to buy, so crafting
+  # remains the cheaper way to obtain a bow. Below about 15% the two cross over and the shop starts
+  # undercutting the crafting table.
+  #
+  # No profit loop exists in either direction: buying the ingredients costs 51.60 and the finished bow sells
+  # for 12.38, and buying a finished bow at 61.90 to sell at 12.38 is worse still.
+  #
+  # allow-damaged is what makes a skeleton's bow sellable at all. It forgives durability and NOTHING else --
+  # an enchanted bow keeps its enchantments when the damage is cleared and is refused, as are named bows,
+  # relics and anything carrying custom data.
+  BOW: {buy: 61.9, sell: 12.38, daily-full: 512, category: MOB_DROPS, allow-damaged: true}
 
 luxuries:
+  WET_SPONGE:
+    buy: 25000
+    display: Waterlogged Architect's Sponge
   NAME_TAG:
     buy: 10000
     display: Name Tag
@@ -196,3 +355,16 @@ luxuries:
   TOTEM_OF_UNDYING:
     buy: 100000
     display: Totem of Undying
+  # A CONSUMABLE, bought over and over for crystal PvP, and the easiest thing in this shop to craft -- so it
+  # is priced off its craft cost with a convenience margin, exactly like the Wind Charge it sits beside, not
+  # off what it can be used for.
+  #   7 glass @ 15.4      = 107.80
+  #   eye of ender         = 100.00  (ender pearl 70 + blaze powder 30, i.e. half a 60 blaze rod)
+  #   ghast tear           = 260.00
+  #   materials            = 467.80
+  # Owner-set to 6,000 -- roughly 13x materials. The earlier 5x (2,350) was judged too cheap for something
+  # bought by the stack for crystal PvP: the convenience of skipping the ghast-tear hunt entirely is worth
+  # more than the parts, and this keeps it a real money sink rather than a rounding error.
+  END_CRYSTAL:
+    buy: 6000
+    display: Bound End Crystal

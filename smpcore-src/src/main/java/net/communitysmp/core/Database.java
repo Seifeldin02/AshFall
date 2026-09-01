@@ -171,6 +171,17 @@ final class Database implements AutoCloseable {
              *  mobs rather than kill events, so a stack of 100 counts as 100. */
             /** Native buy orders. escrow is the money still held FOR THIS ROW; every movement of it is a
              *  conditional UPDATE so it can never be spent or refunded twice. */
+            /** Arena escrow and captured player state. Both live here rather than in memory so a restart
+             *  mid-duel neither loses a stake nor strands somebody in a kit. */
+            s.execute("CREATE TABLE IF NOT EXISTS arena_escrow (player TEXT PRIMARY KEY, amount REAL NOT NULL DEFAULT 0)");
+            s.execute("CREATE TABLE IF NOT EXISTS arena_wagers (id INTEGER PRIMARY KEY AUTOINCREMENT, player TEXT NOT NULL, backed TEXT NOT NULL, amount REAL NOT NULL)");
+            s.execute("CREATE TABLE IF NOT EXISTS arena_item_wager (duel INTEGER NOT NULL, player TEXT NOT NULL, items BLOB NOT NULL, PRIMARY KEY(duel,player))");
+            s.execute("CREATE TABLE IF NOT EXISTS arena_state (player TEXT PRIMARY KEY, items BLOB NOT NULL, world TEXT NOT NULL, x REAL, y REAL, z REAL, yaw REAL, pitch REAL, level INTEGER, exp REAL, health REAL, food INTEGER, gamemode TEXT)");
+            /** Added after arena_state shipped: saturation, potion effects, flight and the rest, packed into
+             *  one text column so a duellist is restored to EXACTLY their pre-duel state, not just inventory. */
+            try{s.execute("ALTER TABLE arena_state ADD COLUMN extra TEXT");}catch(SQLException ignored){}
+            /** Added with per-round spectator betting: 0 = whole match, N = a specific round. */
+            try{s.execute("ALTER TABLE arena_wagers ADD COLUMN round INTEGER NOT NULL DEFAULT 0");}catch(SQLException ignored){}
             s.execute("CREATE TABLE IF NOT EXISTS smp_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, buyer TEXT NOT NULL, buyer_name TEXT NOT NULL, item_key TEXT NOT NULL, amount INTEGER NOT NULL, filled INTEGER NOT NULL DEFAULT 0, unit_price REAL NOT NULL, escrow REAL NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE')");
             s.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON smp_orders(status)");
             /** Added after the table shipped, so guarded rather than assumed. */
@@ -180,8 +191,18 @@ final class Database implements AutoCloseable {
             s.execute("CREATE TABLE IF NOT EXISTS smp_order_stash (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, item BLOB NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_stash_owner ON smp_order_stash(owner)");
             s.execute("CREATE TABLE IF NOT EXISTS spawner_kill_counts (player TEXT NOT NULL, mob_type TEXT NOT NULL, day TEXT NOT NULL, killed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(player,mob_type,day))");
+            s.execute("CREATE TABLE IF NOT EXISTS plugin_forced_chunks (world TEXT NOT NULL, cx INTEGER NOT NULL, cz INTEGER NOT NULL, owner TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(world,cx,cz))");
+            s.execute("CREATE TABLE IF NOT EXISTS spawner_allowance (spawner_id TEXT NOT NULL, day TEXT NOT NULL, represented INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(spawner_id,day))");
+            s.execute("CREATE TABLE IF NOT EXISTS golem_spawner_daily (day TEXT PRIMARY KEY, represented_kills INTEGER NOT NULL DEFAULT 0, payout REAL NOT NULL DEFAULT 0)");
             s.execute("CREATE TABLE IF NOT EXISTS discarded_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL, material TEXT NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL, recycled INTEGER NOT NULL DEFAULT 0, world TEXT NOT NULL DEFAULT '', x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0, z INTEGER NOT NULL DEFAULT 0)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material ON discarded_ledger(material)");
+            /** Spawner Shop stock: one row per mob type, holding how many recovered spawners of that type are
+             *  available to buy back. Deliberately a COUNT rather than a ledger of individual spawners --
+             *  every spawner of a type is interchangeable, and the audit trail lives in `history`. */
+            s.execute("CREATE TABLE IF NOT EXISTS spawner_shop(entity_type TEXT PRIMARY KEY, stock INTEGER NOT NULL DEFAULT 0)");
+            try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN enchants TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
+            s.execute("CREATE INDEX IF NOT EXISTS idx_discarded_material_ench ON discarded_ledger(material,enchants)");
+            try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN details TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
             s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS staff_notes_player ON staff_notes(player_uuid,created_at DESC)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
@@ -690,6 +711,55 @@ final class Database implements AutoCloseable {
         return update("UPDATE shop_stock SET quantity=quantity-? WHERE material=? AND quantity>=?",amount,material,amount)>0;
     }
     synchronized void recordSale(String player,String item,String day,int quantity,double earned){update("INSERT INTO daily_sales(player,item,day,quantity,earned) VALUES(?,?,?,?,?) ON CONFLICT(player,item,day) DO UPDATE SET quantity=quantity+excluded.quantity,earned=earned+excluded.earned",player,item,day,quantity,earned);}
+    record ArenaState(byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode,String extra){}
+    synchronized void arenaStateSave(String player,byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode,String extra){
+        update("INSERT OR REPLACE INTO arena_state(player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra);
+    }
+    synchronized ArenaState arenaState(String player){
+        return one("SELECT items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra FROM arena_state WHERE player=?",
+                rs->new ArenaState(rs.getBytes(1),rs.getString(2),rs.getDouble(3),rs.getDouble(4),rs.getDouble(5),rs.getFloat(6),rs.getFloat(7),rs.getInt(8),rs.getFloat(9),rs.getDouble(10),rs.getInt(11),rs.getString(12),rs.getString(13)),player);
+    }
+    synchronized void arenaStateClear(String player){update("DELETE FROM arena_state WHERE player=?",player);}
+    synchronized List<String> arenaStateOwners(){return list("SELECT player FROM arena_state",rs->rs.getString(1));}
+    synchronized void arenaEscrowSet(String player,double amount){update("INSERT OR REPLACE INTO arena_escrow(player,amount) VALUES(?,?)",player,amount);}
+    synchronized double arenaEscrowOf(String player){Double v=one("SELECT amount FROM arena_escrow WHERE player=?",rs->rs.getDouble(1),player);return v==null?0:v;}
+    synchronized void arenaEscrowClear(String player){update("DELETE FROM arena_escrow WHERE player=?",player);}
+    synchronized void arenaWagerAdd(String player,String backed,double amount,int round){update("INSERT INTO arena_wagers(player,backed,amount,round) VALUES(?,?,?,?)",player,backed,amount,round);}
+    synchronized void arenaWagersClear(){update("DELETE FROM arena_wagers",new Object[0]);}
+    synchronized void arenaWagersClearFor(String a,String b){update("DELETE FROM arena_wagers WHERE backed=? OR backed=?",a,b);}
+    /** On boot, any escrow or wagers still present belong to a match a restart interrupted -- refund and
+     *  clear them. A clean shutdown has already refunded live matches, so this finds nothing then. */
+    synchronized void arenaEscrowRefundAll(java.util.function.BiConsumer<String,Double> refund){
+        for(String[] row:list("SELECT player,amount FROM arena_escrow",rs->new String[]{rs.getString(1),String.valueOf(rs.getDouble(2))}))
+            if(Double.parseDouble(row[1])>0)refund.accept(row[0],Double.parseDouble(row[1]));
+        update("DELETE FROM arena_escrow",new Object[0]);
+    }
+    synchronized void arenaWagersRefundAll(java.util.function.BiConsumer<String,Double> refund){
+        for(String[] row:list("SELECT player,amount FROM arena_wagers",rs->new String[]{rs.getString(1),String.valueOf(rs.getDouble(2))}))
+            if(Double.parseDouble(row[1])>0)refund.accept(row[0],Double.parseDouble(row[1]));
+        update("DELETE FROM arena_wagers",new Object[0]);
+    }
+    /** Item wagers are escrowed to the DB the moment a duellist locks their wager box, so a crash or restart
+     *  can never eat their items -- they are handed back by arenaItemWagerRefundAll on boot. Keyed by (duel,
+     *  player); duel ids reset each boot, so any surviving row is orphaned and refunded. */
+    synchronized void arenaItemWagerSave(int duel,String player,byte[] items){update("INSERT OR REPLACE INTO arena_item_wager(duel,player,items) VALUES(?,?,?)",duel,player,items);}
+    synchronized byte[] arenaItemWagerGet(int duel,String player){return one("SELECT items FROM arena_item_wager WHERE duel=? AND player=?",rs->rs.getBytes(1),duel,player);}
+    synchronized void arenaItemWagerClear(int duel,String player){update("DELETE FROM arena_item_wager WHERE duel=? AND player=?",duel,player);}
+    synchronized void arenaItemWagerRefundAll(java.util.function.BiConsumer<String,List<ItemStack>> refund){
+        for(Object[] row:list("SELECT player,items FROM arena_item_wager",rs->new Object[]{rs.getString(1),rs.getBytes(2)})){
+            List<ItemStack> items=new ArrayList<>();
+            try{for(ItemStack it:ItemStack.deserializeItemsFromBytes((byte[])row[1]))if(it!=null&&!it.getType().isAir())items.add(it);}catch(Throwable ignored){}
+            refund.accept((String)row[0],items);
+        }
+        update("DELETE FROM arena_item_wager",new Object[0]);
+    }
+    /** Drop a single arbitrary item into a player's order-stash (their persistent "claim later" store) -- used
+     *  to return escrowed duel items to an OFFLINE owner without losing them. */
+    synchronized void stashAddItem(String owner,ItemStack item){
+        if(item==null||item.getType().isAir())return;
+        update("INSERT INTO smp_order_stash(owner,item,created_at) VALUES(?,?,?)",owner,ItemStack.serializeItemsAsBytes(new ItemStack[]{item}),System.currentTimeMillis());
+    }
+
     record OrderRow(long id,String buyer,String buyerName,String itemKey,int amount,int filled,double unit,double escrow,long createdAt,long expiresAt,String status,int notified,int notifiedEnd,int hidden){}
     private static final String ORDER_COLUMNS="id,buyer,buyer_name,item_key,amount,filled,unit_price,escrow,created_at,expires_at,status,notified,notified_end,hidden";
     private static OrderRow orderRow(ResultSet rs)throws SQLException{
@@ -757,14 +827,46 @@ final class Database implements AutoCloseable {
         return before;
     }
     /** Housekeeping: reward days older than a fortnight are of no further use. */
-    synchronized void pruneSpawnerKills(String keepFrom){update("DELETE FROM spawner_kill_counts WHERE day<?",keepFrom);}
+    synchronized void pruneSpawnerKills(String keepFrom){update("DELETE FROM spawner_kill_counts WHERE day<?",keepFrom);update("DELETE FROM spawner_allowance WHERE day<?",keepFrom);}
+
+    /** Chunks this PLUGIN force-loaded. Only rows recorded here are ever released again, which is what
+     *  keeps an administrator's own /forceload rectangles untouched: they are never written here, so no
+     *  cleanup path can see them. Rows surviving a restart are stale by definition -- a live ticket never
+     *  outlives the process -- so startup reconciliation releases them. */
+    synchronized void addForcedChunk(String world,int cx,int cz,String owner){
+        update("INSERT INTO plugin_forced_chunks(world,cx,cz,owner,created_at) VALUES(?,?,?,?,?) ON CONFLICT(world,cx,cz) DO UPDATE SET owner=excluded.owner",world,cx,cz,owner,System.currentTimeMillis());}
+    synchronized void removeForcedChunk(String world,int cx,int cz){
+        update("DELETE FROM plugin_forced_chunks WHERE world=? AND cx=? AND cz=?",world,cx,cz);}
+    synchronized java.util.List<int[]> forcedChunkCoords(String world){
+        return list("SELECT cx,cz FROM plugin_forced_chunks WHERE world=?",rs->new int[]{rs.getInt("cx"),rs.getInt("cz")},world);}
+    synchronized java.util.List<String> forcedChunkWorlds(){
+        return list("SELECT DISTINCT world FROM plugin_forced_chunks",rs->rs.getString("world"));}
+
+    /** Full-rate allowance is tracked per REPRESENTED SPAWNER rather than per player, so a x10 stack gets
+     *  ten times the allowance and stacking is not punished. Every unit in a stack is debited its equal
+     *  share of each kill, which is what makes the allowance survive breaking, moving and splitting: the
+     *  identities travel with the spawner items, so a split hands each piece the consumption it already
+     *  carried instead of handing it a fresh day. */
+    synchronized int spawnerAllowanceUsed(java.util.List<String> ids,String day){
+        int total=0;for(String id:ids)total+=integer("SELECT represented FROM spawner_allowance WHERE spawner_id=? AND day=?",id,day);return total;}
+    synchronized void addSpawnerAllowance(java.util.List<String> ids,String day,int represented){
+        if(ids.isEmpty()||represented<=0)return;int n=ids.size(),each=represented/n,extra=represented%n;
+        for(int i=0;i<n;i++){int share=each+(i<extra?1:0);if(share<=0)continue;
+            update("INSERT INTO spawner_allowance(spawner_id,day,represented) VALUES(?,?,?) ON CONFLICT(spawner_id,day) DO UPDATE SET represented=represented+excluded.represented",ids.get(i),day,share);}}
+
+    /** Daily golem-spawner telemetry, kept so the model can be rebalanced from real server data. */
+    synchronized void recordGolemDaily(String day,int kills,double payout){
+        update("INSERT INTO golem_spawner_daily(day,represented_kills,payout) VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET represented_kills=represented_kills+excluded.represented_kills,payout=payout+excluded.payout",day,kills,payout);}
+    synchronized double[] golemDaily(String day){
+        return new double[]{integer("SELECT represented_kills FROM golem_spawner_daily WHERE day=?",day),
+                            scalarDouble("SELECT payout FROM golem_spawner_daily WHERE day=?",day)};}
 
     /** One statement for a whole batch of destroyed items rather than one per item. */
     synchronized void recordDiscarded(java.util.List<Object[]> rows){
         if(rows.isEmpty())return;
-        StringBuilder sql=new StringBuilder("INSERT INTO discarded_ledger(occurred_at,material,amount,reason,recycled,world,x,y,z) VALUES");
+        StringBuilder sql=new StringBuilder("INSERT INTO discarded_ledger(occurred_at,material,amount,reason,recycled,world,x,y,z,enchants,details) VALUES");
         List<Object> args=new ArrayList<>();
-        for(int i=0;i<rows.size();i++){sql.append(i==0?"":",").append("(?,?,?,?,?,?,?,?,?)");args.addAll(Arrays.asList(rows.get(i)));}
+        for(int i=0;i<rows.size();i++){sql.append(i==0?"":",").append("(?,?,?,?,?,?,?,?,?,?,?)");args.addAll(Arrays.asList(rows.get(i)));}
         update(sql.toString(),args.toArray());
     }
     /** Batched counterpart of shopStockAdd: a single upsert covering every material in the batch. */
@@ -784,10 +886,36 @@ final class Database implements AutoCloseable {
     }
     /** Per-material totals with the details of the most recent destruction. SQLite takes the bare columns
      *  from the same row that produced MAX(occurred_at), so "last reason/where" needs no second query. */
+    synchronized List<String[]> discardedAggregate(int limit){
+        return list("SELECT material,COALESCE(enchants,''),COALESCE(details,''),SUM(amount),SUM(CASE WHEN recycled=1 THEN amount ELSE 0 END),reason,world,x,y,z,MAX(occurred_at) FROM discarded_ledger GROUP BY material,COALESCE(enchants,''),COALESCE(details,'') ORDER BY SUM(amount) DESC LIMIT ?",
+                rs->new String[]{rs.getString(1),rs.getString(2)==null?"":rs.getString(2),rs.getString(3)==null?"":rs.getString(3),String.valueOf(rs.getLong(4)),String.valueOf(rs.getLong(5)),rs.getString(6),rs.getString(7),String.valueOf(rs.getInt(8)),String.valueOf(rs.getInt(9)),String.valueOf(rs.getInt(10)),String.valueOf(rs.getLong(11))},limit);
+    }
     synchronized List<String[]> discardedTotals(int limit){
         return list("SELECT material,SUM(amount),SUM(CASE WHEN recycled=1 THEN amount ELSE 0 END),reason,world,x,y,z,MAX(occurred_at) FROM discarded_ledger GROUP BY material ORDER BY SUM(amount) DESC LIMIT ?",
                 rs->new String[]{rs.getString(1),String.valueOf(rs.getLong(2)),String.valueOf(rs.getLong(3)),rs.getString(4),rs.getString(5),String.valueOf(rs.getInt(6)),String.valueOf(rs.getInt(7)),String.valueOf(rs.getInt(8)),String.valueOf(rs.getLong(9))},limit);
     }
+    /** Adds recovered spawners to the shop's stock. */
+    synchronized void spawnerShopAdd(String entityType,int amount){
+        if(amount<=0)return;
+        update("INSERT INTO spawner_shop(entity_type,stock) VALUES(?,?) ON CONFLICT(entity_type) DO UPDATE SET stock=stock+?",entityType,amount,amount);
+    }
+
+    /** Takes exactly one spawner out of stock, and reports whether it actually got one.
+     *
+     *  The `stock>0` in the WHERE clause is what makes this safe: two players clicking the last spawner at
+     *  the same moment both run this, and only the one whose UPDATE matches a row walks away with it. */
+    synchronized boolean spawnerShopTake(String entityType){
+        return update("UPDATE spawner_shop SET stock=stock-1 WHERE entity_type=? AND stock>0",entityType)>0;
+    }
+
+    synchronized java.util.LinkedHashMap<String,Integer> spawnerShopStock(){
+        java.util.LinkedHashMap<String,Integer> out=new java.util.LinkedHashMap<>();
+        for(String[] row:list("SELECT entity_type,stock FROM spawner_shop WHERE stock>0 ORDER BY entity_type",
+                rs->new String[]{rs.getString(1),String.valueOf(rs.getInt(2))}))
+            out.put(row[0],Integer.parseInt(row[1]));
+        return out;
+    }
+
     synchronized void recordEconomy(String player,String category,double amount,String detail){if(!Double.isFinite(amount)||Math.abs(amount)<.0001)return;update("INSERT INTO economy_ledger(occurred_at,player,category,amount,detail) VALUES(?,?,?,?,?)",System.currentTimeMillis(),player,category,amount,detail);}
     synchronized List<EconomyTotal> economyTotals(long since){return list("SELECT category,SUM(amount) amount FROM economy_ledger WHERE occurred_at>=? GROUP BY category ORDER BY category",rs->new EconomyTotal(rs.getString("category"),rs.getDouble("amount")),since);}
     synchronized ProgressMetrics progressMetrics(String player){
@@ -810,6 +938,10 @@ final class Database implements AutoCloseable {
     /** Debits the treasury directly (no player account involved) for bank-funded spend like auto-bounties.
      *  The WHERE-clause balance guard makes this atomically insolvency-safe: it simply fails if the
      *  treasury can't actually afford it, the same way issueLoan already protects loan issuance. */
+    /** Direct admin balance adjustment (delta may be negative). Unlike debitBank this does not require the
+     *  treasury to already hold the amount -- admins set the balance authoritatively, and the bank is allowed
+     *  to run negative (that negative is exactly what turns on the deficit surcharge). */
+    synchronized void adjustBank(double delta){update("UPDATE central_bank SET balance=balance+?,updated_at=? WHERE id=1",delta,System.currentTimeMillis());}
     synchronized boolean debitBank(double amount,String detail){
         amount=roundMoney(amount);if(amount<=0)return false;
         if(update("UPDATE central_bank SET balance=balance-?,updated_at=? WHERE id=1 AND balance>=?",amount,System.currentTimeMillis(),amount)!=1)return false;
@@ -818,6 +950,13 @@ final class Database implements AutoCloseable {
     }
     synchronized LoanRow loan(String player){return one("SELECT * FROM bank_loans WHERE player=? AND status IN ('ACTIVE','OVERDUE') ORDER BY issued_at DESC LIMIT 1",Database::mapLoan,player);}
     synchronized int repaidLoanCount(String player){return integer("SELECT COUNT(*) FROM bank_loans WHERE player=? AND status='PAID'",player);}
+    /** The credit rating's only downward term -- a record of paying late is exactly what a credit score
+     *  is for. Limited by the schema: bank_loans has no paid_at column, so a loan that was late but has
+     *  since been settled leaves no trace and cannot be counted. This therefore measures CURRENT
+     *  delinquency (0 or 1, since the unique index allows one active loan at a time) rather than lifetime
+     *  history. Adding a paid_at column would make it a real history; not done here to keep the migration
+     *  out of this change. */
+    synchronized int overdueLoanCount(String player){return integer("SELECT COUNT(*) FROM bank_loans WHERE player=? AND status='OVERDUE'",player);}
     synchronized LoanRow accrueLoan(String player,double maxInterestPercent){
         LoanRow loan=loan(player);if(loan==null)return null;long now=System.currentTimeMillis();double elapsed=Math.max(0,now-loan.lastAccrual())/86400000.0;
         double cap=loan.originalAmount()*Math.max(0,maxInterestPercent)/100.0,interest=Math.min(cap,loan.interest()+loan.principal()*Math.max(0,loan.rateDaily())*elapsed);
@@ -853,7 +992,7 @@ final class Database implements AutoCloseable {
     synchronized boolean payShopSeller(String player,double gross,double requestedGarnish,String detail){
         gross=roundMoney(gross);if(gross<=0)return false;LoanRow loan=loan(player);double payment=loan==null?0:roundMoney(Math.min(Math.max(0,requestedGarnish),Math.min(gross,loan.debt())));boolean own=false;
         try{own=connection.getAutoCommit();if(own)connection.setAutoCommit(false);long now=System.currentTimeMillis();
-            if(update("UPDATE central_bank SET balance=balance-?,shop_payouts=shop_payouts+?,updated_at=? WHERE id=1 AND balance>=?",gross,gross,now,gross)!=1){if(own)connection.rollback();return false;}
+            if(update("UPDATE central_bank SET balance=balance-?,shop_payouts=shop_payouts+?,updated_at=? WHERE id=1",gross,gross,now)!=1){if(own)connection.rollback();return false;}
             if(!changeBalance(player,gross-payment))throw new IllegalStateException("shop payout recipient account missing");
             update("INSERT INTO bank_ledger(occurred_at,player,category,amount,detail) VALUES(?,?,?,?,?)",now,player,"SHOP_PAYOUT",-gross,detail);
             if(payment>0)applyLoanPayment(loan,payment);if(own)connection.commit();return true;

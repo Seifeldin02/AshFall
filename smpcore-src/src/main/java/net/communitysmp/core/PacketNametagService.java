@@ -132,6 +132,17 @@ final class PacketNametagService implements Listener {
     @EventHandler public void death(PlayerDeathEvent event){forget(event.getEntity());}
     @EventHandler public void respawn(PlayerRespawnEvent event){forget(event.getPlayer());}
     @EventHandler public void changedWorld(PlayerChangedWorldEvent event){forget(event.getPlayer());}
+    /*  A game mode change tears the tag down immediately.
+     *
+     *  The refresh loop already refuses to tag a spectator, but it can only tear an existing tag down while
+     *  it still VISITS that target -- and the moment somebody becomes a spectator, other clients stop
+     *  tracking them, so isTrackedBy goes false and the loop stops reaching them at all. The overlay was
+     *  therefore left mounted on a player nobody receives position updates for any more, and hung at the
+     *  block where /gamemode spectator was typed. Reported live, exactly that way.
+     *
+     *  forget() destroys it on every client that holds it, which is the same treatment death and a world
+     *  change already get, and the rescan ten ticks later declines to rebuild it. */
+    @EventHandler public void gameMode(org.bukkit.event.player.PlayerGameModeChangeEvent event){forget(event.getPlayer());}
     @EventHandler public void teleport(PlayerTeleportEvent event){
         if(event.getTo()==null||event.getFrom().getWorld()==null)return;
         if(!event.getFrom().getWorld().equals(event.getTo().getWorld())||event.getFrom().distanceSquared(event.getTo())>4096)forget(event.getPlayer());
@@ -233,7 +244,26 @@ final class PacketNametagService implements Listener {
                  *  re-sent and that one player's tag stayed missing until something unrelated changed the
                  *  text. That is exactly the "couldn't see MacoCT until we both /spawn" case: /spawn forced
                  *  a re-track, which is the only thing that fixed it. Paper tells us directly. */
-                boolean tracked=viewer.getWorld().equals(target.getWorld())&&viewer.canSee(target)
+                /** A dead player is never tagged.
+                 *
+                 *  death() destroys the tag entities, but the rescan it schedules ten ticks later would
+                 *  happily rebuild them: the corpse is still tracked by nearby clients through the death
+                 *  animation, so `tracked` was still true and the tag was re-sent onto a body. It then sat
+                 *  at the death spot until something forced a re-track -- which is why it only cleared when
+                 *  the owner walked back into view. Excluding dead targets stops it being recreated at all,
+                 *  and costs nothing else: a living player is never isDead(). */
+                /*  Spectators and invisible players carry no tag, matching vanilla.
+                 *
+                 *  Spectator: other clients stop receiving position updates for a spectator, so the mounted
+                 *  overlay simply stayed at the block where /gamemode spectator was typed and hung there.
+                 *  It is not a stale-tag problem to sweep afterwards -- a spectator should have no tag at all.
+                 *
+                 *  Invisible: vanilla hides a player's nametag while they are invisible, which is most of the
+                 *  point of the potion. Rendering the overlay at zero opacity was not enough, because the
+                 *  overlay is also what SUPPRESSES the vanilla tag -- so destroying it here is what actually
+                 *  reproduces vanilla: no custom tag, and vanilla's own hiding rule takes over. */
+                boolean tracked=!target.isDead()&&target.getGameMode()!=org.bukkit.GameMode.SPECTATOR&&!target.isInvisible()
+                        &&viewer.getWorld().equals(target.getWorld())&&viewer.canSee(target)
                         &&target.isTrackedBy(viewer)
                         &&viewer.getLocation().distanceSquared(target.getLocation())
                           <(seen.containsKey(id)?outerRangeSq():innerRangeSq());
@@ -247,7 +277,10 @@ final class PacketNametagService implements Listener {
                 }
                 /** Sneaking is part of the change key so crouching re-sends at once, rather than waiting for
                  *  the balance or health to happen to change. */
-                boolean sneaking=target.isSneaking();
+                /** An invisible player (potion or otherwise) is treated like a crouching one: the overlay stays
+                 *  mounted -- which suppresses the vanilla nametag -- but renders at zero opacity, so no name
+                 *  floats over an invisible player. Standard behaviour, and the same DIM path crouch uses. */
+                boolean sneaking=target.isSneaking()||target.isInvisible();
                 String variant=render(snapshot,money,faction,hearts)+(sneaking?SNEAK_MARK:"");
                 String previous=seen.get(id);
                 if(variant.equals(previous))continue;

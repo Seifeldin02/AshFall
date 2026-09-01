@@ -8,6 +8,12 @@ depend: [Vault, WorldEdit]
 softdepend: [packetevents, AuthMe, floodgate, Geyser-Spigot, TAB, SkinsRestorer, GrimAC, Nicked, ReplayCore, PunisherX, Prism]
 loadbefore: [DonutOrders]
 commands:
+  duel:
+    description: Challenge somebody to a wagered 1v1
+    usage: /duel <player>
+  duels:
+    description: Arrange where each piece of a duel kit sits
+    usage: /duels [kit]
   orders:
     description: Browse and fill buy orders
     usage: /orders
@@ -58,6 +64,9 @@ commands:
   reply:
     description: Reply to your most recent private conversation
     aliases: [r]
+  spawnershop:
+    description: Buy back spawners recovered from explosions, lava and despawning.
+    usage: /spawnershop
   shop:
     description: Open the server shop
   luxuryshop:
@@ -112,6 +121,10 @@ commands:
   ashfall:
     description: Ashfall administration
     aliases: [smp, smpcore]
+  voidworld:
+    description: "Temporary event worlds: list | exit | enter <name> | create <name> | delete <name>"
+    usage: /voidworld <list|exit|enter|create|delete> [name]
+    aliases: [vw, eventworld]
   nickname:
     description: Apply an administrator disguise
     aliases: [disguise]
@@ -123,10 +136,27 @@ commands:
     description: "Console-only SMPCore admin management: list | add <player> | remove <player> | simlogin <name> (test ban-enforcement listeners without a real client)"
   shout:
     description: Send a prominent server-wide announcement
+  fly:
+    description: Toggle flight for yourself or another player
+    usage: /fly [player] [on|off]
+    permission: smpcore.fly
+  flyspeed:
+    description: Set flight speed (1 = normal, up to 10)
+    usage: /flyspeed [player] <1-10>
+    permission: smpcore.fly
 permissions:
   smpcore.admin:
     description: Full SMPCore administration
     default: op
+  smpcore.fly:
+    description: Use /fly and /flyspeed
+    default: op
   smpcore.play:
     description: Normal SMPCore gameplay
     default: true
+  smpcore.voidworld.enter:
+    description: Enter a temporary event world that an administrator has opened
+    default: true
+  smpcore.voidworld.manage:
+    description: Create and delete temporary event worlds
+    default: op
