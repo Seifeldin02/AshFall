@@ -131,7 +131,12 @@ def main() -> int:
             if s.is_dir():
                 detail += f" (staging {snapshot_shape(s)} vs production {snapshot_shape(p)})"
             rows.append((DIFF, rel, detail + note))
-            if args.fix:
+            if args.fix and entry.get("do_not_autofix"):
+                # Some files are a mix of shared settings and per-server secrets, so a wholesale copy is
+                # never right even though the diff is real. Report and skip rather than silently promoting
+                # a staging-only key into production, which is precisely what happened on 2026-09-02.
+                rows[-1] = (DIFF, rel, "differs, and is marked do_not_autofix - promote the changed keys BY HAND" + note)
+            elif args.fix:
                 copy_entry(s, p)
                 rows[-1] = (INFO, rel, "COPIED to production" + note)
         else:

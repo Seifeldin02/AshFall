@@ -277,8 +277,10 @@ items:
   SCULK_CATALYST: {buy: 2000, sell: 400, daily-full: 64, category: MOB_DROPS}
 
   # ---- THE BOW AND WHAT IT IS MADE OF ----
-  # A stick is an eighth of a log: one log makes four planks makes eight sticks, so 1.90 / 8.
-  STICK: {buy: 1.2, sell: 0.24, daily-full: 8192, category: WOOD}
+  # STICK was ALREADY priced further up this file (1.20 / 0.24, "Stick = 2 planks / 4 per craft") and adding
+  # it again here made a duplicate YAML key. Removed. Worth noting that the price derived independently for
+  # the bow -- a log is four planks is eight sticks, 1.90 / 8 -- landed on exactly the existing value, so the
+  # bow below is priced against the shop's own model rather than against a number invented for it.
   # Priced from the recipe, as asked: three string (9.60) plus three sticks (0.72) is 10.32, and a 20%
   # crafting premium -- the middle of the 15-25% band -- makes 12.38.
   #

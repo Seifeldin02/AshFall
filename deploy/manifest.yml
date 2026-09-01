@@ -17,7 +17,14 @@ servers:
 
 sync:
   - path: plugins/SMPCore/config.yml
+    do_not_autofix: true
     note: |
+      DO NOT PROMOTE THIS FILE WITH --fix. It carries two STAGING-ONLY keys under trusted-admin
+      (same-machine-autologin, staging-session-persistence) that must never exist on production, and --fix
+      copies the whole file. It did exactly that during the 2026-09-02 promotion and they had to be stripped
+      out again by hand a minute later. Promote the changed KEYS by hand, or run --fix and then re-check the
+      trusted-admin block. do_not_autofix makes --fix report it and skip it.
+
       Main plugin config. Owner-fixed values that have silently failed to reach production before:
         EXPECTED staging-only difference: trusted-admin.same-machine-autologin is set on staging and must
         NEVER appear in production or in the shipped resource -- it is what lets an admin reuse AuthMe's
