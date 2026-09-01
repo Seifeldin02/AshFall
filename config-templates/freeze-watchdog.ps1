@@ -132,9 +132,23 @@ if ($others.Count -gt 0) {
 
 Write-Watch "started; probing RCON port $port every ${IntervalSeconds}s, killing after $FailuresBeforeKill consecutive failures (~$([math]::Round($IntervalSeconds * $FailuresBeforeKill / 60.0, 1)) minutes)"
 
+<#  The console this watchdog was launched alongside. When it goes, so does this script.
+
+    console-guard.ps1 gets this for free -- it exits the moment GetConsoleMode fails. This one only ever
+    talks to a socket and a log file, so nothing would ever tell it its console had closed, and orphans
+    accumulated across restarts. Harmless individually (the restart lock means only one of them can act),
+    but a pile of invisible processes deciding when to restart the server is not a thing to leave lying
+    around.  #>
+$ownerConsole = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+
 $failures = 0
 while ($true) {
     Start-Sleep -Seconds $IntervalSeconds
+
+    if ($ownerConsole -and -not (Get-CimInstance Win32_Process -Filter "ProcessId=$ownerConsole" -ErrorAction SilentlyContinue)) {
+        Write-Watch "the console that launched this watchdog (pid $ownerConsole) is gone; exiting."
+        break
+    }
 
     $owner = $null
     try {
