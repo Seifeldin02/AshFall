@@ -114,6 +114,24 @@ sync:
       logs/console-guard.log, never to the console -- writing to the console is the thing being guarded.
       start.bat / start-staging.bat must launch it with `start /b`. Verify with an external probe attached to
       the server console: mode must read 0x89 while Java is running.
+  - path: freeze-watchdog.ps1
+    note: |
+      ADDED 2026-09-02. Probes RCON from OUTSIDE the JVM every 30s and, after 10 consecutive unanswered
+      probes (~5 min), calls restart-server.bat and kills the JVM. This is the layer that bounds ANY hang --
+      deadlock, plugin loop, GC spiral, blocked console -- to minutes rather than hours. RCON is the probe
+      because answering it requires the main thread; a bare TCP connect stayed up all through the
+      2026-08-31 outage. Launched by start.bat / start-staging.bat with `start /b`.
+
+      KNOWN BEHAVIOUR: it exits with its console, so it is absent until the next server start. Verified end
+      to end on staging by suspending the JVM with NtSuspendProcess: detected, killed and restarted with no
+      human involved.
+  - path: launch-via-conhost.bat
+    note: |
+      The visible-console launcher, in BOTH server directories, each cd-ing to its own. Every path inside it
+      must stay ABSOLUTE (%~dp0-derived). It used a relative script name for years, worked fine from a normal
+      console, and failed silently the first time restart-server.bat called it -- the recovery child inherits
+      the JVM environment, and NoDefaultCurrentDirectoryInExePath alone makes cmd answer "not recognized"
+      with the file sitting right there. A repo copy of the shape is in config-templates/.
   - path: restart-server.bat
     note: |
       ADDED 2026-09-01. spigot.yml settings.restart-script now points at this file by ABSOLUTE path; it used
@@ -164,6 +182,12 @@ jar_versions:
 env:
   - path: start.bat
     note: |
+      JVM FLAGS ARE LOAD-BEARING, not tuning. -Dlog4j2.AsyncQueueFullPolicy=Discard and
+      -Dlog4j2.DiscardThreshold=ERROR are the fix for the 2026-08-31 console stall: Paper wraps the file and
+      console appenders in ONE Log4j AsyncAppender, and the DEFAULT full-queue policy makes the producer --
+      the server thread -- block until there is room. Discard drops log lines instead. A launcher that loses
+      these flags re-opens a 22-hour outage. Verified present on production 2026-09-02.
+
       Production launcher. Differs from staging by heap and by filename (staging uses start-staging.bat), so
       it is never copied -- but BOTH must invoke disable-quickedit.ps1 before the JVM and launch
       console-guard.ps1 with `start /b` alongside it. A launcher missing the guard is how the 2026-08-31

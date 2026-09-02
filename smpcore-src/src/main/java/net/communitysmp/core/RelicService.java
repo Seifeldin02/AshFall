@@ -1012,13 +1012,35 @@ final class RelicService implements Listener {
          *
          *  Only the i-frame case is touched. A normal combo -- the overwhelming majority -- takes the
          *  branch above and behaves precisely as before. */
-        if(event.getEntity() instanceof LivingEntity framed&&framed.getNoDamageTicks()>0&&framed.getLastDamage()>0){
+        /*  Test the OUTCOME, not vanilla's bookkeeping.
+         *
+         *  The previous version asked whether the target looked invulnerable -- getNoDamageTicks() > 0 AND
+         *  getLastDamage() > 0 -- and it did not fire when it mattered. Straight out of the production log:
+         *
+         *    gliding=true | mace base 1.02 -> applied 19.03 (x2.00 = 2.04, slam = 19.03) | final 0.00
+         *
+         *  The handler did its job and raised the hit to 19.03, and the target still took nothing. So at
+         *  least one of those two fields was not set the way the guard assumed at the moment the event
+         *  fired, and guessing which one again would be the third theory in a row.
+         *
+         *  There is no need to guess. getFinalDamage() already tells us what the target is about to take,
+         *  with vanilla's i-frame subtraction folded in. If that is materially less than what this handler
+         *  decided to apply, the hit is being swallowed -- whatever the reason -- and the answer is the same
+         *  one every other damage path here uses: clear the window and deal it properly.
+         *
+         *  Only a swallowed hit takes this branch. A combo landing for its full value never enters it. */
+        double reaching=event.getFinalDamage();
+        if(event.getEntity() instanceof LivingEntity framed&&reaching<applied-.01){
             event.setCancelled(true);
             framed.setNoDamageTicks(0);
             framed.setLastDamage(0);
             /** Re-entrant by design and safe: the anchor was already removed above, so this handler returns
              *  immediately on the way back in and cannot loop. */
             framed.damage(applied,player);
+            if(config.getBoolean("buffs.skyward-anchor.log-combo",true))
+                plugin.getLogger().info(String.format(java.util.Locale.US,
+                        "[anchor-combo] rescued a swallowed hit on %s: %.2f was reaching the target, re-dealt %.2f",
+                        event.getEntity().getType(),reaching,applied));
         }
         /** The thing you actually landed on takes the FULL stagger, whatever the geometry says -- it was hit
          *  directly, not caught in the blast. Only the surrounding area damage scales with distance. */

@@ -127,7 +127,19 @@ final class GameplayListener implements Listener {
      *  fully absorbed — a shield block, or armor/enchantments/Resistance reducing it to nothing — without the
      *  event being cancelled at all; getFinalDamage() is 0 either way. Neither case is a real fight, so
      *  neither should start the PvP teleport lock or the Ender Chest combat lock. */
-    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void pvpTag(EntityDamageByEntityEvent e){if(e.getFinalDamage()<=0)return;if(e.getEntity() instanceof Player victim&&!isSelfEnderPearl(e,victim)){Player attacker=playerDamager(e.getDamager());if(attacker!=null&&!plugin.privileged(attacker)&&!plugin.privileged(victim)&&!(plugin.arena()!=null&&plugin.arena().areDuelOpponents(attacker,victim))){teleports.onPvpHit(attacker,victim);plugin.enderChests().combatStarted(attacker);plugin.enderChests().combatStarted(victim);}}}
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void pvpTag(EntityDamageByEntityEvent e){
+        /*  Being hit is combat, whatever the arithmetic came to.
+         *
+         *  This used to bail on getFinalDamage() <= 0, which reads as "no damage, no fight" and is wrong for
+         *  the case that was reported: punched while wearing full Netherite and never put into PvP lockout.
+         *  A hit that lands inside another hit's invulnerability window has vanilla's previous lastHurt
+         *  subtracted from it and can reach the target as exactly zero -- the same mechanic that was
+         *  swallowing the Skyward Anchor combo. Enchantment protection and absorption can land on zero too.
+         *
+         *  None of those mean nobody swung. The event is ignoreCancelled, so a hit that was blocked outright
+         *  never arrives here at all; anything that does arrive is a real attack that connected, and it
+         *  starts the lockout. */
+        if(e.getEntity() instanceof Player victim&&!isSelfEnderPearl(e,victim)){Player attacker=playerDamager(e.getDamager());if(attacker!=null&&!plugin.privileged(attacker)&&!plugin.privileged(victim)&&!(plugin.arena()!=null&&plugin.arena().areDuelOpponents(attacker,victim))){teleports.onPvpHit(attacker,victim);plugin.enderChests().combatStarted(attacker);plugin.enderChests().combatStarted(victim);}}}
     /** Teleport warmup is cancelled here, at MONITOR, rather than in damaged() at HIGH.
      *
      *  combat() cancels friendly fire at HIGH, and damaged() also ran at HIGH. EntityDamageByEntityEvent

@@ -5,6 +5,115 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-09-02 - Host-wide lag incident: Prism's 36 GB database (read-only audit)
+
+### Confirmed cause
+
+**`plugins/prism/prism.db` is 36.39 GB across 92,756,837 rows in `prism_activities`, on a 475.7 GB disk with
+22.6 GB free.** Production's JVM had written **307.95 GB in the 11 hours** since it started - a sustained
+~8 MB/s of SQLite WAL churn against a 36 GB file. That saturates the laptop's disk, which is why the whole
+machine was slow, not just the server.
+
+Prism's retention is `prism purge start before:6w`, scheduled daily and enabled. The server's data begins
+around 22 July, so **at the time of the incident nothing was yet six weeks old and the purge had never
+deleted a single row.** The database grew unbounded from day one; the retention policy was correct in
+principle and had simply never fired.
+
+What feeds it: `block-break`, `block-place`, `block-form`, `block-harvest`, `block-use`, `entity-death`,
+`entity-remove`, `item-insert`, `item-remove`, `item-pickup`, `item-drop`, `item-destroy`, `item-throw`,
+`item-trade`, `item-use`, `player-death` and more, all `true`. On this server that means every Industrial
+Hopper transfer (nine items a cycle), every stacked-spawner death and every container touch becomes rows.
+
+Compounding it, from the 2026-09-01 watchdog dump: Prism's `EntityDeathListener` constructs a **complete new
+entity, AI `Brain` and all**, for every entity death purely to serialise its NBT
+(`NbtService.processEntityNbt` -> `CraftRegionAccessor.createEntity`). At the observed ~9,700 creeper deaths
+a day that is significant CPU on top of the write volume.
+
+### Why the server looked fine while the machine did not
+
+`tps` reported **20.0 / 20.0 / 20.0** across 1m, 5m and 15m throughout. Prism commits off the main thread, so
+the tick loop never suffered - the damage was entirely in host I/O. That is also why the only genuine lag
+symptom in the logs is a network one:
+
+```
+[15:30:37] MacoCT was kicked due to keepalive timeout!
+[15:30:47] MacoCT lost connection: Timed out
+```
+
+A starved machine cannot service keepalives on time even at 20 TPS.
+
+### The mass kick was NOT lag
+
+Two separate events, neither caused by the database:
+
+- **04:10:11 - a deliberate restart.** `[STDOUT] [org.spigotmc.RestartCommand] Attempting to restart with
+  C:\MinecraftServer\restart-server.bat`, then Asserto and TPKIID `lost connection: Server is restarting`.
+  TPKIID ran `/restart` at 04:10:10 while trying to clear MacoCT's AuthMe IP ban (`/unban macoct` 04:06:04,
+  `/unban ip macoct` 04:06:23 - neither clears an IP tempban; `pardon-ip` does). The server was back at
+  04:10:29.
+- **13:32:44-45 - all three players `lost connection: Disconnected` inside one second.** That reason is a
+  client/network-side drop, not a server kick.
+
+### Did the console/host changes contribute? No - and each is accounted for
+
+| Change | Effect on this incident | Evidence |
+|---|---|---|
+| `console-guard.ps1` | none | running as pid 19884, 92 MB; did not appear anywhere in a live 6-second CPU sample (the only PowerShell above 1% was the tooling host). One WMI query per 5s. |
+| `freeze-watchdog.ps1` | none - **it was not running** | exited 04:23:46 when its console closed. Production has been unwatched since. See below. |
+| `-Dlog4j2.AsyncQueueFullPolicy=Discard` | strictly reduces work | never blocks a producer; cannot add load. |
+| `log-named-deaths: false`, `log-villager-deaths: false` | strictly reduces work | total production `logs/` is 8.1 MB against Prism's 37 GB. |
+| ReplayCore jar moved out of `plugins/` | strictly reduces work | 0 occurrences of `ReplayCore` in the current log. |
+| `restart-script` -> `restart-server.bat` | **positive** | it is what made `/restart` work at 04:10. Under the previous `./start.sh` the isFile() check fails, so that `/restart` would have taken production down permanently instead of for 19 seconds. |
+
+Console state at audit time: window title `Ashfall Concord [PRODUCTION]` with **no `Select ` prefix**, and
+the guard log shows the mode held at `0x89`. No console blockage recurred.
+
+### Other things checked and found clean
+
+- **One** production JVM (34128 wrapper -> 11456, started 04:23:42). No staging server running, so nothing
+  was competing with production. No duplicate servers, no restart loop.
+- No new `hs_err_*`, no heap dumps, no crash reports; the only one on disk is from 2026-08-22.
+- No Paper watchdog events, no `Can't keep up`, no `stopped responding` anywhere today. A thread dump was
+  therefore not taken - at 20 TPS with no watchdog trip there was nothing for it to show.
+- Disk latency at audit time 0.1 ms write / 0.4 ms read, queue length 0 - with zero players online and Prism
+  therefore near-idle. The write volume figure above is what matters, not the instantaneous latency.
+- Pagefile 13.9 GB allocated, 2.8 GB used, 5.4 GB peak. RAM 31.9 GB with 7.8 GB free. Not memory-bound.
+- Running jar confirmed by hash: `plugins/SMPCore.jar` md5 `8e9d293b4d79cc1d5f3a0df46915a035`, identical to
+  the built `SMPCore-1.7.0.jar`.
+
+### Two loose ends found during the audit (not causes, not yet fixed)
+
+1. **Production has no freeze watchdog running.** It exits with its console by design, and the 04:23 restart
+   left it stopped. It restarts with the next server start; until then the 5-minute hang recovery is absent.
+2. **One idle `cmd /K C:\MinecraftServer\restart-server.bat` (pid 31288)** left over from the 04:10 restart.
+   `start` runs a `.bat` under `/K`, which keeps the shell open after the script finishes. Harmless, but it
+   accumulates one per watchdog-driven restart.
+
+### Smallest safe fix
+
+Purge Prism's history. Nothing else needs to change and no code is involved:
+
+```
+prism purge start before:7d --nodefaults
+```
+
+That is the existing, supported mechanism, already scheduled nightly - it has simply never had anything old
+enough to remove. Reclaiming ~36 GB removes both the disk pressure and the I/O cost of writing into a file
+that size. Follow it with a `VACUUM` to return the space to the filesystem, which SQLite does not do on
+delete alone.
+
+If the write rate is still too high afterwards, the next lever is narrowing what Prism records - `item-insert`,
+`item-remove` and `item-pickup` are the ones a hopper-heavy server generates most of - and only then
+shortening the retention window from six weeks.
+
+### Rollback
+
+Nothing was changed during this audit, so there is nothing to roll back. The fix above is reversible in the
+sense that matters: a purge deletes history older than the chosen window and cannot affect live world data,
+player data or the SMPCore database.
+
+---
+
 ## Session: 2026-09-01 (part 2) - Hopper rate, void-world sealing, /ec case, mob-drop shop audit (staging only)
 
 ### A plain hopper must move at a plain hopper's rate
