@@ -177,6 +177,9 @@ final class GameplayListener implements Listener {
          *  money even when neither side had wagered anything -- reported live. The kit, the graves and the
          *  drops are all handled by ArenaService; this listener simply must not tax it. */
         boolean duelDeath=plugin.arena()!=null&&plugin.arena().inArena(victim);
+        /** A Colosseum death is not a real death either. The fee is the stake, the belongings are restored
+         *  from the capture, and taxing the balance on top would charge twice for one loss. */
+        if(plugin.colosseum()!=null&&plugin.colosseum().isColosseumWorld(victim.getWorld()))duelDeath=true;
         double percent=duelDeath?0:plugin.getConfig().getDouble("death.balance-loss-percent",10),cap=plugin.getConfig().getDouble("death.balance-loss-cap",10000),lost=percent<=0?0:db.takeFraction(CoreUtil.id(victim),percent/100.0*plugin.bank().buyFactor(),cap*plugin.bank().buyFactor());if(lost>0)CoreUtil.error(victim,"Death cost you "+CoreUtil.money(lost)+".");e.getDrops().removeIf(item->item.getType()==Material.PLAYER_HEAD);if(killer!=null&&plugin.getConfig().getBoolean("pvp.drop-player-head",true)){ItemStack head=new ItemStack(Material.PLAYER_HEAD);SkullMeta meta=(SkullMeta)head.getItemMeta();meta.setOwningPlayer(victim);meta.displayName(net.kyori.adventure.text.Component.text(plugin.nicknames().displayName(victim)+"'s Head",net.kyori.adventure.text.format.NamedTextColor.RED));meta.lore(List.of(net.kyori.adventure.text.Component.text("Claimed by "+plugin.nicknames().displayName(killer),net.kyori.adventure.text.format.NamedTextColor.GRAY)));head.setItemMeta(meta);e.getDrops().add(head);}boolean awarded=bounties.onPlayerKill(victim,killer,lost);if(lost>0&&!awarded){plugin.bank().creditSink(lost,CoreUtil.id(victim),"DEATH_PENALTY");db.recordEconomy(CoreUtil.id(victim),"DEATH_SINK",-lost,"NON_PVP");}graves.create(victim,e.getDrops(),victim.getLocation());}
     /** Trial Chamber spawner mobs are tagged here (SpawnReason.TRIAL_SPAWNER is unambiguous — it's set only
      *  for mobs the vanilla trial spawner mechanic itself spawns, never for an ordinary hostile that wanders
@@ -254,7 +257,11 @@ if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason
             if(viewer.getGameMode()==GameMode.SPECTATOR)changed.hidePlayer(plugin,viewer);else changed.showPlayer(plugin,viewer);
         }
     }
-    @EventHandler public void mobDeath(EntityDeathEvent e){netWorth.entityRemoved(e.getEntity());if(!(e.getEntity() instanceof Player)&&e.getEntity().getKiller()!=null)db.incrementStat(CoreUtil.id(e.getEntity().getKiller()),"mob_kills");bosses.onDeath(e);}
+    /** A Colosseum boss dying is not a mob kill. It pays no mob money, counts toward no kill statistic and
+     *  never reaches the world-boss reward path -- the encounter pays its own prize, once, from its own
+     *  table, after the player's belongings are back. Without this guard a boss worth a million dollars
+     *  would ALSO pay ordinary combat income on the way down. */
+    @EventHandler public void mobDeath(EntityDeathEvent e){if(plugin.colosseum()!=null&&plugin.colosseum().isColosseumWorld(e.getEntity().getWorld()))return;netWorth.entityRemoved(e.getEntity());if(!(e.getEntity() instanceof Player)&&e.getEntity().getKiller()!=null)db.incrementStat(CoreUtil.id(e.getEntity().getKiller()),"mob_kills");bosses.onDeath(e);}
     @EventHandler(ignoreCancelled=true) public void transform(EntityTransformEvent e){netWorth.entityRemoved(e.getEntity());bosses.onTransform(e);plugin.getServer().getScheduler().runTask(plugin,()->{for(Entity entity:e.getTransformedEntities())if(entity instanceof Villager villager)netWorth.villagerChanged(villager);});}
     @EventHandler public void entitiesLoad(org.bukkit.event.world.EntitiesLoadEvent e){bosses.onEntitiesLoaded(e.getEntities());netWorth.entitiesLoaded(e.getEntities());}
     @EventHandler(ignoreCancelled=true) public void villagerCareer(VillagerCareerChangeEvent e){plugin.getServer().getScheduler().runTask(plugin,()->netWorth.villagerChanged(e.getEntity()));}

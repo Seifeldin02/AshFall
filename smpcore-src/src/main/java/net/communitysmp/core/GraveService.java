@@ -104,6 +104,10 @@ final class GraveService implements Listener {
         /** Arena duels never leave a grave -- deaths there are intercepted, but guard here too so nothing
          *  can ever drop a grave (or a grave compass) inside the duel world. */
         if(plugin.arena()!=null&&plugin.arena().isArenaWorld(owner.getWorld()))return false;
+        /** Same for a Colosseum encounter, and for the same reason: the death is intercepted and every item
+         *  is restored from the capture, so a grave here would be a SECOND copy of belongings the player is
+         *  about to get back -- in a world that is deleted seconds later. */
+        if(plugin.colosseum()!=null&&plugin.colosseum().isColosseumWorld(owner.getWorld()))return false;
         List<ItemStack> items=drops.stream().filter(Objects::nonNull).filter(item->!item.getType().isAir()&&item.getAmount()>0&&!isCompass(item)).map(ItemStack::clone).toList();
         drops.removeIf(this::isCompass);if(items.isEmpty())return false;
         location=findSafeGraveLocation(location);

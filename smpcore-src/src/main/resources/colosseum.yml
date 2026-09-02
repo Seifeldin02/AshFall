@@ -1,0 +1,278 @@
+# ============================================================================================
+# THE ASHFALL COLOSSEUM
+#
+# A paid, solo, single-boss encounter fought inside a disposable arena instance with the
+# player's own real equipment. Every value a boss has lives here; nothing is compiled in.
+#
+# This is NOT the world-boss system in a box. Colosseum bosses have their own identities,
+# stats, mechanics, reward tables and lifecycle, and they never touch world-boss state,
+# participation records, natural spawning or the active-boss restriction.
+#
+# HOW HEALTH WORKS. Minecraft caps the MAX_HEALTH attribute at 1024, so a boss with more than
+# that cannot carry it on the attribute. `health` below is the EFFECTIVE pool: the engine
+# health is clamped to 1024 and incoming damage is divided by health/1024, which gives the
+# intended pool with a health bar that still drains at the right rate. Set `health` to
+# whatever the fight should actually be worth and ignore the cap.
+#
+# BALANCE INTENT. Difficult but fair for one player in strong enchanted survival gear
+# (netherite, Protection IV, Sharpness V, golden apples). Relics and exceptional equipment
+# help but are never required. There is no hidden player-count scaling anywhere: a Colosseum
+# fight is one player against one boss, always, and the numbers below are the whole story.
+# ============================================================================================
+
+# Global concurrency. Each active encounter is its own cloned void world, so this is the real
+# ceiling on how much disk, chunk and entity work the Colosseum can be doing at once.
+max-concurrent-instances: 4
+
+# How many chunks an instance pulls in per tick while preparing. The arena is ~49 chunks, so
+# the default spreads it over two ticks and is invisible to everybody else on the server.
+chunks-per-tick: 24
+
+economy:
+  # Rewarded victories one player may bank per real day ACROSS the whole Colosseum. This is
+  # the money-printing brake: at the default fee/prize it caps Colosseum profit at $1,500,000
+  # a day. Resets at midnight Riyadh time, the same day boundary the rest of the server uses.
+  daily-rewarded-victories: 3
+  # Announce a victory in chat. Losses are never announced.
+  broadcast-victories: true
+
+# --------------------------------------------------------------------------------------------
+# ARENAS
+#
+# Each arena is a private TEMPLATE world an admin builds in, plus a committed snapshot that
+# every encounter is cloned from. Colosseum templates are entirely separate worlds from duel
+# maps: editing one can never alter the other. `base-template` is only used the first time an
+# arena is created, to copy a duel map's committed snapshot as a non-destructive starting
+# point -- after that the Colosseum template is its own thing and the duel map is never read
+# again.
+# --------------------------------------------------------------------------------------------
+arenas:
+  ashen_colosseum:
+    name: "The Ashen Colosseum"
+    base-template: arena100
+    # Where the player lands, and where the boss is summoned. Far enough apart that the
+    # encounter starts with a moment to look at what has arrived.
+    player-spawn: [0.5, 65.0, -30.5]
+    boss-spawn: [0.5, 65.0, 20.5]
+    spectator: [0.5, 90.0, 0.5]
+    # The playable cuboid: the only area chunks are loaded for, the only area a player may be
+    # in, and the boundary every escape guard is measured against.
+    bounds: [-50, 64, -50, 49, 319, 49]
+
+# --------------------------------------------------------------------------------------------
+# BOSSES
+#
+# style / difficulty are display strings shown in the GUI.
+# health           effective pool (see the note at the top of this file)
+# damage           melee attack damage attribute
+# armor            ARMOR attribute -- straight percentage reduction on physical damage
+# armor-toughness  reduces how much high-damage hits cut through armor
+# movement         MOVEMENT_SPEED attribute (a zombie is 0.23, a vindicator 0.35)
+# knockback-resistance  0 = punted freely, 1 = immovable
+# time-limit-seconds    running out is a LOSS: the fee is kept and nothing is paid
+# entry-fee / cash-prize   see economy above. The fee is never refunded on a victory, so the
+#                          profit on a win is (cash-prize - entry-fee).
+# reward-limit     optional per-boss daily rewarded-victory cap, on top of the global one.
+#                  0 or absent means only the global cap applies.
+# available        false hides the boss from the menu and refuses entry.
+# --------------------------------------------------------------------------------------------
+bosses:
+
+  # ---------------------------------------------------------------- 1. the duel
+  emberbound_duelist:
+    name: "Emberbound Duelist"
+    icon: NETHERITE_SWORD
+    style: "Duellist"
+    difficulty: "Hard"
+    arena: ashen_colosseum
+    entity: WITHER_SKELETON
+    scale: 1.25
+    lore:
+      - "A swordsman burned into his own oath."
+      - "Reads your rhythm and answers it."
+    health: 1800.0
+    damage: 17.0
+    armor: 6.0
+    armor-toughness: 2.0
+    movement: 0.30
+    knockback-resistance: 0.4
+    follow-range: 64.0
+    time-limit-seconds: 300
+    entry-fee: 500000
+    cash-prize: 1000000
+    available: true
+    abilities:
+      # RIPOSTE. Telegraphed with a glow and a rising note; while the stance holds, melee hits
+      # are cut hard and a share is returned to the attacker as magic damage. The counterplay
+      # is simply to STOP HITTING for two seconds -- which is the entire point of the fight.
+      riposte:
+        cooldown-seconds: 14
+        telegraph-ticks: 30
+        duration-ticks: 40
+        damage-taken-multiplier: 0.25
+        reflect-fraction: 0.35
+        reflect-cap: 6.0
+      # LUNGE. Closes distance from range with a visible ember trail, then is briefly slowed --
+      # the punish window. Never used point-blank, so it cannot chain into a stunlock.
+      lunge:
+        cooldown-seconds: 9
+        telegraph-ticks: 20
+        min-range: 6.0
+        max-range: 22.0
+        power: 1.25
+        recovery-ticks: 30
+      # FLURRY. Three quick strikes at melee range after a wind-up. Each is a normal attack
+      # and is fully blockable and avoidable by stepping out.
+      flurry:
+        cooldown-seconds: 17
+        telegraph-ticks: 25
+        strikes: 3
+        strike-interval-ticks: 8
+        damage: 7.0
+        range: 4.5
+
+  # ---------------------------------------------------------------- 2. the siege
+  warden_of_cinders:
+    name: "Warden of Cinders"
+    icon: MAGMA_BLOCK
+    style: "Area control"
+    difficulty: "Very hard"
+    arena: ashen_colosseum
+    entity: IRON_GOLEM
+    scale: 1.5
+    lore:
+      - "Slow, deliberate, and impossible to push."
+      - "It does not chase you. It removes where you stand."
+    health: 2600.0
+    damage: 20.0
+    armor: 12.0
+    armor-toughness: 6.0
+    movement: 0.20
+    knockback-resistance: 0.95
+    follow-range: 64.0
+    time-limit-seconds: 420
+    entry-fee: 500000
+    cash-prize: 1000000
+    available: true
+    abilities:
+      # FISSURE. Marks a ring of ground with magma particles and a warning tone, then erupts
+      # 1.5s later. Pure particles and damage -- it never edits a block, so it cannot damage
+      # the arena or open an escape. Step off the marks.
+      fissure:
+        cooldown-seconds: 12
+        telegraph-ticks: 30
+        radius: 5.0
+        rings: 2
+        damage: 9.0
+      # BULWARK. Anchors and takes far less damage, but cannot move or attack while it holds.
+      # Free repositioning and healing time in exchange for a damage window you cannot win.
+      bulwark:
+        cooldown-seconds: 26
+        telegraph-ticks: 20
+        duration-ticks: 80
+        damage-taken-multiplier: 0.2
+      # SLAM. Wind-up, then a radial shove with modest damage. Punishes standing in its face
+      # forever; survivable anywhere, worst at point-blank.
+      slam:
+        cooldown-seconds: 15
+        telegraph-ticks: 25
+        radius: 7.0
+        damage: 6.0
+        knockback: 1.1
+
+  # ---------------------------------------------------------------- 3. the chase
+  ashfallen_revenant:
+    name: "Ashfallen Revenant"
+    icon: SOUL_LANTERN
+    style: "Mobile skirmisher"
+    difficulty: "Hard"
+    arena: ashen_colosseum
+    entity: VINDICATOR
+    scale: 1.15
+    lore:
+      - "Never where you swung."
+      - "Punishes a player who stops moving."
+    health: 1500.0
+    damage: 14.0
+    armor: 4.0
+    armor-toughness: 1.0
+    movement: 0.36
+    knockback-resistance: 0.25
+    follow-range: 64.0
+    time-limit-seconds: 300
+    entry-fee: 500000
+    cash-prize: 1000000
+    available: true
+    abilities:
+      # BLINK. Telegraphed with portal particles at BOTH ends, so the destination is visible
+      # before it arrives. Lands behind the player at a fixed distance -- turn, or move.
+      blink:
+        cooldown-seconds: 10
+        telegraph-ticks: 20
+        behind-distance: 3.0
+        max-range: 30.0
+      # VOLLEY. Three small fireballs in a spread after a wind-up. Dodgeable, blockable with a
+      # shield, and deflectable. Bounded to `count` projectiles, which is what keeps this from
+      # ever becoming an unbounded entity source.
+      volley:
+        cooldown-seconds: 11
+        telegraph-ticks: 25
+        count: 3
+        spread: 0.16
+        speed: 0.9
+        damage: 6.0
+      # VEIL. Below the health threshold it gains speed and shrugs off projectiles, so the
+      # last third of the fight has to be closed out in melee.
+      veil:
+        health-threshold: 0.35
+        speed-bonus: 0.06
+        projectile-damage-multiplier: 0.35
+
+# --------------------------------------------------------------------------------------------
+# REWARD TABLES
+#
+# Rolled ONCE per victory, after the player's own belongings have been restored. Entries are
+# MATERIAL:min-max:chance. `rolls` is how many times the whole table is walked.
+#
+# Nothing here is granted on a loss, and nothing is granted before restoration succeeds -- if a
+# restored inventory has no room the overflow goes to the persistent claim-later stash rather
+# than being dropped on the floor or deleted.
+# --------------------------------------------------------------------------------------------
+rewards:
+  emberbound_duelist:
+    rolls: 2
+    entries:
+      - "NETHERITE_SCRAP:1-2:0.45"
+      - "DIAMOND:6-14:1.0"
+      - "ENCHANTED_GOLDEN_APPLE:1-1:0.18"
+      - "EXPERIENCE_BOTTLE:16-32:0.7"
+      - "NETHERITE_INGOT:1-1:0.12"
+  warden_of_cinders:
+    rolls: 2
+    entries:
+      - "ANCIENT_DEBRIS:1-3:0.55"
+      - "DIAMOND_BLOCK:1-2:0.6"
+      - "ENCHANTED_GOLDEN_APPLE:1-2:0.25"
+      - "EXPERIENCE_BOTTLE:24-48:0.8"
+      - "NETHERITE_INGOT:1-2:0.16"
+  ashfallen_revenant:
+    rolls: 2
+    entries:
+      - "NETHERITE_SCRAP:1-2:0.4"
+      - "DIAMOND:6-12:1.0"
+      - "GOLDEN_APPLE:2-5:0.6"
+      - "EXPERIENCE_BOTTLE:16-32:0.7"
+      - "ENDER_PEARL:4-8:0.5"
+
+# Experience granted on a victory, split across a handful of orbs so it is collectable.
+victory-experience: 600
+
+# Sounds. Deliberately restrained, and deliberately NOT a victory fanfare at the start.
+sounds:
+  click: UI_BUTTON_CLICK
+  confirm: BLOCK_NOTE_BLOCK_PLING
+  cancel: BLOCK_NOTE_BLOCK_BASS
+  start: BLOCK_RESPAWN_ANCHOR_SET_SPAWN
+  victory: UI_TOAST_CHALLENGE_COMPLETE
+  defeat: ENTITY_ELDER_GUARDIAN_CURSE
+  telegraph: BLOCK_NOTE_BLOCK_BIT

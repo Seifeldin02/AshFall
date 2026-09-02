@@ -342,9 +342,7 @@ class DuelMapService implements org.bukkit.event.Listener {
             deleteQuietly(target);
             return false;
         }
-        new File(target, "uid.dat").delete();
-        new File(target, "session.lock").delete();
-        new File(new File(target, "data" + File.separator + "paper"), "metadata.dat").delete();
+        stripIdentity(target);
         plugin.getLogger().info("[duel-maps] materialised workspace " + map.templateWorld() + " from its committed snapshot");
         return true;
     }
@@ -559,9 +557,7 @@ class DuelMapService implements org.bukkit.event.Listener {
     private World openCopied(DuelMap map, String name, File target) {
         /** Belt and braces over copyWorldFolder's own exclusion: a snapshot taken by an older build could
          *  still have an identity file in it, and Paper would refuse the clone as a duplicate world. */
-        new File(target, "uid.dat").delete();
-        new File(target, "session.lock").delete();
-        new File(new File(target, "data" + File.separator + "paper"), "metadata.dat").delete();
+        stripIdentity(target);
         World instance = new WorldCreator(name).generator(new ArenaService.VoidGenerator())
                 .type(WorldType.FLAT).environment(World.Environment.NORMAL).createWorld();
         if (instance == null) return null;
@@ -1075,7 +1071,12 @@ class DuelMapService implements org.bukkit.event.Listener {
 
     // ------------------------------------------------------------------ filesystem
 
-    private void copyWorldFolder(Path source, Path target) throws IOException {
+    /*  Package-private, not private, because the Colosseum clones worlds too and must do it with THIS
+     *  implementation rather than a lookalike. The subtleties here were all learned the hard way -- which
+     *  files carry a world's identity, that Paper refuses a clone whose UUID it already knows, that Windows
+     *  holds region-file handles after an unload -- and a second copy of that knowledge would rot. The
+     *  Colosseum keeps its own registry, prefixes and rules; it borrows only the filesystem. */
+    void copyWorldFolder(Path source, Path target) throws IOException {
         if (!Files.isDirectory(source)) throw new IOException("source " + source + " is not a directory");
         Files.walkFileTree(source, new SimpleFileVisitor<>() {
             @Override public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
@@ -1097,6 +1098,15 @@ class DuelMapService implements org.bukkit.event.Listener {
      *  data/paper/metadata.dat, not in the uid.dat older versions used. Copying it made every clone silently
      *  refuse to open, which surfaced only as a null world several layers up. Both names are excluded, so the
      *  copy works on either layout. */
+    /** Strips the three files that make a copied folder look like a world Paper already has open.
+     *  {@link #copyWorldFolder} skips them, but a snapshot written by an older build can still contain one,
+     *  and Paper refuses such a clone outright ("is a duplicate of another world"). */
+    static void stripIdentity(File folder) {
+        new File(folder, "uid.dat").delete();
+        new File(folder, "session.lock").delete();
+        new File(new File(folder, "data" + File.separator + "paper"), "metadata.dat").delete();
+    }
+
     private static boolean identityFile(Path file) {
         String name = file.getFileName().toString();
         if (name.equals("session.lock") || name.equals("uid.dat")) return true;
@@ -1105,7 +1115,7 @@ class DuelMapService implements org.bukkit.event.Listener {
                 && parent.getFileName().toString().equals("paper");
     }
 
-    private void deleteWithRetry(File folder, int attemptsLeft) {
+    void deleteWithRetry(File folder, int attemptsLeft) {
         deleteQuietly(folder);
         if (!folder.exists() || attemptsLeft <= 0) {
             if (folder.exists()) plugin.getLogger().warning("[duel-maps] could not delete " + folder.getName() + "; it will be swept at next startup.");
@@ -1114,7 +1124,7 @@ class DuelMapService implements org.bukkit.event.Listener {
         Bukkit.getScheduler().runTaskLater(plugin, () -> deleteWithRetry(folder, attemptsLeft - 1), 40L);
     }
 
-    private void deleteQuietly(File folder) {
+    void deleteQuietly(File folder) {
         if (folder == null || !folder.exists()) return;
         try (java.util.stream.Stream<Path> walk = Files.walk(folder.toPath())) {
             walk.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) { } });

@@ -43,7 +43,12 @@ final class SettingsService implements Listener {
         /** Listing is not buying. Selling something into the AH charges a percentage fee up front, which is
          *  a completely different risk from spending a known price on a listing you chose -- so it gets its
          *  own switch rather than riding on AUCTION. */
-        AUCTION_LIST("confirm_auction_list",true);
+        AUCTION_LIST("confirm_auction_list",true),
+        /** Colosseum entry is the largest single voluntary spend on the server -- half a million, gone the
+         *  moment the arena is ready, with a real chance of losing it. It is mandatory in spirit and ON by
+         *  default, and the screen it opens spells out the fee, the prize, the daily allowance and every way
+         *  the money can be lost before the player agrees to any of it. */
+        COLOSSEUM("confirm_colosseum",true);
         final String key;final boolean fallback;
         ConfirmationKind(String key,boolean fallback){this.key=key;this.fallback=fallback;}
     }
@@ -758,7 +763,7 @@ final class SettingsService implements Listener {
     private boolean defaultFor(String key){for(ConfirmationKind kind:ConfirmationKind.values())if(kind.key.equals(key))return kind.fallback;for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return kind.fallback;for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return kind.fallback;return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::fallback).findFirst().orElse(true);}
     private String state(Player player,String key,boolean fallback){return enabled(player,key,fallback)?"ON":"OFF";}
     private String displayKey(String key){for(TpaKind kind:TpaKind.values())if(kind.key.equals(key))return prettyTpa(kind);for(NametagKind kind:NametagKind.values())if(kind.key.equals(key))return prettyNametag(kind);return MAIN.stream().filter(toggle->toggle.key().equals(key)).map(Toggle::title).findFirst().orElse(key.startsWith("confirm_")?CoreUtil.pretty(key.substring(8))+" confirmations":CoreUtil.pretty(key));}
-    private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"AH Purchase";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";case SPAWNER->"Spawner Shop";case AUCTION_LIST->"AH Listing Fee";};}
+    private String prettyConfirmation(ConfirmationKind kind){return switch(kind){case SHOP->"Regular Shop";case AUCTION->"AH Purchase";case LUXURY->"Luxury Shop";case SHARD->"Shard Shop";case SPAWNER->"Spawner Shop";case AUCTION_LIST->"AH Listing Fee";case COLOSSEUM->"Colosseum Entry";};}
     private String prettyTpa(TpaKind kind){return switch(kind){case OTHER->"TPA Requests";case FACTION->"Faction TPA Requests";case AUTO_ACCEPT->"Auto-Accept Faction TPA";};}
     /** Auto-TPA submenu clicks. Kept out of the TPA branch above so the two pages cannot collide on a slot. */
     private void autoTpaClick(InventoryClickEvent event,Player player,int slot){
@@ -939,7 +944,7 @@ final class SettingsService implements Listener {
         if(living.getPersistentDataContainer().has(new org.bukkit.NamespacedKey(plugin,"trial_spawner_mob"),org.bukkit.persistence.PersistentDataType.BYTE))return false;
         return true;
     }
-    boolean selfTest(){return MAIN.size()==10&&ConfirmationKind.values().length==6&&defaultFor(ConfirmationKind.SPAWNER.key)&&defaultFor(ConfirmationKind.AUCTION_LIST.key)&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
+    boolean selfTest(){return MAIN.size()==10&&ConfirmationKind.values().length==7&&defaultFor(ConfirmationKind.COLOSSEUM.key)&&defaultFor(ConfirmationKind.SPAWNER.key)&&defaultFor(ConfirmationKind.AUCTION_LIST.key)&&!defaultFor(ConfirmationKind.SHOP.key)&&defaultFor(ConfirmationKind.LUXURY.key)&&defaultFor(ConfirmationKind.AUCTION.key)&&defaultFor(ConfirmationKind.SHARD.key)&&particleScaleFor("FULL")==1&&particleScaleFor("MINIMAL")<particleScaleFor("REDUCED")&&tpaSelfTest()&&NametagKind.values().length==3&&defaultFor(NametagKind.BALANCES.key)&&!defaultFor(NametagKind.FACTIONS.key)&&!defaultFor(NametagKind.HEARTS.key);}
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 

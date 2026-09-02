@@ -19,7 +19,7 @@ import java.time.Instant;
 import java.util.*;
 
 public final class SMPCore extends JavaPlugin implements CommandExecutor,TabCompleter {
-    private Database db;private DuelMapService duelMaps;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private VoidWorldService voidWorlds;private DiscardedVaultService vault;private ArenaService arena;private SpawnerShopService spawnerShop;private SpectacleService spectacle;private PacketNametagService packetNametags;
+    private Database db;private DuelMapService duelMaps;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private VoidWorldService voidWorlds;private DiscardedVaultService vault;private ArenaService arena;private ColosseumService colosseum;private SpawnerShopService spawnerShop;private SpectacleService spectacle;private PacketNametagService packetNametags;
     private final Map<UUID,Long> feedbackCooldowns=new HashMap<>();
     Database db(){return db;} UIService ui(){return ui;} ProgressService progress(){return progress;} TeleportService teleports(){return teleports;} SpawnClaimService spawnClaims(){return spawnClaims;}EnderChestService enderChests(){return enderChests;}NetWorthService netWorth(){return netWorth;}BankService bank(){return bank;}VillagerCapsuleService capsules(){return capsules;}FactionService factions(){return factions;}BossEventService bosses(){return bosses;}MessagingService messaging(){return messaging;}GraveService graves(){return graves;}BulletinService bulletin(){return bulletin;}SettingsService settings(){return settings;}AccountService account(){return account;}RegistrationService registration(){return registration;}ConfirmationService confirmations(){return confirmations;}ShardService shards(){return shards;}MarketplaceService marketplace(){return marketplace;}WeeklyDragonService weeklyDragon(){return weeklyDragon;}VillagerDiscountService villagerDiscounts(){return villagerDiscounts;}SpawnerService spawners(){return spawners;}NicknameService nicknames(){return nicknames;}TabIntegration tab(){return tabIntegration;}AfkService afk(){return afk;}RelicService relics(){return relics;}AdminToolsService adminTools(){return adminTools;}PunishmentService punishments(){return punishments;}ReplayIntegration replay(){return replay;}TrustedAdminService trustedAdmins(){return trustedAdmins;}IpBanService ipBans(){return ipBans;}ModerationService moderation(){return moderation;}PacketNametagService packetNametags(){return packetNametags;}
     OrdersService orders(){return ordersService;}
@@ -29,6 +29,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
 
     DiscardedVaultService vault(){return vault;}
     ArenaService arena(){return arena;}
+    ColosseumService colosseum(){return colosseum;}
     DuelMapService duelMaps(){return duelMaps;}
     ShopService shop(){return shop;} SpawnerShopService spawnerShop(){return spawnerShop;} SpectacleService spectacle(){return spectacle;}
     double creditEarned(String player,double amount,String detail){if(amount<=0)return 0;if(bank==null){db.changeBalance(player,amount);return amount;}return bank.creditEarned(player,amount,detail);}
@@ -52,7 +53,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             org.bukkit.plugin.Plugin target=getServer().getPluginManager().getPlugin(name);
             if(target!=null&&target.isEnabled()){getServer().getPluginManager().disablePlugin(target);getLogger().info("Disabled "+name+" per config (integrations.disabled-plugins).");}
         }
-        for(String resource:List.of("shop.yml","bosses.yml","events.yml","relics.yml","shards.yml"))
+        for(String resource:List.of("shop.yml","bosses.yml","events.yml","relics.yml","shards.yml","colosseum.yml"))
             if(!new File(getDataFolder(),resource).exists())saveResource(resource,false);
         db=new Database(this);
         try{db.open();}catch(SQLException e){getLogger().severe("SMPCore cannot open SQLite: "+e.getMessage());getServer().getPluginManager().disablePlugin(this);return;}
@@ -65,7 +66,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         bounties=new BountyService(this,factions);spawners=new SpawnerService(this,factions);netWorth=new NetWorthService(this,factions,shop,spawners);
         merchants=new MerchantService(this,shop,auctions,bosses,bank);capsules=new VillagerCapsuleService(this,factions,spawnClaims,merchants);
         settings=new SettingsService(this);account=new AccountService(this);registration=new RegistrationService(this);confirmations=new ConfirmationService(this);shards=new ShardService(this);marketplace=new MarketplaceService(this,shop,auctions,shards);
-        spectacle=new SpectacleService(this);tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);spawnerShop=new SpawnerShopService(this);getServer().getPluginManager().registerEvents(spawnerShop,this);duelMaps=new DuelMapService(this);getServer().getPluginManager().registerEvents(duelMaps,this);arena=new ArenaService(this);getServer().getPluginManager().registerEvents(arena,this);voidWorlds=new VoidWorldService(this);getServer().getPluginManager().registerEvents(voidWorlds,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
+        spectacle=new SpectacleService(this);tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);spawnerShop=new SpawnerShopService(this);getServer().getPluginManager().registerEvents(spawnerShop,this);duelMaps=new DuelMapService(this);getServer().getPluginManager().registerEvents(duelMaps,this);arena=new ArenaService(this);getServer().getPluginManager().registerEvents(arena,this);colosseum=new ColosseumService(this);getServer().getPluginManager().registerEvents(colosseum,this);voidWorlds=new VoidWorldService(this);getServer().getPluginManager().registerEvents(voidWorlds,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
         villagerDiscounts=new VillagerDiscountService(this);
         worldBorders=new WorldBorderService(this);
         for(World world:getServer().getWorlds())try{world.setGameRule(GameRule.LOCATOR_BAR,false);}catch(Throwable ignored){}
@@ -73,6 +74,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         adminTools=new AdminToolsService(this);discordReminders=new DiscordReminderService(this);ordersService=new OrdersService(this);afk=new AfkService(this);punishments=new PunishmentService(this);ipBans=new IpBanService(this);monuments=new MonumentService(this);moderation=new ModerationService(this);
         getServer().getPluginManager().registerEvents(new GameplayListener(this,factions,teleports,shop,auctions,bosses,bounties,relics,progress,spawners,spawnClaims,netWorth,merchants,capsules,graves,obsidian),this);
         getServer().getPluginManager().registerEvents(trustedAdmins,this);
+        /** Orphan sweep and interrupted-run recovery: both need a live server, so neither belongs in the
+         *  service constructor. Anything left ACTIVE in colosseum_runs at this point is a fight the process
+         *  died in the middle of, and its entry fee goes back. */
+        colosseum.start();
         for(Listener listener:List.of(packetNametags,enderChests,bank,settings,account,confirmations,shards,marketplace,graves,bulletin,guides,progress,netWorth,villagerDiscounts,nicknames,adminTools,ordersService,relics,spawnClaims,afk,bounties,ipBans))
             getServer().getPluginManager().registerEvents(listener,this);
         if(getServer().getPluginManager().isPluginEnabled("GrimAC"))grimCompatibility=new GrimCompatibility(this);
@@ -87,13 +92,13 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         org.bukkit.permissions.Permission banBroadcast=getServer().getPluginManager().getPermission("punisherx.see.ban");
         if(banBroadcast!=null)banBroadcast.setDefault(org.bukkit.permissions.PermissionDefault.TRUE);
         replay=new ReplayIntegration(this);
-        for(String name:List.of("f","balance","pay","home","sethome","delhome","renamehome","homes","buyhome","tpa","tpahere","tpaccept","tpdeny","spawn","rtp","back","msg","reply","shop","luxuryshop","shardshop","settings","ah","bounty","bounties","events","relics","leaderboards","guide","smphelp","role","sidebar","feedback","stats","progress","history","graves","enderchest","ashfall","nickname","discord","admin","shout","afk","myorders")){
+        for(String name:List.of("f","balance","pay","home","sethome","delhome","renamehome","homes","buyhome","tpa","tpahere","tpaccept","tpdeny","spawn","rtp","back","msg","reply","shop","luxuryshop","shardshop","settings","ah","bounty","bounties","events","relics","leaderboards","guide","smphelp","role","sidebar","feedback","stats","progress","history","graves","enderchest","ashfall","nickname","discord","admin","shout","afk","myorders","colosseum")){
             PluginCommand command=getCommand(name);if(command!=null){command.setExecutor(this);command.setTabCompleter(this);}
         }
         applyCommandFeedbackPolicy();
         getLogger().info("SMPCore 1.7.0 enabled: marketplace, accessibility settings, shards, faction relations and weekly Dragon are ready.");
     }
-    @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(voidWorlds!=null)voidWorlds.shutdown();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(spectacle!=null)spectacle.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
+    @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(voidWorlds!=null)voidWorlds.shutdown();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(colosseum!=null)colosseum.shutdown();if(spectacle!=null)spectacle.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
 
     /*  The player-facing half of the temporary event worlds.
      *
@@ -177,7 +182,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         return true;
     }
 
-    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("fly"))return flyCommand(sender,args);if(name.equals("flyspeed"))return flySpeedCommand(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(name.equals("voidworld"))return voidWorldCommand(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"duel"->duel(p,args);case"duels"->duels(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"spawnershop"->{spawnerShop.open(p);yield true;}case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
+    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("fly"))return flyCommand(sender,args);if(name.equals("flyspeed"))return flySpeedCommand(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(name.equals("voidworld"))return voidWorldCommand(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"colosseum"->colosseum.command(p,args);case"duel"->duel(p,args);case"duels"->duels(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"spawnershop"->{spawnerShop.open(p);yield true;}case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
                 if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /kit.");yield true;}
                 if(args.length<1||!args[0].equalsIgnoreCase("test")){CoreUtil.error(p,"Usage: /kit test [player]");yield true;}
                 /** Admin-only in both forms; the optional target lets staff outfit someone else for a
@@ -516,7 +521,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"vault"->{int page=1;if(args.length>1)try{page=Math.max(1,Integer.parseInt(args[1]));}catch(NumberFormatException ignored){}CoreUtil.msg(sender,vault.summaryLine());vault.show(sender,page);}
                 case"balance"->adminBalance(sender,args);
                 case"boss"->adminBoss(sender,args);
-                case"duelmap"->adminDuelMap(sender,args);case"spawnershop"->CoreUtil.msg(sender,spawnerShop.describeStock());
+                case"colosseum"->adminColosseum(sender,args);case"duelmap"->adminDuelMap(sender,args);case"spawnershop"->CoreUtil.msg(sender,spawnerShop.describeStock());
                 case"elite"->adminElite(sender,args);
                 case"event"->adminEvent(sender,args);
                 case"merchant"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run merchant commands in game.");return true;}merchants.command(p,args);}
@@ -761,6 +766,16 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     /** Which duel maps a match could actually be sent to right now. A map with no committed snapshot is not
      *  a failure -- it just has not been built yet -- but it is the single most useful thing to see in a
      *  selftest, because it is exactly what stops the duel flow reaching a player. */
+    /** Which Colosseum arenas an encounter could actually be sent to right now. An arena with no committed
+     *  snapshot is not a failure -- it just has not been built -- but it is exactly what stops /colosseum
+     *  reaching a player, so it belongs in the selftest readout rather than in a support ticket. */
+    private String colosseumSnapshotStatus(){
+        if(colosseum==null)return "unavailable";
+        List<String> missing=new ArrayList<>();
+        int total=0;
+        for(ColosseumArenas.Arena a:colosseum.arenas().arenas()){total++;if(!colosseum.arenas().hasSnapshot(a))missing.add(a.key());}
+        return (total-missing.size())+"/"+total+(missing.isEmpty()?" (all playable)":" - not yet built: "+String.join(", ",missing));
+    }
     private String duelMapSnapshotStatus(){
         if(duelMaps==null)return "unavailable";
         List<String> missing=new ArrayList<>();
@@ -920,6 +935,152 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         }
     }
 
+    // ------------------------------------------------------------------ colosseum
+
+    /** Every /ashfall colosseum subcommand, in the order help prints them. Single source of truth for the
+     *  help text, the tab completion and the unknown-subcommand reply, so the three cannot drift. */
+    private static final List<String> COLOSSEUM_SUBS=List.of("list","create","enter","exit","save","setspawn",
+        "setboss","test","instances","drop","orphans","reload","verify");
+
+    private final Map<String,org.bukkit.Location> colosseumReturn=new java.util.concurrent.ConcurrentHashMap<>();
+
+    private void colosseumUsage(CommandSender sender,String sub,String what){
+        CoreUtil.error(sender,"Usage: /ashfall colosseum "+sub+" <"+what+">");
+        if(what.startsWith("arena"))CoreUtil.msg(sender,"Arenas: "+String.join(", ",colosseum.arenas().arenaKeys()));
+        else if(what.startsWith("boss"))CoreUtil.msg(sender,"Bosses: "+String.join(", ",colosseum.bosses().keys()));
+        else if(what.startsWith("instance")){
+            List<String> live=colosseum.arenas().instanceNames();
+            CoreUtil.msg(sender,"Live instances: "+(live.isEmpty()?"none":String.join(", ",live)));
+        }
+    }
+
+    /** /ashfall colosseum ... -- arena maintenance with the same commit guarantees as duel maps: a write
+     *  barrier that actually flushes, a validated temporary snapshot, an atomic publish, and the previous
+     *  good snapshot preserved on any failure. */
+    private void adminColosseum(CommandSender sender,String[] args){
+        if(colosseum==null){CoreUtil.error(sender,"The Colosseum is unavailable.");return;}
+        ColosseumArenas svc=colosseum.arenas();
+        String sub=args.length>1?args[1].toLowerCase(Locale.ROOT):"list";
+        switch(sub){
+            case"list"->{
+                CoreUtil.msg(sender,"Colosseum arenas:");
+                for(ColosseumArenas.Arena a:svc.arenas())
+                    CoreUtil.msg(sender,"  "+a.key()+" - "+a.name()+" world="+a.templateWorld()
+                        +(getServer().getWorld(a.templateWorld())!=null?" (loaded)":" (not loaded)")
+                        +(svc.hasSnapshot(a)?" [committed: "+svc.describeSnapshot(a)+"]":" [NOT COMMITTED - encounters cannot use it]"));
+                CoreUtil.msg(sender,"Colosseum bosses:");
+                for(ColosseumBosses.BossDef d:colosseum.bosses().all())
+                    CoreUtil.msg(sender,"  "+d.key()+" - "+d.name()+" ["+d.style()+"/"+d.difficulty()+"] arena="+d.arena()
+                        +" hp="+(long)d.health()+" dmg="+d.damage()+" limit="+ColosseumService.timeText(d.timeLimitSeconds())
+                        +" fee="+CoreUtil.money(d.entryFee())+" prize="+CoreUtil.money(d.cashPrize())
+                        +(d.available()?"":" [CLOSED]"));
+                CoreUtil.msg(sender,"Snapshots live in "+svc.snapshotRoot().getAbsolutePath());
+            }
+            case"create"->{
+                ColosseumArenas.Arena a=args.length>2?svc.arena(args[2]):null;
+                if(a==null){colosseumUsage(sender,"create","arena");return;}
+                CoreUtil.msg(sender,"Opening the "+a.name()+" workspace - this can take a few seconds...");
+                org.bukkit.World w=svc.workspace(a,line->CoreUtil.msg(sender,"  "+line));
+                if(w==null){CoreUtil.error(sender,"Could not create that workspace.");return;}
+                CoreUtil.msg(sender,"Template world "+w.getName()+" is ready. Build it, then /ashfall colosseum save "+a.key()+".");
+                if(!svc.hasSnapshot(a))CoreUtil.msg(sender,"It has no committed snapshot yet, so encounters cannot use it until you save.");
+            }
+            case"enter"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                ColosseumArenas.Arena a=args.length>2?svc.arena(args[2]):null;
+                if(a==null){colosseumUsage(sender,"enter","arena");return;}
+                org.bukkit.World w=svc.workspace(a,line->CoreUtil.msg(p,"  "+line));
+                if(w==null){CoreUtil.error(sender,"Could not open that workspace.");return;}
+                if(!svc.holdsArena(w,a)){
+                    CoreUtil.error(sender,a.name()+" has no arena in its workspace and nothing to rebuild it from.");
+                    CoreUtil.msg(sender,"Its base template is '"+a.baseTemplate()+"'; commit that duel map first, or build this one by hand.");
+                }
+                colosseumReturn.put(p.getUniqueId().toString(),p.getLocation());
+                p.teleport(a.playerSpawn(w));
+                p.setGameMode(org.bukkit.GameMode.CREATIVE);
+                CoreUtil.msg(p,"Editing "+a.name()+". /ashfall colosseum save "+a.key()+" commits it; /ashfall colosseum exit returns you.");
+            }
+            case"exit"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                org.bukkit.Location back=colosseumReturn.remove(p.getUniqueId().toString());
+                p.teleport(back!=null?back:getServer().getWorlds().get(0).getSpawnLocation());
+                CoreUtil.msg(p,"Left the Colosseum template.");
+            }
+            case"save"->{
+                ColosseumArenas.Arena a=args.length>2?svc.arena(args[2]):null;
+                if(a==null){colosseumUsage(sender,"save","arena");return;}
+                CoreUtil.msg(sender,svc.commitTemplate(a));
+            }
+            case"setspawn"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                if(args.length<4){colosseumUsage(sender,"setspawn","arena> <player|boss|spectator");return;}
+                ColosseumArenas.Arena a=svc.arena(args[2]);
+                if(a==null){colosseumUsage(sender,"setspawn","arena");return;}
+                String which=args[3].toLowerCase(Locale.ROOT);
+                String field=switch(which){case"player"->"player-spawn";case"boss"->"boss-spawn";case"spectator"->"spectator";default->null;};
+                if(field==null){colosseumUsage(sender,"setspawn","arena> <player|boss|spectator");return;}
+                org.bukkit.Location at=p.getLocation();
+                if(!writeColosseumConfig("arenas."+a.key()+"."+field,List.of(round2(at.getX()),round2(at.getY()),round2(at.getZ())))){
+                    CoreUtil.error(sender,"Could not write colosseum.yml.");return;}
+                colosseum.reload();
+                CoreUtil.msg(p,"Set the "+which+" spawn for "+a.name()+" to "+fmt(at)+".");
+            }
+            case"setboss"->{
+                if(args.length<4){colosseumUsage(sender,"setboss","arena> <boss");return;}
+                ColosseumArenas.Arena a=svc.arena(args[2]);
+                ColosseumBosses.BossDef d=colosseum.bosses().boss(args[3]);
+                if(a==null){colosseumUsage(sender,"setboss","arena");return;}
+                if(d==null){colosseumUsage(sender,"setboss","boss");return;}
+                if(!writeColosseumConfig("bosses."+d.key()+".arena",a.key())){CoreUtil.error(sender,"Could not write colosseum.yml.");return;}
+                colosseum.reload();
+                CoreUtil.msg(sender,d.name()+" now fights in "+a.name()+".");
+            }
+            case"test"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only - an admin test is a real encounter.");return;}
+                ColosseumBosses.BossDef d=args.length>2?colosseum.bosses().boss(args[2]):null;
+                if(d==null){colosseumUsage(sender,"test","boss");return;}
+                CoreUtil.msg(sender,"Admin test: a real instance and a real fight, with NO charge, NO prize, NO reward table, no daily allowance used and no leaderboard entry.");
+                colosseum.challenge(p,d.key(),true);
+            }
+            case"instances"->{for(String line:colosseum.instanceReport())CoreUtil.msg(sender,line);}
+            case"drop"->{
+                if(args.length<3){colosseumUsage(sender,"drop","instance-world");return;}
+                CoreUtil.msg(sender,colosseum.dropInstance(args[2]));
+            }
+            case"orphans"->CoreUtil.msg(sender,"Removed "+svc.cleanupOrphans()+" orphaned Colosseum instance(s); swept "+svc.sweepDetached()+" detached folder(s).");
+            case"reload"->{
+                int ended=colosseum.interruptAll("configuration reload");
+                colosseum.reload();
+                CoreUtil.msg(sender,"Colosseum configuration reloaded ("+colosseum.arenas().arenas().size()+" arena(s), "
+                    +colosseum.bosses().all().size()+" boss(es))"+(ended>0?"; "+ended+" running encounter(s) were interrupted and refunded.":"."));
+            }
+            case"verify"->{
+                CoreUtil.msg(sender,"Verifying the Colosseum end to end - this creates and destroys its own instances:");
+                new ColosseumVerify(this,colosseum).run(line->CoreUtil.msg(sender,"  "+line));
+            }
+            default->{
+                if(args.length>1)CoreUtil.error(sender,"Unknown subcommand '"+args[1]+"'.");
+                CoreUtil.msg(sender,"COLOSSEUM - /ashfall colosseum <"+String.join("|",COLOSSEUM_SUBS)+">");
+                CoreUtil.msg(sender,"  create/enter/save build and commit an arena; test runs a free real encounter.");
+                CoreUtil.msg(sender,"  instances/drop/orphans manage live worlds; verify is the full automated suite.");
+                CoreUtil.msg(sender,"  Arenas: "+String.join(", ",colosseum.arenas().arenaKeys())+" | Bosses: "+String.join(", ",colosseum.bosses().keys()));
+            }
+        }
+    }
+
+    /** colosseum.yml is not the plugin's main config, so it is loaded, edited and written back explicitly.
+     *  Comments in the file are lost on a write, which is why only setspawn/setboss do it -- everything else
+     *  is edited by hand. */
+    private boolean writeColosseumConfig(String path,Object value){
+        try{
+            java.io.File file=new java.io.File(getDataFolder(),"colosseum.yml");
+            org.bukkit.configuration.file.YamlConfiguration yaml=org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file);
+            yaml.set(path,value);
+            yaml.save(file);
+            return true;
+        }catch(java.io.IOException error){getLogger().warning("Could not write colosseum.yml: "+error.getMessage());return false;}
+    }
+
     private void adminElite(CommandSender s,String[] args){
         if(args.length<2){eliteHelp(s);return;}
         String tier=args[1].toLowerCase(Locale.ROOT);
@@ -1018,7 +1179,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String claimInfo=claim==null?"none":claim.size()+"x"+claim.size()+" | center "+((claim.minX()+claim.maxX())/2)+", "+((claim.minZ()+claim.maxZ())/2)+" | bounds X "+claim.minX()+".."+claim.maxX()+", Z "+claim.minZ()+".."+claim.maxZ();
         CoreUtil.msg(s,target.name()+" — "+f.name()+" ["+f.tag()+"] | members="+String.join(",",db.factionMembers(f.id()))+" | bank="+CoreUtil.money(f.balance())+" | claim="+claimInfo+" | net-worth="+CoreUtil.money(netWorth.value(f.id())));
     }
-    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
+    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Colosseum arenas, boss identities, economy and daily cap: "+(colosseum.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Colosseum arena snapshots committed: "+colosseumSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
 
     /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
     /** /duels -- where each piece of a duel kit sits when the match starts. A standing preference, so it
@@ -1154,8 +1315,30 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             if(args.length==4&&sub.equals("setspawn"))return filter(args[3],List.of("p1","p2","spectator"));
             return List.of();
         }
+        /** /ashfall colosseum ... completes from the LIVE registry and world list, exactly like duel maps.
+         *  The whole /ashfall tree is already gated above, so being here means the sender may run these. */
+        if(name.equals("ashfall")&&args.length>=2&&args[0].equalsIgnoreCase("colosseum")){
+            if(colosseum==null)return List.of();
+            if(args.length==2)return filter(args[1],COLOSSEUM_SUBS);
+            String sub=args[1].toLowerCase(Locale.ROOT);
+            if(args.length==3)return switch(sub){
+                case"create","enter","save","setspawn","setboss"->filter(args[2],colosseum.arenas().arenaKeys());
+                case"test"->filter(args[2],colosseum.completableBosses(true));
+                case"drop"->filter(args[2],colosseum.arenas().instanceNames());
+                default->List.of();
+            };
+            if(args.length==4&&sub.equals("setspawn"))return filter(args[3],List.of("player","boss","spectator"));
+            if(args.length==4&&sub.equals("setboss"))return filter(args[3],colosseum.completableBosses(true));
+            return List.of();
+        }
         if(name.equals("ashfall")&&args.length==2&&args[0].equalsIgnoreCase("hopper"))
             return filter(args[1],List.of("verify","rig","count","create"));
+        if(name.equals("colosseum")&&args.length==2){
+            String verb=args[0].toLowerCase(Locale.ROOT);
+            if(verb.equals("stats"))return publicOnlineNames(sender,args[1]);
+            if(verb.equals("top"))return filter(args[1],colosseum.completableBosses(true));
+            return List.of();
+        }
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("invite"))return publicOnlineNames(sender,args[1]);
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("locate")&&sender instanceof Player p)return filter(args[1],getServer().getOnlinePlayers().stream().filter(target->!target.equals(p)&&factions.friendly(p,target)).map(nicknames::displayName).toList());
         if(name.equals("f")&&args.length==2&&Set.of("ally","truce","storage","info").contains(args[0].toLowerCase(Locale.ROOT))){
@@ -1172,7 +1355,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("buyhome")&&args.length==1)return filter(args[0],List.of("confirm"));
         if(name.equals("homes")&&args.length==1)return filter(args[0],List.of("locate"));
         if(name.equals("relics")&&args.length==2&&args[0].equalsIgnoreCase("trace")&&sender instanceof Player p)return filter(args[1],db.relicLifecycles().stream().filter(row->"ACTIVE".equals(row.status())&&row.owner().equals(CoreUtil.id(p))).map(Database.RelicLifecycleRow::key).toList());
-        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper","duelmap","spawnershop","voidworld"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
+        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"colosseum"->{List<String> options=new ArrayList<>(List.of("stats","top","leave","list"));options.addAll(colosseum.completableBosses(sender instanceof Player cp&&isAdmin(cp)));yield filter(args[0],options);}case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper","duelmap","colosseum","spawnershop","voidworld"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
         if(name.equals("shop")&&args.length==2&&(args[0].equalsIgnoreCase("buy")||args[0].equalsIgnoreCase("sell")))return shop.itemNames(args[0].equalsIgnoreCase("sell"),args[1]);
         if(name.equals("shop")&&args.length==2&&args[0].equalsIgnoreCase("sellall"))return filter(args[1],List.of("chest"));
         if(name.equals("f")&&args.length==2&&(args[0].equalsIgnoreCase("home")||args[0].equalsIgnoreCase("delhome"))&&sender instanceof Player p){Database.FactionRow faction=db.factionOf(CoreUtil.id(p));return faction==null?List.of():filter(args[1],db.homes(Long.toString(faction.id()),"FACTION").stream().map(Database.HomeRow::name).toList());}
@@ -1208,6 +1391,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"ipban"->filter(args[1],List.of("ban","unban","duration","list"));
                 case"monument"->filter(args[1],List.of("list","locate","tp","register","inspect","remove","rename","snapshot","restore","refill","history","reconstruct","revamp","prism","help"));
                 case"moderation"->filter(args[1],List.of("view","duration","revoke","note","notes"));
+                case"colosseum"->filter(args[1],COLOSSEUM_SUBS);
                 default->List.of();
             };
         }

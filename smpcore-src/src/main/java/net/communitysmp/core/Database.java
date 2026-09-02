@@ -205,6 +205,30 @@ final class Database implements AutoCloseable {
             try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN details TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
             s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS staff_notes_player ON staff_notes(player_uuid,created_at DESC)");
+            /*  COLOSSEUM. Two tables, deliberately separate from the duel arena's own.
+             *
+             *  colosseum_runs is the LIFECYCLE ledger, and it is what makes the money safe. Every flag on it
+             *  answers exactly one question that must never be answered twice: charged (was the fee taken),
+             *  paid (was the prize and loot granted), refunded (was the fee given back), rewarded (does this
+             *  count against the daily cap). A repeated callback, a duplicate death event, a reconnect or a
+             *  restart-recovery pass can all try to resolve the same run -- they read the flag, see the work
+             *  is done, and stop.
+             *
+             *  state is the crash discriminator, and it is why an ordinary disconnect and a server crash can
+             *  be told apart without guessing from whether the player is online. A normal disconnect is
+             *  RESOLVED the instant it happens, as a loss. So a row still ACTIVE at boot can only mean the
+             *  process died with the run genuinely live -- the system interrupted the player, and the fee is
+             *  refunded.
+             *
+             *  colosseum_state is a full copy of the player's pre-entry world: the same shape as arena_state,
+             *  kept as its own table so a Colosseum bug can never restore somebody into a duel's capture or
+             *  vice versa. */
+            s.execute("CREATE TABLE IF NOT EXISTS colosseum_runs (run_id TEXT PRIMARY KEY, player TEXT NOT NULL, player_name TEXT NOT NULL, boss TEXT NOT NULL, arena TEXT NOT NULL, world TEXT, state TEXT NOT NULL, outcome TEXT, fee REAL NOT NULL DEFAULT 0, prize REAL NOT NULL DEFAULT 0, charged INTEGER NOT NULL DEFAULT 0, paid INTEGER NOT NULL DEFAULT 0, refunded INTEGER NOT NULL DEFAULT 0, rewarded INTEGER NOT NULL DEFAULT 0, admin_test INTEGER NOT NULL DEFAULT 0, day TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL DEFAULT 0, ended_at INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0)");
+            s.execute("CREATE INDEX IF NOT EXISTS colosseum_runs_state ON colosseum_runs(state)");
+            s.execute("CREATE INDEX IF NOT EXISTS colosseum_runs_player_day ON colosseum_runs(player,day,rewarded)");
+            s.execute("CREATE TABLE IF NOT EXISTS colosseum_stats (player TEXT NOT NULL, boss TEXT NOT NULL, player_name TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, victories INTEGER NOT NULL DEFAULT 0, losses INTEGER NOT NULL DEFAULT 0, best_ms INTEGER NOT NULL DEFAULT 0, fees_paid REAL NOT NULL DEFAULT 0, cash_won REAL NOT NULL DEFAULT 0, last_victory_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(player,boss))");
+            s.execute("CREATE INDEX IF NOT EXISTS colosseum_stats_boss_best ON colosseum_stats(boss,best_ms)");
+            s.execute("CREATE TABLE IF NOT EXISTS colosseum_state (player TEXT PRIMARY KEY, items BLOB NOT NULL, world TEXT NOT NULL, x REAL, y REAL, z REAL, yaw REAL, pitch REAL, level INTEGER, exp REAL, health REAL, food INTEGER, gamemode TEXT, extra TEXT)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
             s.execute("DROP TABLE IF EXISTS private_chests");
         }
@@ -769,6 +793,107 @@ final class Database implements AutoCloseable {
     }
     /** Drop a single arbitrary item into a player's order-stash (their persistent "claim later" store) -- used
      *  to return escrowed duel items to an OFFLINE owner without losing them. */
+    // ------------------------------------------------------------------ colosseum
+
+    record ColosseumRun(String runId,String player,String playerName,String boss,String arena,String world,
+                        String state,String outcome,double fee,double prize,boolean charged,boolean paid,
+                        boolean refunded,boolean rewarded,boolean adminTest,String day,long startedAt,long endedAt,long durationMs){}
+    record ColosseumStats(String player,String boss,String playerName,int attempts,int victories,int losses,
+                          long bestMs,double feesPaid,double cashWon,long lastVictoryAt){}
+    private static final String COLO_COLUMNS="run_id,player,player_name,boss,arena,world,state,outcome,fee,prize,charged,paid,refunded,rewarded,admin_test,day,started_at,ended_at,duration_ms";
+    private static ColosseumRun mapColosseumRun(ResultSet rs)throws SQLException{
+        return new ColosseumRun(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),
+                rs.getString(7),rs.getString(8),rs.getDouble(9),rs.getDouble(10),rs.getInt(11)!=0,rs.getInt(12)!=0,
+                rs.getInt(13)!=0,rs.getInt(14)!=0,rs.getInt(15)!=0,rs.getString(16),rs.getLong(17),rs.getLong(18),rs.getLong(19));
+    }
+    private static ColosseumStats mapColosseumStats(ResultSet rs)throws SQLException{
+        return new ColosseumStats(rs.getString(1),rs.getString(2),rs.getString(3),rs.getInt(4),rs.getInt(5),rs.getInt(6),rs.getLong(7),rs.getDouble(8),rs.getDouble(9),rs.getLong(10));
+    }
+    private static final String COLO_STAT_COLUMNS="player,boss,player_name,attempts,victories,losses,best_ms,fees_paid,cash_won,last_victory_at";
+
+    synchronized void colosseumRunOpen(String runId,String player,String playerName,String boss,String arena,double fee,double prize,boolean adminTest,String day){
+        update("INSERT OR REPLACE INTO colosseum_runs(run_id,player,player_name,boss,arena,state,fee,prize,admin_test,day,started_at) VALUES(?,?,?,?,?,'PREPARING',?,?,?,?,?)",
+                runId,player,playerName,boss,arena,fee,prize,adminTest?1:0,day,System.currentTimeMillis());
+    }
+    synchronized ColosseumRun colosseumRun(String runId){
+        return one("SELECT "+COLO_COLUMNS+" FROM colosseum_runs WHERE run_id=?",Database::mapColosseumRun,runId);
+    }
+    /** The one unresolved run a player may have. Used to refuse a second entry and to recover after a crash. */
+    synchronized ColosseumRun colosseumOpenRunOf(String player){
+        return one("SELECT "+COLO_COLUMNS+" FROM colosseum_runs WHERE player=? AND state<>'RESOLVED' ORDER BY started_at DESC LIMIT 1",Database::mapColosseumRun,player);
+    }
+    synchronized List<ColosseumRun> colosseumUnresolved(){
+        return list("SELECT "+COLO_COLUMNS+" FROM colosseum_runs WHERE state<>'RESOLVED' ORDER BY started_at",Database::mapColosseumRun);
+    }
+    synchronized void colosseumRunWorld(String runId,String world){update("UPDATE colosseum_runs SET world=? WHERE run_id=?",world,runId);}
+    /** Charging is a COMPARE-AND-SET, not an update: the WHERE clause refuses a second charge outright, so a
+     *  duplicated callback cannot take the fee twice even if it beats the in-memory guard. */
+    synchronized boolean colosseumMarkCharged(String runId){return update("UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0",runId)==1;}
+    synchronized boolean colosseumMarkRefunded(String runId){return update("UPDATE colosseum_runs SET refunded=1 WHERE run_id=? AND charged=1 AND refunded=0",runId)==1;}
+    synchronized boolean colosseumMarkPaid(String runId){return update("UPDATE colosseum_runs SET paid=1 WHERE run_id=? AND paid=0",runId)==1;}
+    synchronized boolean colosseumMarkActive(String runId){return update("UPDATE colosseum_runs SET state='ACTIVE' WHERE run_id=? AND state='PREPARING'",runId)==1;}
+    /** Resolution is also a compare-and-set, and it is the single gate every exit path passes through. */
+    synchronized boolean colosseumResolve(String runId,String outcome,boolean rewarded,long durationMs){
+        return update("UPDATE colosseum_runs SET state='RESOLVED',outcome=?,rewarded=?,ended_at=?,duration_ms=? WHERE run_id=? AND state<>'RESOLVED'",
+                outcome,rewarded?1:0,System.currentTimeMillis(),durationMs,runId)==1;
+    }
+    /** Rewarded victories a player has banked today. Admin tests are excluded at the query, not by the caller. */
+    synchronized int colosseumRewardedToday(String player,String day){
+        return integer("SELECT COUNT(*) FROM colosseum_runs WHERE player=? AND day=? AND rewarded=1 AND admin_test=0",player,day);
+    }
+    synchronized int colosseumRewardedTodayFor(String player,String day,String boss){
+        return integer("SELECT COUNT(*) FROM colosseum_runs WHERE player=? AND day=? AND boss=? AND rewarded=1 AND admin_test=0",player,day,boss);
+    }
+    synchronized ColosseumStats colosseumStats(String player,String boss){
+        return one("SELECT "+COLO_STAT_COLUMNS+" FROM colosseum_stats WHERE player=? AND boss=?",Database::mapColosseumStats,player,boss);
+    }
+    synchronized List<ColosseumStats> colosseumStatsOf(String player){
+        return list("SELECT "+COLO_STAT_COLUMNS+" FROM colosseum_stats WHERE player=?",Database::mapColosseumStats,player);
+    }
+    /** Fastest valid clears of one boss. best_ms is only ever written by a committed, non-test victory, so
+     *  the leaderboard cannot contain an admin test or a recovered crash. */
+    synchronized List<ColosseumStats> colosseumTop(String boss,int limit){
+        return list("SELECT "+COLO_STAT_COLUMNS+" FROM colosseum_stats WHERE boss=? AND best_ms>0 ORDER BY best_ms ASC LIMIT ?",Database::mapColosseumStats,boss,limit);
+    }
+    private void colosseumEnsureStats(String player,String playerName,String boss){
+        update("INSERT OR IGNORE INTO colosseum_stats(player,boss,player_name) VALUES(?,?,?)",player,boss,playerName);
+        update("UPDATE colosseum_stats SET player_name=? WHERE player=? AND boss=?",playerName,player,boss);
+    }
+    synchronized void colosseumStatAttempt(String player,String playerName,String boss,double fee){
+        colosseumEnsureStats(player,playerName,boss);
+        update("UPDATE colosseum_stats SET attempts=attempts+1,fees_paid=fees_paid+? WHERE player=? AND boss=?",fee,player,boss);
+    }
+    /** Only a committed, normally-completed rewarded victory reaches the public numbers. {@code ranked} is
+     *  false for an admin test, which still gets its attempt/victory recorded privately but never a time. */
+    synchronized void colosseumStatVictory(String player,String playerName,String boss,double won,long durationMs,boolean ranked){
+        colosseumEnsureStats(player,playerName,boss);
+        update("UPDATE colosseum_stats SET victories=victories+1,cash_won=cash_won+?,last_victory_at=? WHERE player=? AND boss=?",won,System.currentTimeMillis(),player,boss);
+        if(ranked&&durationMs>0)update("UPDATE colosseum_stats SET best_ms=? WHERE player=? AND boss=? AND (best_ms=0 OR best_ms>?)",durationMs,player,boss,durationMs);
+    }
+    synchronized void colosseumStatLoss(String player,String playerName,String boss){
+        colosseumEnsureStats(player,playerName,boss);
+        update("UPDATE colosseum_stats SET losses=losses+1 WHERE player=? AND boss=?",player,boss);
+    }
+    synchronized void colosseumStateSave(String player,byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode,String extra){
+        update("INSERT OR REPLACE INTO colosseum_state(player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra);
+    }
+    synchronized ArenaState colosseumState(String player){
+        return one("SELECT items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra FROM colosseum_state WHERE player=?",
+                rs->new ArenaState(rs.getBytes(1),rs.getString(2),rs.getDouble(3),rs.getDouble(4),rs.getDouble(5),rs.getFloat(6),rs.getFloat(7),rs.getInt(8),rs.getFloat(9),rs.getDouble(10),rs.getInt(11),rs.getString(12),rs.getString(13)),player);
+    }
+    synchronized void colosseumStateClear(String player){update("DELETE FROM colosseum_state WHERE player=?",player);}
+    /** Removes the throwaway rows /ashfall colosseum verify writes. A verification run must not leave a
+     *  trace in the ledgers it is verifying -- a leftover row would surface on a leaderboard or in an audit
+     *  as a real encounter. Scoped to the suite's own prefix, which no real player id can match. */
+    synchronized int colosseumPurgeVerifyRows(String prefix){
+        int removed=update("DELETE FROM colosseum_runs WHERE run_id LIKE ? OR player LIKE ?",prefix,prefix);
+        removed+=update("DELETE FROM colosseum_stats WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM colosseum_state WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM players WHERE id LIKE ?",prefix);
+        return removed;
+    }
+    synchronized List<String> colosseumStateOwners(){return list("SELECT player FROM colosseum_state",rs->rs.getString(1));}
+
     synchronized void stashAddItem(String owner,ItemStack item){
         if(item==null||item.getType().isAir())return;
         update("INSERT INTO smp_order_stash(owner,item,created_at) VALUES(?,?,?)",owner,ItemStack.serializeItemsAsBytes(new ItemStack[]{item}),System.currentTimeMillis());
@@ -1170,6 +1295,20 @@ final class Database implements AutoCloseable {
             if(relicLifecycle("__selftest_relic").active())throw new SQLException("a reclaimed relic must not be active");
             checks.add("Relic lifecycle state round trip (LOST and RECLAIMED distinct): ok");
             grantServerAdmin("__selftest_admin","SelfTestAdmin");if(!isServerAdmin("__selftest_admin"))throw new SQLException("server admin persistence");checks.add("Console-managed admin persistence: ok");
+            /*  Colosseum: the money flags are compare-and-set, and that is the whole anti-duplication
+             *  guarantee. Asserted directly, because "charge once" is not something a live fight can prove. */
+            colosseumRunOpen("__selftest_run","__selftest_a","SelfTestA","__selftest_boss","__selftest_arena",500000,1000000,false,"__selftest_day");
+            if(!colosseumMarkCharged("__selftest_run")||colosseumMarkCharged("__selftest_run"))throw new SQLException("the entry fee could be charged twice");
+            if(!colosseumMarkActive("__selftest_run")||colosseumMarkActive("__selftest_run"))throw new SQLException("a run could be committed twice");
+            if(!colosseumMarkPaid("__selftest_run")||colosseumMarkPaid("__selftest_run"))throw new SQLException("the prize could be paid twice");
+            if(!colosseumResolve("__selftest_run","VICTORY",true,1234)||colosseumResolve("__selftest_run","DEATH",false,1))throw new SQLException("a run could be resolved twice");
+            if(colosseumRewardedToday("__selftest_a","__selftest_day")!=1)throw new SQLException("daily rewarded-victory count");
+            colosseumStatVictory("__selftest_a","SelfTestA","__selftest_boss",1000000,5000,true);
+            colosseumStatVictory("__selftest_a","SelfTestA","__selftest_boss",1000000,9000,true);
+            if(colosseumStats("__selftest_a","__selftest_boss").bestMs()!=5000)throw new SQLException("best completion time kept the slower run");
+            colosseumStatVictory("__selftest_a","SelfTestA","__selftest_boss",0,10,false);
+            if(colosseumStats("__selftest_a","__selftest_boss").bestMs()!=5000)throw new SQLException("an unranked (admin test) run reached the leaderboard");
+            checks.add("Colosseum fee/prize/resolution single-shot guards and leaderboard integrity: ok");
             connection.rollback();checks.add("Test transaction rollback: ok (no test data retained)");
         } catch(Exception e){rollbackQuietly();checks.add("FAILED: "+e.getMessage());}
         finally{autoCommitQuietly();}
