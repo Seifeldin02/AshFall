@@ -574,6 +574,20 @@ final class Database implements AutoCloseable {
     synchronized RelicLifecycleRow relicLifecycle(String key){return one("SELECT * FROM relics WHERE relic_key=?",Database::mapRelicLifecycle,key);}
     synchronized void confirmRelic(String key,String owner,String ownerName){update("UPDATE relics SET owner=?,owner_name=?,active=1,status='ACTIVE',last_confirmed=?,eligible_at=0 WHERE relic_key=?",owner,ownerName,System.currentTimeMillis(),key);}
     synchronized void markRelicLost(String key,long eligibleAt){update("UPDATE relics SET active=0,status='LOST',last_confirmed=?,eligible_at=? WHERE relic_key=?",System.currentTimeMillis(),eligibleAt,key);}
+    /*  RECLAIMED: taken back on purpose, as opposed to LOST, which means "we believe this was destroyed".
+     *
+     *  The two used to share LOST, and that is what made the inactivity rule do nothing at all. A relic was
+     *  reclaimed on schedule, marked LOST, and then handed straight back the moment its owner logged in --
+     *  because the false-loss recovery correctly reinstates a LOST relic found in its tracked owner's hands.
+     *  Production, 2026-08-29/30:
+     *
+     *    [14:41:22] crown_of_ash reclaimed -- xFPu has not logged in for 7 real days.
+     *    [12:46:53] crown_of_ash reappeared in its tracked owner's hands ...; reinstating rather than removing
+     *
+     *  Seven seconds after he rejoined. Nothing was ever confiscated either, because the reclaim only strips
+     *  the item from ONLINE players and the owner is offline by definition -- that is why it is being
+     *  reclaimed. A separate status is the whole fix: recovery only ever looks at LOST. */
+    synchronized void markRelicReclaimed(String key,long eligibleAt){update("UPDATE relics SET active=0,status='RECLAIMED',last_confirmed=?,eligible_at=? WHERE relic_key=?",System.currentTimeMillis(),eligibleAt,key);}
     synchronized void makeRelicEligible(String key){update("UPDATE relics SET active=0,status='ELIGIBLE',eligible_at=0 WHERE relic_key=?",key);}
     synchronized List<RelicLifecycleRow> relicLifecycles(){return list("SELECT * FROM relics ORDER BY discovered_at",Database::mapRelicLifecycle);}
     synchronized String state(String key) { return scalar("SELECT value FROM state WHERE key=?",key); }
@@ -1145,7 +1159,16 @@ final class Database implements AutoCloseable {
             List<ItemStack> graveItems=List.of(new ItemStack(org.bukkit.Material.DIAMOND,3),new ItemStack(org.bukkit.Material.IRON_PICKAXE));long grave=createGrave("__selftest_a",UUID.nameUUIDFromBytes("OfflinePlayer:SelfTestA".getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString(),"SelfTestA","SelfTestA",null,null,plugin.getServer().getWorlds().getFirst().getSpawnLocation(),System.currentTimeMillis()+60000,graveItems);if(grave(grave)==null||graveItems(grave).size()!=2)throw new SQLException("grave persistence");saveGraveItems(grave,List.of(new ItemStack(org.bukkit.Material.DIAMOND)));if(graveItems(grave).size()!=1)throw new SQLException("grave partial persistence");saveGraveItems(grave,List.of());if(grave(grave)!=null)throw new SQLException("empty grave cleanup");checks.add("Independent grave/partial-loot/empty cleanup round trip: ok");
             recordEliteSpawn("epic",true);if(eliteSpawnCounts().stream().noneMatch(row->row.tier().equals("epic")&&row.total()>0))throw new SQLException("elite telemetry");checks.add("Elite rarity telemetry round trip: ok");
             saveMerchant(new MerchantRow("__selftest_merchant","SHOP",plugin.getServer().getWorlds().getFirst().getName(),0,64,0,0,0,null));if(merchant("__selftest_merchant")==null)throw new SQLException("merchant round trip");checks.add("Persistent spawn merchant round trip: ok");
-            markRelicLost("__selftest_relic",System.currentTimeMillis()+1000);if(!"LOST".equals(relicLifecycle("__selftest_relic").status()))throw new SQLException("relic lifecycle");checks.add("Relic lifecycle state round trip: ok");
+            markRelicLost("__selftest_relic",System.currentTimeMillis()+1000);if(!"LOST".equals(relicLifecycle("__selftest_relic").status()))throw new SQLException("relic lifecycle");
+            /*  RECLAIMED must be its own state, distinct from LOST.
+             *
+             *  They shared LOST, and the false-loss recovery -- which correctly reinstates a LOST relic found
+             *  in its tracked owner's hands -- therefore cancelled every inactivity reclaim seconds after the
+             *  owner logged back in. If these two ever collapse back into one value, this fails. */
+            markRelicReclaimed("__selftest_relic",System.currentTimeMillis()+1000);
+            if(!"RECLAIMED".equals(relicLifecycle("__selftest_relic").status()))throw new SQLException("relic reclaimed state");
+            if(relicLifecycle("__selftest_relic").active())throw new SQLException("a reclaimed relic must not be active");
+            checks.add("Relic lifecycle state round trip (LOST and RECLAIMED distinct): ok");
             grantServerAdmin("__selftest_admin","SelfTestAdmin");if(!isServerAdmin("__selftest_admin"))throw new SQLException("server admin persistence");checks.add("Console-managed admin persistence: ok");
             connection.rollback();checks.add("Test transaction rollback: ok (no test data retained)");
         } catch(Exception e){rollbackQuietly();checks.add("FAILED: "+e.getMessage());}

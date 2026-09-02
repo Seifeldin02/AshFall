@@ -106,7 +106,7 @@ final class RelicService implements Listener {
      *  same ELIGIBLE end state lifecycleTick() would arrive at on its own once eligible_at passes. */
     boolean forceEligible(String relicKey){
         Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);
-        if(row==null||!"LOST".equals(row.status()))return false;
+        if(row==null||!("LOST".equals(row.status())||"RECLAIMED".equals(row.status())))return false;
         db.makeRelicEligible(relicKey);
         plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(relicKey)+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
         db.history("SERVER",null,"RELIC",displayName(relicKey)+" was forced to become eligible to resurface by an admin.");
@@ -290,6 +290,14 @@ final class RelicService implements Listener {
              *  relic was deliberately RECYCLED and released for anyone to re-find, so a stale physical copy
              *  in the previous owner's hands is exactly what has to be removed. Reinstating on ELIGIBLE
              *  would silently cancel the recycle and hand the relic straight back to whoever lost it. */
+            /*  LOST only. Never RECLAIMED.
+             *
+             *  LOST means "we believe this was destroyed" -- if its own tracked owner turns up holding it,
+             *  that belief was wrong and the ledger is corrected. RECLAIMED means the server took it back
+             *  on purpose because the owner stopped playing, and a returning owner holding one is the
+             *  EXPECTED case, not evidence of a mistake. Reinstating there is what silently cancelled every
+             *  inactivity reclaim this server has ever made. Falling through removes the stale copy, which
+             *  is what makes the reclaim real even though it happened while they were offline. */
             if("LOST".equals(row.status())&&CoreUtil.id(player).equals(row.owner())){
                 db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());
                 plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reappeared in its tracked owner's hands ("+player.getName()+", tracked status was "+row.status()+"); reinstating rather than removing it.");
@@ -301,6 +309,40 @@ final class RelicService implements Listener {
             db.history("SERVER",null,"RELIC",displayName(relicKey)+": a duplicate/stale physical copy was removed from "+player.getName()+" during a routine check (tracked owner: "+row.ownerName()+", status: "+row.status()+").");
         }
     }
+    /*  Remove every physical copy this server can actually reach, with the owner offline.
+     *
+     *  A reclaim has to be more than a ledger edit, and the reason the old one was not is that it only
+     *  looked at online players' inventories -- the one place guaranteed to be unreachable, since an owner
+     *  who has not logged in for seven days is by definition offline.
+     *
+     *  Swept here, because each is reachable with the owner offline: any ONLINE player's inventory (a
+     *  traded or looted copy), uncollected graves and dropped item entities in loaded chunks. Auction
+     *  escrow is handled by the caller, which reclaims the listing itself.
+     *
+     *  NOT swept here, and deliberately so: the offline owner's own inventory and Ender Storage, and a
+     *  duel stash. Those need the player object or a live match, and rewriting a player .dat behind Paper's
+     *  back is not a trade worth making. They are covered instead by the RECLAIMED status surviving in the
+     *  ledger -- confirmInventory strips a RECLAIMED relic the instant its holder logs in, before it can be
+     *  used, which is the guarantee that matters. Returns how many copies were physically removed. */
+    private int sweepPhysicalCopies(String relicKey,String owner){
+        int removed=0;
+        for(Player player:plugin.getServer().getOnlinePlayers())
+            for(ItemStack item:player.getInventory().getContents())
+                if(relicKey.equals(keyOf(item))){item.setAmount(0);removed++;}
+        /** Graves the owner never collected -- database-backed, so reachable with them offline. */
+        for(Database.GraveRow grave:db.graves(owner)){
+            java.util.List<ItemStack> items=db.graveItems(grave.id());
+            java.util.List<ItemStack> kept=new java.util.ArrayList<>();
+            for(ItemStack item:items){ if(relicKey.equals(keyOf(item)))removed++; else kept.add(item); }
+            if(kept.size()!=items.size())db.saveGraveItems(grave.id(),kept);
+        }
+        /** Dropped on the floor somewhere loaded. */
+        for(World world:plugin.getServer().getWorlds())
+            for(Entity entity:world.getEntities())
+                if(entity instanceof Item dropped&&relicKey.equals(keyOf(dropped.getItemStack()))){dropped.remove();removed++;}
+        return removed;
+    }
+
     private enum CopyState { PRESENT, ABSENT, UNKNOWN }
     /** Whether the tracked owner still demonstrably has their copy. Auction escrow counts as present (the
      *  item really is there); an offline owner is UNKNOWN rather than ABSENT, since their saved inventory
@@ -337,6 +379,16 @@ final class RelicService implements Listener {
         long now=System.currentTimeMillis();
         for(Database.RelicLifecycleRow row:db.relicLifecycles()){
             if("LOST".equals(row.status()))lostTick(row,now);
+            /** A reclaimed relic runs the same countdown back into circulation, but never through
+             *  lostTick's auction-escrow self-heal: that exists to undo a MISTAKEN loss, and a reclaim is
+             *  not a mistake. Nothing here can return it to its previous owner. */
+            else if("RECLAIMED".equals(row.status())){
+                if(row.eligibleAt()>0&&now>=row.eligibleAt()){
+                    db.makeRelicEligible(row.key());
+                    plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(row.key())+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
+                    db.history("SERVER",null,"RELIC",displayName(row.key())+" became eligible to resurface after being reclaimed for inactivity.");
+                }
+            }
             else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner())){checkReclaim(row,now);checkStillExists(row);}
             else if("ELIGIBLE".equals(row.status()))eligibleTick(row);
         }
@@ -432,11 +484,13 @@ final class RelicService implements Listener {
             plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed from "+row.ownerName()+"'s expired, uncollected auction listing #"+expired.id()+" after "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days without a login since expiry.");
             db.history("SERVER",null,"RELIC",displayName(relicKey)+" was reclaimed from an expired, uncollected auction listing (last owner: "+row.ownerName()+").");
         }else{
-            for(Player player:plugin.getServer().getOnlinePlayers())for(ItemStack item:player.getInventory().getContents())if(relicKey.equals(keyOf(item)))item.setAmount(0);
-            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed — "+row.ownerName()+" has not logged in for "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days.");
+            int swept=sweepPhysicalCopies(relicKey,owner);
+            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed — "+row.ownerName()+" has not logged in for "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days"
+                    +(swept>0?"; removed "+swept+" physical copy/copies from reachable storage":"; the owner is offline, so their copy is removed on their next login")+".");
             db.history("SERVER",null,"RELIC",displayName(relicKey)+" was reclaimed after "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days without a login (last owner: "+row.ownerName()+").");
         }
-        itemLostByKey(relicKey);
+        /** RECLAIMED, not LOST. This is the line the whole bug turned on. */
+        db.markRelicReclaimed(relicKey,System.currentTimeMillis()+config.getLong("lifecycle.resurface-after-real-days",2)*86400000L);
     }
     /** Admin removal of the physical item(s) — not a permanent retirement. deactivateRelic() (still present
      *  in Database.java but deliberately never called from anywhere) sets a terminal 'RETIRED' status

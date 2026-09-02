@@ -147,13 +147,6 @@ sync:
       KNOWN BEHAVIOUR: it exits with its console, so it is absent until the next server start. Verified end
       to end on staging by suspending the JVM with NtSuspendProcess: detected, killed and restarted with no
       human involved.
-  - path: launch-via-conhost.bat
-    note: |
-      The visible-console launcher, in BOTH server directories, each cd-ing to its own. Every path inside it
-      must stay ABSOLUTE (%~dp0-derived). It used a relative script name for years, worked fine from a normal
-      console, and failed silently the first time restart-server.bat called it -- the recovery child inherits
-      the JVM environment, and NoDefaultCurrentDirectoryInExePath alone makes cmd answer "not recognized"
-      with the file sitting right there. A repo copy of the shape is in config-templates/.
   - path: restart-server.bat
     note: |
       ADDED 2026-09-01. spigot.yml settings.restart-script now points at this file by ABSOLUTE path; it used
@@ -202,6 +195,13 @@ jar_versions:
     contains: "b140"
 
 env:
+  - path: launch-via-conhost.bat
+    note: |
+      The visible-console launcher, in BOTH server directories, each cd-ing to its own. Every path inside it
+      must stay ABSOLUTE (%~dp0-derived). It used a relative script name for years, worked fine from a normal
+      console, and failed silently the first time restart-server.bat called it -- the recovery child inherits
+      the JVM environment, and NoDefaultCurrentDirectoryInExePath alone makes cmd answer "not recognized"
+      with the file sitting right there. A repo copy of the shape is in config-templates/.
   - path: start.bat
     note: |
       JVM FLAGS ARE LOAD-BEARING, not tuning. -Dlog4j2.AsyncQueueFullPolicy=Discard and
