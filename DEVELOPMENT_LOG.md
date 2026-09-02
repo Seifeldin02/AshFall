@@ -165,7 +165,7 @@ wind-ups are timestamps; when the run ends its one task is cancelled and there i
 
 ### Verification
 
-`/ashfall colosseum verify` — **125 checks, 0 failures** on staging. Configuration and boss identity; every
+`/ashfall colosseum verify` — **128 checks, 0 failures** on staging. Configuration and boss identity; every
 single-shot money guarantee attempted twice; insufficient funds at the moment of charging; the daily
 allowance including losses and admin tests not consuming it; leaderboard integrity including an admin test
 never reaching it; the full state capture round trip (damaged enchanted tool, full stack, empty slots,
@@ -180,6 +180,33 @@ no failures; `/ashfall duelmap canary` PASSED including the cross-restart snapsh
 `ItemStack.empty()`, not `null`, so "empties survive as null" failed on a round trip that was in fact
 perfect. It now asserts what actually matters — the array keeps its length, so nothing shifts index, and an
 empty slot comes back empty rather than holding somebody else's item.
+
+### One bug the automated suite did not catch, and how it was found
+
+The suite passed at 125/125 before this, so the remaining budget went on failure-path work rather than
+features: a fake `colo_inst_*` folder with real region files was planted on disk while the server was down,
+along with a `colosseum_runs` row in exactly the state a dead process leaves behind — `ACTIVE`, charged,
+$500,000. Boot cleaned the orphan folder and refunded the player correctly.
+
+But the `bank_ledger` had no matching row. `refundIfCharged()` (the live path) gave the fee back through
+`refundServerPayment`, which debits the Central Bank; `recover()` (the boot path) credited the player with
+`changeBalance` directly. **A crash mid-encounter refunded the fighter and left the fee sitting in the
+Central Bank as money nobody had paid.** Two implementations of one operation, and the second was wrong.
+
+There is now one `refundFee()` used by both, and a verify check that takes the fee the way a real encounter
+does and asserts the bank is debited by the same amount it credits the player — which is the check that
+would have caught it. `/ashfall colosseum verify` is now **128 checks, 0 failures**.
+
+Worth stating plainly: this was found by simulating the failure on disk, not by reading the code or by
+running the suite. A green suite proves the things it thought to ask about.
+
+### Stability
+
+Fifteen instance create/destroy cycles over five rounds of three concurrent instances: zero leftover
+folders, zero live instance worlds, zero errors in the log, TPS flat at 19.6-19.7 throughout.
+
+A clean `stop` issued with three instances live: all three worlds unloaded and all three folders deleted
+during `onDisable`, none survived. Nothing has to be swept at the next boot, and the boot sweep confirms it.
 
 ### What still needs a human
 

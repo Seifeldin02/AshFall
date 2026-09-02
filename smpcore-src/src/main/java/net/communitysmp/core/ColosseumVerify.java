@@ -267,11 +267,18 @@ final class ColosseumVerify {
         db.ensurePlayer(player, "ColoCrash", 0);
         db.setBalance(player, 1000);
 
-        /** A run the process died inside, with the fee already taken. */
+        /*  A run the process died inside, with the fee already taken -- and taken the way a real encounter
+         *  takes it, through serverPayment, so the Central Bank actually holds it. That detail matters: a
+         *  refund that credits the player without debiting the bank is not a refund, it is minting, and
+         *  recovery quietly did exactly that until this check was written. */
         String charged = "__coloverify_" + UUID.randomUUID();
         db.colosseumRunOpen(charged, player, "ColoCrash", "__coloverify_boss", "__coloverify_arena", 500, 1000, false, "__coloverify_day");
         db.colosseumMarkCharged(charged);
         db.colosseumMarkActive(charged);
+        check("the fee is taken through the bank, as a real encounter takes it",
+                db.serverPayment(player, 500, "FEE", "__coloverify_entry"));
+        double bankAfterCharge = db.bank().balance();
+        check("the player paid it", Math.abs(db.player(player).balance() - 500) < 0.001);
         /** And one that died during PREPARATION, before any money moved. */
         String uncharged = "__coloverify_" + UUID.randomUUID();
         db.colosseumRunOpen(uncharged, player, "ColoCrash", "__coloverify_boss", "__coloverify_arena", 500, 1000, false, "__coloverify_day");
@@ -282,17 +289,22 @@ final class ColosseumVerify {
 
         check("a run interrupted mid-fight is resolved as INTERRUPTED",
                 isState(charged, "RESOLVED") && "INTERRUPTED".equals(db.colosseumRun(charged).outcome()));
-        check("its entry fee is refunded", db.colosseumRun(charged).refunded()
-                && Math.abs(db.player(player).balance() - 1500) < 0.001);
+        check("its entry fee is refunded to the player", db.colosseumRun(charged).refunded()
+                && Math.abs(db.player(player).balance() - 1000) < 0.001);
+        /** And the Central Bank gives it back, rather than the refund creating money out of nothing. */
+        check("the Central Bank is debited by the same amount (a refund is not minting)",
+                Math.abs((bankAfterCharge - db.bank().balance()) - 500) < 0.001);
         check("an INTERRUPTED run is NOT a rewarded victory (no allowance consumed)", !db.colosseumRun(charged).rewarded());
         check("a run interrupted before the charge is closed with nothing refunded",
                 isState(uncharged, "RESOLVED") && !db.colosseumRun(uncharged).refunded());
         check("recovery leaves nothing unresolved behind", db.colosseumUnresolved().stream()
                 .noneMatch(r -> r.player().equals(player)));
         /** Idempotent: recovery runs at every boot, and a second pass must not refund a second time. */
+        double bankAfterRefund = db.bank().balance();
         colosseum.recover();
         check("a second recovery pass refunds nothing again (idempotent across restarts)",
-                Math.abs(db.player(player).balance() - 1500) < 0.001);
+                Math.abs(db.player(player).balance() - 1000) < 0.001
+                        && Math.abs(db.bank().balance() - bankAfterRefund) < 0.001);
     }
 
     // ------------------------------------------------------------------ 7. instances

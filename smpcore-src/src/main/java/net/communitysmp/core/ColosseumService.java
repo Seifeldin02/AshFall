@@ -528,18 +528,28 @@ final class ColosseumService implements Listener {
     /** Refunds the entry fee if, and only if, it was actually taken and has not been given back. */
     private double refundIfCharged(Run run) {
         Database.ColosseumRun row = db.colosseumRun(run.id);
-        if (row == null || !row.charged() || row.refunded() || row.fee() <= 0) return 0;
-        if (!db.colosseumMarkRefunded(run.id)) return 0;
-        /** The bank gives the fee back the same way it took it. If the bank cannot cover it -- which would
-         *  mean it has been drained since -- the player is still owed the money, so it is credited directly
-         *  rather than quietly withheld. A player is never made to pay for the ledger being short. */
-        if (!db.refundServerPayment(run.player, row.fee(), "FEE", "COLOSSEUM_REFUND:" + run.bossKey)) {
-            db.changeBalance(run.player, row.fee());
+        return row == null ? 0 : refundFee(row, run.bossKey);
+    }
+
+    /*  THE refund. One implementation, used by the live path and by boot recovery alike.
+     *
+     *  These were briefly two, and the second one was wrong: recovery credited the player directly while the
+     *  live path went through the bank, so a crash mid-encounter refunded the fighter and left the fee
+     *  sitting in the Central Bank as money nobody had paid. A fee taken with serverPayment has to be given
+     *  back with refundServerPayment or the books do not balance.
+     *
+     *  If the bank genuinely cannot cover it -- it has been drained since -- the player is still owed the
+     *  money and is credited directly, loudly. A player is never made to pay for the ledger being short. */
+    private double refundFee(Database.ColosseumRun row, String detail) {
+        if (!row.charged() || row.refunded() || row.fee() <= 0) return 0;
+        if (!db.colosseumMarkRefunded(row.runId())) return 0;
+        if (!db.refundServerPayment(row.player(), row.fee(), "FEE", "COLOSSEUM_REFUND:" + detail)) {
+            db.changeBalance(row.player(), row.fee());
             plugin.getLogger().warning("[colosseum] the Central Bank could not fund a refund; credited "
-                    + run.playerName + " directly with " + CoreUtil.money(row.fee()));
+                    + row.playerName() + " directly with " + CoreUtil.money(row.fee()));
         }
-        db.recordEconomy(run.player, "COLOSSEUM_REFUND", row.fee(), run.bossKey);
-        plugin.getLogger().info("[colosseum] refunded " + CoreUtil.money(row.fee()) + " to " + run.playerName + " (" + run.bossKey + ")");
+        db.recordEconomy(row.player(), "COLOSSEUM_REFUND", row.fee(), detail);
+        plugin.getLogger().info("[colosseum] refunded " + CoreUtil.money(row.fee()) + " to " + row.playerName() + " (" + detail + ")");
         return row.fee();
     }
 
@@ -750,12 +760,7 @@ final class ColosseumService implements Listener {
         List<Database.ColosseumRun> open = db.colosseumUnresolved();
         for (Database.ColosseumRun row : open) {
             db.colosseumResolve(row.runId(), "INTERRUPTED", false, 0);
-            double back = 0;
-            if (row.charged() && !row.refunded() && row.fee() > 0 && db.colosseumMarkRefunded(row.runId())) {
-                db.changeBalance(row.player(), row.fee());
-                db.recordEconomy(row.player(), "COLOSSEUM_REFUND", row.fee(), "interrupted:" + row.boss());
-                back = row.fee();
-            }
+            double back = refundFee(row, "interrupted:" + row.boss());
             plugin.getLogger().warning("[colosseum] recovered interrupted run " + row.runId() + " (" + row.playerName()
                     + " vs " + row.boss() + ")" + (back > 0 ? ", refunded " + CoreUtil.money(back) : ", nothing to refund"));
         }
