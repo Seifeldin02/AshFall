@@ -70,6 +70,38 @@ sync:
       were built on staging after the 2026-08-17 world clone. Copy the folders.
 
       Do NOT copy duel-templates/__canary; it is a test artefact of /ashfall duelmap canary.
+  - path: plugins/SMPCore/colosseum.yml
+    note: |
+      COLOSSEUM CONFIGURATION (added 2026-09-02). Every value the three Colosseum bosses have -- names,
+      icons, entity types, health, damage, armour, movement, knockback resistance, every ability value and
+      cooldown, time limits, entry fees, cash prizes, reward tables, availability, per-boss daily reward
+      limits and which arena each fights in -- plus the arena registry, the global concurrency limit and the
+      daily rewarded-victory cap.
+
+      A JAR SWAP DOES NOT CARRY THIS. The shipped resource is only written when the file does not already
+      exist, so an existing server keeps whatever it has. Promote the file, then run
+      /ashfall colosseum reload (which also interrupts and refunds any encounter running at that moment).
+
+      The money lives here: economy.daily-rewarded-victories is the brake that stops the Colosseum being an
+      unlimited money printer. At the default fee/prize it caps Colosseum profit at $1,500,000 per player
+      per day. Do not raise it without deciding what that number should be.
+  - path: plugins/SMPCore/colosseum-templates
+    note: |
+      COMMITTED COLOSSEUM ARENA SNAPSHOTS (added 2026-09-02). Same shape and same rules as duel-templates
+      above -- one folder per arena key, a Paper dimension folder with no level.dat -- and the same
+      consequence if it is missing: /colosseum offers nothing, and /ashfall selftest reports
+      "Colosseum arena snapshots committed: 0/1".
+
+      DELIBERATELY SEPARATE from duel-templates. The Colosseum arena was seeded once from the committed
+      arena100 duel snapshot and is its own world from that point on; editing one can never alter the other,
+      which is the whole reason for the split.
+
+      Unlike the imported duel maps, this one CAN be regenerated on production from code, because its base
+      is the code-built flat arena rather than a copy of the overworld:
+        /ashfall duelmap build arena100     (only if arena100 is not already committed)
+        /ashfall colosseum create ashen_colosseum
+        /ashfall colosseum save ashen_colosseum
+      Copying the folder is still faster and keeps any hand-built decoration.
   - path: config/paper-world-defaults.yml
     note: |
       Global Paper world defaults; the per-dimension files below OVERRIDE this.

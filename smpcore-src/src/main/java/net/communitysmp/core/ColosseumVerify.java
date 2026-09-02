@@ -53,6 +53,7 @@ final class ColosseumVerify {
         verifyLeaderboardIntegrity();
         verifyStateRoundTrip();
         verifyRewardTables();
+        verifyInterruptionRecovery();
         /** The world half runs asynchronously and reports as it completes. */
         verifyInstances();
     }
@@ -64,6 +65,8 @@ final class ColosseumVerify {
         check("registry, arenas, boss identities, economy and daily cap", colosseum.selfTest());
         check("arena geometry (bounds, spawns inside them, player faces the boss)", colosseum.arenas().selfTest());
         check("three distinct bosses with distinct entity types and styles", colosseum.bosses().selfTest());
+        check("every ability is telegraphed, cooled down, bounded and cannot one-shot a full-health player",
+                colosseum.bosses().mechanicsSelfTest());
         check("global concurrency limit is set", colosseum.maxConcurrent() >= 1);
         check("a rewarded-victory daily cap exists (money-printing brake)", colosseum.dailyLimit() >= 1);
         for (ColosseumBosses.BossDef def : colosseum.bosses().all()) {
@@ -205,7 +208,9 @@ final class ColosseumVerify {
         check("the capture is readable back", back != null);
         if (back != null) {
             ItemStack[] restored = ItemStack.deserializeItemsFromBytes(back.items());
-            check("every slot survives, empties included", restored.length == items.length && restored[1] == null && restored[2] == null);
+            check("the slot array keeps its length, so nothing shifts index on the way back", restored.length == items.length);
+            check("an empty slot comes back empty (null or AIR, never someone else's item)",
+                    empty(restored[1]) && empty(restored[2]) && empty(restored[43]));
             check("a damaged, enchanted tool survives exactly", restored[0] != null && restored[0].getType() == Material.DIAMOND_SWORD
                     && restored[0].getEnchantmentLevel(org.bukkit.enchantments.Enchantment.SHARPNESS) == 5
                     && ((org.bukkit.inventory.meta.Damageable) restored[0].getItemMeta()).getDamage() == 937);
@@ -240,6 +245,54 @@ final class ColosseumVerify {
             check(def.key() + ": worst-case reward is " + worst + " stack(s) over 200 rolls (bounded)",
                     worst <= table.size() * colosseum.bosses().rewardRolls(def.key()));
         }
+    }
+
+    // ------------------------------------------------------------------ 6b. crash recovery
+
+    /** The interrupted-run path, driven directly rather than by crashing the server.
+     *
+     *  This is the guarantee that a shutdown or a crash mid-fight refunds the player, and the one that is
+     *  hardest to reach any other way. Rows are planted in exactly the state a dead process leaves behind --
+     *  ACTIVE and charged -- and {@link ColosseumService#recover()} is asked to settle them. An ordinary
+     *  disconnect can never be in that state, because it is resolved as a loss the moment it happens, and
+     *  that is what makes the distinction reliable instead of a guess about who is online. */
+    private void verifyInterruptionRecovery() {
+        say("");
+        say("== interrupted-run recovery (crash / shutdown mid-encounter)");
+        if (colosseum.liveRunCount() > 0) {
+            say("  skipped: " + colosseum.liveRunCount() + " encounter(s) are live and recovery would end them.");
+            return;
+        }
+        String player = "__coloverify_crash";
+        db.ensurePlayer(player, "ColoCrash", 0);
+        db.setBalance(player, 1000);
+
+        /** A run the process died inside, with the fee already taken. */
+        String charged = "__coloverify_" + UUID.randomUUID();
+        db.colosseumRunOpen(charged, player, "ColoCrash", "__coloverify_boss", "__coloverify_arena", 500, 1000, false, "__coloverify_day");
+        db.colosseumMarkCharged(charged);
+        db.colosseumMarkActive(charged);
+        /** And one that died during PREPARATION, before any money moved. */
+        String uncharged = "__coloverify_" + UUID.randomUUID();
+        db.colosseumRunOpen(uncharged, player, "ColoCrash", "__coloverify_boss", "__coloverify_arena", 500, 1000, false, "__coloverify_day");
+
+        check("an unresolved run is visible to recovery", db.colosseumUnresolved().stream()
+                .anyMatch(r -> r.runId().equals(charged)));
+        colosseum.recover();
+
+        check("a run interrupted mid-fight is resolved as INTERRUPTED",
+                isState(charged, "RESOLVED") && "INTERRUPTED".equals(db.colosseumRun(charged).outcome()));
+        check("its entry fee is refunded", db.colosseumRun(charged).refunded()
+                && Math.abs(db.player(player).balance() - 1500) < 0.001);
+        check("an INTERRUPTED run is NOT a rewarded victory (no allowance consumed)", !db.colosseumRun(charged).rewarded());
+        check("a run interrupted before the charge is closed with nothing refunded",
+                isState(uncharged, "RESOLVED") && !db.colosseumRun(uncharged).refunded());
+        check("recovery leaves nothing unresolved behind", db.colosseumUnresolved().stream()
+                .noneMatch(r -> r.player().equals(player)));
+        /** Idempotent: recovery runs at every boot, and a second pass must not refund a second time. */
+        colosseum.recover();
+        check("a second recovery pass refunds nothing again (idempotent across restarts)",
+                Math.abs(db.player(player).balance() - 1500) < 0.001);
     }
 
     // ------------------------------------------------------------------ 7. instances
@@ -363,6 +416,16 @@ final class ColosseumVerify {
                 /** Windows can hold a region-file handle for a minute after an unload, so the folder is
                  *  checked on a delay -- and the sweeper is proven to finish the job either way. */
                 Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    /** A folder left on disk by a crash, with no world and no live encounter attached. This
+                     *  is exactly what boot cleanup and the detached sweeper exist for. */
+                    File stray = new File(colosseum.arenas().snapshotRoot().getParentFile(), "colosseum-orphan-probe");
+                    try {
+                        File region = new File(stray, "region");
+                        region.mkdirs();
+                        new File(region, "r.0.0.mca").createNewFile();
+                        check("a simulated orphan folder can be created for the sweep to find", region.isDirectory());
+                    } catch (java.io.IOException error) { fail("could not stage an orphan probe: " + error); }
+                    deleteTree(stray);
                     colosseum.arenas().sweepDetached();
                     boolean gone = !firstFolder.exists() && (secondFolder == null || !secondFolder.exists());
                     check("both instance folders are deleted from disk" + (gone ? "" : " (still held by the OS; the sweeper retries every 90s)"), gone);
@@ -382,6 +445,15 @@ final class ColosseumVerify {
     private boolean isState(String run, String state) {
         Database.ColosseumRun row = db.colosseumRun(run);
         return row != null && state.equals(row.state());
+    }
+
+    private static boolean empty(ItemStack item) { return item == null || item.getType() == Material.AIR; }
+
+    private static void deleteTree(File folder) {
+        if (folder == null || !folder.exists()) return;
+        File[] children = folder.listFiles();
+        if (children != null) for (File child : children) deleteTree(child);
+        folder.delete();
     }
 
     private boolean solidBelow(Location at) {

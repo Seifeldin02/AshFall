@@ -111,7 +111,7 @@ bosses:
         duration-ticks: 40
         damage-taken-multiplier: 0.25
         reflect-fraction: 0.35
-        reflect-cap: 6.0
+        reflect-cap: 8.0
       # LUNGE. Closes distance from range with a visible ember trail, then is briefly slowed --
       # the punish window. Never used point-blank, so it cannot chain into a stunlock.
       lunge:
@@ -163,7 +163,9 @@ bosses:
         telegraph-ticks: 30
         radius: 5.0
         rings: 2
-        damage: 9.0
+        # Dealt as MAGIC, so armour does not erase it -- see the note in ColosseumBosses.hurt(). Protection,
+        # Resistance, absorption and totems all still apply, and stepping off the marks avoids it entirely.
+        damage: 12.0
       # BULWARK. Anchors and takes far less damage, but cannot move or attack while it holds.
       # Free repositioning and healing time in exchange for a damage window you cannot win.
       bulwark:
@@ -177,7 +179,7 @@ bosses:
         cooldown-seconds: 15
         telegraph-ticks: 25
         radius: 7.0
-        damage: 6.0
+        damage: 8.0
         knockback: 1.1
 
   # ---------------------------------------------------------------- 3. the chase
@@ -220,7 +222,7 @@ bosses:
         count: 3
         spread: 0.16
         speed: 0.9
-        damage: 6.0
+        damage: 7.0
       # VEIL. Below the health threshold it gains speed and shrugs off projectiles, so the
       # last third of the fight has to be closed out in melee.
       veil:

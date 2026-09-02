@@ -417,7 +417,7 @@ final class ColosseumBosses {
                 world.spawnParticle(Particle.LAVA, centre.clone().add(0, 0.4, 0), 40, radius / 2, 0.3, radius / 2, 0);
                 world.spawnParticle(Particle.FLAME, centre.clone().add(0, 0.4, 0), 60, radius / 2, 0.4, radius / 2, 0.03);
                 if (player.getLocation().distance(centre) <= radius)
-                    hurt(player, boss, def.ability("fissure.damage", 9));
+                    hurt(player, boss, def.ability("fissure.damage", 12), true);
             }
             /** BULWARK. Anchors: no movement, no attacks, far less damage taken. A trade the player can see. */
             case "bulwark" -> {
@@ -435,7 +435,7 @@ final class ColosseumBosses {
                 world.spawnParticle(Particle.EXPLOSION, boss.getLocation().add(0, 0.4, 0), 6, radius / 3, 0.2, radius / 3, 0);
                 double distance = player.getLocation().distance(boss.getLocation());
                 if (distance <= radius) {
-                    hurt(player, boss, def.ability("slam.damage", 6));
+                    hurt(player, boss, def.ability("slam.damage", 8), true);
                     Vector away = player.getLocation().toVector().subtract(boss.getLocation().toVector());
                     if (away.lengthSquared() < 0.01) away = new Vector(0, 1, 0);
                     away.normalize().multiply(def.ability("slam.knockback", 1.1)).setY(0.45);
@@ -498,13 +498,68 @@ final class ColosseumBosses {
             hurt(player, boss, def.ability("flurry.damage", 7));
     }
 
-    /** Ability damage goes in as a real damage event so armour, Protection, shields, totems, resistance and
-     *  every other survival tool the player brought still apply. Nothing here is unavoidable or unblockable
-     *  -- it is simply damage that had a visible warning attached to it. */
-    private void hurt(Player player, LivingEntity source, double amount) {
+    /*  Two kinds of damage, and the difference is deliberate.
+     *
+     *  A SWORD STRIKE is an ordinary attack and armour answers it, exactly as it should. An AREA ABILITY --
+     *  a fissure erupting under your feet, a shockwave, a fireball -- is dealt as MAGIC, which armour does
+     *  not reduce. That is the difference between a boss that threatens somebody in netherite and one that
+     *  cannot: full Protection IV cuts a 20-damage physical hit to under two, so an ability that respected
+     *  armour would be pure decoration against the exact gear this fight is balanced for.
+     *
+     *  It is not unfair, and it is not unavoidable. Protection, Resistance, absorption, totems and health
+     *  potions all still apply; every one of these lands one to one and a half seconds after a telegraph
+     *  that says exactly where it will be; and stepping out of the marks takes nothing but attention. What
+     *  it cannot be is ignored.
+     *
+     *  Both forms go in as real damage events, so nothing here bypasses the player's own survival tools. */
+    private void hurt(Player player, LivingEntity source, double amount) { hurt(player, source, amount, false); }
+
+    private void hurt(Player player, LivingEntity source, double amount, boolean magic) {
         if (amount <= 0 || player.isDead() || player.getGameMode() == org.bukkit.GameMode.CREATIVE
                 || player.getGameMode() == org.bukkit.GameMode.SPECTATOR) return;
-        player.damage(amount, source);
+        if (!magic) { player.damage(amount, source); return; }
+        try {
+            org.bukkit.damage.DamageSource.Builder builder = org.bukkit.damage.DamageSource.builder(org.bukkit.damage.DamageType.MAGIC);
+            if (source != null) builder.withCausingEntity(source).withDirectEntity(source);
+            player.damage(amount, builder.build());
+        } catch (Throwable unsupported) {
+            /** Older API: fall back to a plain hit rather than dealing no damage at all. */
+            player.damage(amount, source);
+        }
+    }
+
+    /** Bench only. Draws the heaviest telegraph a boss owns, at a fixed point, so the particle cost of an
+     *  encounter can be measured without a fighter standing in it. Uses the same ring code and the same
+     *  configured radii the real telegraph does, so what is measured is what players will actually see. */
+    void benchTelegraph(BossDef def, LivingEntity boss, Location target) {
+        if (boss == null || !boss.isValid() || target == null) return;
+        World world = boss.getWorld();
+        int rings = Math.max(1, def.abilityInt("fissure.rings", 2));
+        double radius = def.ability("fissure.radius", 5);
+        for (int ring = 1; ring <= rings; ring++) {
+            double r = radius * ring / rings;
+            for (int i = 0; i < 18; i++) {
+                double angle = Math.PI * 2 * i / 18;
+                world.spawnParticle(Particle.FLAME, target.clone().add(Math.cos(angle) * r, 0.2, Math.sin(angle) * r), 1, 0, 0, 0, 0);
+            }
+        }
+        double slam = def.ability("slam.radius", 7);
+        for (int i = 0; i < 24; i++) {
+            double angle = Math.PI * 2 * i / 24;
+            world.spawnParticle(Particle.CRIT, boss.getLocation().clone().add(Math.cos(angle) * slam, 0.2, Math.sin(angle) * slam), 1, 0, 0, 0, 0);
+        }
+        world.spawnParticle(Particle.ENCHANT, boss.getLocation().add(0, 1.2, 0), 10, 0.6, 0.8, 0.6, 0.4);
+    }
+
+    /** The worst-case particle budget one encounter can draw in a single tick, from the configuration
+     *  rather than from a guess. Reported by the bench so the number is auditable. */
+    int worstCaseParticlesPerTick(BossDef def) {
+        int fissure = Math.max(1, def.abilityInt("fissure.rings", 0)) * 18;
+        if (def.abilityInt("fissure.rings", 0) == 0) fissure = 0;
+        int slam = def.ability("slam.radius", 0) > 0 ? 24 : 0;
+        /** Only one ability winds up at a time, so the heaviest single telegraph is the ceiling -- plus the
+         *  small constant the stance and blink markers add. */
+        return Math.max(fissure, slam) + 30;
     }
 
     // ------------------------------------------------------------------ damage interception
@@ -524,12 +579,12 @@ final class ColosseumBosses {
     /** The riposte's answer, applied after the hit has been taken. Capped, so a critical mace drop cannot be
      *  turned into a one-shot on the player who landed it. */
     void bossRiposte(BossDef def, BossState state, Player attacker, double dealt) {
-        if (!"riposte".equals(state.active) || attacker == null) return;
+        if (!"riposte".equals(state.active) || attacker == null || state.entity == null || !state.entity.isValid()) return;
         double back = Math.min(def.ability("riposte.reflect-cap", 6), dealt * def.ability("riposte.reflect-fraction", 0.35));
         if (back <= 0) return;
         attacker.getWorld().playSound(attacker.getLocation(), Sound.ITEM_SHIELD_BLOCK, 1.0f, 1.5f);
         attacker.getWorld().spawnParticle(Particle.CRIT, attacker.getLocation().add(0, 1, 0), 8, 0.3, 0.4, 0.3, 0.1);
-        hurt(attacker, state.entity, back);
+        hurt(attacker, state.entity, back, true);
     }
 
     /** Damage from one of the boss's own projectiles, normalised to the configured value so the fireball's
@@ -593,6 +648,44 @@ final class ColosseumBosses {
     }
 
     // ------------------------------------------------------------------ self test
+
+    /*  The rules every ability must obey, asserted from configuration rather than discovered in a fight.
+     *
+     *  These are the properties that make an encounter readable and survivable, and every one of them is a
+     *  thing a well-meaning config edit could quietly break:
+     *
+     *    * a telegraph is at least three quarters of a second, or it is not a warning
+     *    * a cooldown is longer than the wind-up it gates, or two telegraphs can overlap and become unreadable
+     *    * no single ability can take a full-health player from 20 to 0, whatever they are wearing
+     *    * a multi-strike sequence finishes well inside the time limit, so nothing can stall an encounter
+     *
+     *  Threshold-style abilities (the Revenant's veil) have neither a cooldown nor a telegraph and are
+     *  skipped by name rather than by accident. */
+    boolean mechanicsSelfTest() {
+        for (BossDef def : bosses.values()) {
+            if (def.abilities() == null) return false;
+            int telegraphed = 0;
+            for (String ability : def.abilities().getKeys(false)) {
+                double cooldown = def.ability(ability + ".cooldown-seconds", -1);
+                int telegraph = def.abilityInt(ability + ".telegraph-ticks", -1);
+                if (cooldown < 0 && telegraph < 0) continue;
+                if (telegraph < 15) return false;
+                if (cooldown * 20 <= telegraph) return false;
+                telegraphed++;
+                double damage = def.ability(ability + ".damage", 0);
+                if (damage < 0 || damage >= 20) return false;
+            }
+            /** A boss with nothing telegraphed is a boss with no mechanics. */
+            if (telegraphed < 2) return false;
+            long flurryTicks = (long) def.abilityInt("flurry.strikes", 0) * def.abilityInt("flurry.strike-interval-ticks", 8);
+            if (flurryTicks > def.timeLimitSeconds() * 20L / 4) return false;
+            /** Bounded projectiles: an unbounded volley is an entity leak with a boss attached. */
+            if (def.abilityInt("volley.count", 0) > 8) return false;
+            /** Reflection is capped, so a critical mace drop cannot be turned into a one-shot on the player. */
+            if (def.ability("riposte.reflect-cap", 0) >= 20) return false;
+        }
+        return true;
+    }
 
     /** Configuration integrity, asserted rather than assumed: three bosses, all distinct, all with an arena
      *  that exists, none of them free money, and none of them scaled by anything but their own config. */

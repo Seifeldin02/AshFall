@@ -300,7 +300,7 @@ final class ColosseumService implements Listener {
         if (!run.adminTest) {
             /** Charged exactly once, and only here. The database refuses a second charge for this run
              *  outright; the balance withdrawal itself is atomic and refuses to go negative. */
-            if (!db.colosseumMarkCharged(run.id) || !db.changeBalance(run.player, -run.fee)) {
+            if (!db.colosseumMarkCharged(run.id) || !db.serverPayment(run.player, run.fee, "FEE", "COLOSSEUM_ENTRY:" + def.key())) {
                 db.colosseumMarkRefunded(run.id);
                 db.colosseumResolve(run.id, "ABORTED", false, 0);
                 run.moving = true;
@@ -311,7 +311,6 @@ final class ColosseumService implements Listener {
                 return;
             }
             db.recordEconomy(run.player, "COLOSSEUM_ENTRY", -run.fee, def.key());
-            plugin.bank().creditFee(run.fee, run.player, "COLOSSEUM_ENTRY");
             db.colosseumStatAttempt(run.player, run.playerName, def.key(), run.fee);
             CoreUtil.msg(player, "Entry fee of " + CoreUtil.money(run.fee) + " paid.");
         } else {
@@ -367,7 +366,8 @@ final class ColosseumService implements Listener {
         if (player == null || !player.isOnline()) { resolve(run, "DISCONNECT"); return; }
         LivingEntity boss = run.boss.entity;
         if (boss == null || !boss.isValid() || boss.isDead()) { resolve(run, "VICTORY"); return; }
-        if (run.instance == null || !run.instance.equals(player.getWorld())) {
+        if (run.instance == null) { resolve(run, "INTERRUPTED"); return; }
+        if (!run.instance.equals(player.getWorld())) {
             /** Out of the arena while the fight is live. Put them back once; if that fails the encounter is
              *  over rather than left running with nobody in it. */
             run.moving = true;
@@ -424,9 +424,28 @@ final class ColosseumService implements Listener {
         ColosseumBosses.BossDef def = bosses.boss(run.bossKey);
         Player player = plugin.getServer().getPlayer(run.player);
 
-        /** Restoration first, always. The player's own belongings are more important than any prize, and a
-         *  prize is never granted into a state where the belongings did not come back. */
-        boolean restored = player != null && player.isOnline() && restore(player);
+        /*  Restoration first, always. The player's own belongings matter more than any prize, and a prize is
+         *  never granted into a state where the belongings did not come back.
+         *
+         *  A DEAD player is forced through respawn before anything else. destroyInstance() moves players out
+         *  of the world it is about to delete, and a corpse cannot be teleported -- so without this the
+         *  loser of a fight is left lying in a world that stops existing a tick later. Respawning here fires
+         *  PlayerRespawnEvent while the capture is still intact, which is what puts them back on the exact
+         *  spot they entered from.
+         *
+         *  A DISCONNECT is different again: the player is on their way out and neither a teleport nor a
+         *  gamemode change will survive, but their inventory is about to be written to disk holding the
+         *  ARENA COPY of their gear. That copy is overwritten with the real one here so the saved file is
+         *  clean, and the capture is deliberately KEPT so the join handler can finish the job properly. */
+        boolean restored;
+        if ("DISCONNECT".equals(outcome)) restored = sanitiseOnQuit(player);
+        else {
+            if (player != null && player.isOnline() && player.isDead()) {
+                try { player.spigot().respawn(); }
+                catch (Throwable error) { plugin.getLogger().warning("[colosseum] forced respawn failed for " + run.playerName + ": " + error); }
+            }
+            restored = player != null && player.isOnline() && restore(player);
+        }
         dropWorld(run);
 
         if (interrupted) {
@@ -478,7 +497,9 @@ final class ColosseumService implements Listener {
             db.colosseumStatVictory(run.player, run.playerName, run.bossKey, 0, duration, false);
             return;
         }
-        db.changeBalance(run.player, run.prize);
+        /** Routed through the bank like every other earned payout, so an overdue loan is garnished from
+         *  a Colosseum prize exactly as it would be from any other income. */
+        plugin.creditEarned(run.player, run.prize, "COLOSSEUM_PRIZE:" + run.bossKey);
         db.recordEconomy(run.player, "COLOSSEUM_PRIZE", run.prize, run.bossKey);
         db.colosseumStatVictory(run.player, run.playerName, run.bossKey, run.prize, duration, true);
         List<ItemStack> loot = def == null ? List.of() : bosses.rollRewards(run.bossKey);
@@ -509,7 +530,14 @@ final class ColosseumService implements Listener {
         Database.ColosseumRun row = db.colosseumRun(run.id);
         if (row == null || !row.charged() || row.refunded() || row.fee() <= 0) return 0;
         if (!db.colosseumMarkRefunded(run.id)) return 0;
-        db.changeBalance(run.player, row.fee());
+        /** The bank gives the fee back the same way it took it. If the bank cannot cover it -- which would
+         *  mean it has been drained since -- the player is still owed the money, so it is credited directly
+         *  rather than quietly withheld. A player is never made to pay for the ledger being short. */
+        if (!db.refundServerPayment(run.player, row.fee(), "FEE", "COLOSSEUM_REFUND:" + run.bossKey)) {
+            db.changeBalance(run.player, row.fee());
+            plugin.getLogger().warning("[colosseum] the Central Bank could not fund a refund; credited "
+                    + run.playerName + " directly with " + CoreUtil.money(row.fee()));
+        }
         db.recordEconomy(run.player, "COLOSSEUM_REFUND", row.fee(), run.bossKey);
         plugin.getLogger().info("[colosseum] refunded " + CoreUtil.money(row.fee()) + " to " + run.playerName + " (" + run.bossKey + ")");
         return row.fee();
@@ -612,6 +640,38 @@ final class ColosseumService implements Listener {
             return true;
         } catch (Throwable error) {
             plugin.getLogger().severe("[colosseum] could not restore " + id + ": " + error);
+            return false;
+        }
+    }
+
+    /** Overwrites a quitting player's live inventory and experience with the captured originals, WITHOUT
+     *  clearing the capture.
+     *
+     *  A player who disconnects mid-encounter has Paper write their .dat immediately afterwards, and at that
+     *  moment their inventory holds the arena COPY of their equipment. Left alone, they would rejoin owning a
+     *  second set of everything they walked in with -- the duplication this whole design exists to prevent.
+     *  So the copy is replaced here, where the write is still ahead of us, and the location, health, effects
+     *  and gamemode are left to {@link #restore} on their next join, where a teleport actually works. */
+    private boolean sanitiseOnQuit(Player player) {
+        if (player == null) return false;
+        Database.ArenaState state = db.colosseumState(CoreUtil.id(player));
+        if (state == null) return true;
+        try {
+            ItemStack[] all = ItemStack.deserializeItemsFromBytes(state.items());
+            int size = player.getInventory().getSize();
+            ItemStack[] main = new ItemStack[size], armour = new ItemStack[4];
+            System.arraycopy(all, 0, main, 0, Math.min(size, all.length));
+            if (all.length >= size + 4) System.arraycopy(all, size, armour, 0, 4);
+            player.getInventory().clear();
+            player.getInventory().setContents(main);
+            player.getInventory().setArmorContents(armour);
+            player.getInventory().setItemInOffHand(all.length > size + 4 ? all[size + 4] : null);
+            player.setItemOnCursor(null);
+            player.setLevel(state.level());
+            player.setExp(state.exp());
+            return true;
+        } catch (Throwable error) {
+            plugin.getLogger().severe("[colosseum] could not sanitise " + player.getName() + "'s inventory on quit: " + error);
             return false;
         }
     }
@@ -736,6 +796,7 @@ final class ColosseumService implements Listener {
     /** Damage to and from a Colosseum boss. Everything the fight's numbers depend on happens here. */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void damage(EntityDamageEvent event) {
+        if (!isColosseumWorld(event.getEntity().getWorld())) return;
         Run run = runOfEntity(event.getEntity());
         if (run == null || run.resolved) return;
         ColosseumBosses.BossDef def = bosses.boss(run.bossKey);
@@ -747,7 +808,7 @@ final class ColosseumService implements Listener {
             if (byEntity.getDamager() instanceof Player direct) attacker = direct;
             else if (byEntity.getDamager() instanceof Projectile projectile && projectile.getShooter() instanceof Player shooter) attacker = shooter;
         }
-        if (attacker == null || !attacker.getName().equalsIgnoreCase(run.playerName)) { event.setCancelled(true); return; }
+        if (attacker == null || !CoreUtil.id(attacker).equals(run.player)) { event.setCancelled(true); return; }
         bosses.bossHurt(def, run.boss, event);
         double dealt = event.getFinalDamage();
         Player who = attacker;
@@ -757,6 +818,7 @@ final class ColosseumService implements Listener {
     /** Damage FROM a Colosseum boss's own projectile, normalised to the configured value. */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void projectile(EntityDamageByEntityEvent event) {
+        if (!isColosseumWorld(event.getEntity().getWorld())) return;
         if (!(event.getDamager() instanceof Projectile projectile)) return;
         String id = projectile.getPersistentDataContainer().get(runKey, PersistentDataType.STRING);
         if (id == null) return;
@@ -807,9 +869,20 @@ final class ColosseumService implements Listener {
     public void join(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         if (db.colosseumState(CoreUtil.id(player)) == null) return;
+        /*  Next tick, not in a second.
+         *
+         *  Until this runs the player is holding the ARENA COPY of their equipment in the real world, and
+         *  every tick of that is a tick in which an item could be dropped, traded or stored -- which would
+         *  duplicate it. One tick is short enough that nothing can act in it; the delayed second attempt is
+         *  a safety net for the case where another plugin's own join handling moved them first, and costs
+         *  nothing because restore() is a no-op once the capture is cleared. */
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (player.isOnline() && restore(player)) CoreUtil.msg(player, "Your pre-Colosseum belongings have been restored.");
-        }, 20L);
+        }, 1L);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (player.isOnline() && db.colosseumState(CoreUtil.id(player)) != null && restore(player))
+                CoreUtil.msg(player, "Your pre-Colosseum belongings have been restored.");
+        }, 40L);
     }
 
     /** Nothing leaves a Colosseum world under its own steam -- an ender pearl, a chorus fruit or a plugin
@@ -1048,10 +1121,10 @@ final class ColosseumService implements Listener {
             lore.add("");
             String no = refusal(player, def, false);
             lore.add(no == null ? "§aClick to challenge — you will be asked to confirm." : "§cUnavailable: " + no);
-            inv.setItem(slot, CoreUtil.named(def.icon(), (no == null ? "§c" : "§8") + def.name(), lore));
+            inv.setItem(slot, icon(def.icon(), (no == null ? "§c" : "§8") + def.name(), lore));
             slot++;
         }
-        inv.setItem(rows * 9 - 5, CoreUtil.named(Material.BOOK, "§6How the Colosseum works", List.of(
+        inv.setItem(rows * 9 - 5, icon(Material.BOOK, "§6How the Colosseum works", List.of(
                 "§7One player, one boss, one disposable arena.",
                 "§7You fight with your own current equipment.",
                 "§7Your belongings are copied in and restored exactly",
@@ -1066,6 +1139,20 @@ final class ColosseumService implements Listener {
         sound(player, "click");
     }
 
+    /** A menu item whose legacy colour codes actually render, with italics off so it reads the same on
+     *  Java and through Geyser on Bedrock. */
+    private static ItemStack icon(Material material, String name, List<String> lore) {
+        ItemStack item = new ItemStack(material);
+        org.bukkit.inventory.meta.ItemMeta meta = item.getItemMeta();
+        net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer legacy =
+                net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection();
+        meta.displayName(legacy.deserialize(name).decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC, false));
+        meta.lore(lore.stream().map(line -> legacy.deserialize(line.isEmpty() ? " " : line)
+                .decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC, false)).toList());
+        item.setItemMeta(meta);
+        return item;
+    }
+
     @EventHandler
     public void menuClick(org.bukkit.event.inventory.InventoryClickEvent event) {
         if (!(event.getInventory().getHolder(false) instanceof MenuHolder)) return;
@@ -1076,7 +1163,7 @@ final class ColosseumService implements Listener {
         String name = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
                 .serialize(clicked.getItemMeta().displayName());
         for (ColosseumBosses.BossDef def : bosses.all())
-            if (name.equals(def.name())) {
+            if (name.equals(def.name()) || name.endsWith(def.name())) {
                 player.closeInventory();
                 challenge(player, def.key(), false);
                 return;
@@ -1128,6 +1215,90 @@ final class ColosseumService implements Listener {
             resolve(run, "INTERRUPTED");
         }
         return live.size();
+    }
+
+    /*  What concurrent encounters actually cost this server, measured rather than asserted.
+     *
+     *  Holds `instances` real arena clones open with a real boss alive and telegraphing in each, samples the
+     *  server's own tick times through the run, and tears everything down. The one thing it cannot do is
+     *  swing a sword -- so the fighter's own damage is absent -- but everything that scales with the number
+     *  of simultaneous encounters is here: the world clones, their chunks, the entities, the per-run tasks
+     *  and the particle budget.
+     *
+     *  Reports through {@code say} as it goes, because the whole point is a measurement over time. */
+    void bench(int instances, int seconds, java.util.function.Consumer<String> say) {
+        ColosseumBosses.BossDef def = bosses.all().stream()
+                .max(Comparator.comparingDouble(ColosseumBosses.BossDef::health)).orElse(null);
+        if (def == null) { say.accept("No bosses are configured."); return; }
+        ColosseumArenas.Arena arena = arenas.arena(def.arena());
+        if (arena == null || !arenas.hasSnapshot(arena)) { say.accept("The arena for " + def.key() + " has no committed snapshot."); return; }
+        int wanted = Math.max(1, Math.min(maxConcurrent(), instances));
+        int hold = Math.max(5, Math.min(120, seconds));
+
+        double[] before = plugin.getServer().getTPS();
+        double idleMspt = plugin.getServer().getAverageTickTime();
+        say.accept("Benchmarking " + wanted + " concurrent " + def.name() + " encounter(s) for " + hold + "s.");
+        say.accept("  baseline: TPS " + String.format("%.2f", before[0]) + " (1m), MSPT " + String.format("%.2f", idleMspt)
+                + ", worlds " + plugin.getServer().getWorlds().size()
+                + ", worst-case particles/tick per encounter " + bosses.worstCaseParticlesPerTick(def));
+
+        List<World> worlds = new ArrayList<>();
+        List<LivingEntity> mobs = new ArrayList<>();
+        long[] prepared = new long[]{0, 0};
+        java.util.concurrent.atomic.AtomicInteger ready = new java.util.concurrent.atomic.AtomicInteger();
+        long began = System.currentTimeMillis();
+        for (int i = 0; i < wanted; i++) {
+            arenas.prepareInstance(arena, (world, stats) -> {
+                if (world != null) {
+                    worlds.add(world);
+                    if (stats != null) { prepared[0] += stats[1]; prepared[1] = Math.max(prepared[1], stats[1]); }
+                    LivingEntity boss = bosses.spawn(def, arena.bossSpawn(world), "__bench_" + world.getName());
+                    if (boss != null) mobs.add(boss);
+                }
+                if (ready.incrementAndGet() < wanted) return;
+
+                say.accept("  prepared " + worlds.size() + "/" + wanted + " instance(s) in " + (System.currentTimeMillis() - began)
+                        + " ms wall (mean " + (worlds.isEmpty() ? 0 : prepared[0] / worlds.size()) + " ms, slowest " + prepared[1] + " ms)");
+                int chunks = worlds.stream().mapToInt(w -> w.getLoadedChunks().length).sum();
+                int entities = worlds.stream().mapToInt(w -> w.getEntities().size()).sum();
+                say.accept("  loaded chunks " + chunks + " across " + worlds.size() + " world(s), entities " + entities
+                        + ", forced chunks " + worlds.stream().mapToInt(w -> w.getForceLoadedChunks().size()).sum());
+
+                /** One task, standing in for the per-run tickers, driving the heaviest telegraph each boss
+                 *  has at the same 2-tick cadence a real encounter uses. */
+                double[] worst = {0};
+                int[] samples = {0};
+                org.bukkit.scheduler.BukkitTask load = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                    for (LivingEntity mob : mobs)
+                        if (mob.isValid()) bosses.benchTelegraph(def, mob, mob.getLocation().clone().add(6, 0, 0));
+                    double mspt = plugin.getServer().getAverageTickTime();
+                    worst[0] = Math.max(worst[0], mspt);
+                    samples[0]++;
+                }, 2L, 2L);
+
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    double[] during = plugin.getServer().getTPS();
+                    double loadedMspt = plugin.getServer().getAverageTickTime();
+                    load.cancel();
+                    say.accept("  under load: TPS " + String.format("%.2f", during[0]) + " (1m), MSPT " + String.format("%.2f", loadedMspt)
+                            + " (peak " + String.format("%.2f", worst[0]) + " over " + samples[0] + " samples)");
+                    say.accept("  delta vs idle: MSPT " + String.format("%+.2f", loadedMspt - idleMspt)
+                            + " ms, TPS " + String.format("%+.2f", during[0] - before[0]));
+                    long teardown = System.currentTimeMillis();
+                    for (LivingEntity mob : mobs) if (mob.isValid()) mob.remove();
+                    for (World instance : new ArrayList<>(worlds)) arenas.destroyInstance(instance, null);
+                    say.accept("  torn down in " + (System.currentTimeMillis() - teardown) + " ms; live instances now "
+                            + arenas.liveInstanceCount() + ", Colosseum worlds loaded "
+                            + Bukkit.getWorlds().stream().filter(w -> w.getName().startsWith(ColosseumArenas.INSTANCE_PREFIX)).count());
+                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                        int swept = arenas.sweepDetached();
+                        say.accept("  after the sweep: " + swept + " leftover folder(s) removed, TPS "
+                                + String.format("%.2f", plugin.getServer().getTPS()[0]) + ", MSPT "
+                                + String.format("%.2f", plugin.getServer().getAverageTickTime()));
+                    }, 60L);
+                }, hold * 20L);
+            });
+        }
     }
 
     // ------------------------------------------------------------------ small helpers

@@ -426,7 +426,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     }
 
     void giveGuide(Player p){guides.giveBoth(p);}
-    private void playerHelp(Player p){p.sendMessage("§6§lASHFALL");p.sendMessage("§eFactions: §f/f create, /f claim, /f relations, /f expand, /f <player>");p.sendMessage("§eEconomy: §f/balance, /pay, /bounty, /bounties");p.sendMessage("§eMarketplace: §f/shop, /ah, /luxuryshop, /shardshop, /orders, /myorders");p.sendMessage("§eTravel: §f/home, /tpa, /spawn, /rtp, /rtp queue");p.sendMessage("§eSocial: §f/msg, /r, /trade, /feedback");p.sendMessage("§eMore: §f/settings, /events, /progress, /stats, /graves, /enderchest, /guide, /afk");}
+    private void playerHelp(Player p){p.sendMessage("§6§lASHFALL");p.sendMessage("§eFactions: §f/f create, /f claim, /f relations, /f expand, /f <player>");p.sendMessage("§eEconomy: §f/balance, /pay, /bounty, /bounties");p.sendMessage("§eMarketplace: §f/shop, /ah, /luxuryshop, /shardshop, /orders, /myorders");p.sendMessage("§eTravel: §f/home, /tpa, /spawn, /rtp, /rtp queue");p.sendMessage("§eSocial: §f/msg, /r, /trade, /feedback");p.sendMessage("§eCombat: §f/duel, /colosseum");p.sendMessage("§eMore: §f/settings, /events, /progress, /stats, /graves, /enderchest, /guide, /afk");}
 
     private boolean admin(CommandSender sender,String[] args){
         if(sender instanceof Player p&&!isAdmin(p)){CoreUtil.error(sender,"Only the configured ADMIN account can use SMPCore administration.");return true;}
@@ -574,6 +574,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         s.sendMessage(ChatColor.GOLD+""+ChatColor.BOLD+"ASHFALL ADMIN");
         adminCategory(s,"Economy","/ashfall balance, /ashfall bank, /ashfall economy report, /ashfall shard");
         adminCategory(s,"Events & Bosses","/ashfall event, /ashfall boss, /ashfall elite");
+        adminCategory(s,"Arenas","/ashfall duelmap, /ashfall colosseum");
         adminCategory(s,"Factions & Spawn","/ashfall faction, /ashfall spawnclaim");
         adminCategory(s,"Merchants","/ashfall merchant");
         adminCategory(s,"Bulletin","/ashfall bulletin");
@@ -604,10 +605,38 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"feedback"->feedbackHelp(s);
             case"relics","relic"->relicHelp(s);
             case"bounty","bounties"->bountyHelp(s);
+            case"arenas","colosseum"->colosseumHelp(s);
+            case"duelmap","duelmaps"->adminCommands(s,"Duel Maps","/ashfall duelmap <"+String.join("|",DUELMAP_SUBS)+">",
+                "  build/import/save commit a template; test/dryrun/loot clone one; drop removes an instance.",
+                "  canary = template persistence proof, verify = full pipeline.");
             case"maintenance","debug"->adminCommands(s,"Debug / Maintenance","/ashfall border status","/ashfall border apply","/ashfall border restore","/ashfall setspawn","/ashfall reload","/ashfall debug","/ashfall selftest","/ashfall grave repair");
             default->adminHelp(s);
         }
     }
+    /** The Colosseum admin surface, in the order an arena is actually brought up: make it, build it,
+     *  commit it, test it, then keep an eye on what it is running. */
+    private void colosseumHelp(CommandSender s){
+        adminCommands(s,"Boss Colosseum",
+            "/ashfall colosseum list                          arenas, bosses, stats and snapshot state",
+            "/ashfall colosseum create <arena>                open (or seed) the build workspace",
+            "/ashfall colosseum enter <arena>                 teleport in to build it (creative)",
+            "/ashfall colosseum setspawn <arena> <player|boss|spectator>",
+            "/ashfall colosseum setboss <arena> <boss>        move a boss to another arena",
+            "/ashfall colosseum save <arena>                  commit it; future encounters clone this",
+            "/ashfall colosseum exit                          back where you came from",
+            "/ashfall colosseum test <boss>                   a REAL encounter, free: no charge, no prize,",
+            "                                                 no reward table, no allowance, no leaderboard",
+            "/ashfall colosseum instances                     live encounters, worlds, chunks, prep times",
+            "/ashfall colosseum drop <instance-world>         end one (interrupts and REFUNDS its fighter)",
+            "/ashfall colosseum orphans                       remove leftover instance worlds",
+            "/ashfall colosseum reload                        reload colosseum.yml (refunds live encounters)",
+            "/ashfall colosseum verify                        the full automated suite",
+            "/ashfall colosseum bench <instances> <seconds>   measure what concurrency costs this server",
+            "",
+            "Player side: /colosseum, /colosseum stats [player], /colosseum top [boss], /colosseum leave.",
+            "Every boss value lives in plugins/SMPCore/colosseum.yml -- nothing is compiled in.");
+    }
+
     private void eventHelp(CommandSender s){adminCommands(s,"Events","/ashfall event resource","/ashfall event elitehunt","/ashfall event taskmaster","/ashfall event worldboss","/ashfall event stop");}
     private void bossHelp(CommandSender s){adminCommands(s,"World Boss","/ashfall boss spawn [ashen|iron|piglin]","/ashfall boss here [ashen|iron|piglin]","/ashfall boss despawn");}
     private void eliteHelp(CommandSender s){adminCommands(s,"Powered Mobs","/ashfall elite <uncommon|rare|epic|legendary|miniboss> [mob] [here | <x> <y> <z>]","  mob optional (e.g. wither_skeleton, blaze); location optional -> random if omitted","/ashfall elite legendary blaze here","/ashfall elite epic 100 64 -200","/ashfall elite stats");}
@@ -940,7 +969,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     /** Every /ashfall colosseum subcommand, in the order help prints them. Single source of truth for the
      *  help text, the tab completion and the unknown-subcommand reply, so the three cannot drift. */
     private static final List<String> COLOSSEUM_SUBS=List.of("list","create","enter","exit","save","setspawn",
-        "setboss","test","instances","drop","orphans","reload","verify");
+        "setboss","test","instances","drop","orphans","reload","verify","bench");
 
     private final Map<String,org.bukkit.Location> colosseumReturn=new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -1043,6 +1072,12 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 colosseum.challenge(p,d.key(),true);
             }
             case"instances"->{for(String line:colosseum.instanceReport())CoreUtil.msg(sender,line);}
+            case"bench"->{
+                int count=args.length>2?parseIntOr(args[2],2):2,seconds=args.length>3?parseIntOr(args[3],20):20;
+                /** Results arrive over the following seconds, by which time an RCON caller has already been
+                 *  disconnected -- so every line goes to the log as well as to whoever asked. */
+                colosseum.bench(count,seconds,line->{CoreUtil.msg(sender,line);getLogger().info("[colosseum-bench] "+line);});
+            }
             case"drop"->{
                 if(args.length<3){colosseumUsage(sender,"drop","instance-world");return;}
                 CoreUtil.msg(sender,colosseum.dropInstance(args[2]));
@@ -1063,6 +1098,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 CoreUtil.msg(sender,"COLOSSEUM - /ashfall colosseum <"+String.join("|",COLOSSEUM_SUBS)+">");
                 CoreUtil.msg(sender,"  create/enter/save build and commit an arena; test runs a free real encounter.");
                 CoreUtil.msg(sender,"  instances/drop/orphans manage live worlds; verify is the full automated suite.");
+                CoreUtil.msg(sender,"  bench <instances> <seconds> measures what concurrent encounters cost this server.");
                 CoreUtil.msg(sender,"  Arenas: "+String.join(", ",colosseum.arenas().arenaKeys())+" | Bosses: "+String.join(", ",colosseum.bosses().keys()));
             }
         }
@@ -1071,6 +1107,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     /** colosseum.yml is not the plugin's main config, so it is loaded, edited and written back explicitly.
      *  Comments in the file are lost on a write, which is why only setspawn/setboss do it -- everything else
      *  is edited by hand. */
+    private static int parseIntOr(String value,int fallback){try{return Integer.parseInt(value);}catch(NumberFormatException e){return fallback;}}
+
     private boolean writeColosseumConfig(String path,Object value){
         try{
             java.io.File file=new java.io.File(getDataFolder(),"colosseum.yml");
@@ -1325,10 +1363,12 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"create","enter","save","setspawn","setboss"->filter(args[2],colosseum.arenas().arenaKeys());
                 case"test"->filter(args[2],colosseum.completableBosses(true));
                 case"drop"->filter(args[2],colosseum.arenas().instanceNames());
+                case"bench"->filter(args[2],List.of("1","2","3","4"));
                 default->List.of();
             };
             if(args.length==4&&sub.equals("setspawn"))return filter(args[3],List.of("player","boss","spectator"));
             if(args.length==4&&sub.equals("setboss"))return filter(args[3],colosseum.completableBosses(true));
+            if(args.length==4&&sub.equals("bench"))return filter(args[3],List.of("10","20","30","60"));
             return List.of();
         }
         if(name.equals("ashfall")&&args.length==2&&args[0].equalsIgnoreCase("hopper"))
@@ -1367,7 +1407,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("events")&&args.length==2&&args[0].equalsIgnoreCase("track"))return filter(args[1],List.of("on","off"));
         if(name.equals("ashfall")&&args.length==2){
             return switch(args[0].toLowerCase(Locale.ROOT)){
-                case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","maintenance"));
+                case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","arenas","colosseum","duelmap","maintenance"));
                 case"balance"->filter(args[1],List.of("set","add","take"));
                 case"bank"->filter(args[1],List.of("add","remove","set"));
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));

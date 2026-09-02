@@ -5,6 +5,217 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-02 (part 3) - The Boss Colosseum
+
+A paid, solo boss fight in a disposable arena clone, using the player's own real equipment. Three bosses
+with distinct identities and combat styles, their own configuration, reward tables, statistics and
+lifecycle. Staging only; production is untouched.
+
+### What it is, and what it deliberately is not
+
+It is NOT the world-boss system in a smaller room. A Colosseum encounter never creates, reads or clears
+world-boss state, participation records, the active-boss restriction, natural or event spawning, or
+world-boss cleanup — the two systems are invisible to each other, and `/ashfall colosseum verify` asserts
+that directly by checking a spawned Colosseum boss is not tagged as a world boss.
+
+What IS shared is arithmetic that was already proven here: Minecraft caps the `MAX_HEALTH` attribute at
+1024, so a bigger pool has to be carried as a damage divisor. Same technique as the world bosses, same
+1024 clamp, and the verifier asserts `engineHealth x toughness == configured health` for every boss so the
+two halves can never silently disagree.
+
+### The three bosses
+
+| Boss | Entity | Style | Pool | Melee | Armour | Limit |
+|---|---|---|---:|---:|---:|---|
+| **Emberbound Duelist** | Wither Skeleton | Duellist | 1,800 | 17 | 6 | 5m |
+| **Warden of Cinders** | Iron Golem | Area control | 2,600 | 20 | 12 | 7m |
+| **Ashfallen Revenant** | Vindicator | Mobile skirmisher | 1,500 | 14 | 4 | 5m |
+
+- **Emberbound Duelist** — *Riposte* (telegraphed stance: melee is cut to 25% and 35% of it comes back,
+  capped at 8; the counterplay is simply to stop swinging for two seconds), *Lunge* (closes from range,
+  then stands slowed — that recovery window is the reward), *Flurry* (three spaced sword strikes).
+- **Warden of Cinders** — *Fissure* (marks a ring of ground, erupts 1.5s later; step off the marks),
+  *Bulwark* (anchors: 20% damage taken but cannot move or attack — free repositioning in exchange for a
+  damage window you cannot win), *Slam* (radial shove, worst at point-blank).
+- **Ashfallen Revenant** — *Blink* (telegraphed at BOTH ends, so the destination is visible before it
+  arrives), *Volley* (exactly three small fireballs, bounded and tracked), *Veil* (below 35% it gains speed
+  and shrugs off projectiles, forcing the last third to be closed out in melee).
+
+Every ability is telegraphed with a sound and particles at least 0.75s ahead, has an explicit answer, edits
+no blocks, summons nothing and cannot one-shot a full-health player. `mechanicsSelfTest()` asserts all four
+of those properties from configuration, so a well-meaning config edit cannot quietly break any of them.
+
+**Ability damage is dealt as MAGIC on purpose.** Full Protection IV netherite cuts a 20-damage physical hit
+to under two, so an area ability that respected armour would be pure decoration against the exact gear
+this is balanced for. Protection, Resistance, absorption, totems and healing all still apply, and every one
+of these lands a second or more after a telegraph that says exactly where it will be — but none of them can
+be ignored. Sword strikes stay physical, as they should.
+
+There is no hidden player-count scaling anywhere. A `BossDef` carries no participant field at all.
+
+### The money, and why it is shaped this way
+
+$500,000 in, $1,000,000 out, fee never refunded on a win, so a victory nets $500,000. Three rewarded
+victories per player per real day across the whole Colosseum, resetting at Riyadh midnight like every other
+daily boundary here — that caps Colosseum profit at $1.5M/day/player, and it is the entire brake on this
+becoming a money printer.
+
+**Nothing is charged until the world exists, the state is captured, and the player is verifiably standing
+in the arena.** Not "did `teleport()` return true" — `world.equals(player.getWorld())`, because a teleport
+can be cancelled or redirected and charging for a fight somebody is not in is the failure this order of
+operations exists to make impossible. The charge is the last step before commitment, so any failure during
+preparation costs exactly nothing.
+
+Every money flag is a **compare-and-set in SQL**, not a boolean in memory:
+
+```sql
+UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0
+```
+
+A duplicated callback, a double click, a reconnect, a duplicate death event, instance cleanup and boot
+recovery can all try to resolve the same run. The first one wins; the rest are no-ops that the caller can
+see are no-ops. The verifier attempts every one of them twice on purpose and requires the second to fail.
+
+The fee moves through `serverPayment`/`refundServerPayment` — the atomic debit-and-credit pair the rest of
+the economy already uses. A fee that only debits the player and a refund that only credits them are not
+inverses: the first destroys money and the second creates it. The prize goes through `creditEarned`, so an
+overdue bank loan is garnished from a Colosseum prize exactly as from any other income.
+
+### Belongings: a copy in, the original back
+
+A fighter carries a **copy** of their equipment. Durability, eaten golden apples, spent rockets, arena
+drops and boss loot are all discarded; the captured original is restored exactly on every exit path.
+
+Which means every route out of the inventory has to be closed while inside, or a copy becomes a duplicate.
+Rather than enumerate Ender Chests, shulkers, auctions, orders, faction vaults and trades and hope nobody
+adds a twelfth next month, **the rule is inverted**: the only inventory a player may open inside an
+encounter is their own, and commands are an allowlist rather than a blocklist. A system added tomorrow is
+covered without anybody remembering to come back here.
+
+Two failure modes that took specific work:
+
+- **A corpse cannot be teleported.** `destroyInstance()` moves players out of the world it is about to
+  delete, and a dead player ignores that — so the loser of a fight would be left lying in a world that
+  stopped existing a tick later. Resolution now forces the respawn first, which fires `PlayerRespawnEvent`
+  while the capture is still intact and puts them back on the exact spot they entered from. (Same shape as
+  the duel bug where losers woke up at their bed.)
+- **A disconnect writes the arena copy to disk.** Paper saves the player's `.dat` right after they quit,
+  and at that moment it holds the copied gear — rejoin and you own two of everything. So a quit overwrites
+  the live inventory with the captured original *before* that write, and deliberately KEEPS the capture so
+  the join handler can finish the location, health and effects properly. The join restore runs on the next
+  tick, not after a second, because every tick holding a copy in the real world is a tick it could be
+  dropped.
+
+Deaths leave no grave (guard added to `GraveService`), drop nothing real, pay no death tax (guard added to
+`GameplayListener`), and never touch the real respawn point. A Colosseum boss death pays no mob money and
+counts toward no kill statistic — without that guard a boss worth a million dollars would *also* pay
+ordinary combat income on the way down.
+
+Rewards are granted only after restoration succeeds. If it fails, nothing is paid and the fee is refunded
+instead: the failure mode is "the player got their money back", never "the player got a prize and lost
+their inventory". Overflow goes to the persistent `/orders` stash rather than onto the floor.
+
+### Crash vs disconnect, without guessing
+
+An ordinary quit is resolved as a **loss the instant it happens**. So a row still `ACTIVE` at boot can only
+mean the process died with the run genuinely live — the system interrupted the player, and the fee comes
+back. No heuristic about who is online, no heartbeat column, no timeout. `recover()` is idempotent, and the
+verifier plants rows in exactly the state a dead process leaves behind and runs it twice.
+
+### Arenas
+
+The duel engine's architecture, and in the places that matter literally the duel engine's code:
+`copyWorldFolder`, `deleteQuietly`, `deleteWithRetry`, `stripIdentity` and `customWorldDir()` in
+`DuelMapService` were opened up to package scope and are called directly. Everything learned the hard way
+about Paper's `<level-name>/dimensions/<ns>/` layout, duplicate-UUID refusals and Windows holding region
+handles after an unload now has exactly one implementation instead of two that can drift.
+
+What is **not** shared is identity. `colo_tpl_*` / `colo_inst_*`, their own snapshot directory, their own
+registry. Editing a Colosseum arena cannot alter a duel map or vice versa; no Colosseum world is ever
+offered to duel matchmaking; and the duel chest-loot roller never sees a Colosseum instance — which matters,
+because it would be a free item printer sitting inside a paid fight.
+
+`ashen_colosseum` was seeded once from the committed `arena100` duel snapshot (a read and a copy out; the
+duel map is not modified) and is its own world from that point on.
+
+Instance preparation is an async folder copy of the immutable snapshot plus sliced chunk loading, 24 chunks
+per tick. Templates are never entered by matchmaking. Orphans are cleaned at boot and swept every 90s.
+
+### Performance, measured
+
+`/ashfall colosseum bench <instances> <seconds>` holds real instances open with a real boss telegraphing in
+each, samples the server's own tick times, and tears it all down. Two concurrent Warden of Cinders
+encounters on staging:
+
+| | Value |
+|---|---|
+| Instance preparation | 516 ms cold single; ~1.28 s wall for two at once (folder copy 48 ms) |
+| Loaded chunks | 93-94 per instance (arena is 64; the rest is Paper's ticket propagation) |
+| Force-loaded chunks | **0** — nothing is ever pinned |
+| Entities per instance | 1 (the boss) plus at most 3 short-lived fireballs |
+| Repeating tasks per encounter | **1** |
+| Worst-case particles/tick per encounter | 66, computed from configuration |
+| Teardown | 82 ms for both worlds; folders gone, 0 leftovers after the sweep |
+| TPS delta under two concurrent encounters | -0.15 |
+
+Every ability is driven by the run's single ticker rather than nested `runTaskLater` calls. That is not
+style: a telegraph scheduled with a delayed task outlives the fight that scheduled it, and an ability
+landing in a world that has already been deleted is exactly the leak this may not have. Cooldowns and
+wind-ups are timestamps; when the run ends its one task is cancelled and there is provably nothing pending.
+
+### Verification
+
+`/ashfall colosseum verify` — **125 checks, 0 failures** on staging. Configuration and boss identity; every
+single-shot money guarantee attempted twice; insufficient funds at the moment of charging; the daily
+allowance including losses and admin tests not consuming it; leaderboard integrity including an admin test
+never reaching it; the full state capture round trip (damaged enchanted tool, full stack, empty slots,
+absorption, flight, velocity, effects); bounded reward tables over 200 rolls; interrupted-run recovery run
+twice for idempotency; instance isolation, two concurrent instances of one arena, boundary rejection, world
+rules, all three bosses spawning and being removed cleanly, deletion, orphan cleanup and the sweep.
+
+Regression, after: `/ashfall selftest` 55 checks with zero failures; `/ashfall duelmap verify` 197 lines,
+no failures; `/ashfall duelmap canary` PASSED including the cross-restart snapshot proof.
+
+**One assertion was wrong and was corrected rather than removed:** Paper hands an unset slot back as
+`ItemStack.empty()`, not `null`, so "empties survive as null" failed on a round trip that was in fact
+perfect. It now asserts what actually matters — the array keeps its length, so nothing shifts index, and an
+empty slot comes back empty rather than holding somebody else's item.
+
+### What still needs a human
+
+Everything above is asserted without a player. What cannot be, and is the manual acceptance list:
+
+- The feel of each fight in real gear — whether the telegraphs read clearly and the time limits are right.
+- The GUI and confirmation screen as rendered on Bedrock through Geyser.
+- A real death, a real `/colosseum leave`, and a real mid-fight Alt-F4, end to end.
+- A live restart during a committed encounter, to see the refund arrive on rejoin.
+
+### Files, schema and config
+
+New: `ColosseumService`, `ColosseumArenas`, `ColosseumBosses`, `ColosseumVerify`, `colosseum.yml`.
+Changed: `Database` (three tables, accessors, selftest), `DuelMapService` (filesystem primitives opened for
+reuse; no behaviour change), `SMPCore` (service, commands, admin family, autocomplete, help, selftest),
+`SettingsService` (the `COLOSSEUM` confirmation kind), `GameplayListener` and `GraveService` (guards),
+`plugin.yml`, `deploy/manifest.yml`.
+
+Schema, created automatically on boot: `colosseum_runs` (the lifecycle ledger with the compare-and-set
+flags), `colosseum_stats` (per player per boss), `colosseum_state` (pre-entry capture, deliberately its own
+table so a Colosseum bug can never restore somebody into a duel's capture).
+
+Two new deploy artefacts, both now in `deploy/manifest.yml`: `plugins/SMPCore/colosseum.yml` and
+`plugins/SMPCore/colosseum-templates/`. **Neither travels with a jar swap.**
+
+### Commands
+
+Player: `/colosseum` (menu), `/colosseum <boss>`, `/colosseum stats [player]`, `/colosseum top [boss]`,
+`/colosseum leave` (warns once, then forfeits). Permission `smpcore.colosseum`, default true.
+
+Admin, under the existing ADMIN gate: `/ashfall colosseum list|create|enter|exit|save|setspawn|setboss|
+test|instances|drop|orphans|reload|verify|bench`, with live autocomplete for arena ids, boss ids, instance
+world names and spawn roles. `/ashfall help colosseum` prints the whole surface.
+
+---
+
 ## Session: 2026-09-02 (part 2) - Prism reset: 36.4 GB to a bounded ~0.2 GB
 
 ### What the 36.4 GB actually was
