@@ -76,3 +76,9 @@ rem the listening port rather than an unlucky gap between the two.
 waitfor /t 60 AshfallRestartSettle >nul 2>&1
 rmdir "%LOCK%" 2>nul
 endlocal
+
+rem Windows `start` runs a .bat through `cmd /K`, which keeps the shell open once the script ends -- so
+rem every watchdog-driven restart left an idle "cmd /K restart-server.bat" window behind for good.
+rem `exit` (not `exit /b`) terminates that shell. Found one from the 04:10 restart still sitting there
+rem hours later, and they accumulate one per restart.
+exit

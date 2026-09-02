@@ -1,0 +1,123 @@
+# When enabled, worlds are identified by name instead of UUID.
+# This is useful for servers with software that frequently regenerates worlds
+# where the world name stays the same but the UUID changes.
+# Disabled by default. Only enable if you have a specific need for this.
+identify-worlds-by-name=false
+# Enable query spy. This logs queries and helpful debug information.
+# Used primarily for development and debugging. Use carefully.
+spy=false
+# Set which storage system to use.
+# Available options: H2, MARIADB, MYSQL, POSTGRES, SQLITE
+# NOTE: Only one storage system may be used at a time.
+# Transferring data from one to another is not yet supported.
+primary-storage-type=SQLITE
+# Settings for H2 file-based databases. File-based databases aren't generally
+# recommended but the pros/cons depend entirely on your usage and needs.
+h2 {
+    # The path for the database file, excluding the filename.
+    # By default the file will be inside the prism plugin folder.
+    # You must use forward-slashes (c:/example) or double backslashes (c:\temp).
+    path="."
+    # Set the max number of records saved to storage per batch.
+    batch-max=2000
+    # Configure the database name.
+    database=prism
+    # Enter the prefix prism should use for database table names. i.e. prism_activities.
+    prefix="prism_"
+}
+# Settings for MariaDB
+mariadb {
+    # Toggle recommended Hikari datasource optimizations.
+    # You can read about these here: https://github.com/brettwooldridge/HikariCP/wiki/MySQL-Configuration
+    use-hikari-optimizations=true
+    # Enable stored procedures. Stored procedures allow Prism to modify database records
+    # more efficiently and with reduced network traffic.
+    # However, your account must have privileges to `CREATE ROUTINE` and `ALTER ROUTINE`.
+    # If you use a shared database, you likely do NOT have such permission.
+    # If you're unsure, Prism tells you in the server console during server startup.
+    # Prism will force disable this setting if you do not have necessary permission.
+    use-stored-procedures=true
+    # Configure the hostname.
+    host=localhost
+    # Enter the password, if the selected datasource uses authentication.
+    password=""
+    # Configure the port.
+    port="3306"
+    # Enter the username, if the selected datasource uses authentication.
+    username=root
+    # Set the max number of records saved to storage per batch.
+    batch-max=2000
+    # Configure the database name.
+    database=prism
+    # Enter the prefix prism should use for database table names. i.e. prism_activities.
+    prefix="prism_"
+}
+# Settings for MySQL
+mysql {
+    # Toggle recommended Hikari datasource optimizations.
+    # You can read about these here: https://github.com/brettwooldridge/HikariCP/wiki/MySQL-Configuration
+    use-hikari-optimizations=true
+    # Enable stored procedures. Stored procedures allow Prism to modify database records
+    # more efficiently and with reduced network traffic.
+    # However, your account must have privileges to `CREATE ROUTINE` and `ALTER ROUTINE`.
+    # If you use a shared database, you likely do NOT have such permission.
+    # If you're unsure, Prism tells you in the server console during server startup.
+    # Prism will force disable this setting if you do not have necessary permission.
+    use-stored-procedures=true
+    # Configure the hostname.
+    host=localhost
+    # Enter the password, if the selected datasource uses authentication.
+    password=""
+    # Configure the port.
+    port="3306"
+    # Enter the username, if the selected datasource uses authentication.
+    username=root
+    # Set the max number of records saved to storage per batch.
+    batch-max=2000
+    # Configure the database name.
+    database=prism
+    # Enter the prefix prism should use for database table names. i.e. prism_activities.
+    prefix="prism_"
+}
+# Settings for Postgres
+postgres {
+    # Set the schema for prism tables/functions to use.
+    # We recommend creating a "prism" schema for all prism entities.
+    # https://neon.tech/postgresql/postgresql-administration/postgresql-create-schema
+    schema=prism
+    # Enable stored procedures. Stored procedures allow Prism to modify database records
+    # more efficiently and with reduced network traffic.
+    # However, your postgres account must have privileges to `CREATE FUNCTION`.
+    # If you're unsure, Prism tells you in the server console during server startup.
+    # Prism will force disable this setting if you do not have necessary permission.
+    use-stored-procedures=true
+    # Configure the hostname.
+    host=localhost
+    # Enter the password, if the selected datasource uses authentication.
+    password=""
+    # Configure the port.
+    port="5432"
+    # Enter the username, if the selected datasource uses authentication.
+    username=postgres
+    # Set the max number of records saved to storage per batch.
+    batch-max=2000
+    # Configure the database name.
+    database=prism
+    # Enter the prefix prism should use for database table names. i.e. prism_activities.
+    prefix="prism_"
+}
+# Settings for sqlite file-based databases. File-based databases aren't generally
+# recommended but the pros/cons depend entirely on your usage and needs.
+sqlite {
+    busy-timeout=3000
+    # The path for the database file, excluding the filename.
+    # By default the file will be inside the prism plugin folder.
+    # You must use forward-slashes (c:/example) or double backslashes (c:\temp).
+    path="."
+    # Set the max number of records saved to storage per batch.
+    batch-max=2000
+    # Configure the database name.
+    database=prism
+    # Enter the prefix prism should use for database table names. i.e. prism_activities.
+    prefix="prism_"
+}

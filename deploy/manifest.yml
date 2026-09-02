@@ -114,6 +114,28 @@ sync:
       logs/console-guard.log, never to the console -- writing to the console is the thing being guarded.
       start.bat / start-staging.bat must launch it with `start /b`. Verify with an external probe attached to
       the server console: mode must read 0x89 while Java is running.
+  - path: storage-guard.ps1
+    note: |
+      ADDED 2026-09-02 after Prism's database reached 36.4 GB with nothing anywhere reporting it -- the
+      server itself sat at a flawless 20.0 TPS throughout, because Prism commits off the main thread, so
+      every in-game signal said healthy while the host drowned in write I/O.
+
+      Checks plugins/prism/prism.db and free disk every 15 minutes; logs to logs/storage-guard.log and warns
+      in-game over RCON on a CHANGE of state. Warn/alarm: Prism 2/5 GB, free disk 40/20 GB. The 2 GB warning
+      is ~10x the measured post-filter steady state (~0.22 GB over a 7-day window). Launched by the
+      launchers with `start /b`.
+  - path: plugins/prism/prism.conf
+    note: |
+      BOUNDS PRISM'S GROWTH. Do not let these three revert:
+        vehicle-ride / vehicle-exit = false   66.8% of the old 36.4 GB was oak boats in one creeper farm
+        filter ignore-environmental-mob-deaths  IGNORE entity-death whose named-cause is environmental
+                                              (fall/cramming/drowning/...); 32% more of the old database.
+                                              Keyed on CAUSE so player kills and boss kills are still kept.
+        purge before:7d                       was 6w, which had NEVER fired because the data was younger
+                                              than the window the whole time.
+      Everything else stays ON deliberately -- block, container, item, player-death and audit actions cost
+      almost nothing (0.85% of rows combined) and are the entire point of the plugin.
+      Pre-reset copies: config-templates/prism/*.pre-reset-20260902
   - path: freeze-watchdog.ps1
     note: |
       ADDED 2026-09-02. Probes RCON from OUTSIDE the JVM every 30s and, after 10 consecutive unanswered

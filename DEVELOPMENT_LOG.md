@@ -5,6 +5,143 @@ Newest first. Updating this is part of finishing a change, not an afterthought â
 
 ---
 
+## Session: 2026-09-02 (part 2) - Prism reset: 36.4 GB to a bounded ~0.2 GB
+
+### What the 36.4 GB actually was
+
+Read-only analysis of the old database before touching it. 92,756,899 rows, 36.39 GB, 14.70 days of data
+(2026-08-18 23:06 to 2026-09-02 15:51), averaging ~421 bytes per row including indexes.
+
+| Action | Rows | Share | Est. size |
+|---|---:|---:|---:|
+| `vehicle-exit` | 30,964,518 | 33.4% | 12.15 GB |
+| `vehicle-ride` | 30,962,708 | 33.4% | 12.15 GB |
+| `entity-death` | 30,044,704 | 32.4% | 11.79 GB |
+| `block-break` | 382,868 | 0.4% | 0.15 GB |
+| `item-dispense` | 161,657 | 0.2% | 0.06 GB |
+| everything else (21 actions) | 240,444 | 0.26% | 0.09 GB |
+
+Top causes: `(none)` 62,950,758 and `fall` 29,705,553. Top affected entity types: `oak_boat` 61,925,505 and
+`creeper` 29,782,010.
+
+**99.1% of the database was one creeper farm** - boats being entered and exited, and creepers hitting the
+bottom of the drop shaft at ~6996,147,6819. Hoppers were never involved: `item-insert` was 28,082 rows in
+fifteen days, `item-remove` 26,564, `item-pickup` 47,859. Together 0.1%.
+
+Measured growth: 6.3M rows/day (2.48 GB/day) lifetime; over the last seven days 3.13M rows/day (1.23 GB/day)
+with a peak day of 8.96M rows (3.51 GB). **A seven-day retention alone would have settled at 8.6 GB, and
+24.6 GB at the peak rate** - which is why retention alone was not the answer.
+
+### What changed
+
+**`plugins/prism/prism.conf`** (backed up first - see below):
+
+- `vehicle-exit: true -> false` and `vehicle-ride: true -> false`. 66.8% of all rows, every one an oak boat
+  in the farm. `vehicle-break` and `vehicle-place` stay ON: those are how a player loses a boat or minecart,
+  which is a real grief report.
+- New filter `ignore-environmental-mob-deaths`, IGNORE, on `actions=[entity-death]` with
+  `named-causes=[cramming, decay, drowning, dryout, fall, "fire tick", lava, suffocation]`.
+
+  Keyed on the CAUSE, not on the mob, and that distinction is the whole point: a creeper a player kills
+  still has a cause player and is still recorded, as are boss kills, named mobs, and anything that matters
+  for a grief or rollback report. Only the 29.7M rows of mobs dying to the farm disappear. `entity-death`
+  itself stays ON - disabling it outright would have thrown away player kills with the farm noise.
+- Retention `before:6w -> before:7d`, nightly cron unchanged.
+
+  Six weeks was never wrong in principle and had simply **never fired**: the oldest data was always younger
+  than the window, so the scheduled purge had deleted nothing in the plugin's entire life while the database
+  grew to 36.4 GB.
+
+**Deliberately left ON**, because they are the audit trail and cost almost nothing: `block-break`,
+`block-place`, `block-form`, `block-harvest`, `block-use`, `item-insert`, `item-remove`, `item-pickup`,
+`item-drop`, `item-destroy`, `item-throw`, `item-trade`, `item-use`, `item-dispense`, `player-death`,
+`entity-death` (player-caused), `entity-place`, `entity-remove`, `sign-edit`, `bucket-fill`, `bucket-empty`,
+`hanging-*`, `vehicle-break`, `vehicle-place`, `raid-trigger`.
+
+### Files deleted
+
+Exactly three paths, all under `plugins/prism/`:
+
+- `prism.db` - 39,078,596,608 bytes (36.39 GB)
+- `prism.db-wal` - already absent (SQLite removes it on a clean close, which also confirmed the shutdown was
+  clean)
+- `prism.db-shm` - already absent, same reason
+
+Nothing else was touched. `prism.conf`, `storage.conf`, `prism.lock`, `libs/`, `locale/`, the plugin jar,
+all worlds, all SMPCore data and every other plugin were left exactly as they were.
+
+Free disk went from **55.2 GB to 91.6 GB**.
+
+Production was already cleanly stopped at 16:09:31 when this began, so no restart announcement was owed and
+none was made. Before deleting, an exclusive open on `prism.db` was taken to prove the JVM had released it.
+
+### Backups
+
+Configuration only - the 36 GB database was deliberately NOT backed up, on instruction:
+
+- `C:\Ashfall-Development\security-backups\prism-config-20260902-162617\prism.conf` and `storage.conf`
+- `config-templates/prism/prism.conf.pre-reset-20260902` and `storage.conf.pre-reset-20260902` (in Git)
+
+### Projection
+
+With the filters applied to the measured historical composition, the surviving traffic is ~1,103,700 rows
+over the 14.70 days analysed:
+
+- **~75,000 rows/day, ~31 MB/day**
+- **seven-day steady state ~525,000 rows, ~0.22 GB**
+- at the *peak* observed day's composition, ~107,000 rows/day -> ~0.31 GB over seven days
+
+That is a ~150x reduction and is predictably bounded: one nightly purge removes roughly a day's worth, far
+inside the existing 5,000-per-batch / 2-second-cycle purge budget.
+
+**No database backend change is needed.** SQLite is entirely comfortable at 0.2-0.3 GB; the 36 GB figure was
+never a backend problem, it was 99% avoidable rows. If the workload ever changes enough to make this
+untrue, that is a separate conversation before anything is installed or migrated.
+
+### Monitoring added
+
+`storage-guard.ps1`, in both server directories, launched by the launchers with `start /b` alongside the
+console guard and freeze watchdog. Every 15 minutes it records Prism's size and free disk to
+`logs/storage-guard.log`, and on a *change* of state it warns in-game over RCON so the alert is noticed
+rather than becoming wallpaper.
+
+| | Warn | Alarm |
+|---|---|---|
+| `prism.db` | 2 GB | 5 GB |
+| free disk | 40 GB | 20 GB |
+
+The 2 GB warning is about ten times the expected steady state - clear of normal variation, and still weeks
+of runway. It writes to a file and never to the console, because console output is exactly what a blocked
+console stalls on (see the 2026-09-01 entry).
+
+### Also fixed
+
+`restart-server.bat` now ends with `exit`. Windows `start` runs a `.bat` through `cmd /K`, which keeps the
+shell open after the script finishes, so every watchdog-driven restart left an idle
+`cmd /K restart-server.bat` window behind permanently. One from the 04:10 restart was still sitting there
+twelve hours later. `exit` (not `exit /b`) terminates it.
+
+### Verification after restart
+
+- Prism created a clean database and loaded the filter: `Loaded filter ignore-environmental-mob-deaths
+  (IGNORE). Total filters: 1`
+- No SQLite or WAL errors. The only ERROR lines in the boot are GrimAC's pre-existing SLF4J notices.
+- `/ashfall selftest` 53/53, zero failures
+- All three supervisors running, exactly one each: console guard, freeze watchdog, storage guard
+- `storage-guard.log`: `OK  prism.db 0 GB  free disk 91.6 GB`
+- Disk 91.6 GB free, up from 55.2 GB
+
+### Non-Git production changes made here
+
+All are host files, all now in `deploy/manifest.yml`:
+
+- `plugins/prism/prism.conf` - actions, filter, retention (config backed up as above)
+- `storage-guard.ps1` - new, both servers
+- `start.bat` / `start-staging.bat` - launch the storage guard
+- `restart-server.bat` - trailing `exit`
+
+---
+
 ## Session: 2026-09-02 - Host-wide lag incident: Prism's 36 GB database (read-only audit)
 
 ### Confirmed cause
