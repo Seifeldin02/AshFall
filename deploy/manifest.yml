@@ -85,6 +85,23 @@ sync:
       The money lives here: economy.daily-rewarded-victories is the brake that stops the Colosseum being an
       unlimited money printer. At the default fee/prize it caps Colosseum profit at $1,500,000 per player
       per day. Do not raise it without deciding what that number should be.
+
+      2026-09-03: now SIX bosses, and two keys that a jar swap will not carry and that matter:
+
+        economy.victory-shards (default 3) -- Shards a rewarded victory pays. These come from the SAME
+        ShardService and the SAME daily allowance as world bosses; there is no separate Colosseum shard
+        balance or cap. Raising this does not raise the daily cap, it only changes how fast a player
+        reaches it.
+
+        bosses.<key>.environment (NORMAL | NETHER) -- which world environment that boss's disposable
+        instance is CREATED with. Only emberbound_duelist is NETHER, because a Wither Skeleton is
+        Nether-native and burns in Overworld daylight; the arena, blocks and bounds are identical either
+        way and no Nether terrain is generated. Changing this to NORMAL will make that boss catch fire the
+        moment somebody edits the arena's pinned time of day.
+
+      Each boss also carries strength / weakness / counterplay strings that the GUI prints and the selftest
+      requires to be non-empty, and max-single-hit-percent, which stops one enormous opening blow skipping
+      an encounter's mechanics and announces itself when it fires.
   - path: plugins/SMPCore/colosseum-templates
     note: |
       COMMITTED COLOSSEUM ARENA SNAPSHOTS (added 2026-09-02). Same shape and same rules as duel-templates

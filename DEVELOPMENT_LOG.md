@@ -5,6 +5,259 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-03 - Colosseum bosses 4-6, Nether instances, Shards, and the Voidworld lifecycle
+
+### The three new encounters
+
+Six bosses now, all independently selectable, all sharing one daily limit. The new three are built around
+a question rather than a stat line: *where do you stand*, *what is actually keeping it alive*, and *when do
+you spend your burst*.
+
+| Boss | Entity | Style | Pool | Melee | Armour | Limit | Arena |
+|---|---|---|---:|---:|---:|---|---|
+| **Chainbound Behemoth** | Ravager | Charging bruiser | 3,000 | 22 | 10 | 7m | Overworld |
+| **Cinderveil Arcanist** | Evoker | Warded caster | 2,400 | 12 | 6 | 7m | Overworld |
+| **Ashglass Alchemist** | Witch | Zoning apothecary | 2,200 | 13 | 7 | 7m | Overworld |
+
+**Chainbound Behemoth — positional baiting.** Armoured across a 110° frontal arc (hits from the front are
+cut to 30%) and at 0.9 knockback resistance, so standing in front of it and trading is the slowest way to
+kill it. *Headlong Charge* locks its facing 1.5 seconds before it moves — AI off, yaw pinned — and cannot
+steer afterwards, which is what makes a bait possible at all: stand in the drawn lane, step out, and it
+sprints past you into the wall. A charge that reaches the boundary, meets a solid block, or simply stops
+making progress **crashes**: five seconds stunned, frontal armour gone entirely, taking 2×.
+
+Crash detection is explicit encounter logic, not a hope that vanilla collision reports it — a bounds probe
+1.6 blocks ahead, a solid-block probe at feet and head, and a no-progress fallback that catches every
+obstruction nobody thought of. The last one is also what stops a Ravager wedging itself against a barrier
+for the rest of the fight; on crashing it is nudged two blocks back, if that step is inside the arena. A
+`stun-immunity-ticks` window halves any crash that lands immediately after one, so the stun cannot chain.
+
+*Chain Sweep* is a low ring with two drawn answers — be outside it, or be above `safe-height`. *Trample
+Line* marks a 1.6-block lane and surges down it; one step sideways is the whole counterplay.
+
+**Cinderveil Arcanist — target priority.** *Triune Ward* raises exactly three Cinder Seals: real attackable
+Shulkers, AI off and peeked open (so projectiles are not silently halved), each with its health written into
+its own name because particles are not feedback on Bedrock. Each seal soaks 18% of every hit the caster
+takes, capped at 60% — it is **never** an unexplained invulnerability phase, and the ward announces its own
+count and percentage the first time you hit into it.
+
+*Ashen Circuit* energises 1.1-block lines between the caster and each surviving seal, drawn a second and a
+half before they go live; everything that is not a line is safe ground, and almost all of the arena is.
+*Rekindle* is a four-second channel to rebuild **one** seal — never all three, never a fourth under any
+circumstance. 55 damage during the channel breaks it, restores nothing, and staggers the caster at 1.8×.
+
+Vanilla Evoker spellcasting is suppressed outright (`EntitySpellCastEvent`), so there are no Vexes and no
+untelegraphed fangs — every effect a player sees comes from a configured, telegraphed ability.
+
+**Ashglass Alchemist — reading and timing.** Deliberately not the Warden with different particles: the
+Warden owns space by hitting it, the Alchemist makes it *cost something to stand in*. *Volatile Mixture*
+paints at most three colour-coded zones — orange burns, blue slows, purple weakens — and they are pure
+state. No thrown potion entity, no lingering cloud, no fire is ever created, which is why clearing the list
+**is** the cleanup.
+
+*Ashglass Distillation* stops it fighting entirely for 4.5 seconds and heals 12% if it finishes — a real
+setback, never a reset to full. 65 damage during the channel shatters the brew instead: it takes 6% of its
+own pool, is weakened, and opens a 1.9× window. *Unstable Catalyst* arms once at 45% and is spent on the
+**next** mixture rather than becoming a permanent enrage. Its cleanse is rate-limited to 22s, so crowd
+control stays worth using without being invalidated.
+
+Its vanilla potion throwing and self-drinking are both suppressed (`ProjectileLaunchEvent`,
+`EntityPotionEffectEvent` on `POTION_DRINK`) — a witch healing itself on its own schedule would quietly
+compete with the Distillation the whole fight is built around.
+
+### Preventing a big opening hit from skipping the mechanics
+
+Every new boss carries `max-single-hit-percent: 0.12`. A mace dropped from height can carry several hundred
+damage; against a boss whose defining mechanics only start once its health moves, one blow could skip the
+encounter outright — seals never raised, charge never baited, brew never interrupted.
+
+It is deliberately generous (no ordinary weapon comes near 12% of a 3,000 pool), configurable, off by
+default, and it **announces itself in the action bar when it fires**. Damage that vanishes without
+explanation is exactly what this is carefully not doing. Protection, Resistance, absorption and totems are
+all on the other side of the fight and untouched.
+
+The whole defence chain is now one pure function, `applyDefences`, in a fixed order: pool divisor → stance →
+veil → frontal → ward → vulnerability window → single-hit cap. The verifier calls it directly at exact
+boundaries, which is how "baiting the charge really does beat trading with its face" became an assertion
+rather than an opinion.
+
+### Nether-capable instances, and the audit
+
+Bosses declare `environment: NORMAL | NETHER`, chosen at world creation and never mutated afterwards —
+there is no safe way to change a loaded world's dimension underneath the entities standing in it. The arena
+is unchanged either way: same committed template, same blocks, same bounds, same barriers, because terrain
+comes from the void generator and the region files, not from the environment. No Nether landscape is
+generated, and the verifier asserts that by sampling a block 30 outside the bounds.
+
+**The audit of all six put exactly one in the Nether:**
+
+| Boss | Entity | Environment | Why |
+|---|---|---|---|
+| Emberbound Duelist | Wither Skeleton | **NETHER** | Nether-native; burns in Overworld daylight |
+| Warden of Cinders | Iron Golem | NORMAL | Overworld-native |
+| Ashfallen Revenant | Vindicator | NORMAL | Overworld-native |
+| Chainbound Behemoth | Ravager | NORMAL | Overworld-native |
+| Cinderveil Arcanist | Evoker | NORMAL | Overworld-native |
+| Ashglass Alchemist | Witch | NORMAL | Overworld-native |
+
+The Duelist is the honest finding. It was never *breaking* — the arena pins its time to 18000 and turns the
+daylight cycle off, so it never caught fire. But that is an **incidental** protection: one edit to that line
+and the boss starts burning. Running it in a Nether instance makes the protection structural instead.
+
+`/ashfall colosseum verify` checks the actual `World.Environment` of a loaded instance, not the config text,
+and spawns the Nether-native boss in it to confirm it is stable and unlit.
+
+Dimension-specific escapes are closed in both: `PortalCreateEvent` and `BlockIgniteEvent` are refused in any
+Colosseum world, and interacting with a bed or a respawn anchor is cancelled — the two things that behave
+differently in the Nether and could otherwise damage arena infrastructure.
+
+### Shards: one service, one allowance
+
+A rewarded victory pays 3 Shards through the **same `ShardService.award()`** and the **same daily cap** a
+world boss uses. No separate Colosseum balance, no second allowance, no parallel cap implementation —
+`rewardColosseum()` hands the amount to the existing choke point and lets the one existing limit decide what
+lands. Shards from a world boss reduce what a Colosseum win can pay, and the reverse; the verifier asserts
+that in both directions against the same counter.
+
+No cooldown is claimed. The Colosseum already has its own brake — three rewarded victories per day — and
+stacking a source cooldown on top would silently pay nothing on the second win of the day with no way for
+the player to tell why. If the allowance is spent the win pays zero Shards and **says so**; the cash and
+loot are unaffected. Granted inside the `paid` flag, after restoration, alongside the other rewards — never
+for a loss, timeout, disconnect, abort, admin test or recovery refund.
+
+The menu and the confirmation screen both show the Shard reward and the remaining allowance before the
+player pays.
+
+### Reward parity, measured in money
+
+Six themed pools, compared by **expected shop value**, not item count — a table of forty experience bottles
+and a table of two netherite ingots are nothing alike by count and can be nearly identical by value. The
+first pass failed on item count (1.87×) and passed on value, which is the right way round; the check now
+uses value and the tables were left thematically distinct.
+
+| Boss | Expected stacks | Expected items | Expected loot value |
+|---|---:|---:|---:|
+| Emberbound Duelist | 4.90 | 55.6 | $4,000 |
+| Warden of Cinders | 4.72 | 62.8 | $3,240 |
+| Ashfallen Revenant | 6.40 | 63.0 | $3,684 |
+| Chainbound Behemoth | 6.54 | 73.9 | $4,309 |
+| Cinderveil Arcanist | 7.44 | 97.2 | $3,698 |
+| Ashglass Alchemist | 6.36 | 104.1 | $3,543 |
+
+Spread 1.33×, inside the 1.5× tolerance the verifier enforces. Every boss pays the identical
+$500,000 in / $1,000,000 out, so loot is the only difference between them and none is the correct farm.
+No relics, no progression-breaking gear, no guaranteed god items, no new currency.
+
+### THE VOIDWORLD BUG, and what it actually was
+
+**Reported:** teleported directly to a friend inside a void world rather than entering through the command;
+on leaving, was placed at 0,0 **inside** the void world while already holding restored normal-world
+belongings. A normal player could have stepped off the platform and lost everything they owned.
+
+**Cause.** The snapshot was written from `PlayerChangedWorldEvent`. That event fires **after** the crossing
+and carries the world you left but not the *place*. So `player.getLocation()` there recorded the
+**destination** — and "where you came from" became the void world's own spawn plateau at 0,65,0.
+`/voidworld exit` then dutifully teleported them back to it, cleared the snapshot in a `finally` block
+regardless of whether anything had worked, and the follow-up nudge saw them *still inside* and sent them to
+the same coordinates again.
+
+Three separate defects in one line of reasoning: the origin was read too late, restoration ran before the
+player was confirmed out, and the snapshot was deleted unconditionally.
+
+**The fix is one lifecycle both directions route through.**
+
+*Entry* is idempotent and takes the origin as an **argument**. A new `MONITOR`-priority
+`PlayerTeleportEvent` handler records the true origin from `getFrom()` **before** the crossing — which
+covers `/tp`, admin teleports, other plugins, ender pearls and portals alike, including routes nobody has
+thought of yet. A player who already holds a snapshot never captures again: that is what makes hopping
+between two void worlds keep the original return destination instead of overwriting a real inventory with
+the empty one they are standing in. A void world is refused as an origin outright, at both ends.
+
+*Exit* runs in the only safe order:
+
+1. resolve a destination **outside** the void world, and refuse to proceed without one
+2. destroy everything found inside
+3. teleport
+4. **verify they actually left**
+5. only now restore the belongings
+6. only now delete the snapshot
+
+A failure anywhere leaves the session fully intact and the player stood safely on the platform, rather than
+half-restored. Never raw 0,0: the recorded spot if it is still standable, a verified safe surface in the
+same world if it is not, then the configured server spawn.
+
+A player found inside with no session leaves empty-handed — which is the state they are already in — and is
+never handed normal-world belongings while over the void.
+
+Void-to-void now honours the closed-world rule as well, so an open world cannot be used as a lobby into a
+closed one; access control was tightened by this work, not weakened. Graves are refused in void worlds for
+the third time and the same reason they already are in duels and the Colosseum.
+
+`/ashfall voidworld verify` — **13 checks, 0 failures** — asserts the reported defect as a property: a
+snapshot pointing inside a void world is impossible to create and impossible to return to.
+
+### Verification
+
+`/ashfall colosseum verify` — **259 checks, 0 failures** (was 128). New coverage:
+
+- every ability's telegraph provably precedes its effect, and its cooldown outlasts its wind-up
+- worst simultaneous burst per boss is below a full-health player's 20
+- the ward raises exactly three seals and refuses a fourth however many times it is asked
+- three seals materially reduce damage; the caster is never immune; breaking one measurably weakens it
+- interrupts fire at **exactly** their threshold and not one point before (asserted at the boundary)
+- an interrupted Rekindle restores no seal; an uninterrupted one restores exactly one
+- a real charge aimed at the boundary crashes, and while stunned the front plate is gone and damage more
+  than doubles — so baiting is provably better than trading
+- the vulnerability window ends when it says it does; a stun-immunity window exists
+- zones are bounded, expire on their own clock, and cover under 25% of the arena even catalysed
+- no thrown potion, area-effect cloud or fire entity exists in the arena at any point
+- both environments asserted against the **loaded world**, plus the Nether instance being the same arena
+- reward pools compared by money; shard allowance shared with world bosses in both directions
+- every boss and seal removed on despawn — and by **tag** across the arena, not only by list
+
+Regression after: `/ashfall selftest` 55 checks 0 failures · `/ashfall duelmap verify` 0 failures ·
+`/ashfall duelmap canary` PASSED · `/ashfall voidworld verify` 13/0.
+
+**One real cleanup gap the verifier found:** the Arcanist check cleared its seal list without removing the
+entities, and the "no Cinder Seal survives" assertion caught it. That was a bug in the test — but it
+revealed that `despawn()` trusted its own bookkeeping. It now also sweeps by **PDC tag** across the arena,
+so "no seal survives" is a property of resolution rather than of the list having stayed accurate.
+
+### Performance
+
+Four concurrent Chainbound Behemoth encounters — the heaviest new boss, at the concurrency limit:
+
+| | Value |
+|---|---|
+| Preparation | 1,317 ms wall for four (mean 1,226 ms each) |
+| Loaded chunks | 376 across 4 worlds (94 each) |
+| Force-loaded chunks | **0** |
+| Entities per instance | 1 boss (+ ≤3 seals or ≤3 fireballs, never both) |
+| Repeating tasks per encounter | **1** |
+| Worst-case particles/tick per encounter | 90, computed from configuration |
+| Teardown | 139 ms for all four; 0 leftovers after the sweep |
+| MSPT delta | +0.25 ms |
+| TPS delta | −0.30 |
+
+**15 cycles × 3 concurrent instances = 45 create/resolve/destroy operations** across all three new bosses:
+zero leftover folders, zero live instance worlds, zero unresolved runs, zero held player state, zero errors
+in the log, TPS flat between 19.4 and 19.9 throughout.
+
+### What genuinely needs a human
+
+Everything above is asserted without a player. These cannot be:
+
+- Whether each new fight *reads* in real gear — especially whether the charge lane is obvious enough to
+  bait deliberately, and whether the interrupt bars are legible mid-fight.
+- The six-slot menu, the strength/weakness/counterplay lines and the confirmation screen through Geyser on
+  Bedrock.
+- The Voidworld scenarios end to end with two real accounts: `/tp` to somebody inside, an admin teleporting
+  a third party in, dying after a direct-teleport entry, and a disconnect/reconnect from inside.
+- Whether 3,000 effective HP on the Behemoth is the right length of fight once a player is actually baiting
+  charges rather than trading.
+
+---
+
 ## Session: 2026-09-02 (part 3) - The Boss Colosseum
 
 A paid, solo boss fight in a disposable arena clone, using the player's own real equipment. Three bosses

@@ -611,6 +611,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"relics","relic"->relicHelp(s);
             case"bounty","bounties"->bountyHelp(s);
             case"arenas","colosseum"->colosseumHelp(s);
+            case"voidworld","voidworlds"->voidWorldHelp(s);
             case"duelmap","duelmaps"->adminCommands(s,"Duel Maps","/ashfall duelmap <"+String.join("|",DUELMAP_SUBS)+">",
                 "  build/import/save commit a template; test/dryrun/loot clone one; drop removes an instance.",
                 "  canary = template persistence proof, verify = full pipeline.");
@@ -620,6 +621,19 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     }
     /** The Colosseum admin surface, in the order an arena is actually brought up: make it, build it,
      *  commit it, test it, then keep an eye on what it is running. */
+    private void voidWorldHelp(CommandSender s){
+        adminCommands(s,"Event (Void) Worlds",
+            "/voidworld enter|exit|list                       the player-facing verbs",
+            "/ashfall voidworld create|delete <name>          admin only",
+            "/ashfall voidworld open|close <name>             a closed world is admin-only to ENTER",
+            "/ashfall voidworld verify                        the entry/exit lifecycle suite",
+            "",
+            "Crossing INTO a void world by any route -- the command, /tp, an admin teleport, another",
+            "plugin -- captures the player's real state from where they came FROM, once, and isolates",
+            "them. Crossing back out restores only after they are verifiably outside, and the snapshot",
+            "is not deleted until that succeeds. A failed exit keeps the session intact.");
+    }
+
     private void colosseumHelp(CommandSender s){
         adminCommands(s,"Boss Colosseum",
             "/ashfall colosseum list                          arenas, bosses, stats and snapshot state",
@@ -639,6 +653,11 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             "/ashfall colosseum bench <instances> <seconds>   measure what concurrency costs this server",
             "",
             "Player side: /colosseum, /colosseum stats [player], /colosseum top [boss], /colosseum leave.",
+            "",
+            "Six bosses, one shared limit of 3 rewarded victories per player per Riyadh day.",
+            "Each declares environment: NORMAL or NETHER -- the instance is CREATED in that",
+            "environment (same arena, same blocks; no Nether terrain is generated).",
+            "A rewarded win also pays Shards from the SAME daily allowance as world bosses.",
             "Every boss value lives in plugins/SMPCore/colosseum.yml -- nothing is compiled in.");
     }
 
@@ -1412,7 +1431,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("events")&&args.length==2&&args[0].equalsIgnoreCase("track"))return filter(args[1],List.of("on","off"));
         if(name.equals("ashfall")&&args.length==2){
             return switch(args[0].toLowerCase(Locale.ROOT)){
-                case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","arenas","colosseum","duelmap","maintenance"));
+                case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","arenas","colosseum","duelmap","voidworld","maintenance"));
                 case"balance"->filter(args[1],List.of("set","add","take"));
                 case"bank"->filter(args[1],List.of("add","remove","set"));
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));
