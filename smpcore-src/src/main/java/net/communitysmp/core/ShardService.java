@@ -282,26 +282,50 @@ final class ShardService implements Listener {
         else if(type==org.bukkit.entity.EntityType.WITHER)award(player,5,"WITHER",config.getLong("earning.wither-cooldown-hours",24)*3600000L);
         else if(type==org.bukkit.entity.EntityType.WARDEN)award(player,ThreadLocalRandom.current().nextInt(2,4),"WARDEN",config.getLong("earning.warden-cooldown-hours",24)*3600000L);
     }
+    /*  A Colosseum victory, paying exactly like a world boss and out of exactly the same allowance.
+     *
+     *  This deliberately creates NO new balance, NO second cap and NO parallel accounting: it hands the
+     *  amount to award() and lets the one existing daily limit decide what actually lands. So shards earned
+     *  from a world boss reduce what a Colosseum win can pay, and the reverse, because both are spending
+     *  the same number.
+     *
+     *  No cooldown is claimed. The Colosseum already has its own brake -- three rewarded victories per
+     *  player per day -- and stacking a source cooldown on top would silently pay nothing on the second
+     *  win of the day with no way for the player to tell why.
+     *
+     *  Returns what was actually granted, so the caller can say so honestly rather than announcing a number
+     *  the allowance trimmed. */
+    int rewardColosseum(Player player, int amount) { return award(player, amount, "COLOSSEUM", 0); }
+
+    /** What is left of today's shared allowance. Shown in the Colosseum menu so a player knows before they
+     *  pay whether a win will actually pay shards. */
+    int remainingDailyShards(Player player) {
+        int cap = config.getInt("earning.daily-cap", 10);
+        if (cap <= 0) return Integer.MAX_VALUE;
+        return Math.max(0, cap - db.shardsEarnedSince(CoreUtil.id(player), shardDayStart()));
+    }
+
     /** Every non-playtime shard source funnels through here, so the daily allowance is enforced in exactly
      *  one place. Passive playtime shards deliberately bypass this method entirely (see playtimeTick) and
      *  are therefore completely outside the cap, as intended. A reward that would exceed the remaining
      *  allowance is trimmed to the remainder rather than dropped, so a big kill still pays what it can.
      *  The cooldown claim is only consumed once the award is actually going to pay out. */
-    private void award(Player player,int amount,String source,long cooldown){
-        if(amount<=0)return;
+    private int award(Player player,int amount,String source,long cooldown){
+        if(amount<=0)return 0;
         String id=CoreUtil.id(player);
         int cap=config.getInt("earning.daily-cap",10);
         int granted=amount;
         if(cap>0){
             int used=db.shardsEarnedSince(id,shardDayStart());
             int remaining=Math.max(0,cap-used);
-            if(remaining<=0){shardMessage(player,"Daily Shard limit reached ("+cap+"/day). Playtime Shards are unaffected.");return;}
+            if(remaining<=0){shardMessage(player,"Daily Shard limit reached ("+cap+"/day). Playtime Shards are unaffected.");return 0;}
             granted=Math.min(amount,remaining);
         }
-        if(cooldown>0&&!db.claimShardCooldown(id,source,cooldown))return;
+        if(cooldown>0&&!db.claimShardCooldown(id,source,cooldown))return 0;
         db.addShards(id,granted,source,null);
         shardMessage(player,"+"+granted+" Shards • "+CoreUtil.pretty(source)+(granted<amount?" (daily limit reached)":""));
         if(plugin.settings().sounds(player))player.playSound(player.getLocation(),Sound.BLOCK_AMETHYST_CLUSTER_BREAK,.8f,1.25f);
+        return granted;
     }
     /** Start of the current shard day: 12:00 in the configured zone, matching the rest of the server's
      *  scheduling (Asia/Riyadh). Before noon we are still inside the day that began at noon YESTERDAY. */

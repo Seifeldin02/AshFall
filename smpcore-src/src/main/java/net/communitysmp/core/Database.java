@@ -889,6 +889,13 @@ final class Database implements AutoCloseable {
         int removed=update("DELETE FROM colosseum_runs WHERE run_id LIKE ? OR player LIKE ?",prefix,prefix);
         removed+=update("DELETE FROM colosseum_stats WHERE player LIKE ?",prefix);
         removed+=update("DELETE FROM colosseum_state WHERE player LIKE ?",prefix);
+        /*  The Shard tables too, because the Colosseum now feeds the SAME allowance world bosses do -- and a
+         *  verification run that left ledger rows behind would both inflate somebody's earned total and,
+         *  worse, make its own next run fail against its own leftovers. */
+        removed+=update("DELETE FROM shard_ledger WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM shard_accounts WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM shard_cooldowns WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM shard_purchases WHERE player LIKE ?",prefix);
         removed+=update("DELETE FROM players WHERE id LIKE ?",prefix);
         return removed;
     }

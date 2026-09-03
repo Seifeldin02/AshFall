@@ -109,7 +109,7 @@ final class ColosseumService implements Listener {
     private final Database db;
     private final ColosseumArenas arenas;
     private final ColosseumBosses bosses;
-    private final NamespacedKey runKey, bossKey;
+    private final NamespacedKey runKey, bossKey, sealKey;
     private final Map<String, Run> byPlayer = new ConcurrentHashMap<>();
     /** Players whose confirmation screen is open or whose instance is being prepared. Purely a double-click
      *  guard -- the authoritative "one run per player" rule is the unresolved row in the database. */
@@ -122,6 +122,7 @@ final class ColosseumService implements Listener {
         this.db = plugin.db();
         this.runKey = new NamespacedKey(plugin, "colosseum_run");
         this.bossKey = new NamespacedKey(plugin, "colosseum_boss");
+        this.sealKey = new NamespacedKey(plugin, "colosseum_seal");
         this.arenas = new ColosseumArenas(plugin);
         this.bosses = new ColosseumBosses(plugin);
         reload();
@@ -140,6 +141,7 @@ final class ColosseumService implements Listener {
     ColosseumBosses bosses() { return bosses; }
     NamespacedKey runKey() { return runKey; }
     NamespacedKey bossKey() { return bossKey; }
+    NamespacedKey sealKey() { return sealKey; }
     YamlConfiguration config() { return config; }
     int chunksPerTick() { return config == null ? 24 : Math.max(1, config.getInt("chunks-per-tick", 24)); }
     int maxConcurrent() { return config == null ? 4 : Math.max(1, config.getInt("max-concurrent-instances", 4)); }
@@ -215,8 +217,15 @@ final class ColosseumService implements Listener {
         if (adminTest) { prepare(player, def, true); return; }
         List<String> details = new ArrayList<>();
         details.add("Boss: " + def.name() + " (" + def.style() + ", " + def.difficulty() + ")");
+        details.add("Arena: " + (def.environment() == World.Environment.NETHER ? "Nether" : "Overworld") + " instance");
+        details.add("Strength: " + def.strength());
+        details.add("Weakness: " + def.weakness());
+        details.add("Counterplay: " + def.counterplay());
         details.add("Entry fee: " + CoreUtil.money(def.entryFee()) + " — charged when the arena is ready");
         details.add("Victory prize: " + CoreUtil.money(def.cashPrize()) + " plus its reward table");
+        int shards = shardReward(def);
+        if (shards > 0) details.add("Shards on a win: " + shards + " (shared daily limit, "
+                + (plugin.shards() == null ? 0 : plugin.shards().remainingDailyShards(player)) + " left today)");
         details.add("Net profit on a win: " + CoreUtil.money(def.cashPrize() - def.entryFee()));
         details.add("Time limit: " + timeText(def.timeLimitSeconds()));
         details.add("Rewarded victories left today: " + Math.max(0, dailyLimit() - rewardedToday(player)) + " of " + dailyLimit());
@@ -245,9 +254,12 @@ final class ColosseumService implements Listener {
         ColosseumArenas.Arena arena = arenas.arena(def.arena());
         Run run = new Run(id, player.getName(), def.key(), arena.key(), adminTest, def.entryFee(), def.cashPrize());
         db.colosseumRunOpen(run.id, id, player.getName(), def.key(), arena.key(), run.fee, run.prize, adminTest, CoreUtil.riyadhDay());
-        CoreUtil.msg(player, "Preparing the " + arena.name() + "...");
+        CoreUtil.msg(player, "Preparing the " + arena.name() + " ("
+                + (def.environment() == World.Environment.NETHER ? "Nether" : "Overworld") + " instance)...");
         sound(player, "confirm");
-        arenas.prepareInstance(arena, (world, stats) -> {
+        /** The environment is the BOSS's, chosen at world creation. A Nether-native entity gets a Nether
+         *  world; everything else stays Overworld. Same arena, same blocks, same bounds either way. */
+        arenas.prepareInstance(arena, def.environment(), (world, stats) -> {
             preparing.remove(id);
             if (world == null) {
                 /** Preparation failed before any money moved, which is the entire point of doing it in this
@@ -392,8 +404,13 @@ final class ColosseumService implements Listener {
         if (run.bar != null) {
             run.bar.setProgress(Math.max(0, Math.min(1, boss.getHealth() / Math.max(1, max))));
             long left = run.remainingSeconds();
-            run.bar.setTitle(def.name() + "  §7" + (int) Math.ceil(boss.getHealth() / Math.max(1, max) * 100) + "%  §f" + timeText(left));
-            if (left <= 30) run.bar.setColor(BarColor.YELLOW);
+            /** The state label is how a punish window announces itself on the one piece of UI a player is
+             *  always looking at. Bedrock renders a boss bar title identically, which is why it is text. */
+            String label = bosses.stateLabel(run.boss);
+            run.bar.setTitle(def.name() + "  §7" + (int) Math.ceil(boss.getHealth() / Math.max(1, max) * 100) + "%  §f" + timeText(left)
+                    + (label.isEmpty() ? "" : "  §e" + label));
+            run.bar.setColor(label.contains("STUNNED") || label.contains("STAGGERED") ? BarColor.GREEN
+                    : left <= 30 ? BarColor.YELLOW : BarColor.RED);
         }
     }
 
@@ -505,11 +522,27 @@ final class ColosseumService implements Listener {
         List<ItemStack> loot = def == null ? List.of() : bosses.rollRewards(run.bossKey);
         int stashed = giveOrStash(run.player, loot);
         int experience = config == null ? 600 : Math.max(0, config.getInt("victory-experience", 600));
+        /*  SHARDS. The same service, the same shared daily cap as a world boss.
+         *
+         *  Inside the paid flag, so it is granted exactly once however many times a resolution is attempted;
+         *  after restoration, alongside the cash and the loot; and only ever for a genuine rewarded victory
+         *  -- an admin test returns above this point, and every loss, timeout, disconnect, abort and
+         *  recovery refund never reaches payVictory at all. */
+        int shards = 0, shardsOffered = shardReward(def);
+        if (player != null && player.isOnline() && shardsOffered > 0 && plugin.shards() != null)
+            shards = plugin.shards().rewardColosseum(player, shardsOffered);
         if (player != null && player.isOnline()) {
             if (experience > 0) player.giveExp(experience);
             CoreUtil.msg(player, "VICTORY over " + (def == null ? run.bossKey : def.name()) + " in " + timeText(duration / 1000) + ".");
             CoreUtil.msg(player, "  " + CoreUtil.money(run.prize) + " awarded (net " + CoreUtil.money(run.prize - run.fee) + " after the entry fee).");
             if (!loot.isEmpty()) CoreUtil.msg(player, "  " + loot.size() + " reward stack(s)" + (stashed > 0 ? " — " + stashed + " sent to your /orders stash (no room)" : "") + ".");
+            if (shardsOffered > 0) {
+                int left = plugin.shards() == null ? 0 : plugin.shards().remainingDailyShards(player);
+                CoreUtil.msg(player, shards > 0
+                        ? "  +" + shards + " Shard" + (shards == 1 ? "" : "s") + (shards < shardsOffered
+                            ? " (trimmed to your remaining daily allowance)" : "") + " — " + left + " left today."
+                        : "  No Shards: you have already reached today's Shard limit (shared with world bosses).");
+            }
             int left = Math.max(0, dailyLimit() - rewardedToday(player));
             CoreUtil.msg(player, "  Rewarded victories left today: " + left + " of " + dailyLimit() + (left == 0 ? " — resets " + resetsIn() : "") + ".");
             sound(player, "victory");
@@ -523,6 +556,15 @@ final class ColosseumService implements Listener {
                     + " in the Colosseum — " + timeText(duration / 1000) + ".", NamedTextColor.GOLD));
         plugin.getLogger().info("[colosseum] " + run.playerName + " defeated " + run.bossKey + " in " + duration + " ms; paid "
                 + CoreUtil.money(run.prize) + " and " + loot.size() + " reward stack(s)");
+    }
+
+    /** What a victory over this boss offers in Shards, before the shared daily allowance trims it. A
+     *  per-boss override falls back to the Colosseum-wide default, so tuning one encounter does not mean
+     *  editing six. */
+    int shardReward(ColosseumBosses.BossDef def) {
+        if (config == null) return 0;
+        int fallback = Math.max(0, config.getInt("economy.victory-shards", 3));
+        return def == null ? fallback : Math.max(0, config.getInt("bosses." + def.key() + ".victory-shards", fallback));
     }
 
     /** Refunds the entry fee if, and only if, it was actually taken and has not been given back. */
@@ -814,10 +856,23 @@ final class ColosseumService implements Listener {
             else if (byEntity.getDamager() instanceof Projectile projectile && projectile.getShooter() instanceof Player shooter) attacker = shooter;
         }
         if (attacker == null || !CoreUtil.id(attacker).equals(run.player)) { event.setCancelled(true); return; }
-        bosses.bossHurt(def, run.boss, event);
+        /*  A Cinder Seal is not the caster. It takes its own damage, on its own health bar, with no ward
+         *  reduction and no divisor -- which is what makes breaking one a visibly faster job than grinding
+         *  the Arcanist through its own protection. */
+        if (event.getEntity().getPersistentDataContainer().has(sealKey, PersistentDataType.BYTE)) {
+            bosses.sealHurt(run.boss, event);
+            return;
+        }
+        bosses.bossHurt(def, run.boss, event, attacker);
         double dealt = event.getFinalDamage();
         Player who = attacker;
-        Bukkit.getScheduler().runTask(plugin, () -> { if (!run.resolved) bosses.bossRiposte(def, run.boss, who, dealt); });
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (run.resolved) return;
+            bosses.bossRiposte(def, run.boss, who, dealt);
+            /** Damage landed during a channel is what interrupts it, counted after every multiplier so the
+             *  threshold means what the player actually dealt. */
+            bosses.noteChannelDamage(run.boss, dealt);
+        });
     }
 
     /** Damage FROM a Colosseum boss's own projectile, normalised to the configured value. */
@@ -949,6 +1004,56 @@ final class ColosseumService implements Listener {
     /** Belt and braces over DO_MOB_SPAWNING: spawn eggs, trial spawners and imported spawner blocks do not
      *  all honour the gamerule. Only explicitly plugin-spawned entities are let through, so a Colosseum
      *  arena contains exactly the boss that was paid for. */
+    /*  A Colosseum boss uses ITS OWN mechanics, never the vanilla ones its body happens to carry.
+     *
+     *  An Evoker left to itself summons Vexes -- an unbounded mob source inside a bounded encounter -- and
+     *  throws fangs nobody telegraphed. A Witch throws splash potions on its own schedule and drinks
+     *  healing ones, which would quietly compete with the Distillation this fight is built around. Both are
+     *  suppressed here so every effect a player sees comes from a configured, telegraphed ability. */
+    @EventHandler(ignoreCancelled = true)
+    public void spellCast(org.bukkit.event.entity.EntitySpellCastEvent event) {
+        if (event.getEntity().getPersistentDataContainer().has(bossKey, PersistentDataType.STRING)) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void bossProjectile(org.bukkit.event.entity.ProjectileLaunchEvent event) {
+        if (!isColosseumWorld(event.getEntity().getWorld())) return;
+        if (!(event.getEntity().getShooter() instanceof org.bukkit.entity.Entity shooter)) return;
+        if (!shooter.getPersistentDataContainer().has(bossKey, PersistentDataType.STRING)) return;
+        /** The Revenant's volley is spawned directly and tagged with the run; anything else a boss body
+         *  throws by itself is vanilla behaviour and is refused. */
+        if (!event.getEntity().getPersistentDataContainer().has(runKey, PersistentDataType.STRING)) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void bossSelfPotion(org.bukkit.event.entity.EntityPotionEffectEvent event) {
+        if (event.getCause() != org.bukkit.event.entity.EntityPotionEffectEvent.Cause.POTION_DRINK) return;
+        if (event.getEntity().getPersistentDataContainer().has(bossKey, PersistentDataType.STRING)) event.setCancelled(true);
+    }
+
+    /*  Dimension-specific escapes, closed in a Nether instance exactly as in an Overworld one. Nothing can
+     *  be placed in an arena, so the only routes left are igniting an existing block into a portal or
+     *  detonating a bed, and both are refused rather than left to chance. */
+    @EventHandler(ignoreCancelled = true)
+    public void portalCreate(org.bukkit.event.world.PortalCreateEvent event) {
+        if (isColosseumWorld(event.getWorld())) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void ignite(org.bukkit.event.block.BlockIgniteEvent event) {
+        if (isColosseumWorld(event.getBlock().getWorld()) && !isEditor(event.getPlayer())) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void bedOrAnchor(org.bukkit.event.player.PlayerInteractEvent event) {
+        if (!inColosseum(event.getPlayer()) || event.getClickedBlock() == null) return;
+        Material type = event.getClickedBlock().getType();
+        if (type == Material.RESPAWN_ANCHOR || type.name().endsWith("_BED")) {
+            event.setCancelled(true);
+            event.getPlayer().sendActionBar(Component.text("Not in the Colosseum.", NamedTextColor.RED));
+        }
+    }
+
     @EventHandler(ignoreCancelled = true)
     public void spawn(org.bukkit.event.entity.CreatureSpawnEvent event) {
         if (!isColosseumWorld(event.getLocation().getWorld())) return;
@@ -1097,22 +1202,40 @@ final class ColosseumService implements Listener {
      *  player needs to decide is written in the lore rather than in a hover or a click hint. */
     void openMenu(Player player) {
         List<ColosseumBosses.BossDef> list = new ArrayList<>(bosses.all());
-        int rows = Math.max(3, Math.min(6, 2 + (list.size() + 8) / 9));
+        /*  Six entries in two rows of three, centred, with a full clear row above and below.
+         *
+         *  Deliberately not "as many as fit across nine": Geyser renders a chest menu faithfully but a
+         *  Bedrock player is tapping, not hovering, so widely spaced targets and a fixed layout read far
+         *  better than a dense grid that reflows every time a boss is added. */
+        int rows = 6;
         org.bukkit.inventory.Inventory inv = plugin.getServer().createInventory(new MenuHolder(), rows * 9,
                 Component.text("The Ashfall Colosseum", NamedTextColor.DARK_RED));
         int used = rewardedToday(player);
-        int slot = 10;
-        for (ColosseumBosses.BossDef def : list) {
-            if (slot % 9 == 8) slot += 2;
-            if (slot >= rows * 9) break;
+        int shardsLeft = plugin.shards() == null ? 0 : plugin.shards().remainingDailyShards(player);
+        int[] slots = {11, 13, 15, 29, 31, 33};
+        for (int i = 0; i < list.size() && i < slots.length; i++) {
+            ColosseumBosses.BossDef def = list.get(i);
             Database.ColosseumStats row = db.colosseumStats(CoreUtil.id(player), def.key());
             List<String> lore = new ArrayList<>();
-            lore.add("§7" + def.style() + " · Difficulty: §f" + def.difficulty());
+            lore.add("§7" + def.style() + " · Difficulty: §f" + def.difficulty()
+                    + (def.environment() == World.Environment.NETHER ? " §c· Nether arena" : ""));
             for (String line : def.lore()) lore.add("§8" + line);
+            lore.add("");
+            /*  The mechanic, in plain words, BEFORE the price.
+             *
+             *  A player should never have to read a wiki, or die twice, to find out what a boss is doing to
+             *  them. Strength says why the obvious approach is slow; weakness says what is actually true;
+             *  counterplay says what to do about it. All three are configured per boss and asserted by the
+             *  self test, so a boss cannot ship without them. */
+            lore.add("§eStrength: §f" + def.strength());
+            lore.add("§aWeakness: §f" + def.weakness());
+            lore.add("§bCounterplay: §f" + def.counterplay());
             lore.add("");
             lore.add("§7Entry fee: §c" + CoreUtil.money(def.entryFee()));
             lore.add("§7Victory prize: §a" + CoreUtil.money(def.cashPrize()) + " §7(net §a" + CoreUtil.money(def.cashPrize() - def.entryFee()) + "§7)");
-            lore.add("§7Plus its reward table:");
+            int shards = shardReward(def);
+            if (shards > 0) lore.add("§7Shards on a win: §d" + shards + " §7(shared daily limit — §f" + shardsLeft + "§7 left today)");
+            lore.add("§7Reward table (§f" + String.format("%.1f", bosses.expectedRewardStacks(def.key())) + " stacks expected§7):");
             for (ColosseumBosses.Roll roll : bosses.rewardTable(def.key()))
                 lore.add("§8  " + CoreUtil.pretty(roll.material().name()) + " ×" + (roll.min() == roll.max() ? roll.min() : roll.min() + "-" + roll.max())
                         + "  " + Math.round(roll.chance() * 100) + "%");
@@ -1121,15 +1244,15 @@ final class ColosseumService implements Listener {
             lore.add("§7Your record: §f" + (row == null ? 0 : row.victories()) + "W §7/ §f" + (row == null ? 0 : row.losses()) + "L"
                     + " §7of §f" + (row == null ? 0 : row.attempts()));
             lore.add("§7Best time: §f" + (row != null && row.bestMs() > 0 ? timeText(row.bestMs() / 1000) : "—"));
-            lore.add("§7Rewarded victories left today: §f" + Math.max(0, dailyLimit() - used) + "§7/§f" + dailyLimit());
+            lore.add("§7Rewarded victories left today: §f" + Math.max(0, dailyLimit() - used) + "§7/§f" + dailyLimit()
+                    + " §8(shared by all " + list.size() + " bosses)");
             lore.add("§8Resets " + resetsIn());
             lore.add("");
             String no = refusal(player, def, false);
             lore.add(no == null ? "§aClick to challenge — you will be asked to confirm." : "§cUnavailable: " + no);
-            inv.setItem(slot, icon(def.icon(), (no == null ? "§c" : "§8") + def.name(), lore));
-            slot++;
+            inv.setItem(slots[i], icon(def.icon(), (no == null ? "§c" : "§8") + def.name(), lore));
         }
-        inv.setItem(rows * 9 - 5, icon(Material.BOOK, "§6How the Colosseum works", List.of(
+        inv.setItem(49, icon(Material.BOOK, "§6How the Colosseum works", List.of(
                 "§7One player, one boss, one disposable arena.",
                 "§7You fight with your own current equipment.",
                 "§7Your belongings are copied in and restored exactly",
@@ -1138,6 +1261,13 @@ final class ColosseumService implements Listener {
                 "§7A LOSS keeps the entry fee: dying, running out of",
                 "§7time, /colosseum leave, or disconnecting.",
                 "§7If the SERVER interrupts you, the fee is refunded.",
+                "",
+                "§7Every boss lists its strength, weakness and the",
+                "§7counterplay. Read them — none of the six is beaten",
+                "§7by standing still and swinging.",
+                "",
+                "§d" + Math.max(0, dailyLimit() - used) + " §7rewarded victories left today, §d" + shardsLeft + " §7Shards",
+                "§8The Shard allowance is shared with world bosses.",
                 "",
                 "§7/colosseum stats · /colosseum top · /colosseum leave")));
         player.openInventory(inv);

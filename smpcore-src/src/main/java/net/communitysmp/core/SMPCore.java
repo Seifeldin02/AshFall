@@ -440,7 +440,12 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                      *  Follows the conventions the rest of /ashfall uses: a verb as args[1], the subject as
                      *  args[2], every branch answers the sender, and every verb is offered by tab complete.
                      *  `enter` is player-only because it moves somebody; the rest work from console. */
-                    if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close> [name]");return true;}
+                    if(args.length>=2&&args[1].equalsIgnoreCase("verify")){
+                        CoreUtil.msg(sender,"Verifying the void world entry/exit lifecycle:");
+                        for(String line:voidWorlds.verify())CoreUtil.msg(sender,line);
+                        return true;
+                    }
+                    if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close|verify> [name]");return true;}
                     String verb=args[1].toLowerCase(Locale.ROOT);
                     if(verb.equals("list")){
                         java.util.List<String> labels=voidWorlds.labels();
@@ -1413,7 +1418,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));
                 case"elite"->filter(args[1],List.of("stats","uncommon","rare","epic","legendary","miniboss"));
                 case"event"->filter(args[1],List.of("resource","elitehunt","taskmaster","worldboss","stop"));
-                case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete","open","close"));
+                case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete","open","close","verify"));
                 case"hopper"->filter(args[1],List.of("verify","livesuite","live","watch","create","rig","count"));
                 case"economy"->filter(args[1],List.of("report"));
                 case"feedback"->filter(args[1],List.of("notify","list","view","done","reopen","delete"));

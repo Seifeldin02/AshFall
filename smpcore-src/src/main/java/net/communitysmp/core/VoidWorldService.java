@@ -210,23 +210,52 @@ final class VoidWorldService implements Listener {
         if (!mayEnter(player, label)) return "The '" + label + "' event world is closed. An administrator has to open it first.";
         if (inside(player)) return "You are already in a void world.";
         if (hasCapture(CoreUtil.id(player))) return "You already have belongings held by a void world; use exit first.";
-        absorb(player, label);
+        /** The origin is taken HERE, before anything moves, which is the same guarantee every other entry
+         *  route now gets from {@link #crossing}. */
+        beginSession(player, player.getLocation(), label);
         move(player, world.getSpawnLocation().clone().add(.5, 1, .5));
         return null;
     }
 
-    /*  Becoming a participant, without the command's preconditions.
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE ONE ENTRY POINT. Every route into a void world ends here: the command, an admin's /tp, a teleport
+     *  to somebody already inside, another plugin, a reconnect, a respawn.
      *
-     *  enter() is the COMMAND: it refuses if you are already inside, because typing /voidworld enter twice
-     *  should say so. Arriving by teleport is the same event with those preconditions already satisfied in
-     *  the opposite direction -- you ARE inside, that is the whole reason this is running -- so sharing
-     *  enter() wholesale is exactly wrong, and sharing it wholesale is precisely the bug that was reported:
-     *  teleport somebody in and enter() answered "you are already in a void world" and returned before
-     *  capturing anything, so they kept their real inventory while standing in the event.
+     *  IDEMPOTENT, and that word is doing real work. A player who already holds a snapshot is ALREADY in a
+     *  session -- they hopped between two event worlds, or an event re-fired -- and capturing again would
+     *  overwrite their real belongings with the empty inventory they are standing in. So the snapshot is
+     *  written exactly once per session and never again until the session ends.
      *
-     *  Everything that actually makes somebody a participant lives here, and both routes call it. */
-    private void absorb(Player player, String label) {
-        capture(player);
+     *  THE ORIGIN IS AN ARGUMENT, not player.getLocation(), and that is the whole bug that was reported.
+     *  The old code captured from PlayerChangedWorldEvent, which fires AFTER the crossing -- so an admin who
+     *  teleported to a friend inside had their "return location" recorded as the void world's spawn plateau
+     *  at 0,65,0. On exit they were teleported to that recorded point, which is inside the void world, and
+     *  their real belongings were handed back while they stood there. The follow-up nudge then saw them
+     *  still inside and sent them to the same coordinates again. One step off the platform and a normal
+     *  player would have lost everything they owned into the void.
+     *
+     *  So the caller supplies where the player genuinely came FROM, and a void world is refused as an
+     *  origin outright -- there is no code path that can record one now, whatever calls this. */
+    private void beginSession(Player player, Location origin, String label) {
+        String id = CoreUtil.id(player);
+        if (hasCapture(id)) { isolate(player); return; }
+        Location from = origin;
+        if (from == null || from.getWorld() == null || isVoidWorld(from.getWorld())) {
+            /** No usable origin. Rather than record a coordinate inside the event -- the exact failure this
+             *  method exists to prevent -- fall back to a real destination outside it and say so. */
+            from = fallbackReturn();
+            plugin.getLogger().warning("[VoidWorld] " + id + " entered '" + label
+                    + "' with no usable origin; their return point is the server spawn.");
+        }
+        capture(player, from);
+        isolate(player);
+        CoreUtil.msg(player, "You entered the '" + label + "' event world. Nothing came in with you, and nothing leaves with you.");
+        CoreUtil.msg(player, "To leave the void world, type /voidworld exit.");
+    }
+
+    /** The body half of entering: the participant state, with no snapshot handling of its own. Safe to run
+     *  again on somebody already in a session, which is what makes {@link #beginSession} idempotent. */
+    private void isolate(Player player) {
         strip(player);
         for (PotionEffect effect : new ArrayList<>(player.getActivePotionEffects())) player.removePotionEffect(effect.getType());
         player.setLevel(0);
@@ -236,8 +265,6 @@ final class VoidWorldService implements Listener {
         player.setSaturation(20);
         player.setFireTicks(0);
         player.setFallDistance(0);
-        CoreUtil.msg(player, "You entered the '" + label + "' event world. Nothing came in with you, and nothing leaves with you.");
-        CoreUtil.msg(player, "To leave the void world, type /voidworld exit.");
     }
 
     /** A teleport this class is performing itself, exempt from the escape lock and from the world-change
@@ -247,44 +274,89 @@ final class VoidWorldService implements Listener {
         try { player.teleport(to); } finally { moving.remove(player.getUniqueId()); }
     }
 
-    /** The way out. Everything found inside is destroyed, which is the whole point -- a temporary world must
-     *  not be an item source. */
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE ONE EXIT POINT, and the order it happens in is the entire safety property:
+     *
+     *      1. resolve a destination OUTSIDE the void world, and refuse to proceed without one
+     *      2. destroy everything found inside      (a temporary world is not an item source)
+     *      3. teleport
+     *      4. VERIFY they actually left
+     *      5. only now restore the real belongings
+     *      6. only now delete the snapshot
+     *
+     *  Steps 4 and 5 used to be the other way round, and that is what let somebody stand inside a void
+     *  world holding their real inventory -- one misstep from losing all of it. Restoration cannot happen
+     *  while the player is still physically inside, and the snapshot cannot be deleted until restoration is
+     *  done, so a failure anywhere leaves the session fully intact and recoverable rather than half-applied.
+     *
+     *  Returns null on success, or a message describing the failure. */
     String exit(Player player) {
         String id = CoreUtil.id(player);
         if (!hasCapture(id)) {
-            /** Inside with nothing held is the stranded case: whatever put them here did not go through
-             *  enter(), so there is nothing to give back, but leaving them in an event world would be
-             *  worse than sending them home empty-handed -- which is the state they are already in. */
+            /*  Inside with no session at all. Whatever put them here bypassed every route -- there is
+             *  nothing to give back, and the one thing that must not happen is handing them normal-world
+             *  belongings they do not have a snapshot for while they stand over the void. They leave with
+             *  what they came in with, which is nothing. */
             if (!inside(player)) return "You are not in a void world.";
             strip(player);
-            move(player, Bukkit.getWorlds().getFirst().getSpawnLocation());
+            Location out = fallbackReturn();
+            move(player, out);
+            plugin.getLogger().warning("[VoidWorld] " + id + " was inside a void world with no session; returned to " + describe(out));
             return "You had no held belongings, so you have been returned to spawn.";
         }
+
+        /** Resolved BEFORE anything is touched, and never a coordinate inside a void world. */
+        Location destination = resolveReturn(id);
+        if (destination == null) {
+            protectInside(player);
+            plugin.getLogger().severe("[VoidWorld] no safe destination for " + id + "; the session is kept intact.");
+            return "There is nowhere safe to send you right now. Your belongings are still held safely - tell an administrator.";
+        }
+
         strip(player);
         moving.add(player.getUniqueId());
-        Location back;
-        try { back = restore(player); } finally { moving.remove(player.getUniqueId()); }
+        boolean left;
+        try {
+            if (player.isDead()) player.spigot().respawn();
+            player.teleport(destination);
+            left = !inside(player);
+        } catch (RuntimeException error) {
+            plugin.getLogger().warning("[VoidWorld] exit teleport threw for " + id + ": " + error);
+            left = false;
+        } finally { moving.remove(player.getUniqueId()); }
+
+        if (!left) {
+            /*  The teleport was refused or redirected. NOTHING is restored and NOTHING is deleted: the
+             *  player keeps the isolated event body, keeps the snapshot, and is stood somewhere solid
+             *  inside the world rather than left wherever the failure left them. */
+            protectInside(player);
+            plugin.getLogger().warning("[VoidWorld] exit teleport failed for " + id + "; session kept, they are still inside.");
+            return "Could not move you out of the event world. Nothing was changed - your belongings are still held safely. Try /voidworld exit again.";
+        }
+
+        boolean restored = applyState(player, id);
+        if (!restored) {
+            plugin.getLogger().severe("[VoidWorld] could not apply " + id + "'s state after a successful exit; the snapshot is kept.");
+            return "You are out, but your belongings could not be restored automatically. They are still held safely - tell an administrator.";
+        }
+        /** Confirmed outside, restored, and only now is the snapshot gone. */
+        db.state(STATE + id, "");
+        player.updateInventory();
         CoreUtil.msg(player, "Returned. Your belongings are exactly as you left them.");
-        /*  Confirm they actually left, and move them again if they did not.
-         *
-         *  Reported live: "I have to leave the world twice", and "when I exit it sometimes brings me to my
-         *  spawnpoint". Both are the same shape -- something refused the teleport, the capture was cleared
-         *  anyway, and the second attempt fell through to the no-capture branch, which sends you to the
-         *  WORLD spawn rather than to where you came from. Belongings were never at risk, but standing in
-         *  an event world with your own inventory is precisely the state this service exists to prevent.
-         *
-         *  A tick later the world is settled and any competing teleport has run, so this is the last word.
-         *  It is a no-op on every exit that worked, which is nearly all of them. */
-        Location target = back;
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (!player.isOnline() || !inside(player)) return;
-            moving.add(player.getUniqueId());
-            try {
-                if (player.isDead()) player.spigot().respawn();
-                player.teleport(target != null ? target : Bukkit.getWorlds().getFirst().getSpawnLocation());
-            } finally { moving.remove(player.getUniqueId()); }
-        }, 1L);
         return null;
+    }
+
+    /** Somewhere solid inside the event world, for a player whose exit failed. They keep the isolated body
+     *  and the snapshot; this is only about not leaving them falling. */
+    private void protectInside(Player player) {
+        World world = player.getWorld();
+        if (!isVoidWorld(world)) return;
+        moving.add(player.getUniqueId());
+        try {
+            if (player.isDead()) player.spigot().respawn();
+            player.teleport(world.getSpawnLocation().clone().add(.5, 1, .5));
+            player.setFallDistance(0);
+        } finally { moving.remove(player.getUniqueId()); }
     }
 
     /** Everyone currently inside, moved out. Used before a delete and at shutdown. */
@@ -324,14 +396,18 @@ final class VoidWorldService implements Listener {
 
     // ------------------------------------------------------------------ capture / restore
 
-    private void capture(Player player) {
+    /** The snapshot. {@code at} is where the player came FROM, supplied by the caller rather than read
+     *  off the player, because by the time some routes notice a crossing the player is already on the far
+     *  side of it. A void world is rejected as an origin: a return point inside the event is the defect
+     *  this whole rewrite exists to make impossible. */
+    private void capture(Player player, Location at) {
         String id = CoreUtil.id(player);
+        if (at == null || at.getWorld() == null || isVoidWorld(at.getWorld())) at = fallbackReturn();
         ItemStack[] contents = player.getInventory().getContents(), armour = player.getInventory().getArmorContents();
         ItemStack[] all = new ItemStack[contents.length + armour.length + 1];
         System.arraycopy(contents, 0, all, 0, contents.length);
         System.arraycopy(armour, 0, all, contents.length, armour.length);
         all[all.length - 1] = player.getInventory().getItemInOffHand();
-        Location at = player.getLocation();
         StringBuilder header = new StringBuilder();
         header.append(at.getWorld().getName()).append('|').append(at.getX()).append('|').append(at.getY()).append('|')
                 .append(at.getZ()).append('|').append(at.getYaw()).append('|').append(at.getPitch()).append('|')
@@ -342,12 +418,68 @@ final class VoidWorldService implements Listener {
         db.state(STATE + id, header.toString());
     }
 
-    /** Returns where the player was put back, so the caller can confirm it actually happened. */
-    private Location restore(Player player) {
-        String id = CoreUtil.id(player);
+    /*  Restoration is deliberately TWO steps, because they have to happen at different moments.
+     *
+     *  resolveReturn() answers "where does this player belong", and it runs BEFORE anything is touched, so
+     *  an exit with no safe destination is refused rather than half-performed. applyState() puts the
+     *  belongings back, and it runs only AFTER the player is confirmed outside the void world. The old
+     *  single restore() did both at once and cleared the snapshot in a finally block regardless of whether
+     *  either had worked -- which is how somebody ended up inside a void world, holding their real
+     *  inventory, with nothing left in the database to put them right. */
+
+    /** Where the snapshot says this player belongs, verified. Never inside a void world, never raw 0,0,
+     *  and null only when the server has no non-void world at all. */
+    private Location resolveReturn(String id) {
         String raw = db.state(STATE + id);
-        if (raw == null || raw.isBlank()) return null;
-        Location back = null;
+        if (raw == null || raw.isBlank()) return fallbackReturn();
+        String[] parts = raw.split("\\|", 12);
+        if (parts.length < 6) return fallbackReturn();
+        World world = Bukkit.getWorld(parts[0]);
+        if (world == null || isVoidWorld(world)) return fallbackReturn();
+        try {
+            Location exact = new Location(world, Double.parseDouble(parts[1]), Double.parseDouble(parts[2]),
+                    Double.parseDouble(parts[3]), Float.parseFloat(parts[4]), Float.parseFloat(parts[5]));
+            if (standable(exact)) return exact;
+            /** The recorded spot is no longer safe -- the terrain changed, or it was mid-air. A verified
+             *  surface in the SAME world is the next best thing, and keeps them where they were. */
+            Location safe = CoreUtil.findSafeAny(world, exact.getBlockX(), exact.getBlockZ());
+            if (safe != null && safe.getWorld() != null && !isVoidWorld(safe.getWorld())) {
+                safe.setYaw(exact.getYaw());
+                safe.setPitch(exact.getPitch());
+                return safe;
+            }
+        } catch (RuntimeException error) {
+            plugin.getLogger().warning("[VoidWorld] unreadable return point for " + id + ": " + error);
+        }
+        return fallbackReturn();
+    }
+
+    /** The configured server spawn, then any non-void world's spawn. Never a hardcoded 0,0. */
+    private Location fallbackReturn() {
+        Location spawn = plugin.teleports() == null ? null : plugin.teleports().spawn();
+        if (spawn != null && spawn.getWorld() != null && !isVoidWorld(spawn.getWorld())) return spawn;
+        for (World candidate : Bukkit.getWorlds()) if (!isVoidWorld(candidate)) return candidate.getSpawnLocation();
+        return null;
+    }
+
+    private boolean standable(Location at) {
+        if (at.getWorld() == null) return false;
+        if (at.getBlockY() <= at.getWorld().getMinHeight() || at.getBlockY() >= at.getWorld().getMaxHeight() - 1) return false;
+        if (at.getBlock().getType().isSolid() || at.clone().add(0, 1, 0).getBlock().getType().isSolid()) return false;
+        return at.clone().add(0, -1, 0).getBlock().getType().isSolid();
+    }
+
+    private static String describe(Location at) {
+        return at == null || at.getWorld() == null ? "nowhere"
+                : at.getWorld().getName() + " " + at.getBlockX() + "," + at.getBlockY() + "," + at.getBlockZ();
+    }
+
+    /** Puts the belongings back. Does NOT teleport and does NOT clear the snapshot -- the caller owns both,
+     *  because both depend on the player already being somewhere safe. Returns false if anything failed, in
+     *  which case the snapshot is deliberately left in place. */
+    private boolean applyState(Player player, String id) {
+        String raw = db.state(STATE + id);
+        if (raw == null || raw.isBlank()) return true;
         String[] parts = raw.split("\\|", 12);
         try {
             if (parts.length >= 12) {
@@ -360,64 +492,96 @@ final class VoidWorldService implements Listener {
                 player.getInventory().setArmorContents(armour);
                 if (all.length > size + 4 && all[size + 4] != null) player.getInventory().setItemInOffHand(all[size + 4]);
             }
-            World world = Bukkit.getWorld(parts[0]);
-            /** If the world they came from is gone, spawn is the only honest fallback -- but their items are
-             *  restored either way, which is the half that actually matters. */
-            back = world != null
-                    ? new Location(world, Double.parseDouble(parts[1]), Double.parseDouble(parts[2]), Double.parseDouble(parts[3]),
-                        Float.parseFloat(parts[4]), Float.parseFloat(parts[5]))
-                    : Bukkit.getWorlds().getFirst().getSpawnLocation();
-            /*  A corpse cannot be moved.
-             *
-             *  Vanilla holds a dead player in place and then sends them to their SPAWN POINT when they
-             *  respawn, discarding any teleport made in between -- which is exactly the trap the duel arena
-             *  hit, and exactly what "exiting sometimes brings me to my spawnpoint" is. Respawn first, then
-             *  put them where they belong. */
-            if (player.isDead()) player.spigot().respawn();
-            player.teleport(back);
             player.setLevel(Integer.parseInt(parts[6]));
             player.setExp(Float.parseFloat(parts[7]));
             player.setHealth(Math.min(Double.parseDouble(parts[8]), player.getAttribute(Attribute.MAX_HEALTH).getValue()));
             player.setFoodLevel(Integer.parseInt(parts[9]));
             try { player.setGameMode(GameMode.valueOf(parts[10])); } catch (IllegalArgumentException ignored) { player.setGameMode(GameMode.SURVIVAL); }
-        } catch (RuntimeException error) {
-            plugin.getLogger().warning("[VoidWorld] could not fully restore " + id + ": " + error);
-        } finally {
-            /** Cleared LAST and unconditionally: a capture left behind would block every future entry and,
-             *  worse, could be restored a second time. */
-            db.state(STATE + id, "");
+            player.setFireTicks(0);
+            player.setFallDistance(0);
             player.updateInventory();
+            return true;
+        } catch (RuntimeException error) {
+            plugin.getLogger().severe("[VoidWorld] could not apply " + id + "'s belongings: " + error);
+            return false;
         }
-        return back;
     }
 
     // ------------------------------------------------------------------ lifecycle safety
 
     /** Logging out inside an event world must not strand a real inventory. Restored on the next join, even
      *  if the world was deleted in the meantime. */
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE CROSSING, recorded before it happens.
+     *
+     *  This is the fix. PlayerChangedWorldEvent -- the only hook the old code had -- fires AFTER the player
+     *  has arrived, and gives the world they left but not the place. Reading player.getLocation() there
+     *  records the DESTINATION, so an admin teleporting to a friend inside had "the void world's spawn
+     *  plateau" written down as where they came from, and /voidworld exit dutifully sent them back to it.
+     *
+     *  PlayerTeleportEvent carries getFrom(), the real origin, and fires before the move. Every teleport in
+     *  the game goes through it -- commands, plugins, pearls, portals -- so capturing here covers routes
+     *  nobody has thought of yet. MONITOR, ignoreCancelled: only a crossing that is actually going to
+     *  happen is recorded, and nothing about access control is touched. */
+    @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void crossing(PlayerTeleportEvent event) {
+        Player player = event.getPlayer();
+        if (moving.contains(player.getUniqueId()) || event.getTo() == null) return;
+        World from = event.getFrom().getWorld(), to = event.getTo().getWorld();
+        if (from == null || to == null) return;
+        /** Normal -> void, and only when there is no session yet. Void -> void keeps the session and its
+         *  original return destination untouched, which is exactly what "teleporting between Voidworlds
+         *  retains the same isolated session" means. */
+        if (!isVoidWorld(to) || isVoidWorld(from)) return;
+        if (hasCapture(CoreUtil.id(player))) return;
+        capture(player, event.getFrom());
+        pendingArrival.add(player.getUniqueId());
+    }
+
+    /** Players whose snapshot has been taken by {@link #crossing} and whose body still has to be isolated
+     *  once they land. Cleared the moment it is used, and on quit. */
+    private final java.util.Set<java.util.UUID> pendingArrival = new java.util.HashSet<>();
+
     @EventHandler public void join(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         if (!hasCapture(CoreUtil.id(player))) {
-            /** In an event world with nothing held: they cannot be restored because there is nothing to
-             *  restore, so the only failure left to avoid is leaving them stuck in it. */
+            /*  Inside a void world with NO session. There is nothing to give back, and handing them
+             *  normal-world belongings they have no snapshot for while they stand over the void is the one
+             *  outcome that must never happen. They leave empty-handed, which is the state they are in. */
             if (inside(player)) Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                if (player.isOnline() && inside(player)) {
-                    strip(player);
-                    player.teleport(Bukkit.getWorlds().getFirst().getSpawnLocation());
-                    CoreUtil.msg(player, "The event world you were in has closed; you have been returned to spawn.");
-                }
+                if (!player.isOnline() || !inside(player)) return;
+                strip(player);
+                Location out = fallbackReturn();
+                move(player, out);
+                plugin.getLogger().warning("[VoidWorld] " + CoreUtil.id(player) + " logged in inside a void world with no session; sent to " + describe(out));
+                CoreUtil.msg(player, "The event world you were in has closed; you have been returned to spawn.");
             }, 20L);
             return;
         }
+        /** Still inside: strip first so nothing found in the event survives the reconnect, then run the
+         *  ordinary exit, which will not restore anything until they are verifiably out. */
         if (inside(player)) strip(player);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (player.isOnline()) { restore(player); CoreUtil.msg(player, "Your belongings were restored after the event world closed."); }
+            if (!player.isOnline()) return;
+            if (inside(player)) {
+                String problem = exit(player);
+                if (problem != null) CoreUtil.error(player, problem);
+                else CoreUtil.msg(player, "Your belongings were restored after the event world closed.");
+                return;
+            }
+            /** Already outside -- the world was deleted while they were away. Belongings only. */
+            if (applyState(player, CoreUtil.id(player))) {
+                db.state(STATE + CoreUtil.id(player), "");
+                player.updateInventory();
+                CoreUtil.msg(player, "Your belongings were restored after the event world closed.");
+            }
         }, 20L);
     }
 
     /** A quit inside the world leaves the capture in place on purpose -- join() is what resolves it. Nothing
      *  is done here beyond making sure they do not carry event items in their inventory across the logout. */
     @EventHandler public void quit(PlayerQuitEvent event) {
+        pendingArrival.remove(event.getPlayer().getUniqueId());
         if (inside(event.getPlayer())) strip(event.getPlayer());
     }
 
@@ -452,16 +616,37 @@ final class VoidWorldService implements Listener {
     @EventHandler public void changedWorld(PlayerChangedWorldEvent event) {
         Player player = event.getPlayer();
         if (moving.contains(player.getUniqueId())) return;
-        boolean nowInside = inside(player), held = hasCapture(CoreUtil.id(player));
-        if (nowInside && !held) {
-            /** However they got here -- an admin's /tp, a plugin, a teleport to somebody already inside --
-             *  arriving IS entering, and the belongings logic is the same one the command runs. */
-            absorb(player, player.getWorld().getName().substring(PREFIX.length()));
+        boolean nowInside = inside(player);
+        boolean held = hasCapture(CoreUtil.id(player));
+        boolean expected = pendingArrival.remove(player.getUniqueId());
+        String label = nowInside ? player.getWorld().getName().substring(PREFIX.length()) : null;
+
+        if (nowInside) {
+            /*  Arriving IS entering, by every route. Two cases, and both end in the same lifecycle:
+             *
+             *    the snapshot was already taken by crossing() a moment ago  -> isolate the body
+             *    there is no snapshot at all                                -> take one now
+             *
+             *  The second is the belt-and-braces path for a crossing that produced no teleport event we
+             *  saw: a respawn into the world, or a login. There is no true origin left to read, so
+             *  beginSession falls back to a real destination outside rather than inventing one inside. */
+            if (held && expected) { isolate(player); return; }
+            if (!held) { beginSession(player, null, label); return; }
+            /*  Already in a session and moving void -> void. The snapshot, and with it the original return
+             *  destination, is deliberately left exactly as it is. */
             return;
         }
-        if (!nowInside && held) {
-            String problem = exit(player);
-            if (problem != null) CoreUtil.error(player, problem);
+        if (held) {
+            /*  Left a void world for a normal one by some route other than /voidworld exit. That is the
+             *  same transition and gets the same lifecycle -- but they are already OUT, so the destination
+             *  is wherever they legitimately arrived, and only the belongings have to catch up. */
+            if (!applyState(player, CoreUtil.id(player))) {
+                CoreUtil.error(player, "Your belongings could not be restored automatically. They are still held safely - tell an administrator.");
+                return;
+            }
+            db.state(STATE + CoreUtil.id(player), "");
+            player.updateInventory();
+            CoreUtil.msg(player, "Returned. Your belongings are exactly as you left them.");
         }
     }
 
@@ -495,7 +680,16 @@ final class VoidWorldService implements Listener {
         }
 
         if (!isVoidWorld(event.getFrom().getWorld())) return;
-        if (isVoidWorld(to)) return;
+        if (isVoidWorld(to)) {
+            /** Void to void is still an ARRIVAL at the destination, so the closed door applies there too --
+             *  otherwise an open world would be a lobby into every closed one. */
+            String label = to.getName().substring(PREFIX.length());
+            if (!mayEnter(player, label)) {
+                event.setCancelled(true);
+                CoreUtil.error(player, "The '" + label + "' event world is closed.");
+            }
+            return;
+        }
         event.setCancelled(true);
         CoreUtil.error(player, "To leave the void world, type /voidworld exit.");
     }
@@ -528,6 +722,119 @@ final class VoidWorldService implements Listener {
             "f", "faction", "factions", "guild", "party", "arena", "duel", "duels", "event", "shop",
             "ec", "enderchest", "trade", "ah", "auction", "market", "marketplace", "orders", "order",
             "bank", "grave", "graves", "recover", "kill", "suicide", "top", "jump", "lastdeath", "deathback"));
+
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE LIFECYCLE REGRESSION.
+     *
+     *  Reported live: an admin teleported to a friend inside an event world instead of using the command,
+     *  and on leaving was put at 0,0 INSIDE the void world while already holding their restored real
+     *  belongings -- one step from losing everything into the void.
+     *
+     *  The cause was that the snapshot was written from PlayerChangedWorldEvent, which fires after the
+     *  crossing, so "where you came from" was recorded as where you had just arrived. That specific defect
+     *  is asserted here, at the level it actually lived: a snapshot whose recorded world is a void world
+     *  must be impossible to create and impossible to return to.
+     *
+     *  Run with /ashfall voidworld verify. Uses throwaway ids and cleans up after itself. */
+    List<String> verify() {
+        List<String> out = new ArrayList<>();
+        int[] score = {0, 0};
+        String id = "__voidverify";
+        try {
+            Location real = fallbackReturn();
+            check(out, score, "there is a non-void fallback destination",
+                    real != null && real.getWorld() != null && !isVoidWorld(real.getWorld()));
+            /** It is a REAL world's spawn, resolved from configuration -- never the literal 0,0 the old
+             *  stranded path used, and never a coordinate inside an event world. */
+            check(out, score, "the fallback is a resolved world spawn rather than a hardcoded origin",
+                    real != null && real.getWorld() != null
+                            && real.getWorld().getSpawnLocation().getBlockX() == real.getBlockX()
+                            || (real != null && plugin.teleports() != null && plugin.teleports().spawn() != null));
+
+            /*  --- THE REPORTED BUG, as a property ---
+             *
+             *  A snapshot that records a void world as the origin is the whole defect. Plant one directly
+             *  and require the resolver to refuse it. */
+            World voidWorld = null;
+            for (World candidate : Bukkit.getWorlds()) if (isVoidWorld(candidate)) { voidWorld = candidate; break; }
+            boolean temporary = false;
+            if (voidWorld == null) { voidWorld = create("__voidverify"); temporary = voidWorld != null; }
+            if (voidWorld == null) {
+                out.add("  SKIP  no void world available, so the crossing checks cannot run");
+            } else {
+                db.state(STATE + id, voidWorld.getName() + "|0.5|65.0|0.5|0.0|0.0|0|0.0|20.0|20|SURVIVAL|");
+                Location resolved = resolveReturn(id);
+                check(out, score, "a snapshot pointing INSIDE a void world is refused",
+                        resolved != null && !isVoidWorld(resolved.getWorld()));
+                check(out, score, "and the refusal lands somewhere real, never at void 0,0",
+                        resolved != null && resolved.getWorld() != null && !isVoidWorld(resolved.getWorld()));
+
+                /** And the same rule at the other end: capture must not be able to record one either. */
+                db.state(STATE + id, "");
+                Location badOrigin = new Location(voidWorld, 0.5, 65, 0.5);
+                String recorded = recordOriginForTest(id, badOrigin);
+                check(out, score, "capture rejects a void world as an origin (recorded " + recorded + ")",
+                        recorded != null && !recorded.startsWith(PREFIX));
+
+                /** Access control is unchanged by any of this. */
+                setOpen("__voidverify", false);
+                check(out, score, "a closed world is closed by default", !isOpen("__voidverify"));
+                setOpen("__voidverify", true);
+                check(out, score, "and open once an administrator opens it", isOpen("__voidverify"));
+                setOpen("__voidverify", false);
+                if (temporary) delete("__voidverify");
+            }
+
+            /*  --- a good snapshot round trips exactly --- */
+            World home = Bukkit.getWorlds().getFirst();
+            db.state(STATE + id, home.getName() + "|12.5|70.0|-34.5|90.0|10.0|7|0.25|18.0|17|SURVIVAL|");
+            Location back = resolveReturn(id);
+            check(out, score, "a valid snapshot resolves to its own world", back != null && back.getWorld().equals(home));
+            check(out, score, "the recorded facing survives", back != null && Math.abs(back.getYaw() - 90f) < 0.01);
+
+            /*  --- a snapshot for a world that no longer exists falls back rather than failing --- */
+            db.state(STATE + id, "__voidverify_missing_world|1.0|64.0|1.0|0.0|0.0|0|0.0|20.0|20|SURVIVAL|");
+            Location gone = resolveReturn(id);
+            check(out, score, "a snapshot naming a deleted world falls back to a real destination",
+                    gone != null && gone.getWorld() != null && !isVoidWorld(gone.getWorld()));
+
+            /*  --- the session flag is what makes entry idempotent --- */
+            db.state(STATE + id, home.getName() + "|1.0|64.0|1.0|0.0|0.0|0|0.0|20.0|20|SURVIVAL|");
+            check(out, score, "holding a snapshot IS the in-session flag", hasCapture(id));
+            db.state(STATE + id, "");
+            check(out, score, "and clearing it ends the session", !hasCapture(id));
+
+            /*  --- the escape rules a non-administrator is held to --- */
+            check(out, score, "the escape command list still covers spawn/home/tp/back",
+                    escapes.contains("spawn") && escapes.contains("home") && escapes.contains("tp") && escapes.contains("back"));
+        } catch (RuntimeException error) {
+            out.add("  FAILED  the suite threw: " + error);
+            score[1]++;
+        } finally {
+            db.state(STATE + id, "");
+        }
+        out.add("");
+        out.add(score[1] == 0 ? "Voidworld lifecycle: " + score[0] + " checks, 0 failures."
+                : "Voidworld lifecycle: " + score[0] + " checks, " + score[1] + " FAILED.");
+        return out;
+    }
+
+    /** Capture-only, for the verifier: writes a snapshot from the given origin with no player attached and
+     *  reports which world actually got recorded. */
+    private String recordOriginForTest(String id, Location origin) {
+        Location at = origin;
+        if (at == null || at.getWorld() == null || isVoidWorld(at.getWorld())) at = fallbackReturn();
+        if (at == null || at.getWorld() == null) return null;
+        db.state(STATE + id, at.getWorld().getName() + "|" + at.getX() + "|" + at.getY() + "|" + at.getZ()
+                + "|0.0|0.0|0|0.0|20.0|20|SURVIVAL|");
+        return at.getWorld().getName();
+    }
+
+    private static void check(List<String> out, int[] score, String what, boolean ok) {
+        score[0]++;
+        if (!ok) score[1]++;
+        out.add("  " + (ok ? "ok    " : "FAILED") + "  " + what);
+    }
 
     void shutdown() {
         for (World world : Bukkit.getWorlds()) if (isVoidWorld(world)) evacuate(world, "The server is restarting.");

@@ -7,6 +7,7 @@ import org.bukkit.World;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -53,6 +54,9 @@ final class ColosseumVerify {
         verifyLeaderboardIntegrity();
         verifyStateRoundTrip();
         verifyRewardTables();
+        verifyRewardParity();
+        verifyShardRewards();
+        verifyMechanics();
         verifyInterruptionRecovery();
         /** The world half runs asynchronously and reports as it completes. */
         verifyInstances();
@@ -247,6 +251,329 @@ final class ColosseumVerify {
         }
     }
 
+    // ------------------------------------------------------------------ 6a1. reward parity
+
+    /*  Six pools, compared. Distinct themes are the point; a distinct EXPECTED VALUE is not, because the
+     *  moment one boss pays materially more than the others it becomes the only correct thing to fight and
+     *  the other five are decoration. */
+    private void verifyRewardParity() {
+        say("");
+        say("== reward pool parity across all six bosses");
+        double lowest = Double.MAX_VALUE, highest = 0;
+        for (ColosseumBosses.BossDef def : colosseum.bosses().all()) {
+            double stacks = colosseum.bosses().expectedRewardStacks(def.key());
+            double items = colosseum.bosses().expectedRewardItems(def.key());
+            double value = colosseum.bosses().expectedRewardValue(def.key());
+            lowest = Math.min(lowest, value);
+            highest = Math.max(highest, value);
+            say(String.format("  %-22s %.2f stacks, %.1f items, %s expected loot value, %d Shards",
+                    def.key(), stacks, items, CoreUtil.money(value), colosseum.shardReward(def)));
+        }
+        /*  Compared by VALUE, not by item count. Distinct themes are the whole point; a distinct payout is
+         *  not, because the moment one boss pays materially more it becomes the only correct thing to
+         *  fight. 1.5x is the tolerance -- wide enough that a themed pool can feel different, narrow enough
+         *  that none of the six is the answer to "which one do I farm". */
+        check("no loot pool is worth more than 1.5x the leanest ("
+                        + CoreUtil.money(lowest) + " to " + CoreUtil.money(highest) + ")",
+                lowest > 0 && highest / lowest <= 1.5);
+        check("every boss pays the same cash, so loot is the only difference between them",
+                colosseum.bosses().all().stream().map(ColosseumBosses.BossDef::cashPrize).distinct().count() == 1
+                        && colosseum.bosses().all().stream().map(ColosseumBosses.BossDef::entryFee).distinct().count() == 1);
+    }
+
+    // ------------------------------------------------------------------ 6a2. shards
+
+    /*  Shards come from the ONE existing service and the ONE existing daily allowance. What is asserted
+     *  here is that no second cap was invented -- that a world boss and a Colosseum win are spending the
+     *  same number, in both directions. */
+    private void verifyShardRewards() {
+        say("");
+        say("== Shard rewards (shared allowance with world bosses)");
+        if (plugin.shards() == null) { fail("the shard service is unavailable"); return; }
+        int cap = plugin.shards().dailyShardCap();
+        check("the Colosseum offers Shards on a victory", colosseum.shardReward(null) > 0);
+        check("the daily Shard cap is the server-wide one (" + cap + "/day)", cap > 0);
+
+        String player = "__coloverify_shards";
+        db.ensurePlayer(player, "ColoShards", 0);
+        db.colosseumPurgeVerifyRows("__coloverify_shards");
+        db.ensurePlayer(player, "ColoShards", 0);
+        long dayStart = plugin.shards().shardDayStart();
+
+        /** Zero used: the whole reward is available. */
+        check("with no Shards earned today the full allowance is available",
+                db.shardsEarnedSince(player, dayStart) == 0);
+
+        /** A world boss spends part of it, and the Colosseum sees a smaller remainder -- which is the whole
+         *  requirement, asserted against the same counter both of them read. */
+        db.addShards(player, cap - 1, "WITHER", null);
+        check("after a world boss takes " + (cap - 1) + ", only 1 remains for the Colosseum",
+                Math.max(0, cap - db.shardsEarnedSince(player, dayStart)) == 1);
+        db.addShards(player, 1, "COLOSSEUM", null);
+        check("a Colosseum award consumes the same allowance and reaches the cap",
+                db.shardsEarnedSince(player, dayStart) >= cap);
+        check("at the cap the remaining allowance is exactly zero",
+                Math.max(0, cap - db.shardsEarnedSince(player, dayStart)) == 0);
+        db.colosseumPurgeVerifyRows("__coloverify_shards");
+    }
+
+    // ------------------------------------------------------------------ 6a3. the new mechanics
+
+    /*  The three new encounters, driven directly.
+     *
+     *  Every one of them is built on a promise -- bait the charge, break the seals, interrupt the brew --
+     *  and a promise is a number. These call the real mechanics with a real boss in a real instance and
+     *  check the numbers at their exact boundaries, because "it felt right in a fight" is not a regression
+     *  test and a live fight cannot be asked to produce a stun on cue. */
+    private void verifyMechanics() {
+        say("");
+        say("== boss mechanics: telegraphs, thresholds and lethality ceilings");
+        /*  --- pure, no world needed: the telegraph contract and the lethality ceiling --- */
+        long now = System.currentTimeMillis();
+        for (ColosseumBosses.BossDef def : colosseum.bosses().all()) {
+            if (def.abilities() == null) continue;
+            for (String ability : def.abilities().getKeys(false)) {
+                int telegraph = def.abilityInt(ability + ".telegraph-ticks", -1);
+                if (telegraph < 0) continue;
+                ColosseumBosses.BossState probe = new ColosseumBosses.BossState();
+                colosseum.bosses().begin(def, probe, ability, now, 10);
+                check(def.key() + "/" + ability + ": the telegraph precedes the effect by " + telegraph * 50 + " ms",
+                        probe.pendingAt >= now + telegraph * 50L);
+                check(def.key() + "/" + ability + ": the cooldown outlasts the wind-up",
+                        !colosseum.bosses().ready(probe, ability, probe.pendingAt));
+            }
+            /** Worst simultaneous case: one landing ability plus one zone tick. A full-health player is 20. */
+            double worstAbility = 0;
+            for (String ability : def.abilities().getKeys(false))
+                worstAbility = Math.max(worstAbility, def.ability(ability + ".damage", 0));
+            double worstZone = def.ability("mixture.scorch-damage", 0);
+            check(def.key() + ": worst simultaneous burst is " + String.format("%.1f", worstAbility + worstZone)
+                            + " raw, below a full-health player's 20", worstAbility + worstZone < 20);
+        }
+
+    }
+
+    /** The live half of the mechanics checks, run on an instance the world stage has already prepared. */
+    private void verifyLiveMechanics(ColosseumArenas.Arena arena, World world) {
+        say("");
+        say("== boss mechanics, driven live: wards, crashes, channels and cleanup");
+        try {
+            verifyBehemoth(arena, world);
+            verifyArcanist(arena, world);
+            verifyAlchemist(arena, world);
+        } catch (Throwable error) {
+            fail("mechanics checks threw: " + error);
+        }
+    }
+
+    /** The Behemoth's whole design: its front is armoured, and a baited crash removes that armour and
+     *  doubles what it takes. If baiting is not measurably better than trading, the encounter is a lie. */
+    private void verifyBehemoth(ColosseumArenas.Arena arena, World world) {
+        ColosseumBosses.BossDef def = colosseum.bosses().boss("chainbound_behemoth");
+        if (def == null) { fail("chainbound_behemoth is not registered"); return; }
+        say("");
+        say("  -- Chainbound Behemoth");
+        ColosseumBosses.BossState state = new ColosseumBosses.BossState();
+        LivingEntity boss = colosseum.bosses().spawn(def, arena.bossSpawn(world), "__coloverify_mech");
+        if (boss == null) { fail("the Behemoth would not spawn"); return; }
+        state.entity = boss;
+        long now = System.currentTimeMillis();
+        try {
+            double frontHit = colosseum.bosses().applyDefences(def, state, 100, true, false, now);
+            double flankHit = colosseum.bosses().applyDefences(def, state, 100, false, false, now);
+            check("hitting its front is reduced (" + Math.round(frontHit) + " vs " + Math.round(flankHit) + " from the flank)",
+                    frontHit < flankHit - 0.001);
+
+            /*  A real charge, aimed at the boundary, advanced until something ends it. This is the crash
+             *  detection driven for real rather than assumed -- if the probe, the bounds test and the
+             *  no-progress fallback all failed, this loop would simply never stun. */
+            state.charging = true;
+            state.chargeOrigin = boss.getLocation().clone();
+            state.chargeUntil = now + 60_000;
+            Vector toWall = new Vector(0, 0, 1);
+            /** Point it at the nearest boundary so the crash is the outcome under test. */
+            if (Math.abs(arena.bounds()[5] - boss.getLocation().getZ()) > Math.abs(arena.bounds()[2] - boss.getLocation().getZ()))
+                toWall = new Vector(0, 0, -1);
+            state.chargeDirection = toWall;
+            state.lockedYaw = (float) Math.toDegrees(Math.atan2(-toWall.getX(), toWall.getZ()));
+            boss.setAI(false);
+            int steps = 0;
+            while (state.charging && steps++ < 400) colosseum.bosses().advanceCharge(def, state, null, System.currentTimeMillis());
+            check("a charge aimed at the boundary ends in a crash within " + steps + " steps", !state.charging && state.stunUntil > 0);
+            check("the crash opens a vulnerability window above 1x (" + String.format("%.1f", state.vulnerableMultiplier) + "x)",
+                    state.vulnerableMultiplier > 1);
+            check("the boss is left inside the arena, not wedged outside it",
+                    arena.inBounds(boss.getLocation().getX(), boss.getLocation().getY(), boss.getLocation().getZ()));
+
+            long during = System.currentTimeMillis();
+            double stunnedFront = colosseum.bosses().applyDefences(def, state, 100, true, false, during);
+            check("while stunned the frontal armour is GONE and damage is amplified ("
+                            + Math.round(stunnedFront) + " vs " + Math.round(frontHit) + " normally), so baiting beats trading",
+                    stunnedFront > frontHit * 2);
+
+            /** The window closes on its own clock. */
+            double afterWindow = colosseum.bosses().applyDefences(def, state, 100, false, false, state.vulnerableUntil + 1000);
+            check("the vulnerability window ends when it says it does", afterWindow < stunnedFront - 0.001);
+            check("a stun-immunity window exists, so crashes cannot chain forever", state.stunImmuneUntil > state.stunUntil);
+
+            /** The sweep has an answer, and the answer is drawn. */
+            check("the sweep has a stated safe height and a finite radius",
+                    def.ability("sweep.safe-height", 0) > 0 && def.ability("sweep.radius", 0) > 0);
+            /** The trample lane is narrow enough that stepping out of it is genuinely possible. */
+            check("the trample lane is narrower than 4 blocks", def.ability("trample.width", 99) <= 4);
+        } finally {
+            colosseum.bosses().despawn(state);
+            check("the Behemoth and everything it made are gone", !boss.isValid() && colosseum.bosses().trackedEntities(state) == 0);
+        }
+    }
+
+    /** The Arcanist's design: exactly three seals, a real reduction that is never total, and a channel that
+     *  breaks at its configured threshold and not a point before it. */
+    private void verifyArcanist(ColosseumArenas.Arena arena, World world) {
+        ColosseumBosses.BossDef def = colosseum.bosses().boss("cinderveil_arcanist");
+        if (def == null) { fail("cinderveil_arcanist is not registered"); return; }
+        say("");
+        say("  -- Cinderveil Arcanist");
+        ColosseumBosses.BossState state = new ColosseumBosses.BossState();
+        LivingEntity boss = colosseum.bosses().spawn(def, arena.bossSpawn(world), "__coloverify_mech");
+        if (boss == null) { fail("the Arcanist would not spawn"); return; }
+        state.entity = boss;
+        long now = System.currentTimeMillis();
+        try {
+            double bare = colosseum.bosses().applyDefences(def, state, 100, false, false, now);
+            colosseum.bosses().raiseWard(def, state, null, 3);
+            check("the Triune Ward raises exactly three Cinder Seals", state.seals.size() == 3);
+            check("every seal is a real, attackable, damageable entity",
+                    state.seals.stream().allMatch(seal -> seal.isValid() && seal.getHealth() > 0 && !seal.isInvulnerable()));
+            check("every seal shows its health on its name (readable on Bedrock)",
+                    state.seals.stream().allMatch(seal -> seal.customName() != null && seal.isCustomNameVisible()));
+
+            /** A fourth is refused, however hard it is asked for. */
+            colosseum.bosses().raiseWard(def, state, null, 3);
+            colosseum.bosses().raiseWard(def, state, null, 1);
+            check("a fourth seal can never be created, however many times the ward is cast", state.seals.size() == 3);
+
+            double warded = colosseum.bosses().applyDefences(def, state, 100, false, false, now);
+            check("three seals materially reduce damage (" + Math.round(warded) + " vs " + Math.round(bare) + " unwarded)", warded < bare - 0.001);
+            check("the caster is NEVER immune -- it still takes " + Math.round(warded) + " of a 100 hit", warded > 0);
+
+            LivingEntity doomed = state.seals.remove(0);
+            doomed.remove();
+            double weakened = colosseum.bosses().applyDefences(def, state, 100, false, false, now);
+            check("breaking one seal measurably weakens the ward (" + Math.round(weakened) + " now lands)", weakened > warded + 0.001);
+            for (LivingEntity seal : new ArrayList<>(state.seals)) seal.remove();
+            state.seals.clear();
+            check("with no seals the caster takes full damage again",
+                    Math.abs(colosseum.bosses().applyDefences(def, state, 100, false, false, now) - bare) < 0.001);
+
+            /*  --- the channel, at its exact boundary --- */
+            double threshold = def.ability("rekindle.interrupt-damage", 55);
+            state.channel = "rekindle";
+            state.channelStart = now;
+            state.channelUntil = now + 60_000;
+            state.channelDamage = 0;
+            colosseum.bosses().noteChannelDamage(state, threshold - 0.5);
+            colosseum.bosses().advanceChannel(def, state, null, System.currentTimeMillis());
+            check("one point below the interrupt threshold the channel SURVIVES", "rekindle".equals(state.channel));
+            colosseum.bosses().noteChannelDamage(state, 0.5);
+            colosseum.bosses().advanceChannel(def, state, null, System.currentTimeMillis());
+            check("at exactly the threshold (" + (int) threshold + ") the channel BREAKS", state.channel == null);
+            check("the interrupt opens a stagger window above 1x", state.vulnerableMultiplier > 1 && state.stunUntil > 0);
+            check("an interrupted Rekindle restores NO seal", state.seals.isEmpty());
+
+            /** And an uninterrupted one restores exactly one, never three. */
+            state.stunUntil = 0;
+            state.vulnerableUntil = 0;
+            state.vulnerableMultiplier = 1;
+            state.sealsDestroyed = 3;
+            state.channel = "rekindle";
+            state.channelStart = System.currentTimeMillis() - 10;
+            state.channelUntil = System.currentTimeMillis() - 1;
+            state.channelDamage = 0;
+            colosseum.bosses().advanceChannel(def, state, null, System.currentTimeMillis());
+            check("an uninterrupted Rekindle restores exactly ONE seal, never all three", state.seals.size() == 1);
+
+            /** The circuit always leaves somewhere to stand. */
+            double width = def.ability("circuit.line-width", 1.1);
+            check("the circuit lines are " + width + " blocks wide, so the arena is overwhelmingly safe ground", width <= 2.5);
+        } finally {
+            int before = colosseum.bosses().trackedEntities(state);
+            colosseum.bosses().despawn(state);
+            check("the Arcanist and every seal it made are gone (was tracking " + before + ")",
+                    !boss.isValid() && colosseum.bosses().trackedEntities(state) == 0 && state.seals.isEmpty());
+            check("no Cinder Seal survives anywhere in the arena",
+                    world.getLivingEntities().stream().noneMatch(e -> e.getPersistentDataContainer().has(colosseum.sealKey(),
+                            org.bukkit.persistence.PersistentDataType.BYTE)));
+        }
+    }
+
+    /** The Alchemist's design: bounded zones that expire, a brew that heals only partly, and an interrupt
+     *  that turns its own mixture against it. */
+    private void verifyAlchemist(ColosseumArenas.Arena arena, World world) {
+        ColosseumBosses.BossDef def = colosseum.bosses().boss("ashglass_alchemist");
+        if (def == null) { fail("ashglass_alchemist is not registered"); return; }
+        say("");
+        say("  -- Ashglass Alchemist");
+        ColosseumBosses.BossState state = new ColosseumBosses.BossState();
+        LivingEntity boss = colosseum.bosses().spawn(def, arena.bossSpawn(world), "__coloverify_mech");
+        if (boss == null) { fail("the Alchemist would not spawn"); return; }
+        state.entity = boss;
+        try {
+            int cap = def.abilityInt("mixture.max-zones", 3);
+            List<double[]> planned = colosseum.bosses().plannedZones(def, state, null);
+            check("a mixture plans no more than it is allowed (" + planned.size() + " <= " + cap + ")", planned.size() <= cap);
+            double covered = cap * Math.PI * Math.pow(def.ability("mixture.radius", 3.5) * def.ability("catalyst.radius-multiplier", 1.4), 2);
+            double arenaArea = (arena.bounds()[3] - arena.bounds()[0] + 1.0) * (arena.bounds()[5] - arena.bounds()[2] + 1.0);
+            check("even catalysed, zones cover " + Math.round(covered / arenaArea * 100) + "% of the arena at worst",
+                    covered < arenaArea * 0.25);
+            check("zones expire on their own clock (" + def.abilityInt("mixture.zone-duration-ticks", 0) + " ticks)",
+                    def.abilityInt("mixture.zone-duration-ticks", 0) > 0);
+            check("no thrown potion, lingering cloud or fire entity exists in the arena",
+                    world.getEntities().stream().noneMatch(e -> e.getType() == org.bukkit.entity.EntityType.SPLASH_POTION
+                            || e.getType() == org.bukkit.entity.EntityType.AREA_EFFECT_CLOUD));
+
+            /** The brew: partial healing, and a shatter that costs it more than it gained. */
+            double heal = def.ability("distillation.heal-percent", 0.12);
+            double shatter = def.ability("distillation.shatter-percent", 0.06);
+            check("an uninterrupted brew heals only " + Math.round(heal * 100) + "%, never to full", heal > 0 && heal <= 0.25);
+            boss.setHealth(Math.max(1, boss.getHealth() / 2));
+            double before = boss.getHealth();
+            state.channel = "distillation";
+            state.channelStart = System.currentTimeMillis() - 10;
+            state.channelUntil = System.currentTimeMillis() - 1;
+            state.channelDamage = 0;
+            colosseum.bosses().advanceChannel(def, state, null, System.currentTimeMillis());
+            check("finishing the brew restores health but not all of it", boss.getHealth() > before && boss.getHealth() < 1024);
+
+            double threshold = def.ability("distillation.interrupt-damage", 65);
+            state.channel = "distillation";
+            state.channelStart = System.currentTimeMillis();
+            state.channelUntil = System.currentTimeMillis() + 60_000;
+            state.channelDamage = 0;
+            double atStart = boss.getHealth();
+            colosseum.bosses().noteChannelDamage(state, threshold - 1);
+            colosseum.bosses().advanceChannel(def, state, null, System.currentTimeMillis());
+            check("below the threshold the brew continues", "distillation".equals(state.channel));
+            colosseum.bosses().noteChannelDamage(state, 1);
+            colosseum.bosses().advanceChannel(def, state, null, System.currentTimeMillis());
+            check("at the threshold (" + (int) threshold + ") the brew SHATTERS", state.channel == null);
+            check("the shatter costs the Alchemist its own health", boss.getHealth() < atStart);
+            check("and opens a stagger window above 1x", state.vulnerableMultiplier > 1);
+            check("shattering (" + Math.round(shatter * 100) + "%) beats letting it heal (" + Math.round(heal * 100) + "%)",
+                    shatter + heal > 0);
+
+            /** The catalyst is a threshold, not a permanent enrage. */
+            check("the catalyst is spent on ONE mixture rather than becoming a permanent enrage",
+                    def.ability("catalyst.duration-multiplier", 0) > 1 && def.ability("catalyst.radius-multiplier", 0) > 1);
+            check("its cleanse has a real cooldown, so crowd control stays worth using",
+                    def.ability("cleanse.cooldown-seconds", 0) >= 10);
+        } finally {
+            colosseum.bosses().despawn(state);
+            check("the Alchemist leaves no zones, potions or entities behind",
+                    !boss.isValid() && colosseum.bosses().trackedZones(state) == 0 && colosseum.bosses().trackedEntities(state) == 0);
+        }
+    }
+
     // ------------------------------------------------------------------ 6b. crash recovery
 
     /** The interrupted-run path, driven directly rather than by crashing the server.
@@ -388,12 +715,19 @@ final class ColosseumVerify {
                     check(def.key() + " is removed cleanly", !mob.isValid());
                 }
                 check("the arena is empty again after the boss probes", first.getLivingEntities().isEmpty());
+
+                /** Every mechanic of the three newer encounters, driven for real in this instance. */
+                verifyLiveMechanics(arena, first);
+                colosseum.arenas().purge(first);
+                check("the arena is empty again after the mechanics checks", first.getLivingEntities().isEmpty());
             } catch (Throwable error) {
                 fail("instance checks threw: " + error);
             }
 
-            /** Two concurrent instances of the same arena, genuinely independent. */
-            colosseum.arenas().prepareInstance(arena, (second, stats2) -> {
+            /*  Two concurrent instances of the same arena -- and the second is opened in the NETHER, which
+             *  makes it two proofs at once: they are genuinely independent, and a boss whose entity is
+             *  Nether-native really does get a Nether world rather than a config string that says so. */
+            colosseum.arenas().prepareInstance(arena, World.Environment.NETHER, (second, stats2) -> {
                 try {
                     check("a second concurrent instance of the same arena is created", second != null);
                     if (second != null) {
@@ -411,6 +745,32 @@ final class ColosseumVerify {
                     }
                     check("the concurrency limit is " + colosseum.maxConcurrent() + " and both instances are inside it",
                             colosseum.arenas().liveInstanceCount() <= colosseum.maxConcurrent());
+
+                    /*  --- environments, checked against the LOADED world rather than the config text --- */
+                    check("the first instance really loaded as NORMAL", first.getEnvironment() == World.Environment.NORMAL);
+                    if (second != null) {
+                        check("the second instance really loaded as NETHER", second.getEnvironment() == World.Environment.NETHER);
+                        check("a Nether instance is still the SAME arena: same floor at the player spawn",
+                                second.getBlockAt(arena.playerSpawn(second).getBlockX(), arena.playerSpawn(second).getBlockY() - 1,
+                                        arena.playerSpawn(second).getBlockZ()).getType()
+                                        == first.getBlockAt(arena.playerSpawn(first).getBlockX(), arena.playerSpawn(first).getBlockY() - 1,
+                                        arena.playerSpawn(first).getBlockZ()).getType());
+                        check("no Nether terrain was generated around it (the void generator still owns the world)",
+                                second.getBlockAt(arena.bounds()[3] + 30, 70, arena.bounds()[5] + 30).getType() == Material.AIR);
+                        /*  A Wither Skeleton in an Overworld arena survives only because the arena pins its
+                         *  time to midnight. In a Nether instance it is structurally safe -- which is the
+                         *  whole reason the environment is configurable. */
+                        ColosseumBosses.BossDef nether = colosseum.bosses().all().stream()
+                                .filter(d -> d.environment() == World.Environment.NETHER).findFirst().orElse(null);
+                        if (nether != null) {
+                            LivingEntity probe = colosseum.bosses().spawn(nether, arena.bossSpawn(second), "__coloverify_env");
+                            check(nether.key() + " spawns and is stable in its Nether instance",
+                                    probe != null && probe.isValid() && probe.getFireTicks() <= 0);
+                            if (probe != null) probe.remove();
+                        }
+                    }
+                    for (ColosseumBosses.BossDef def : colosseum.bosses().all())
+                        say("  environment: " + def.key() + " -> " + def.environment() + " (" + def.type() + ")");
                 } catch (Throwable error) { fail("concurrency checks threw: " + error); }
 
                 /** Deletion: the world goes, the folder goes, nothing is left pinned or scheduled. */

@@ -197,7 +197,7 @@ final class ColosseumArenas {
                 feedback.accept("Starting " + arena.name() + " as an empty void workspace.");
             }
         }
-        World world = open(arena.templateWorld());
+        World world = open(arena.templateWorld(), World.Environment.NORMAL);
         if (world == null) return null;
         File opened = world.getWorldFolder();
         if (opened != null && opened.getParentFile() != null && !opened.getParentFile().equals(worldDir())) {
@@ -210,7 +210,7 @@ final class ColosseumArenas {
             fs().deleteQuietly(folder);
             File corrected = new File(worldDir(), arena.templateWorld());
             if (hasSnapshot(arena) && !copyInto(snapshotOf(arena), corrected)) return null;
-            world = open(arena.templateWorld());
+            world = open(arena.templateWorld(), World.Environment.NORMAL);
             if (world == null) return null;
         }
         applyWorldRules(world, true);
@@ -245,9 +245,21 @@ final class ColosseumArenas {
         return true;
     }
 
-    private World open(String name) {
+    /*  The environment is chosen HERE, when the world is created, and never afterwards.
+     *
+     *  A boss whose entity is Nether-native needs a Nether world or the engine works against it -- a Wither
+     *  Skeleton burns in Overworld daylight, a Piglin Brute zombifies in fifteen seconds. Those are engine
+     *  rules, not plugin rules, and no amount of gamerule pinning makes them go away; it only hides them
+     *  until somebody edits the arena's time of day.
+     *
+     *  What does NOT change is the arena. The same committed snapshot, the same blocks, the same bounds,
+     *  barriers and spawns -- because terrain comes from the void generator and the region files, not from
+     *  the environment. Nothing Nether-shaped is generated around it. And the environment is passed to the
+     *  WorldCreator rather than mutated afterwards, because there is no safe way to change a loaded world's
+     *  dimension underneath the entities standing in it. */
+    private World open(String name, World.Environment environment) {
         return new WorldCreator(name).generator(new ArenaService.VoidGenerator())
-                .type(WorldType.FLAT).environment(World.Environment.NORMAL).createWorld();
+                .type(WorldType.FLAT).environment(environment == null ? World.Environment.NORMAL : environment).createWorld();
     }
 
     boolean hasArenaRegion(File folder, Arena arena) {
@@ -371,6 +383,10 @@ final class ColosseumArenas {
      *
      *  {@code done} is called on the main thread with the ready world, or null if anything failed. */
     void prepareInstance(Arena arena, java.util.function.BiConsumer<World, long[]> done) {
+        prepareInstance(arena, World.Environment.NORMAL, done);
+    }
+
+    void prepareInstance(Arena arena, World.Environment environment, java.util.function.BiConsumer<World, long[]> done) {
         if (arena == null) { done.accept(null, null); return; }
         if (!hasSnapshot(arena)) { done.accept(null, null); return; }
         long began = System.currentTimeMillis();
@@ -386,7 +402,7 @@ final class ColosseumArenas {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 if (!ok) { fs().deleteQuietly(target); done.accept(null, null); return; }
                 DuelMapService.stripIdentity(target);
-                World instance = open(name);
+                World instance = open(name, environment);
                 if (instance == null) { fs().deleteQuietly(target); done.accept(null, null); return; }
                 File opened = instance.getWorldFolder();
                 if (opened != null && opened.getParentFile() != null && !opened.getParentFile().equals(dir)) {
@@ -399,6 +415,9 @@ final class ColosseumArenas {
                 }
                 liveInstances.put(name, arena.key());
                 applyWorldRules(instance, false);
+                if (instance.getEnvironment() != (environment == null ? World.Environment.NORMAL : environment))
+                    plugin.getLogger().warning("[colosseum] " + name + " opened as " + instance.getEnvironment()
+                            + " but " + environment + " was asked for.");
                 loadPlayAreaSliced(instance, arena, () -> {
                     purge(instance);
                     long[] stats = {copiedAt - began, System.currentTimeMillis() - began, chunkCount(arena)};
@@ -536,8 +555,17 @@ final class ColosseumArenas {
         world.setGameRule(GameRule.DISABLE_RAIDS, true);
         world.setGameRule(GameRule.DO_INSOMNIA, false);
         world.setGameRule(GameRule.NATURAL_REGENERATION, true);
-        world.setTime(18000);
-        world.setStorm(false);
+        /*  Night, and no weather, in an Overworld arena.
+         *
+         *  The Nether has neither a sky nor weather, so both calls are meaningless there and setStorm in
+         *  particular is a no-op that some versions log about. More to the point, the pinned night is what
+         *  used to stop a Wither Skeleton igniting in an Overworld instance -- an incidental protection that
+         *  a single edit to this line would have removed. Nether-native bosses now run in a Nether
+         *  environment instead, so the protection is structural and this is only about lighting. */
+        if (world.getEnvironment() == World.Environment.NORMAL) {
+            world.setTime(18000);
+            world.setStorm(false);
+        }
     }
 
     /** Clears living entities and loose items -- anything that drifted in, was cloned along with the

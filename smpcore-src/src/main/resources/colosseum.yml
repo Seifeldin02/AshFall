@@ -35,6 +35,13 @@ economy:
   daily-rewarded-victories: 3
   # Announce a victory in chat. Losses are never announced.
   broadcast-victories: true
+  # Shards a rewarded victory pays, per boss unless a boss overrides it with its own victory-shards.
+  #
+  # These come from the SAME ShardService and the SAME daily allowance world bosses use -- there is no
+  # separate Colosseum shard balance and no second cap. Shards earned from a world boss reduce what a
+  # Colosseum win can pay, and the reverse. If the allowance is already spent the win pays zero Shards and
+  # says so; the cash and the loot are unaffected.
+  victory-shards: 3
 
 # --------------------------------------------------------------------------------------------
 # ARENAS
@@ -86,7 +93,16 @@ bosses:
     difficulty: "Hard"
     arena: ashen_colosseum
     entity: WITHER_SKELETON
+    # NETHER. A Wither Skeleton is a Nether-native mob and burns in Overworld daylight; the only reason it
+    # did not was that the arena pinned its time to midnight, which is an incidental protection a single
+    # edit to that line would have removed. Running it in a Nether-environment instance makes the
+    # protection structural. The arena is the same committed template, the same blocks and the same bounds
+    # -- no Nether terrain is generated, because terrain comes from the void generator and the region files.
+    environment: NETHER
     scale: 1.25
+    strength: "Answers your rhythm — its guard punishes anyone who never stops swinging."
+    weakness: "The Riposte only threatens somebody who keeps attacking into it."
+    counterplay: "Stop hitting for two seconds when it sets its guard; punish the slow recovery after a Lunge."
     lore:
       - "A swordsman burned into his own oath."
       - "Reads your rhythm and answers it."
@@ -139,7 +155,11 @@ bosses:
     difficulty: "Very hard"
     arena: ashen_colosseum
     entity: IRON_GOLEM
+    environment: NORMAL
     scale: 1.5
+    strength: "Heavy armour, immovable, and it removes the ground you are standing on."
+    weakness: "While it braces it cannot move or attack at all."
+    counterplay: "Step off the marked ground before a Fissure lands; use the Bulwark to heal and reposition."
     lore:
       - "Slow, deliberate, and impossible to push."
       - "It does not chase you. It removes where you stand."
@@ -190,7 +210,11 @@ bosses:
     difficulty: "Hard"
     arena: ashen_colosseum
     entity: VINDICATOR
+    environment: NORMAL
     scale: 1.15
+    strength: "Fast, blinks behind you, and shrugs off arrows once its veil is up."
+    weakness: "It is fragile, and the veil only resists ranged damage."
+    counterplay: "Turn into the telegraphed blink; dodge the volley; finish the last third in melee."
     lore:
       - "Never where you swung."
       - "Punishes a player who stops moving."
@@ -230,6 +254,205 @@ bosses:
         speed-bonus: 0.06
         projectile-damage-multiplier: 0.35
 
+  # ---------------------------------------------------------------- 4. the bait
+  chainbound_behemoth:
+    name: "Chainbound Behemoth"
+    icon: CHAIN
+    style: "Charging bruiser"
+    difficulty: "Very hard"
+    arena: ashen_colosseum
+    entity: RAVAGER
+    environment: NORMAL
+    scale: 1.35
+    lore:
+      - "Chained to its own momentum."
+      - "It cannot turn once it has decided where you were."
+    strength: "Armoured from the front, nearly immovable, and its charge hits like a wall."
+    weakness: "It locks its facing before it charges - a missed charge crashes and stuns it."
+    counterplay: "Fight from its flank. Stand in the lane, then step OUT and let it hit the boundary."
+    health: 3000.0
+    damage: 22.0
+    armor: 10.0
+    armor-toughness: 4.0
+    movement: 0.26
+    knockback-resistance: 0.9
+    follow-range: 64.0
+    time-limit-seconds: 420
+    entry-fee: 500000
+    cash-prize: 1000000
+    # A single blow may not remove more than this share of the pool. Generous -- no ordinary weapon comes
+    # close -- and it exists only so an enormous opening hit cannot skip the mechanics the fight is about.
+    # It announces itself in the action bar when it fires; damage never quietly disappears.
+    max-single-hit-percent: 0.12
+    available: true
+    abilities:
+      # FRONTAL. Hitting its face is the slow way to kill it, and it says so the first time you try.
+      # Suspended entirely while it is stunned, which is what makes the crash worth baiting.
+      frontal:
+        arc-degrees: 110
+        damage-multiplier: 0.3
+      # HEADLONG CHARGE. Facing is locked a full 1.5s before it moves and cannot change afterwards, so a
+      # player can deliberately stand in the lane and leave it. A miss that reaches the boundary, a solid
+      # block, or simply stops making progress is a CRASH: stunned, no frontal armour, double damage taken.
+      charge:
+        cooldown-seconds: 16
+        telegraph-ticks: 30
+        min-range: 8.0
+        max-range: 34.0
+        length: 30.0
+        speed: 1.05
+        duration-ticks: 45
+        hit-radius: 2.6
+        damage: 14.0
+        knockback: 1.4
+        probe-distance: 1.6
+        stuck-ticks: 4
+        recovery-ticks: 20
+        stun-ticks: 100
+        crash-vulnerability: 2.0
+        # A second crash cannot land straight after the first, so the stun can never chain indefinitely.
+        stun-immunity-ticks: 120
+      # CHAIN SWEEP. A low ring with two stated answers: be outside it, or be in the air. Both are drawn.
+      sweep:
+        cooldown-seconds: 13
+        telegraph-ticks: 25
+        radius: 6.0
+        safe-height: 1.6
+        damage: 9.0
+      # TRAMPLE LINE. A narrow lane, not an arena-wide blast. One step sideways is the whole answer.
+      trample:
+        cooldown-seconds: 15
+        telegraph-ticks: 25
+        length: 14.0
+        width: 1.6
+        push: 0.9
+        damage: 8.0
+
+  # ---------------------------------------------------------------- 5. the support structure
+  cinderveil_arcanist:
+    name: "Cinderveil Arcanist"
+    icon: SOUL_CAMPFIRE
+    style: "Warded caster"
+    difficulty: "Hard"
+    arena: ashen_colosseum
+    entity: EVOKER
+    environment: NORMAL
+    scale: 1.1
+    lore:
+      - "It does not defend itself. Its seals do."
+      - "Kill the structure, then the caster."
+    strength: "Three Cinder Seals soak a share of every hit it takes, and it will rebuild one."
+    weakness: "Break the seals and the protection goes with them; the Rekindle channel is interruptible."
+    counterplay: "Kill seals first. Burst the Arcanist during Rekindle to interrupt it and stagger it."
+    health: 2400.0
+    damage: 12.0
+    armor: 6.0
+    armor-toughness: 2.0
+    movement: 0.28
+    knockback-resistance: 0.5
+    follow-range: 64.0
+    time-limit-seconds: 420
+    entry-fee: 500000
+    cash-prize: 1000000
+    max-single-hit-percent: 0.12
+    available: true
+    abilities:
+      # TRIUNE WARD. Exactly three seals, ever. Each is a real attackable entity with its health on its
+      # name, and each takes a slice off the caster's incoming damage. max-reduction keeps the caster
+      # damageable at all times -- this is never an invulnerability phase.
+      ward:
+        cooldown-seconds: 30
+        telegraph-ticks: 25
+        radius: 7.0
+        seal-health: 60.0
+        reduction-per-seal: 0.18
+        max-reduction: 0.6
+      # ASHEN CIRCUIT. Live lines between the caster and each surviving seal, drawn before they energise.
+      # Thin, so everything that is not a line is a safe place to stand -- and most of the arena is.
+      circuit:
+        cooldown-seconds: 11
+        telegraph-ticks: 30
+        line-width: 1.1
+        damage: 10.0
+      # REKINDLE. A long channel to rebuild ONE seal. Deal interrupt-damage during it and the cast breaks,
+      # nothing is restored, and the caster is staggered at stagger-vulnerability for stagger-ticks.
+      rekindle:
+        cooldown-seconds: 24
+        telegraph-ticks: 25
+        channel-ticks: 80
+        interrupt-damage: 55.0
+        stagger-ticks: 70
+        stagger-vulnerability: 1.8
+
+  # ---------------------------------------------------------------- 6. the brew
+  ashglass_alchemist:
+    name: "Ashglass Alchemist"
+    icon: BREWING_STAND
+    style: "Zoning apothecary"
+    difficulty: "Very hard"
+    arena: ashen_colosseum
+    entity: WITCH
+    environment: NORMAL
+    scale: 1.25
+    lore:
+      - "It does not chase. It makes the floor expensive."
+      - "And every so often it stops to brew."
+    strength: "Splits the arena into cost zones, shrugs off hexes, and heals itself mid-fight."
+    weakness: "It is soft and completely stationary while distilling."
+    counterplay: "Keep moving between zones. Save burst for the brew - interrupting it shatters the mixture."
+    health: 2200.0
+    damage: 13.0
+    armor: 7.0
+    armor-toughness: 3.0
+    movement: 0.27
+    knockback-resistance: 0.45
+    follow-range: 64.0
+    time-limit-seconds: 420
+    entry-fee: 500000
+    cash-prize: 1000000
+    max-single-hit-percent: 0.12
+    available: true
+    abilities:
+      # VOLATILE MIXTURE. Impact areas are drawn in their own colour before anything is thrown, and each
+      # colour means one thing: orange burns, blue slows, purple weakens. Bounded by max-zones, expiring on
+      # their own clock. No thrown potion entity, no lingering cloud and no fire is ever created.
+      mixture:
+        cooldown-seconds: 12
+        telegraph-ticks: 25
+        zones-per-cast: 2
+        max-zones: 3
+        radius: 3.5
+        spread: 4.5
+        zone-duration-ticks: 120
+        tick-interval-ticks: 20
+        effect-ticks: 60
+        scorch-damage: 4.0
+        mire-amplifier: 1
+        frailty-amplifier: 0
+      # ASHGLASS DISTILLATION. It stops fighting and brews. Uninterrupted it recovers heal-percent of its
+      # pool -- a real setback, never a reset to full. Interrupted, the mixture shatters: it takes
+      # shatter-percent of its own pool, is weakened, and is staggered wide open.
+      distillation:
+        cooldown-seconds: 30
+        telegraph-ticks: 25
+        health-threshold: 0.8
+        channel-ticks: 90
+        interrupt-damage: 65.0
+        heal-percent: 0.12
+        shatter-percent: 0.06
+        shatter-weakness-ticks: 120
+        stagger-ticks: 80
+        stagger-vulnerability: 1.9
+      # UNSTABLE CATALYST. A threshold, not an enrage: it arms once and is spent on the NEXT mixture, which
+      # is larger and lasts longer. Announced when it arms and again when it lands.
+      catalyst:
+        health-threshold: 0.45
+        radius-multiplier: 1.4
+        duration-multiplier: 1.6
+      # CLEANSE. It can drink off a hex, but only this often -- crowd control stays worth using.
+      cleanse:
+        cooldown-seconds: 22
+
 # --------------------------------------------------------------------------------------------
 # REWARD TABLES
 #
@@ -265,6 +488,31 @@ rewards:
       - "GOLDEN_APPLE:2-5:0.6"
       - "EXPERIENCE_BOTTLE:16-32:0.7"
       - "ENDER_PEARL:4-8:0.5"
+
+  chainbound_behemoth:
+    rolls: 2
+    entries:
+      - "ANCIENT_DEBRIS:1-2:0.5"
+      - "IRON_BLOCK:4-8:0.9"
+      - "DIAMOND:6-12:0.9"
+      - "ENCHANTED_GOLDEN_APPLE:1-1:0.22"
+      - "EXPERIENCE_BOTTLE:20-40:0.75"
+  cinderveil_arcanist:
+    rolls: 2
+    entries:
+      - "NETHERITE_SCRAP:1-2:0.42"
+      - "LAPIS_BLOCK:3-6:0.85"
+      - "DIAMOND:6-12:0.95"
+      - "AMETHYST_SHARD:8-16:0.7"
+      - "EXPERIENCE_BOTTLE:24-44:0.8"
+  ashglass_alchemist:
+    rolls: 2
+    entries:
+      - "NETHERITE_SCRAP:1-2:0.45"
+      - "DIAMOND:6-12:0.95"
+      - "GLOWSTONE_DUST:16-32:0.8"
+      - "ENCHANTED_GOLDEN_APPLE:1-1:0.2"
+      - "EXPERIENCE_BOTTLE:20-40:0.78"
 
 # Experience granted on a victory, split across a handful of orbs so it is collectable.
 victory-experience: 600
