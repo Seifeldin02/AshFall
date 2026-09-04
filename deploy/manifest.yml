@@ -306,6 +306,25 @@ env:
 # Artifacts that exist ONLY on staging and must never be copied to production, but still have to be
 # tracked -- their absence on production is correct, while their absence on STAGING is a fault.
 staging_only:
+  - path: testing/harness/harness.ini
+    repo_relative: true
+    note: |
+      REAL-GAME TEST HARNESS ENDPOINT (added 2026-09-04). Lives in the REPOSITORY working copy, not on
+      either server, and is git-ignored on purpose: it holds the staging RCON password and a throwaway
+      test-account password. It does not travel with a clone and must never be committed or created on
+      production.
+
+      Anyone running testing/harness/run.py creates it from harness.ini.example first. There is no default
+      endpoint and no fallback -- guard.py refuses ports 25565 and 25575, the production hostnames, a blank
+      password and the real administrator account names before a socket is opened, and that refusal is not
+      configurable. Verify with `python testing/harness/test_guard.py`, which needs no server.
+
+      The test account (AshfallProbe by default) lives in the staging AuthMe database, which is also not
+      tracked. Create it on a fresh staging server with `authme register <name> <throwaway-password>`. It
+      must NOT be added to trusted-admin.accounts: scenarios needing operator grant and revoke it
+      themselves, and one asserts the account is an ordinary player first, because admin-only testing is
+      what hid the /colosseum leave bug.
+
   - path: start-staging.bat
     note: |
       Staging launcher. Same two requirements as production's start.bat: invoke disable-quickedit.ps1 before

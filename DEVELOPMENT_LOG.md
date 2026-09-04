@@ -5,6 +5,167 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-04 (part 2) - Interface overhaul, the harness becomes real, and three more money gaps
+
+Staging only. No production file, process, configuration, database or restart was touched.
+
+### The interface
+
+The presentation problem was not spread across a hundred screens — it was in two functions. Every
+player-facing line on this server goes through `CoreUtil.msg()` or `CoreUtil.error()`, about 1,350 call
+sites, so the look of the whole thing was decided in two places and both were wrong in the same way.
+
+`msg()` opened every message with the word **Ashfall**. Repeated that often it is not identity, it is
+margin noise: the relic chronicle printed it five times down the left-hand side of five consecutive lines.
+`error()` painted the entire line red, brand included, so a failure arrived as a wall of red with no shape
+and no hint of what to do instead.
+
+Captured from a real client, before and after:
+
+```
+before   §6Ashfall §8› §fBalance: $60,710,750
+         §cAshfall › Home not found. Use /home list.
+         §6Ashfall §8› §f• Warlord's Ember — osjad [Eligible]          (five times)
+         §6§lASHFALL   /   §eFactions: §f/f create, /f claim, ...
+         net $-8,000,000
+
+after    §8› §7Balance: $60,710,750
+         §c› §fHome not found. Use /home list.
+         §6Relic chronicle§8  5 relics
+         §8  · §7Warlord's Ember§8  held by §7osjad§8  Eligible        (five times)
+         §6Ashfall§8  commands   /   §8Factions §7/f create, /f claim, ...
+         net -$8,000,000
+```
+
+`UI_STYLE_GUIDE.md` is the rule set. Seven colours, each meaning exactly one thing: ember is Ashfall and
+money, white is the value you are looking for, grey is body, dark grey is labels and hints, green happened,
+yellow needs attention, red did not happen. The marker glyph is the one the old prefix already used, so it
+is known to render on both clients — no new font, no resource pack.
+
+New shapes for cases that were all being flattened into two: `ok()`, `warn()`, `error(problem, next)`,
+`heading()`, `item()`, `field()`, `hint()`. And `safe()`, because a nickname or faction tag carrying a
+section sign could recolour or hide the rest of the line it appeared in — including the part that says what
+something costs.
+
+The sidebar was five all-caps section headers in five colours (gold, purple, dark red, pink, aqua) with
+three more in the value rows. Nine colours in fifteen permanently on-screen lines meant none of them meant
+anything, and it set the tone for everything else. It is one quiet column now, and the only thing allowed
+to be ember is a live event or a world boss, because that is the only thing that is actually urgent.
+
+Applied beyond the chokepoint to the screens where the old shape was most visible: `/smphelp`, `/stats`,
+`/relics`, `/homes`, leaderboards, the Colosseum list and record, the admin economy window and the bulletin
+list. `money()` also stopped rendering a loss as `$-8,000,000`.
+
+**Not covered, and why.** The chest-GUI layouts were not restructured. Slot numbers appear in the menu
+builder, the click handler and the verifiers at once, and moving an icon without moving all three is how a
+different slot ends up performing a purchase — the risk is real and the benefit is cosmetic. Menu *items*
+inherit the palette through `CoreUtil.named`, and `gui-confirm` now guards the behaviour of the controls
+that matter. Sounds were audited rather than rewritten: two consistent vocabularies already exist
+(`marketSound` and the Colosseum's), both respect the player's sound setting, and no HUD path plays one.
+
+### The harness is repository tooling now
+
+`testing/harness/` — the client, RCON, the NBT chat decoder and five scenarios, no third-party
+dependencies, no build step.
+
+The safety rail mattered most. The endpoint is never defaulted, guessed or inherited: it comes from
+`harness.ini`, which is git-ignored, and `guard.py` refuses ports 25565 and 25575, the production
+hostnames, a blank password and the real administrator account names **before a socket is opened**. That
+refusal is not configurable, because a config file that can switch the safety off is not a safety.
+`test_guard.py` asserts all ten refusals and needs no server.
+
+The test account is an **ordinary player** by default. `colosseum-leave` asserts that before doing anything
+else, because admin-only testing is exactly what hid the bug it covers. The one scenario needing operator
+grants it around the step that needs it and revokes it in a `finally`. Cleanup removes only the worlds the
+run created.
+
+Scenarios: `charge`, `colosseum-leave`, `gui-confirm`, `voidworld-entry`, `inventory`. 38 checks, 0 failed.
+
+Two things it is **not**: Bedrock coverage (the client speaks Java protocol directly; nothing has been
+through Geyser) and a judgement of visual quality.
+
+### Three more money gaps, same shape as the entry fee
+
+An auction sale ran as five separate commits ending in an inventory write. Every gap is a state the
+database can be found in:
+
+| crash point | what is lost |
+|---|---|
+| after the debit, before the sale | buyer paid, listing still for sale |
+| after the sale, before the payout | buyer paid, seller never paid |
+| after the payout, before delivery | everyone paid, **and the item is gone** |
+
+The last is the worst because the listing row *is* the escrow — once it reads SOLD nothing holds the item,
+and an inventory write is not a commit. `Database.auctionSettle()` now does the listing, the debit, the
+seller payout, the tax and the escrow hand-off in one transaction, with a savepoint when the caller is
+already inside one. The item lands in the buyer's durable claim stash (the same one Colosseum reward
+overflow uses); moving it into their inventory afterwards is a convenience on top of a record that already
+exists.
+
+`collect()` had the plainer version: it flipped the row to COLLECTED and then called `addItem`, discarding
+the leftovers `addItem` returns — so a crash, or an inventory that filled after the fit check, destroyed
+the item with nothing noticing. `auctionReclaim()` is one commit, and what does not fit stays claimable.
+
+The selftest asserts conservation from both sides: an unaffordable purchase moves nothing and leaves the
+listing ACTIVE; a completed one debits exactly the price, pays exactly price-minus-tax, puts exactly the tax
+in the Central Bank, and owes exactly one item. Neither a sale nor a reclaim can happen twice.
+
+### Hot paths
+
+The faction border overlay ran a JOIN across `factions` and `faction_members` **twice a second per player
+with borders on**, on the main thread, inside the database lock — to redraw a decoration. Cached for three
+seconds, dropped whenever claims refresh or membership changes (all three mutation sites wired), and
+deliberately used **only for drawing**: nothing that decides whether somebody may build, open a container or
+spend faction money reads the cache. A stale border for three seconds is invisible; a stale permission is a
+bug.
+
+### World-operation pauses: measured, and deliberately not pooled
+
+Decomposed from the server's own instrumentation, six single-instance preparations:
+
+| component | mean | range | thread |
+|---|---:|---:|---|
+| total preparation | 423 ms | 384–468 | |
+| snapshot copy | 54 ms | 24–77 | worker (already off the main thread) |
+| open + sliced chunk load | 369 ms | 351–394 | main |
+
+Tick distribution across three equivalent 45-second windows (97 samples each):
+
+| window | mean | p50 | p95 | worst tick |
+|---|---:|---:|---:|---:|
+| idle | 0.77 ms | 0.70 | 1.00 | 11 ms |
+| four instances, whole cycle | 2.55 ms | 0.90 | 12.60 | 298 ms |
+| idle again | 0.89 ms | 0.80 | 1.40 | 125 ms |
+
+**p50 is essentially unchanged.** The entire cost lives in the tail: one ~300 ms hitch when a world is
+created, and the chunk load either side of it is already sliced across ticks and already spaced one world
+operation per tick from the previous pass.
+
+**A prewarmed pool was considered and rejected on these numbers.** It would have to pool by template
+revision *and* environment, reserve atomically, invalidate after a template commit, prove a complete reset
+before ever reusing a played instance, and bound loaded worlds, chunks, disk and pending preparations —
+and creating the replacement still costs the same 369 ms, just at a different moment. That is a large
+amount of new machinery, with a genuinely dangerous failure mode (a player fighting in a dirty arena), to
+move a single 300 ms hitch that lands while the player who caused it is on a loading screen. The honest
+answer is that the measurement does not justify it.
+
+### Verification
+
+* Suites: `colosseum verify` 278/0, `voidworld verify` 13/0, `selftest` 0 failed, `duelmap verify` 0
+  failed, `duelmap canary` PASSED, `hopper verify` 0 failed.
+* Harness: 5 scenarios, 38 checks, 0 failed, run as an ordinary player.
+* Guard: 10 refusals asserted, no server needed.
+
+### Still unverified
+
+* **Bedrock/Geyser.** Nothing in this session went through Geyser. The palette avoids hex-only colours and
+  the marker glyph is one the server already used, but Bedrock dims further and renders the sidebar
+  differently — the sidebar column and the confirmation screens need a human on a Bedrock client.
+* Whether the quieter sidebar reads as *informative* rather than *empty* during a live world boss.
+* GUI layouts are unchanged, so no menu needs re-acceptance — but the redesigned chat around them does.
+
+---
+
 ## Session: 2026-09-04 - Reliability pass: the charge that never moved, and four other real defects
 
 Staging only. No production file, process, configuration, database or restart was touched.
