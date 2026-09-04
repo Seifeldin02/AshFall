@@ -79,9 +79,46 @@ Write-Guard ("started; checking every {0}m. Prism warn/alarm {1}/{2} GB, free di
 #  its server had gone -- and every staging restart left another copy behind. Nineteen of them were running
 #  at once on 2026-09-04, all polling prism.db and the disk on a laptop shared with production.
 $ownerConsole = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+#  WHY NOT "IS THE CONSOLE STILL THERE".
+#
+#  It is still checked below, for the case where the console dies first. It cannot be the only check: a
+#  conhost stays alive while any process is attached to it, and this guard is attached to it. The console
+#  waits for the guards and the guards wait for the console, so a staging restart left the whole set behind
+#  -- four consoles and their supervisors were still running from boots hours apart on 2026-09-04.
+#
+#  The JVM is the thing that actually ends. Resolve the one inside THIS console's process tree and watch
+#  that. Per-server by construction, so a staging guard is never kept alive by production's server.
+function Resolve-OwnJava {
+    param([int]$console)
+    $all = Get-CimInstance Win32_Process -Filter "Name='java.exe' OR Name='cmd.exe' OR Name='conhost.exe'"
+    $stack = @($console)
+    $seen = @{}
+    while ($stack.Count -gt 0) {
+        $cur = $stack[0]
+        $stack = if ($stack.Count -gt 1) { $stack[1..($stack.Count - 1)] } else { @() }
+        if ($seen.ContainsKey($cur)) { continue }
+        $seen[$cur] = $true
+        foreach ($p in $all) {
+            if ($p.ParentProcessId -ne $cur) { continue }
+            if ($p.Name -eq 'java.exe') { return [int]$p.ProcessId }
+            $stack += [int]$p.ProcessId
+        }
+    }
+    return 0
+}
+
+$ownJava = 0
+$javaSearchUntil = (Get-Date).AddSeconds(180)
+
 
 $lastState = ''
 while ($true) {
+    #  Bind to this console's own JVM as soon as it exists, then exit with it.
+    if ($ownJava -eq 0 -and (Get-Date) -lt $javaSearchUntil) { $ownJava = Resolve-OwnJava $ownerConsole }
+    if ($ownJava -ne 0 -and -not (Get-Process -Id $ownJava -ErrorAction SilentlyContinue)) {
+        Write-Guard "the server this guard was launched for (java pid $ownJava) has exited; exiting."
+        break
+    }
     if ($ownerConsole -and -not (Get-CimInstance Win32_Process -Filter "ProcessId=$ownerConsole" -ErrorAction SilentlyContinue)) {
         Write-Guard "the console that launched this guard (pid $ownerConsole) is gone; exiting."
         break
@@ -107,5 +144,13 @@ while ($true) {
     }
     $lastState = $state
 
-    Start-Sleep -Seconds ($CheckMinutes * 60)
+    #  Sliced, so shutting down is noticed in seconds rather than at the next fifteen-minute check.
+    #  A guard that outlives its server by a quarter of an hour is what kept a restart's console
+    #  chain alive long enough to look like a permanent leak.
+    $wake = (Get-Date).AddSeconds($CheckMinutes * 60)
+    while ((Get-Date) -lt $wake) {
+        Start-Sleep -Seconds 5
+        if ($ownerConsole -and -not (Get-CimInstance Win32_Process -Filter "ProcessId=$ownerConsole" -ErrorAction SilentlyContinue)) { $wake = Get-Date }
+        elseif ($ownJava -ne 0 -and -not (Get-Process -Id $ownJava -ErrorAction SilentlyContinue)) { $wake = Get-Date }
+    }
 }

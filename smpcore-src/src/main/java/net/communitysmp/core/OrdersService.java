@@ -476,7 +476,7 @@ final class OrdersService implements Listener {
         /*  The one a player actually reaches -- /orders opens this board, not the hub. It said
          *  "0 stack(s) waiting" and looked as clickable as everything else beside it. */
         int waiting = db.stashCount(CoreUtil.id(player));
-        inv.setItem(51, waiting > 0
+        inv.setItem(ORD_CLAIM, waiting > 0
                 ? CoreUtil.Menu.action(Material.ENDER_CHEST, "Claim deliveries", List.of(
                         CoreUtil.C_TEXT + waiting + CoreUtil.C_BODY + " stack" + (waiting == 1 ? "" : "s") + " waiting for you",
                         CoreUtil.C_MUTE + "Nothing in here expires."))
@@ -756,7 +756,7 @@ final class OrdersService implements Listener {
         Inventory inv = open(player, Screen.STASH, 1, null, 0, "Claims waiting", 54);
         for (int i = 0; i < Math.min(45, stash.size()); i++) inv.setItem(i, stash.get(i));
         for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
-        inv.setItem(45, CoreUtil.Menu.back("Back to the order board."));
+        inv.setItem(ORD_BACK, CoreUtil.Menu.back("Back to the order board."));
         /*  Collection can legitimately deliver only part of what is owed now -- a full inventory keeps the
          *  rest of the claim rather than dropping it on the floor -- so the button says what will happen
          *  and the screen has something to say when there is nothing left. */
@@ -765,9 +765,9 @@ final class OrdersService implements Listener {
                     "Auction purchases, expired listings and rewards that",
                     "would not fit at the time all end up here.",
                     CoreUtil.C_MUTE + "Nothing in here expires or is lost on a restart.")));
-            inv.setItem(49, CoreUtil.Menu.blocked(Material.HOPPER, "Collect", "there is nothing to collect.", List.of()));
+            inv.setItem(ORD_MINE, CoreUtil.Menu.blocked(Material.HOPPER, "Collect", "there is nothing to collect.", List.of()));
         } else {
-            inv.setItem(49, CoreUtil.Menu.action(Material.HOPPER, "Collect everything", List.of(
+            inv.setItem(ORD_MINE, CoreUtil.Menu.action(Material.HOPPER, "Collect everything", List.of(
                     CoreUtil.C_TEXT + stash.size() + CoreUtil.C_BODY + " stack" + (stash.size() == 1 ? "" : "s"),
                     CoreUtil.C_MUTE + "Whatever will not fit stays here.")));
         }
@@ -820,12 +820,12 @@ final class OrdersService implements Listener {
         switch (holder.screen) {
             case PUBLIC -> {
                 switch (slot) {
-                    case 45 -> { askSearch(player, holder); return; }
-                    case 47 -> { openPick(player, 1, null); return; }
-                    case 49 -> { openMine(player, 1); return; }
-                    case 51 -> { openStash(player); return; }
-                    case 46 -> { openPublic(player, Math.max(1, holder.page - 1), holder.search); return; }
-                    case 52 -> { openPublic(player, holder.page + 1, holder.search); return; }
+                    case ORD_SEARCH -> { askSearch(player, holder); return; }
+                    case ORD_CREATE -> { openPick(player, 1, null); return; }
+                    case ORD_MINE -> { openMine(player, 1); return; }
+                    case ORD_CLAIM -> { openStash(player); return; }
+                    case ORD_PREV -> { openPublic(player, Math.max(1, holder.page - 1), holder.search); return; }
+                    case ORD_NEXT -> { openPublic(player, holder.page + 1, holder.search); return; }
                     default -> { }
                 }
             }
@@ -848,13 +848,13 @@ final class OrdersService implements Listener {
             }
             case ENCHANT -> { handleEnchantClick(player, event, slot); return; }
             case STASH -> {
-                if (slot == 45) { openPublic(player); return; }
-                if (slot == 49) { collect(player); return; }
+                if (slot == ORD_BACK) { openPublic(player); return; }
+                if (slot == ORD_MINE) { collect(player); return; }
             }
             case MINE, HISTORY -> {
-                if (slot == 45) { openPublic(player); return; }
-                if (slot == 46) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
-                if (slot == 52) { reopen(player, holder, holder.page + 1); return; }
+                if (slot == ORD_BACK) { openPublic(player); return; }
+                if (slot == ORD_PREV) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
+                if (slot == ORD_NEXT) { reopen(player, holder, holder.page + 1); return; }
             }
             default -> { }
         }
@@ -944,6 +944,16 @@ final class OrdersService implements Listener {
     private int parsePositive(String text, int fallback) {
         try { return Integer.parseInt(text.trim().replace(",", "")); } catch (NumberFormatException error) { return fallback; }
     }
+
+    /*  THE ORDERS FOOTER, by name.
+     *
+     *  Orders uses its own bottom row -- Back at 45, paging at 46 and 52, the claim button at 51 -- rather
+     *  than the 45/49/53 the marketplace family uses. It is internally consistent across all six of its
+     *  screens and its stash screen needs 49 for Collect, so it is named where it is rather than moved:
+     *  half-migrating a footer is how a Back button ends up cancelling an order. The divergence is recorded
+     *  in UI_STYLE_GUIDE.md. */
+    private static final int ORD_BACK = 45, ORD_PREV = 46, ORD_SEARCH = 45, ORD_CREATE = 47,
+            ORD_MINE = 49, ORD_CLAIM = 51, ORD_NEXT = 52;
 
     private void confirm(Player player, Draft draft) {
         double total = draft.amount * draft.unit;

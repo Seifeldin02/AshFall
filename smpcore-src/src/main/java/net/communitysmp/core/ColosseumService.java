@@ -1240,8 +1240,10 @@ final class ColosseumService implements Listener {
             lore.add("§aWeakness: §f" + def.weakness());
             lore.add("§bCounterplay: §f" + def.counterplay());
             lore.add("");
-            lore.add("§7Entry fee: §c" + CoreUtil.money(def.entryFee()));
-            lore.add("§7Victory prize: §a" + CoreUtil.money(def.cashPrize()) + " §7(net §a" + CoreUtil.money(def.cashPrize() - def.entryFee()) + "§7)");
+            lore.add(CoreUtil.C_BODY + "Entry fee " + CoreUtil.C_BAD + CoreUtil.money(def.entryFee())
+                    + CoreUtil.C_MUTE + "   kept whether you win or lose");
+            lore.add(CoreUtil.C_BODY + "Win and you take " + CoreUtil.C_GOOD + CoreUtil.money(def.cashPrize())
+                    + CoreUtil.C_BODY + ", net " + CoreUtil.C_GOOD + CoreUtil.money(def.cashPrize() - def.entryFee()));
             int shards = shardReward(def);
             if (shards > 0) lore.add("§7Shards on a win: §d" + shards + " §7(shared daily limit — §f" + shardsLeft + "§7 left today)");
             lore.add("§7Reward table (§f" + String.format("%.1f", bosses.expectedRewardStacks(def.key())) + " stacks expected§7):");
@@ -1258,8 +1260,9 @@ final class ColosseumService implements Listener {
             lore.add("§8Resets " + resetsIn());
             lore.add("");
             String no = refusal(player, def, false);
-            lore.add(no == null ? "§aClick to challenge — you will be asked to confirm." : "§cUnavailable: " + no);
-            inv.setItem(slots[i], icon(def.icon(), (no == null ? "§c" : "§8") + def.name(), lore));
+            lore.add(no == null ? CoreUtil.C_GOOD + "Click to challenge. You will be asked to confirm first."
+                    : CoreUtil.C_BAD + "Unavailable " + CoreUtil.C_BODY + no);
+            inv.setItem(slots[i], icon(def.icon(), (no == null ? CoreUtil.C_EMBER : CoreUtil.C_MUTE) + def.name(), lore));
         }
         inv.setItem(49, icon(Material.BOOK, "§6How the Colosseum works", List.of(
                 "§7One player, one boss, one disposable arena.",
