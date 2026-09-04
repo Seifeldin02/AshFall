@@ -235,7 +235,20 @@ if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason
         Player player=e.getPlayer();if(plugin.isAdmin(player)||commandExempt(e.getMessage()))return;long now=System.currentTimeMillis(),minimum=Math.max(250,plugin.getConfig().getLong("rate-limits.commands.minimum-interval-ms",500)),last=lastCommands.getOrDefault(player.getUniqueId(),0L);if(now-last>=minimum){lastCommands.put(player.getUniqueId(),now);return;}e.setCancelled(true);
         Deque<Long> violations=commandViolations.computeIfAbsent(player.getUniqueId(),key->new ArrayDeque<>());synchronized(violations){while(!violations.isEmpty()&&now-violations.peekFirst()>5000)violations.removeFirst();violations.addLast(now);if(violations.size()==3)CoreUtil.error(player,"Commands are being sent too quickly.");}
     }
-    private boolean commandExempt(String raw){String lower=raw.toLowerCase(Locale.ROOT).trim();String root=lower.split("\\s+")[0];return Set.of("/login","/l","/register","/reg","/email","/captcha","/2fa","/authme","/tpaccept","/tpdeny","/settings","/shop").contains(root)||lower.matches(".*\\s(confirm|cancel)$");}
+    /*  Commands whose REPEAT is the confirmation.
+     *
+     *  /colosseum leave prints "Run /colosseum leave again within 10 seconds to give it up" and then the
+     *  duplicate-command guard cancelled the repeat with "You just ran that - wait a moment", because a
+     *  command sent twice on purpose looks exactly like a double-tap. So the one command that asks to be
+     *  run twice was the one command that could not be -- and it is the way out of a paid encounter, which
+     *  is the worst possible place to tell somebody to wait. Admins never saw it: they skip the guard.
+     *
+     *  Confirm-by-click screens are already covered by the "confirm"/"cancel" suffix rule below; this list
+     *  is only for confirm-by-repeat, and it should stay short for the same reason the guard exists. */
+    static final Set<String> CONFIRM_BY_REPEAT=Set.of("/colosseum leave");
+    private boolean commandExempt(String raw){return exemptCommand(raw);}
+    /** Package-visible so the Colosseum verifier can assert the exemption rather than trust it. */
+    static boolean exemptCommand(String raw){String lower=raw.toLowerCase(Locale.ROOT).trim();String root=lower.split("\\s+")[0];return Set.of("/login","/l","/register","/reg","/email","/captcha","/2fa","/authme","/tpaccept","/tpdeny","/settings","/shop").contains(root)||lower.matches(".*\\s(confirm|cancel)$")||CONFIRM_BY_REPEAT.contains(lower);}
     @EventHandler(priority=EventPriority.HIGHEST) public void restrictedCommand(PlayerCommandPreprocessEvent e){
         String root=e.getMessage().substring(1).split("\\s+")[0].toLowerCase(Locale.ROOT);
         if(Set.of("gamemode","minecraft:gamemode").contains(root)){if(!plugin.isAdmin(e.getPlayer())){e.setCancelled(true);CoreUtil.error(e.getPlayer(),"That command is console-only.");}return;}

@@ -57,6 +57,7 @@ final class ColosseumVerify {
         verifyRewardParity();
         verifyShardRewards();
         verifyMechanics();
+        verifyPlayerPaths();
         verifyInterruptionRecovery();
         /** The world half runs asynchronously and reports as it completes. */
         verifyInstances();
@@ -325,6 +326,47 @@ final class ColosseumVerify {
      *  and a promise is a number. These call the real mechanics with a real boss in a real instance and
      *  check the numbers at their exact boundaries, because "it felt right in a fight" is not a regression
      *  test and a live fight cannot be asked to produce a stun on cue. */
+    /*  Two things the encounter depends on that live outside it.
+     *
+     *  Both were found by playing the game rather than by reading it, and neither is visible from inside
+     *  ColosseumService, which is exactly why they are asserted here. */
+    private void verifyPlayerPaths() {
+        say("");
+        say("== the ways a player actually reaches and leaves an encounter");
+
+        /*  /colosseum leave is confirm-by-repeat: it prints "run it again within 10 seconds". The
+         *  duplicate-command guard cancels a command repeated inside its window, which made the only way
+         *  out of a paid fight answer "You just ran that - wait a moment". Reproduced live, twice, before
+         *  it was believed. */
+        check("the duplicate-command guard exempts /colosseum leave, whose repeat IS the confirmation",
+                GameplayListener.exemptCommand("/colosseum leave"));
+        check("...including with odd spacing and casing, the way somebody actually types it",
+                GameplayListener.exemptCommand("  /Colosseum   leave  ".replaceAll("\\s+", " ").trim()));
+        check("but the guard still applies to ordinary Colosseum commands",
+                !GameplayListener.exemptCommand("/colosseum stats") && !GameplayListener.exemptCommand("/colosseum"));
+        check("and to everything else it was written for",
+                !GameplayListener.exemptCommand("/rtp") && !GameplayListener.exemptCommand("/home"));
+        check("confirm-by-click screens keep their own exemption",
+                GameplayListener.exemptCommand("/ah sell 100 confirm") && GameplayListener.exemptCommand("/buyhome confirm"));
+
+        /*  A boss that fights in a Nether instance clones a snapshot built in an Overworld world, and an
+         *  Overworld chunk does not fit a Nether world: 24 block sections against 16. Paper drops the light
+         *  data with a stack trace per chunk and re-lights the lot. */
+        for (ColosseumBosses.BossDef def : colosseum.bosses().all()) {
+            if (def.environment() == World.Environment.NORMAL) continue;
+            ColosseumArenas.Arena arena = colosseum.arenas().arena(def.arena());
+            if (arena == null) { fail(def.key() + " names an arena that does not exist"); continue; }
+            check(def.key() + " fights in " + def.environment() + " and has a snapshot shaped for it "
+                            + "(otherwise every chunk of every instance is re-lit on load)",
+                    colosseum.arenas().snapshotOf(arena, def.environment()) != null
+                            && !colosseum.arenas().snapshotOf(arena, def.environment())
+                            .equals(colosseum.arenas().snapshotOf(arena)));
+        }
+        check("an Overworld boss still clones the committed snapshot itself, with nothing derived",
+                colosseum.arenas().snapshotOf(colosseum.arenas().arenas().iterator().next(), World.Environment.NORMAL)
+                        .equals(colosseum.arenas().snapshotOf(colosseum.arenas().arenas().iterator().next())));
+    }
+
     private void verifyMechanics() {
         say("");
         say("== boss mechanics: telegraphs, thresholds and lethality ceilings");

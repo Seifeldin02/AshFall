@@ -145,6 +145,88 @@ final class ColosseumArenas {
     File snapshotOf(Arena arena) { return new File(snapshotRoot(), arena.key()); }
     boolean hasSnapshot(Arena arena) { return arena != null && regionFiles(snapshotOf(arena)).length > 0; }
 
+    /*  ---------------------------------------------------------------------------------------------------
+     *  ONE SNAPSHOT PER ENVIRONMENT, because a chunk is not shaped the same in both.
+     *
+     *  The committed snapshot is built in a NORMAL world, which is 24 block sections tall. A Nether world is
+     *  16. Cloning the Overworld snapshot straight into a Nether instance therefore hands Paper chunks whose
+     *  light arrays are longer than the world can hold, and it says so -- "Failed to parse light data",
+     *  ArrayIndexOutOfBounds, once per chunk, 84 chunks per instance, roughly 1,300 log lines and a full
+     *  re-light every time somebody fought the one boss that uses a Nether arena. Measured on staging: 615
+     *  ms to prepare that instance against ~360 ms for an Overworld one.
+     *
+     *  So a Nether arena gets its own snapshot, converted ONCE from the committed one by opening it as a
+     *  Nether world, letting the engine re-light it that single time, and saving the result. Every instance
+     *  after that clones chunks that already fit. The committed snapshot is never modified, and committing a
+     *  new one drops the derived copies so they cannot go stale. */
+    File snapshotOf(Arena arena, World.Environment environment) {
+        if (arena == null) return null;
+        if (environment == null || environment == World.Environment.NORMAL) return snapshotOf(arena);
+        return new File(snapshotRoot(), arena.key() + "__" + environment.name().toLowerCase(Locale.ROOT));
+    }
+
+    private boolean hasSnapshot(Arena arena, World.Environment environment) {
+        File folder = snapshotOf(arena, environment);
+        return folder != null && regionFiles(folder).length > 0;
+    }
+
+    /** Builds the environment-specific snapshot if it is not there yet. Main thread, once per arena per
+     *  environment, and never again unless the arena is re-committed. Returns the folder to clone from --
+     *  the committed one if conversion was not needed or could not be done, which is always safe: the worst
+     *  case is the behaviour this exists to improve on. */
+    synchronized File snapshotForCloning(Arena arena, World.Environment environment) {
+        File direct = snapshotOf(arena, environment);
+        if (environment == null || environment == World.Environment.NORMAL || direct == null) return snapshotOf(arena);
+        if (hasSnapshot(arena, environment)) return direct;
+        String working = "colo_conv_" + arena.key() + "_" + environment.name().toLowerCase(Locale.ROOT);
+        File workingFolder = new File(worldDir(), working);
+        plugin.getLogger().info("[colosseum] converting the " + arena.key() + " snapshot for " + environment
+                + " (once; the light-data warnings below are the conversion and will not repeat).");
+        try {
+            fs().deleteQuietly(workingFolder);
+            fs().copyWorldFolder(snapshotOf(arena).toPath(), workingFolder.toPath());
+            DuelMapService.stripIdentity(workingFolder);
+            World world = open(working, environment);
+            if (world == null) { fs().deleteQuietly(workingFolder); return snapshotOf(arena); }
+            applyWorldRules(world, false);
+            loadPlayArea(world, arena);
+            world.save();
+            if (!Bukkit.unloadWorld(world, true)) {
+                plugin.getLogger().warning("[colosseum] conversion world " + working + " would not unload; using the committed snapshot.");
+                return snapshotOf(arena);
+            }
+            File tmp = new File(snapshotRoot(), direct.getName() + ".tmp");
+            fs().deleteQuietly(tmp);
+            fs().copyWorldFolder(workingFolder.toPath(), tmp.toPath());
+            String bad = validateSnapshot(tmp, arena);
+            if (bad != null) throw new IOException(bad);
+            fs().deleteQuietly(direct);
+            if (!tmp.renameTo(direct)) throw new IOException("the converted snapshot could not be published");
+            plugin.getLogger().info("[colosseum] " + environment + " snapshot for " + arena.key() + " is ready; "
+                    + "instances of it will no longer re-light on load.");
+            return direct;
+        } catch (IOException | RuntimeException error) {
+            plugin.getLogger().warning("[colosseum] " + environment + " conversion failed for " + arena.key()
+                    + " (" + error + "); falling back to the committed snapshot.");
+            fs().deleteQuietly(direct);
+            return snapshotOf(arena);
+        } finally {
+            fs().deleteQuietly(workingFolder);
+        }
+    }
+
+    /** Derived snapshots are caches of a particular commit, so a new commit invalidates them. */
+    private void dropDerivedSnapshots(Arena arena) {
+        for (World.Environment environment : World.Environment.values()) {
+            if (environment == World.Environment.NORMAL) continue;
+            File derived = snapshotOf(arena, environment);
+            if (derived != null && derived.exists()) {
+                fs().deleteQuietly(derived);
+                plugin.getLogger().info("[colosseum] dropped the stale " + environment + " snapshot for " + arena.key() + ".");
+            }
+        }
+    }
+
     private static File[] regionFiles(File worldFolder) {
         File[] files = new File(worldFolder, "region").listFiles((d, n) -> n.endsWith(".mca") && new File(d, n).length() > 0);
         return files == null ? new File[0] : files;
@@ -346,6 +428,7 @@ final class ColosseumArenas {
                 throw new IOException("the new snapshot could not be published");
             }
             fs().deleteQuietly(parked);
+            dropDerivedSnapshots(arena);
             result = "Committed " + arena.name() + " (" + describeSnapshot(arena) + "). Future encounters use it; running encounters keep the copy they started with.";
             plugin.getLogger().info("[colosseum] committed snapshot for " + arena.key() + " -> " + live.getAbsolutePath());
         } catch (IOException e) {
@@ -393,9 +476,12 @@ final class ColosseumArenas {
         String name = INSTANCE_PREFIX + arena.key() + "_" + System.currentTimeMillis() + "_" + counter.incrementAndGet();
         File dir = worldDir();
         File target = new File(dir, name);
+        /** Resolved on the main thread, before the copy, because the first Nether instance of an arena has a
+         *  world to convert and that is not something to be doing from a worker. */
+        File source = snapshotForCloning(arena, environment);
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             boolean copied;
-            try { fs().deleteQuietly(target); fs().copyWorldFolder(snapshotOf(arena).toPath(), target.toPath()); copied = true; }
+            try { fs().deleteQuietly(target); fs().copyWorldFolder(source.toPath(), target.toPath()); copied = true; }
             catch (IOException e) { plugin.getLogger().warning("[colosseum] clone failed for " + arena.key() + ": " + e.getMessage()); copied = false; }
             long copiedAt = System.currentTimeMillis();
             boolean ok = copied;
