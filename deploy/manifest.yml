@@ -214,6 +214,12 @@ sync:
       instance is harmless, but the next production restart will start accumulating them, so promote
       config-templates/storage-guard.ps1 with the next production restart window.
 
+      2026-09-05: also sliced its fifteen-minute sleep into five-second checks, and both guards now
+      exit with the java process inside their OWN console's tree rather than with the console itself.
+      A conhost stays alive while anything is attached to it, so console-and-guards were each waiting
+      for the other and a restart left the whole set behind. See deploy/PROMOTION_CHECKLIST.md, which
+      covers promoting both scripts and rolling them back independently of the jar.
+
       Checks plugins/prism/prism.db and free disk every 15 minutes; logs to logs/storage-guard.log and warns
       in-game over RCON on a CHANGE of state. Warn/alarm: Prism 2/5 GB, free disk 40/20 GB. The 2 GB warning
       is ~10x the measured post-filter steady state (~0.22 GB over a 7-day window). Launched by the
