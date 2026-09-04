@@ -508,12 +508,12 @@ final class RelicService implements Listener {
     void list(Player p){
         List<Database.RelicLifecycleRow> rows=db.relicLifecycles();
         if(rows.isEmpty()){CoreUtil.msg(p,"No relics have entered the chronicle yet.");return;}
-        CoreUtil.msg(p,"Relic chronicle:");
+        CoreUtil.heading(p,"Relic chronicle",rows.size()+" relic"+(rows.size()==1?"":"s"));
         long now=System.currentTimeMillis();
         for(Database.RelicLifecycleRow row:rows){
             String suffix="";
             if("LOST".equals(row.status())&&row.eligibleAt()>0)suffix=" — resurfaces in "+formatRemaining(row.eligibleAt()-now);
-            CoreUtil.msg(p,"• "+displayName(row.key())+" — "+plugin.nicknames().displayName(row.ownerName())+" ["+CoreUtil.pretty(row.status())+"]"+suffix);
+            CoreUtil.item(p,displayName(row.key())+CoreUtil.C_MUTE+"  held by "+CoreUtil.C_BODY+CoreUtil.safe(plugin.nicknames().displayName(row.ownerName()))+CoreUtil.C_MUTE+"  "+CoreUtil.pretty(row.status())+suffix);
         }
     }
     private String formatRemaining(long millis){

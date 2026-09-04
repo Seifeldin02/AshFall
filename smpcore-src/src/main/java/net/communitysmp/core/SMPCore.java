@@ -436,11 +436,29 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String column=switch(type){case"bosses"->"boss_kills";case"kills"->"player_kills";case"deaths"->"deaths";case"mobs"->"mob_kills";case"events"->"event_wins";case"playtime"->"play_seconds";default->"balance";};
         List<Database.StatsRow> rows=db.topStats(column,size,from);
         if(rows.isEmpty()){CoreUtil.msg(p,"No entries on this page.");return;}
-        int i=from+1;for(Database.StatsRow row:rows){String value=switch(column){case"balance"->CoreUtil.money(row.balance());case"play_seconds"->row.playSeconds()/3600+"h "+row.playSeconds()%3600/60+"m";case"player_kills"->row.playerKills()+" kills";case"deaths"->row.deaths()+" deaths";case"mob_kills"->row.mobKills()+" mobs";case"boss_kills"->row.bossKills()+" bosses";default->row.eventWins()+" wins";};CoreUtil.msg(p,(i++)+". "+nicknames.displayName(row.name())+" — "+value);}
+        int i=from+1;for(Database.StatsRow row:rows){String value=switch(column){case"balance"->CoreUtil.money(row.balance());case"play_seconds"->row.playSeconds()/3600+"h "+row.playSeconds()%3600/60+"m";case"player_kills"->row.playerKills()+" kills";case"deaths"->row.deaths()+" deaths";case"mob_kills"->row.mobKills()+" mobs";case"boss_kills"->row.bossKills()+" bosses";default->row.eventWins()+" wins";};CoreUtil.item(p,(i++)+". "+CoreUtil.safe(nicknames.displayName(row.name()))+"  "+CoreUtil.C_TEXT+value);}
     }
 
     void giveGuide(Player p){guides.giveBoth(p);}
-    private void playerHelp(Player p){p.sendMessage("§6§lASHFALL");p.sendMessage("§eFactions: §f/f create, /f claim, /f relations, /f expand, /f <player>");p.sendMessage("§eEconomy: §f/balance, /pay, /bounty, /bounties");p.sendMessage("§eMarketplace: §f/shop, /ah, /luxuryshop, /shardshop, /orders, /myorders");p.sendMessage("§eTravel: §f/home, /tpa, /spawn, /rtp, /rtp queue");p.sendMessage("§eSocial: §f/msg, /r, /trade, /feedback");p.sendMessage("§eCombat: §f/duel, /colosseum");p.sendMessage("§eMore: §f/settings, /events, /progress, /stats, /graves, /enderchest, /guide, /afk");}
+    /*  The command index.
+     *
+     *  Was a bold all-caps banner over seven yellow labels. Yellow is the server's "pay attention" colour
+     *  and this screen is a reference -- every line shouting is every line being ignored. Ember heading,
+     *  receding labels, commands in white where the eye actually needs to land. */
+    private void playerHelp(Player p){
+        CoreUtil.heading(p,"Ashfall","commands");
+        helpRow(p,"Factions","/f create, /f claim, /f relations, /f expand, /f <player>");
+        helpRow(p,"Economy","/balance, /pay, /bounty, /bounties");
+        helpRow(p,"Marketplace","/shop, /ah, /luxuryshop, /shardshop, /orders");
+        helpRow(p,"Travel","/home, /tpa, /spawn, /rtp");
+        helpRow(p,"Social","/msg, /r, /trade, /feedback");
+        helpRow(p,"Combat","/duel, /colosseum");
+        helpRow(p,"More","/settings, /events, /progress, /stats, /graves, /enderchest, /guide, /afk");
+        CoreUtil.hint(p,"/guide walks through any of these in detail.");
+    }
+    private void helpRow(Player p,String label,String commands){
+        p.sendMessage("  §8"+label+" §7"+commands);
+    }
 
     private boolean admin(CommandSender sender,String[] args){
         if(sender instanceof Player p&&!isAdmin(p)){CoreUtil.error(sender,"Only the configured ADMIN account can use SMPCore administration.");return true;}
@@ -1243,7 +1261,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         List<Database.HomeRow> homes=db.homes(target.id(),"PERSONAL");
         if(homes.isEmpty()){CoreUtil.msg(s,target.name()+" has no personal homes set.");return;}
         CoreUtil.msg(s,target.name()+"'s homes:");
-        for(Database.HomeRow home:homes){Location l=home.location();String where=l.getWorld()==null?"unknown world":l.getWorld().getName()+" "+l.getBlockX()+", "+l.getBlockY()+", "+l.getBlockZ();CoreUtil.msg(s,"• "+home.name()+" — "+where);}
+        for(Database.HomeRow home:homes){Location l=home.location();String where=l.getWorld()==null?"unknown world":l.getWorld().getName()+" "+l.getBlockX()+", "+l.getBlockY()+", "+l.getBlockZ();CoreUtil.item(s,CoreUtil.safe(home.name())+"  "+CoreUtil.C_MUTE+where);}
     }
     private void adminFactionInfo(CommandSender s,String[] args){
         if(args.length<2){CoreUtil.error(s,"Usage: /ashfall factioninfo <player>");return;}

@@ -20,13 +20,44 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class CoreUtil {
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE ASHFALL MESSAGE VOCABULARY
+     *
+     *  Every player-facing line on this server passes through msg() or error() -- about 1,350 call sites --
+     *  so the look of the whole server is decided here rather than in any of them. See UI_STYLE_GUIDE.md
+     *  for the rules; the short version:
+     *
+     *    A marker, not a brand.   Every message used to open with the word "Ashfall". Repeated 1,350 times
+     *                             that stops being identity and becomes margin noise -- the relic list
+     *                             printed it five times down the left-hand side. One coloured mark says the
+     *                             same thing in one character, and its colour is what tells you whether to
+     *                             care.
+     *
+     *    Colour means one thing.  Grey is body. White is a value worth reading. Ember is Ashfall and money.
+     *                             Green happened, yellow needs attention, red did not happen. Nothing else.
+     *
+     *    Errors are not red walls. error() used to paint the whole line red, brand included. Red is for the
+     *                             mark; the sentence stays readable, and the way out of the problem goes
+     *                             quietly underneath it.
+     *
+     *  The marker glyph is the one the old prefix already used, so it is known to render on both clients.
+     *  No new font, no resource pack, nothing exotic. */
+    static final String MARK = "›";
+    static final String DOT = "\u00b7";
+    /** Ember: the one brand colour. Headings, money, the sidebar title. */
+    static final net.kyori.adventure.text.format.TextColor EMBER = net.kyori.adventure.text.format.TextColor.color(0xE0A24B);
+    static final String C_EMBER = "§6", C_TEXT = "§f", C_BODY = "§7", C_MUTE = "§8";
+    static final String C_GOOD = "§a", C_WARN = "§e", C_BAD = "§c";
+
     static final Component PREFIX = Component.text("Ashfall ", NamedTextColor.GOLD).append(Component.text("› ",NamedTextColor.DARK_GRAY));
     private static final DecimalFormat MONEY = new DecimalFormat("#,##0.##");
     private CoreUtil() {}
     static String id(String name){return name.toLowerCase(Locale.ROOT);}
     static String id(Player p){return id(p.getName());}
-    static String money(double amount){return "$"+MONEY.format(amount);}
-    static String compactMoney(double amount){return "$"+compact(amount);}
+    /** The sign goes in front of the symbol. "$-8,000,000" is not how anybody writes a loss, and the
+     *  Colosseum totals line printed exactly that. */
+    static String money(double amount){return (amount<0?"-$":"$")+MONEY.format(Math.abs(amount));}
+    static String compactMoney(double amount){return (amount<0?"-$":"$")+compact(Math.abs(amount));}
     /** The one compact-number formatter. Everything that abbreviates a number goes through this, so
      *  billions read as b and millions as m everywhere at once rather than per screen -- the leaderboards
      *  used to say "bil" and the scoreboard "B" for the same value. */
@@ -36,8 +67,42 @@ final class CoreUtil {
         String pattern=absolute>=100?"0":absolute>=10?"0.#":"0.##";
         return new DecimalFormat(pattern).format(value)+suffixes[suffix];
     }
-    static void msg(CommandSender sender,String text){sender.sendMessage(ChatColor.GOLD+"Ashfall "+ChatColor.DARK_GRAY+"› "+ChatColor.RESET+text);}
-    static void error(CommandSender sender,String text){sender.sendMessage(ChatColor.RED+"Ashfall › "+text);}
+    /** Neutral information -- the overwhelming majority of what the server says. */
+    static void msg(CommandSender sender,String text){sender.sendMessage(C_MUTE+MARK+" "+C_BODY+text);}
+    /** It worked, and something moved because of it. */
+    static void ok(CommandSender sender,String text){sender.sendMessage(C_GOOD+MARK+" "+C_TEXT+text);}
+    /** Worth noticing before it becomes a problem: a cost, a countdown, a limit being approached. */
+    static void warn(CommandSender sender,String text){sender.sendMessage(C_WARN+MARK+" "+C_TEXT+text);}
+    /** It did not happen, and this is why. */
+    static void error(CommandSender sender,String text){sender.sendMessage(C_BAD+MARK+" "+C_TEXT+text);}
+    /** The same, with the way out underneath it. */
+    static void error(CommandSender sender,String problem,String next){
+        sender.sendMessage(C_BAD+MARK+" "+C_TEXT+problem);
+        if(next!=null&&!next.isBlank())sender.sendMessage("  "+C_MUTE+next);
+    }
+    /** Opens a block of related lines -- one heading, then items, instead of a prefix down the margin. */
+    static void heading(CommandSender sender,String title){sender.sendMessage(C_EMBER+title);}
+    static void heading(CommandSender sender,String title,String detail){
+        sender.sendMessage(C_EMBER+title+(detail==null||detail.isBlank()?"":C_MUTE+"  "+detail));
+    }
+    /** A line inside a heading's block. */
+    static void item(CommandSender sender,String text){sender.sendMessage("  "+C_MUTE+DOT+" "+C_BODY+text);}
+    /** A labelled value: the label recedes, the value does not. */
+    static void field(CommandSender sender,String label,String value){
+        sender.sendMessage("  "+C_BODY+label+" "+C_TEXT+value);
+    }
+    /** A quiet line under something else: how to continue, or what a number means. */
+    static void hint(CommandSender sender,String text){sender.sendMessage("  "+C_MUTE+text);}
+
+    /*  Untrusted text on its way into a message.
+     *
+     *  Nicknames, faction names and tags, listing titles and anything else a player chose are data, not
+     *  formatting. A name carrying a section sign would otherwise recolour or hide the rest of the line it
+     *  appears in -- including the part that says what something costs. */
+    static String safe(String text){
+        if(text==null)return "";
+        return text.replace('§','?');
+    }
     static boolean finitePositive(double d){return Double.isFinite(d)&&d>0;}
     private static final Pattern MONEY_INPUT=Pattern.compile("^\\$?([0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(k|m|mil|b)?$",Pattern.CASE_INSENSITIVE);
     private static final BigDecimal MAX_MONEY_INPUT=new BigDecimal("1000000000000000");

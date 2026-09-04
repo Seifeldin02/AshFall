@@ -50,26 +50,42 @@ final class UIService {
         Database.BountyRow top=state.top();
         NetWorthService.Row strongest=state.strongest();
         List<String> lines=new ArrayList<>();
-        lines.add("§6TOP BOUNTY");
-        lines.add(top==null?"§8None active":"§f"+trim(top.targetName(),10)+" §c"+CoreUtil.compactMoney(top.amount()));
-        if(events.active()){
-            lines.add("§5ACTIVE EVENT");
-            lines.add("§f"+trim(state.activeName(),16));
-            lines.add("§8"+state.activeTime());
+        /*  ONE COLUMN, NOT A COLOUR CHART.
+         *
+         *  This used to be five all-caps section headers in five different colours -- gold, purple, dark
+         *  red, pink, aqua -- stacked on top of each other, with the three value rows underneath in three
+         *  more. Nine colours in fifteen lines means none of them meant anything, and the sidebar is on
+         *  screen permanently, so it set the tone for everything else.
+         *
+         *  Now: labels recede in grey, values are white, and the ONE thing that is genuinely urgent -- a
+         *  live event or a world boss -- is the only thing allowed to be ember. Sections are separated by
+         *  blank rows rather than by shouting. */
+        lines.add(row(""));
+        lines.add("§7Balance  §f"+CoreUtil.compactMoney(row.balance()));
+        lines.add("§7Shards   §f"+plugin.shards().balance(player));
+        double ownBounty=state.bounties().getOrDefault(CoreUtil.id(player),0d);
+        if(ownBounty>0)lines.add("§7Bounty   §c"+CoreUtil.compactMoney(ownBounty));
+
+        if(events.active()||events.worldBossActive()){
+            lines.add(row(" "));
+            if(events.worldBossActive()){
+                lines.add("§6World boss");
+                lines.add("§f"+trim(events.worldBossLine(),16));
+                lines.add("§8"+events.activeEventCountdown()+" left");
+            }else{
+                lines.add("§6Event");
+                lines.add("§f"+trim(state.activeName(),16));
+                lines.add("§8"+state.activeTime());
+            }
         }
-        if(events.worldBossActive()){
-            lines.add("§4WORLD BOSS");
-            lines.add("§f"+trim(events.worldBossLine(),16));
-            lines.add("§8Despawns in "+events.activeEventCountdown());
-        }
-        lines.add("§dNEXT EVENT");
-        lines.add("§f"+trim(state.nextName(),16));
-        if(!state.nextTime().isBlank())lines.add("§8"+state.nextTime());
-        lines.add("§bTOP FACTION");
-        lines.add(strongest==null?"§8None yet":"§f"+trim(strongest.name(),10)+" §b"+CoreUtil.compactMoney(strongest.value()));
-        lines.add("§cShards §f"+plugin.shards().balance(player));
-        lines.add("§7Bounty §c"+CoreUtil.compactMoney(state.bounties().getOrDefault(CoreUtil.id(player),0d)));
-        lines.add("§aBalance §f"+CoreUtil.compactMoney(row.balance()));
+
+        lines.add(row("  "));
+        lines.add("§8Next event");
+        lines.add("§7"+trim(state.nextName(),16)+(state.nextTime().isBlank()?"":"§8  "+state.nextTime()));
+        lines.add("§8Top bounty");
+        lines.add(top==null?"§8none":"§7"+trim(CoreUtil.safe(top.targetName()),10)+"§8  "+CoreUtil.compactMoney(top.amount()));
+        lines.add("§8Top faction");
+        lines.add(strongest==null?"§8none":"§7"+trim(CoreUtil.safe(strongest.name()),10)+"§8  "+CoreUtil.compactMoney(strongest.value()));
 
         if(enabled){
             view.sidebar().setDisplaySlot(DisplaySlot.SIDEBAR);
@@ -93,7 +109,7 @@ final class UIService {
 
     private View create(Player player){
         Scoreboard board=plugin.getServer().getScoreboardManager().getNewScoreboard();
-        Objective sidebar=board.registerNewObjective("smpui",Criteria.DUMMY,Component.text("ASHFALL",NamedTextColor.GOLD));
+        Objective sidebar=board.registerNewObjective("smpui",Criteria.DUMMY,Component.text("Ashfall",CoreUtil.EMBER));
         sidebar.numberFormat(NumberFormat.blank());
         if(plugin.getConfig().getBoolean("ui.health-below-name",true))try{
             Objective health=board.registerNewObjective("health",Criteria.HEALTH,Component.text("❤",NamedTextColor.RED));
@@ -115,5 +131,8 @@ final class UIService {
     }
     void remove(Player player){views.remove(player.getUniqueId());player.setScoreboard(plugin.getServer().getScoreboardManager().getMainScoreboard());}
     void shutdown(){if(task!=null)task.cancel();for(Player player:plugin.getServer().getOnlinePlayers())remove(player);views.clear();}
+    /** Scoreboard rows must be unique, so a blank separator carries invisible padding to tell it apart
+     *  from the other blank separators. */
+    private String row(String pad){return CoreUtil.C_MUTE+pad;}
     private String trim(String text,int max){return text.length()<=max?text:text.substring(0,Math.max(1,max-1))+"…";}
 }
