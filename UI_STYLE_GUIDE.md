@@ -86,20 +86,20 @@ The same applies to click actions: never build a `run_command` from player-suppl
 
 ## 6. Sounds
 
-A small vocabulary, used consistently, at volumes that do not carry across a session:
+Two vocabularies already exist and should be used rather than replaced:
 
-| Event | Sound | Volume |
-|---|---|---|
-| Navigate / open | `UI_BUTTON_CLICK` | 0.4 |
-| Confirm a purchase | `ENTITY_EXPERIENCE_ORB_PICKUP` | 0.6 |
-| Cancel | `BLOCK_LEVER_CLICK` | 0.4 |
-| Refused | `ENTITY_VILLAGER_NO` | 0.5 |
-| Encounter starts | `ENTITY_ENDER_DRAGON_GROWL` | 0.7 |
-| Victory | `UI_TOAST_CHALLENGE_COMPLETE` | 0.8 |
-| Defeat | `ENTITY_BLAZE_DEATH` | 0.7 |
+* `SettingsService.marketSound(player, action)` — `purchase`, `sale`, `failed`, `confirm`, `cancel`,
+  `shard`. Config-overridable under `marketplace.sounds.*`, fixed volume 0.55, pitch carrying the meaning
+  (failed drops to 0.65, cancel to 0.85, a sale lifts to 1.2). Every economic screen goes through it.
+* `ColosseumService.sound(player, key)` — `start`, `victory`, `defeat`, `cancel`, `click`, from
+  `colosseum.yml`.
 
-One sound per outcome — if two handlers both react to the same event, only one of them plays. Never play a
-sound on a repeating HUD update. **Every message must be fully understandable with sound off.**
+Rules for both:
+
+* **Respect the player's setting.** Both check `settings().sounds(player)` first. Anything new must too.
+* **One sound per outcome.** If two handlers react to the same event, exactly one of them plays.
+* **Never on a repeating HUD update.** Action bars, boss bars and sidebar refreshes are silent.
+* **Every message must be fully understandable with sound off.** Sound is emphasis, never information.
 
 ## 7. Menus
 

@@ -1149,7 +1149,7 @@ final class ColosseumService implements Listener {
     private final Map<String, Long> leaveWarned = new ConcurrentHashMap<>();
 
     private void listBosses(Player player) {
-        CoreUtil.msg(player, "Colosseum bosses:");
+        CoreUtil.heading(player, "Colosseum", bosses.all().size() + " bosses");
         for (ColosseumBosses.BossDef def : bosses.all())
             player.sendMessage(Component.text("  " + def.key() + " — " + def.name() + " (" + def.style() + ", " + def.difficulty() + ") "
                     + CoreUtil.money(def.entryFee()) + " in, " + CoreUtil.money(def.cashPrize()) + " out"
@@ -1159,7 +1159,7 @@ final class ColosseumService implements Listener {
     void stats(Player viewer, String target) {
         String id = CoreUtil.id(target);
         List<Database.ColosseumStats> rows = db.colosseumStatsOf(id);
-        CoreUtil.msg(viewer, "Colosseum record — " + target + ":");
+        CoreUtil.heading(viewer, "Colosseum record", CoreUtil.safe(target));
         if (rows.isEmpty()) { viewer.sendMessage(Component.text("  No Colosseum encounters yet.", NamedTextColor.GRAY)); return; }
         double fees = 0, won = 0;
         int attempts = 0, victories = 0, losses = 0;

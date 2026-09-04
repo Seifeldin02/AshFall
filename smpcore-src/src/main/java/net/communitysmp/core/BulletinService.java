@@ -116,7 +116,7 @@ final class BulletinService implements Listener {
         };
     }
     void commandHelp(org.bukkit.command.CommandSender sender){
-        sender.sendMessage("§6§lBulletins §7(independent floating holograms)");
+        CoreUtil.heading(sender,"Bulletins","independent floating holograms");
         sender.sendMessage("§7  §f/ashfall bulletin place <stats|players|factions|bounties|all>");
         sender.sendMessage("§7  §f/ashfall bulletin move <name>   §7— re-place it where you stand");
         sender.sendMessage("§7  §f/ashfall bulletin remove <name|all>");
