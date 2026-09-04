@@ -198,6 +198,13 @@ sync:
       server itself sat at a flawless 20.0 TPS throughout, because Prism commits off the main thread, so
       every in-game signal said healthy while the host drowned in write I/O.
 
+      ORPHAN FIX (2026-09-04, staging only so far): the loop had no owner check, so every restart left
+      another copy running. Nineteen were polling prism.db and the disk at once on the staging host
+      before this was found. It now exits when the console that launched it is gone, which is the
+      same guard freeze-watchdog.ps1 already had. PRODUCTION'S COPY STILL PREDATES THIS -- its single
+      instance is harmless, but the next production restart will start accumulating them, so promote
+      config-templates/storage-guard.ps1 with the next production restart window.
+
       Checks plugins/prism/prism.db and free disk every 15 minutes; logs to logs/storage-guard.log and warns
       in-game over RCON on a CHANGE of state. Warn/alarm: Prism 2/5 GB, free disk 40/20 GB. The 2 GB warning
       is ~10x the measured post-filter steady state (~0.22 GB over a 7-day window). Launched by the

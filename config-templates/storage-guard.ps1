@@ -72,8 +72,21 @@ function Send-Rcon([string]$command) {
 Write-Guard ("started; checking every {0}m. Prism warn/alarm {1}/{2} GB, free disk warn/alarm {3}/{4} GB" -f `
     $CheckMinutes, $PrismWarnGb, $PrismAlarmGb, $DiskWarnGb, $DiskAlarmGb)
 
+#  THE SAME ORPHAN BUG freeze-watchdog.ps1 ALREADY FIXED FOR ITSELF.
+#
+#  console-guard exits the moment GetConsoleMode fails, and the freeze watchdog checks whether the console
+#  that launched it is still there. This one only ever touches a file and a socket, so nothing ever told it
+#  its server had gone -- and every staging restart left another copy behind. Nineteen of them were running
+#  at once on 2026-09-04, all polling prism.db and the disk on a laptop shared with production.
+$ownerConsole = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+
 $lastState = ''
 while ($true) {
+    if ($ownerConsole -and -not (Get-CimInstance Win32_Process -Filter "ProcessId=$ownerConsole" -ErrorAction SilentlyContinue)) {
+        Write-Guard "the console that launched this guard (pid $ownerConsole) is gone; exiting."
+        break
+    }
+
     $prismDb = Join-Path $root 'plugins\prism\prism.db'
     $prismGb = if (Test-Path $prismDb) { [math]::Round((Get-Item $prismDb).Length / 1GB, 3) } else { 0 }
     $freeGb = [math]::Round((Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($root.Substring(0,2))'").FreeSpace / 1GB, 1)
