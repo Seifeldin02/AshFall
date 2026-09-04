@@ -190,6 +190,15 @@ sync:
       console mode every five seconds, because JLine sets its own mode when Paper initialises the terminal
       (observed: 0x9, extended flags cleared) and nothing re-asserted it afterwards. Logs to
       logs/console-guard.log, never to the console -- writing to the console is the thing being guarded.
+
+      ORPHAN FIX (2026-09-04, staging only so far): the "is my server still running" check asked whether
+      ANY java.exe was running paper.jar, and on this host production always is -- so a staging guard
+      whose console had gone never reached zero and never exited, while GetConsoleMode kept succeeding
+      for an orphan still holding a handle. Every staging restart left one behind, re-asserting console
+      modes every five seconds forever. It now checks the console that launched it, which is what
+      actually identifies which server it belongs to and is the same guard freeze-watchdog.ps1 uses.
+      PRODUCTION'S COPY STILL PREDATES THIS. Promote config-templates/console-guard.ps1 alongside
+      storage-guard.ps1 at the next production restart window.
       start.bat / start-staging.bat must launch it with `start /b`. Verify with an external probe attached to
       the server console: mode must read 0x89 while Java is running.
   - path: storage-guard.ps1

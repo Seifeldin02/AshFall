@@ -76,6 +76,7 @@ if ($handle -eq [IntPtr]::Zero -or $handle -eq [IntPtr](-1)) {
     exit 1
 }
 
+$ownerConsole = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
 Write-Guard "started; re-asserting every ${IntervalSeconds}s in $root"
 
 $idle = 0
@@ -99,8 +100,22 @@ while ($true) {
         break
     }
 
-    # Stop once the server this guard was launched for is no longer running, so a closed console does not
-    # leave a PowerShell process behind. Tolerates a slow startup before giving up.
+    # THE CHECK BELOW CANNOT TELL THE TWO SERVERS APART.
+    #
+    # It asks whether ANY java.exe is running paper.jar, and on this host production always is -- so a
+    # staging guard whose console has gone never reaches zero and never exits. GetConsoleMode keeps
+    # succeeding for an orphan that still holds a handle, so neither exit condition fires and every staging
+    # restart leaves one behind, each re-asserting console modes every five seconds forever.
+    #
+    # The owner console is the thing that actually identifies which server this guard belongs to, and it is
+    # the same check freeze-watchdog.ps1 already uses.
+    if ($ownerConsole -and -not (Get-CimInstance Win32_Process -Filter "ProcessId=$ownerConsole" -ErrorAction SilentlyContinue)) {
+        Write-Guard "the console that launched this guard (pid $ownerConsole) is gone; exiting."
+        break
+    }
+
+    # Backstop for the case the owner console outlives its server: no paper.jar anywhere means nothing to
+    # guard. Tolerates a slow startup before giving up.
     $running = @(Get-CimInstance Win32_Process -Filter "Name='java.exe'" -ErrorAction SilentlyContinue |
                  Where-Object { $_.CommandLine -like '*paper.jar*' })
     if ($running.Count -eq 0) {
