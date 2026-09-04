@@ -77,6 +77,7 @@ class Bot(object):
         self.captured = []
         self.chat_decode_warned = False
         self.window = 0
+        self.last_screen = b''
         self.state_id = 0
         self.entities = {}
         self.trace = []
@@ -237,6 +238,10 @@ class Bot(object):
             window, at = self._read_varint(payload)
             state, _ = self._read_varint(payload, at)
             self.window, self.state_id = window, state
+            #  Kept so a run can write down what the server actually put on the screen. The icon names and
+            #  their colours arrive as NBT text components, so the printable runs out of the raw payload
+            #  are the real thing the client was handed -- not our own idea of what we sent.
+            self.last_screen = payload
         elif packet_id == 0x15:                                 # container set slot
             window, at = self._read_varint(payload)
             state, _ = self._read_varint(payload, at)
@@ -328,6 +333,12 @@ class Bot(object):
                 self.send(0x0E, varint(self.window) + varint(self.state_id) + struct.pack('>hb', slot, 0)
                           + varint(0) + varint(0) + varint(0))
                 self.note('clicked slot %d in window %d (state %d)' % (slot, self.window, self.state_id))
+            elif line.startswith('screen:dump'):
+                name = line.split(':', 2)[2] if line.count(':') > 1 else 'screen'
+                with io.open('ui_%s.txt' % name, 'w', encoding='utf-8') as f:
+                    f.write(readable(self.last_screen))
+                    f.write(chr(10))
+                self.note('wrote %d bytes of screen content to ui_%s.txt' % (len(self.last_screen), name))
             elif line == 'close':
                 self.send(0x0F, varint(self.window))
                 self.note('closed window %d' % self.window)

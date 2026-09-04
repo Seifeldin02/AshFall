@@ -56,6 +56,7 @@ Requirements on the server side:
 python run.py --list          # what is available
 python run.py                 # everything
 python run.py charge          # one scenario
+python run.py stash menu-navigation   # several
 ```
 
 Each scenario starts its own client process, so a scenario can disconnect the player on purpose and the
@@ -70,6 +71,8 @@ next one still gets a clean session. Exit status is non-zero if anything failed.
 | `gui-confirm` | On a confirmation screen: confirm pays, cancel does not, closing does not, and a second click on a spent confirmation does nothing. |
 | `voidworld-entry` | Entering by a raw `/tp` — not the command — still enters the lifecycle; exit returns to the recorded origin, never 0,0 and never inside; dying inside costs no items and leaves no grave. |
 | `inventory` | Full slot/id/count conservation across death mid-encounter, an attempted second encounter, and a disconnect. |
+| `menu-navigation` | Where a click actually lands: the settings preference band never opens a screen or moves the player, each door opens the screen it is drawn as, Back returns, the marketplace section ring advances one step per click, the first page has nowhere to go back to, a closed menu can be clicked without disconnecting anybody, and repeated clicks on one control do one thing repeatedly. |
+| `stash` | The durable claim stash from the collection side: a full inventory holds the claim rather than consuming it, making room delivers exactly what was owed, and collecting again delivers nothing. Drains through the player's own screens first, so it never needs a console command that can delete somebody's unclaimed property. |
 
 ## What it is not
 
@@ -94,3 +97,12 @@ Scenarios drive the client by queueing lines (`control.say(...)`):
 | `trace:start` / `trace:dump` | record entity positions, then write `trace_<name>.csv` |
 | `chat:start` / `chat:dump` | record chat as rendered, then write `chat_<name>.txt` |
 | `quit` | disconnect cleanly |
+
+### Capturing what a screen actually looked like
+
+`screen:dump:<name>` writes the printable runs out of the last `container_set_content` packet to
+`ui_<name>.txt`. Icon names and their colours travel as text components, so this is what the client
+was handed rather than what the source says was meant -- which is the difference between inspecting a
+rendered result and judging raw colour codes. `Control.screen_dump(name)` reads it back.
+
+It is a capture, not an assertion, and it says nothing about whether the result looks good.

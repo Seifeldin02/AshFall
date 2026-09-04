@@ -85,6 +85,24 @@ class Control(object):
         text = io.open(path, encoding='utf-8', errors='replace').read()[mark:]
         return [line[9:] for line in text.splitlines() if line[9:].startswith('CHAT ')]
 
+    def screens_since(self, mark):
+        """Which screens the server opened for this client, newest last.
+
+        The client notes every open_screen packet with its window id and title, so a headless run
+        can assert where a click actually landed -- which is the half of a menu redesign that a
+        screenshot cannot check. It says nothing at all about how any of it looks."""
+        path = os.path.join(self.workdir, 'bot_%s.log' % self.name)
+        text = io.open(path, encoding='utf-8', errors='replace').read()[mark:]
+        return [line[9:] for line in text.splitlines() if line[9:].startswith('screen opened')]
+
+    def screen_dump(self, name):
+        """What the server actually put on the screen, as the client received it."""
+        path = os.path.join(self.workdir, 'ui_%s.txt' % name)
+        try:
+            return io.open(path, encoding='utf-8', errors='replace').read()
+        except OSError:
+            return ''
+
     def chat_mark(self):
         path = os.path.join(self.workdir, 'bot_%s.log' % self.name)
         return len(io.open(path, encoding='utf-8', errors='replace').read())

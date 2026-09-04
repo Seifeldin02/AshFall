@@ -325,6 +325,11 @@ staging_only:
       themselves, and one asserts the account is an ordinary player first, because admin-only testing is
       what hid the /colosseum leave bug.
 
+      The `stash` scenario grants operator for exactly one console call (`ashfall stash <player> grant`) and
+      revokes it in a finally. It deliberately does not use an admin "wipe the stash" verb to reset itself --
+      it drains through the player's own /orders screens instead, because anything that can delete a player's
+      unclaimed property from the console is a worse thing to own than a slightly longer test.
+
   - path: start-staging.bat
     note: |
       Staging launcher. Same two requirements as production's start.bat: invoke disable-quickedit.ps1 before

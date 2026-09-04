@@ -5,6 +5,165 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-04 (part 3) — Menus finish the overhaul, and the claim stash stops losing things
+
+Staging only. No production file, process, configuration, database or restart was touched.
+
+### The menus
+
+The last pass fixed chat and left the chest screens alone, on the grounds that slot numbers appear in the
+builder, the click handler and the verifier at once and moving an icon is how a different slot ends up
+performing a purchase. That reasoning was right about the risk and wrong about the conclusion: the risk is
+an argument for naming the numbers, not for leaving them.
+
+Four screens had already drifted apart without anybody moving anything.
+
+| screen | Cancel | Confirm |
+|---|---:|---:|
+| the universal confirmation dialog | 11 | 15 |
+| Bank — confirm repayment | 15 | **11** |
+| Ender Chest — upgrade | 15 | **11** |
+| Orders — pay into escrow | 15 | **11** |
+
+Three of the four were mirrored against the one a player sees most. Somebody who learns "the left button
+is Cancel" from the dialog that asks about every purchase would press Confirm on a loan repayment while
+meaning to back out. Nobody caused it; four screens were written at four different times.
+
+`CoreUtil.Menu` now owns the numbers — `SUBJECT`/`CANCEL`/`CONFIRM`, `BACK_SMALL`, the 54-slot browse
+footer, the sell basket — and every builder and click handler reads them from there instead of writing
+them out twice. Cancel is on the left everywhere.
+
+It also owns the icon vocabulary, which is the menu half of what `msg()` and `error()` did for chat. Every
+icon on this server came from `CoreUtil.named` or one of **eight verbatim private copies** of it, all
+producing a gold name over grey lore. Everything looked equally important and equally clickable, so a
+screen could not say "this does something", "this is only information", "this is switched on" or "you
+cannot do this yet" — it could only say all four the same way. Six roles now: `heading`, `action`, `info`,
+`state`, `blocked`, `danger`, plus `nothing()` for empty lists and `page()` for arrows that say whether
+they will move.
+
+And all eight copies left the lore **italic**, because Minecraft italicises custom item text unless you
+turn it off. One file in the codebase knew that and said so in a comment. Every icon on the server is
+upright now.
+
+Captured from the wire — what the client was actually handed, not what the source says we meant:
+
+```
+before   color | gold  | text | Faction Borders          (a BARRIER, the "you cannot do this" icon)
+         color | gray  | text | ON
+         color | gold  | text | Borrow
+         color | gray  | text | Unavailable
+         color | gold  | text | Previous                 (identical to Next, on page one)
+         color | gray  | text | Page 1 / 4
+
+after    italic | color | white     | text | Territory outline
+         italic | color | green     | text | On
+         italic | color | dark_gray | text | Click to turn it off.
+         italic | color | dark_gray | text | Borrow
+         italic | color | red       | text | Unavailable  you already have a loan open.
+         italic | color | dark_gray | text | Previous
+         italic | color | dark_gray | text | This is the first page.
+```
+
+Screens that were already good were left alone. The Colosseum encounter menu explains every boss's
+strength, weakness and counterplay before its price and refuses to ship a boss without them; the duel
+setup wizard and wager box have named slots, a self test asserting them, and comments recording the
+duplication bug each guard exists to prevent. Rearranging either would have been churn.
+
+### What the menus were actually doing wrong
+
+Beyond the mirrored dialogs:
+
+* **A button that did nothing.** The faction screen drew "Faction Bank" at slot 34 and the click handler's
+  switch had no case for it. It looked like a button and was inert.
+* **A blank lore line.** Faction homes joined the home names without checking whether there were any, so a
+  faction with no homes got one empty grey line.
+* **A BARRIER that was a working switch.** Faction borders used the icon every other screen on this server
+  uses for "unavailable".
+* **A disabled control that was still live.** Settings drew Auto-Accept greyed and labelled UNAVAILABLE
+  when Faction TPA was off — and left it fully wired, so clicking it flipped a preference the player could
+  not see, on a screen that did not change. It read as a broken menu.
+* **An action hiding among the preferences.** "Random Travel" teleports you the moment you click it and sat
+  in the middle of the toggle rows. The screen is three bands now: ten switches, six doors, two things that
+  move you.
+* **One icon meaning three things.** HOPPER was the sell basket, the collect button *and* the sort control
+  on the same marketplace screen.
+* **Two identical arrows.** Previous and Next were both ARROW and both said "Page 1 / 4"; on page one,
+  Previous looked exactly as live as Next. The spawner shop's disabled arrow was worse — an ARROW named
+  `" "` with no lore, which reads as a rendering fault.
+* **A one-button ring with no map.** Five marketplace sections, one "Switch to X" button, and no way to
+  know where you were. The whole ring is listed now, with your position marked.
+* **A price two slots from the button that charges it.** Both sell baskets showed the total on a separate
+  icon; the button just said "Confirm Sale". It says the amount now, and greys out when the basket is empty.
+* **Unavailability without a reason.** The bank said "Borrow / Unavailable" for three different causes —
+  an open loan, today's allowance already used, or credit below the minimum. It names which one.
+* **Window titles in capitals** on the six settings screens: ASHEN SETTINGS, CONFIRMATIONS, TPA REQUESTS…
+
+### The claim stash was losing things on the way out
+
+Last pass moved auction settlement into one commit and landed the item in the durable claim stash. That
+protects the **sale**. It does nothing for the **delivery**, and delivery was where property actually went
+missing:
+
+```java
+List<ItemStack> owed = db.stashTake(owner);      // deletes every row, commits
+for (ItemStack item : owed) inventory.addItem(item);
+```
+
+Three ways that loses somebody's property:
+
+* the rows are committed gone the instant the read returns, but the inventory holding the items is not
+  durable until Paper next writes player data — which can be minutes away. A crash in between destroys
+  every claim with no record anywhere that it existed;
+* it is per-**owner**, so one call takes auction goods, Colosseum loot and order deliveries together. An
+  exception on the third item abandons the fourth and fifth, whose rows are already deleted;
+* a full inventory relied on the caller putting the leftovers back. The auction path did. `OrdersService`
+  used `CoreUtil.give`, which drops what will not fit on the floor — five minutes from despawning, or gone
+  with the world if the player happened to be standing in a Colosseum arena or a void world.
+
+Two stores that cannot share a transaction. Something has to go first, and whichever it is decides which
+way a crash in the middle falls. Delete-first fails towards **loss**. It now goes the other way, per item:
+read the row and leave it alone, write to the inventory, keep whatever did not fit in the same row resized,
+flush the player to disk with `saveData()`, and only then delete the rows that were delivered.
+
+A crash before the flush leaves every row claimable and nothing durable — correct. A crash between the
+flush and the delete leaves an item that *is* durable and a row that still says it is owed, so it could be
+claimed once more: one DELETE against a local file wide, on an abrupt kill only, and it fails towards the
+player rather than away from them. That is the residual and it is documented in the code. Collecting twice
+on purpose still cannot duplicate anything, because the row is already gone.
+
+`/ashfall stash <player>` reads the table, because "I bought something and never got it" had no answer that
+was not a database client. `grant` seeds one, operator-gated and audited, so the delivery path can be
+exercised against a live player instead of only against the row lifecycle.
+
+### Verification
+
+* `/ashfall selftest` — the row lifecycle: reading does not consume, resizing keeps the row and its place
+  in the queue, removal is what consumes, removing twice returns false.
+* `testing/harness/run.py stash` — the same thing with a real player and 32 marked diamonds: a full
+  inventory holds the claim, making room delivers exactly 32, and collecting five more times delivers
+  nothing.
+* `testing/harness/run.py menu-navigation` — 16 checks through a real client: the preference band never
+  opens a screen and never moves the player, each door opens the screen it is drawn as, Back returns,
+  the section ring advances one step per click, the first page has nowhere to go back to, clicking a
+  closed menu does not disconnect anybody, and five rapid clicks on one control open five of the same
+  screen and nothing else.
+
+The client can now write down what the server put on a screen (`screen:dump`), because the icon names and
+their colours arrive as text components and the printable runs out of the raw payload are the real thing
+the client was handed. That is where the before/after above comes from.
+
+Suites: colosseum verify 278/0, voidworld verify 13/0, selftest 0 failed, duelmap verify 0 failed, duelmap
+canary PASSED, hopper verify 0 failed. Harness: 7 scenarios, 63 checks, 0 failed, as an ordinary player.
+
+### Still unverified
+
+* **Bedrock/Geyser.** Geyser is installed on staging and nothing in any of this has been through it. The
+  harness client speaks the Java protocol directly.
+* **The bank front page, visually.** It opens only from the Banker merchant, so the capture pass could not
+  reach it. Its behaviour is covered; its appearance is not captured.
+* **Whether it looks good.** The harness asserts where a click lands and what it costs. That is the half
+  that can take somebody's money, and it is not a judgement of visual quality.
+
 ## Session: 2026-09-04 (part 2) - Interface overhaul, the harness becomes real, and three more money gaps
 
 Staging only. No production file, process, configuration, database or restart was touched.
@@ -146,8 +305,15 @@ revision *and* environment, reserve atomically, invalidate after a template comm
 before ever reusing a played instance, and bound loaded worlds, chunks, disk and pending preparations —
 and creating the replacement still costs the same 369 ms, just at a different moment. That is a large
 amount of new machinery, with a genuinely dangerous failure mode (a player fighting in a dirty arena), to
-move a single 300 ms hitch that lands while the player who caused it is on a loading screen. The honest
-answer is that the measurement does not justify it.
+move a single 300 ms hitch to a different moment.
+
+**Correction to how that hitch was described.** It was written up as landing "while the player who caused
+it is on a loading screen", which is wrong in the way that matters: `createWorld` runs on the main thread,
+so the pause stops the *whole server*. Everybody else on it loses those ~300 ms too — they just have no
+loading screen to hide it behind, and no reason to associate the stutter with somebody else entering an
+arena. The measurement still does not justify a pool, because a pool moves the same main-thread pause to
+the moment the replacement is built rather than removing it. But the reason is the arithmetic, not the
+idea that the cost falls on one player who is not looking.
 
 ### Verification
 
