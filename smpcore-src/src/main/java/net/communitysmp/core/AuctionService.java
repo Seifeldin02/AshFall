@@ -54,7 +54,7 @@ final class AuctionService {
     private void listConfirmed(Player p,double price,ItemStack quoted){
         double min=plugin.getConfig().getDouble("auctions.minimum-price",10);if(price<min){CoreUtil.error(p,"Minimum auction price is "+CoreUtil.money(min)+".");return;}int max=plugin.getConfig().getInt("auctions.max-active-per-player",30);if(db.activeAuctionCount(CoreUtil.id(p))>=max){CoreUtil.error(p,"You already have "+max+" active listings.");return;}ItemStack held=p.getInventory().getItemInMainHand();if(held.getType().isAir()){CoreUtil.error(p,"Hold the stack you want to list.");return;}
         if(!held.isSimilar(quoted)||held.getAmount()!=quoted.getAmount()){CoreUtil.error(p,"You are no longer holding what you agreed to list. Nothing was charged.");return;}if(plugin.graves()!=null&&plugin.graves().isCompass(held)){CoreUtil.error(p,"Bound Grave Compasses cannot be auctioned.");return;}if(plugin.shards()!=null&&plugin.shards().bound(held)){CoreUtil.error(p,"Shard rewards are account-bound and cannot be auctioned.");return;}double factor=merchantActive(p)?feeMultiplier():1;double fee=listingFee(price,factor);if(!plugin.bank().payServer(p,fee,"FEE","AUCTION_LISTING")){CoreUtil.error(p,"You need the "+CoreUtil.money(fee)+" listing fee.");return;}ItemStack stored=held.clone();p.getInventory().setItemInMainHand(null);try{long expiry=System.currentTimeMillis()+plugin.getConfig().getLong("auctions.expiry-hours",72)*3600000L;long id=db.createAuction(CoreUtil.id(p),p.getName(),stored,price,expiry,fee);db.recordEconomy(CoreUtil.id(p),"AUCTION_FEE",-fee,"LISTING");CoreUtil.msg(p,"Listed as #"+id+" for "+CoreUtil.money(price)+". Fee paid: "+CoreUtil.money(fee)+".");}catch(RuntimeException ex){plugin.bank().refundServerPayment(p,fee,"FEE","AUCTION_LISTING_FAILED");CoreUtil.give(p,stored);CoreUtil.error(p,"Listing failed safely; your item and fee were returned.");}}
-    void buy(Player buyer,long id,boolean merchant){Database.AuctionRow row=db.auction(id);if(row==null||!row.status().equals("ACTIVE")){CoreUtil.error(buyer,"That listing is no longer active.");plugin.settings().marketSound(buyer,"failed");return;}if(row.seller().equals(CoreUtil.id(buyer))){CoreUtil.error(buyer,"Use /ah cancel "+id+" for your own listing.");plugin.settings().marketSound(buyer,"failed");return;}if(row.price()>=plugin.getConfig().getDouble("bank.overdue-high-value-threshold",25000)&&!plugin.bank().allowNonessential(buyer,"high-value auction purchases")){plugin.settings().marketSound(buyer,"failed");return;}if(!ShopService.canFit(buyer,row.item())){CoreUtil.error(buyer,"Make enough inventory space first.");plugin.settings().marketSound(buyer,"failed");return;}if(!db.changeBalance(CoreUtil.id(buyer),-row.price())){CoreUtil.error(buyer,"You cannot afford this listing.");plugin.settings().marketSound(buyer,"failed");return;}if(!db.markAuctionSold(id,CoreUtil.id(buyer))){db.changeBalance(CoreUtil.id(buyer),row.price());CoreUtil.error(buyer,"Someone else bought it first; you were refunded.");plugin.settings().marketSound(buyer,"failed");return;}double tax=row.price()*plugin.getConfig().getDouble("auctions.sale-tax-percent",5)*(merchant?feeMultiplier():1)/100.0;plugin.creditEarned(row.seller(),row.price()-tax,"AUCTION_SALE");plugin.bank().creditFee(tax,row.seller(),"AUCTION_SALE_TAX");db.recordEconomy(row.seller(),"AUCTION_FEE",-tax,"SALE");buyer.getInventory().addItem(row.item());plugin.relics().transferOnSale(row.item(),buyer);CoreUtil.msg(buyer,"Purchased listing #"+id+" for "+CoreUtil.money(row.price())+".");plugin.settings().marketSound(buyer,"purchase");if(plugin.spectacle()!=null)plugin.spectacle().bigSpend(buyer,row.price(),CoreUtil.pretty(row.item().getType().name()));Player seller=find(row.seller());if(seller!=null&&plugin.settings().auctionNotifications(seller))CoreUtil.msg(seller,"Listing #"+id+" sold. You received "+CoreUtil.money(row.price()-tax)+" after tax.");}
+    void buy(Player buyer,long id,boolean merchant){Database.AuctionRow row=db.auction(id);if(row==null||!row.status().equals("ACTIVE")){CoreUtil.error(buyer,"That listing is no longer active.");plugin.settings().marketSound(buyer,"failed");return;}if(row.seller().equals(CoreUtil.id(buyer))){CoreUtil.error(buyer,"Use /ah cancel "+id+" for your own listing.");plugin.settings().marketSound(buyer,"failed");return;}if(row.price()>=plugin.getConfig().getDouble("bank.overdue-high-value-threshold",25000)&&!plugin.bank().allowNonessential(buyer,"high-value auction purchases")){plugin.settings().marketSound(buyer,"failed");return;}if(!ShopService.canFit(buyer,row.item())){CoreUtil.error(buyer,"Make enough inventory space first.");plugin.settings().marketSound(buyer,"failed");return;}double tax=row.price()*plugin.getConfig().getDouble("auctions.sale-tax-percent",5)*(merchant?feeMultiplier():1)/100.0;/* One commit: the listing is consumed, the buyer is debited, the seller and the fee are paid, and the item lands in the buyer OWNED durable claim stash. Handing it to their inventory below is a convenience on top of a record that already exists, so nothing can be lost in between. */if(!db.auctionSettle(id,CoreUtil.id(buyer),row.seller(),row.price(),tax,row.item(),"AUCTION_SALE_TAX")){CoreUtil.error(buyer,"That listing is gone, or you cannot afford it.","Nothing was charged. /ah shows what is still listed.");plugin.settings().marketSound(buyer,"failed");return;}db.recordEconomy(row.seller(),"AUCTION_FEE",-tax,"SALE");int held=deliverStash(buyer);plugin.relics().transferOnSale(row.item(),buyer);CoreUtil.ok(buyer,"Bought listing #"+id+" · "+CoreUtil.money(row.price())+(tax>0?" · seller paid "+CoreUtil.money(row.price()-tax)+" after "+CoreUtil.money(tax)+" tax":"")+".");if(held>0)CoreUtil.hint(buyer,"No room for it right now — it is waiting in /orders.");plugin.settings().marketSound(buyer,"purchase");if(plugin.spectacle()!=null)plugin.spectacle().bigSpend(buyer,row.price(),CoreUtil.pretty(row.item().getType().name()));Player seller=find(row.seller());if(seller!=null&&plugin.settings().auctionNotifications(seller))CoreUtil.msg(seller,"Listing #"+id+" sold. You received "+CoreUtil.money(row.price()-tax)+" after tax.");}
     /** One-line summary on login of listings that expired while the player was away.
      *
      *  Computed from current state rather than from cached events. An event cache has to catch every
@@ -69,7 +69,39 @@ final class AuctionService {
         CoreUtil.msg(player,rows.size()+" auction listing"+(rows.size()==1?"":"s")+" expired while you were away ("
                 +CoreUtil.money(value)+" of goods). Use /ah collect to reclaim them.");
     }
-    void collect(Player p){List<Database.AuctionRow> rows=db.collectibleAuctions(CoreUtil.id(p));if(rows.isEmpty()){CoreUtil.msg(p,"You have no expired items to collect.");return;}int count=0;for(Database.AuctionRow row:rows){if(!ShopService.canFit(p,row.item()))break;if(db.collectAuction(row.id(),CoreUtil.id(p))){p.getInventory().addItem(row.item());count++;}}CoreUtil.msg(p,"Collected "+count+" expired listing"+(count==1?"":"s")+(count<rows.size()?". Free inventory space for the rest.":"."));}
+    void collect(Player p){
+        List<Database.AuctionRow> rows=db.collectibleAuctions(CoreUtil.id(p));
+        if(rows.isEmpty()){CoreUtil.msg(p,"You have no expired listings to collect.");return;}
+        /*  Reclaiming moves the item from the listing into the durable stash in ONE commit, and out of the
+         *  stash into the inventory afterwards.
+         *
+         *  It used to flip the row to COLLECTED and then call addItem, discarding the leftovers addItem
+         *  returns -- so a crash in between, or an inventory that filled up after the fit check, destroyed
+         *  the item with nothing anywhere noticing. Every listing is reclaimed now regardless of space;
+         *  whatever does not fit simply stays claimable. */
+        int count=0;
+        for(Database.AuctionRow row:rows)if(db.auctionReclaim(row.id(),CoreUtil.id(p),row.item()))count++;
+        int held=deliverStash(p);
+        CoreUtil.ok(p,"Reclaimed "+count+" expired listing"+(count==1?"":"s")+".");
+        if(held>0)CoreUtil.hint(p,held+" would not fit and is waiting in /orders.");
+    }
+
+    /*  Move whatever is owed to this player out of the durable stash and into their hands.
+     *
+     *  Best effort by design: anything that does not fit goes straight back into the stash, so a claim
+     *  survives a full inventory, a disconnect or a restart. Returns how much is still owed. */
+    private int deliverStash(Player player){
+        java.util.List<org.bukkit.inventory.ItemStack> owed=db.stashTake(CoreUtil.id(player));
+        int left=0;
+        for(org.bukkit.inventory.ItemStack item:owed){
+            if(item==null||item.getType().isAir())continue;
+            for(org.bukkit.inventory.ItemStack over:player.getInventory().addItem(item).values()){
+                db.stashAddItem(CoreUtil.id(player),over);
+                left++;
+            }
+        }
+        return left;
+    }
     void cancel(Player p,long id){Database.AuctionRow row=db.auction(id);if(row!=null&&row.seller().equals(CoreUtil.id(p))&&db.cancelAuction(id,CoreUtil.id(p))){CoreUtil.msg(p,"Listing cancelled. The listing fee is not refunded; use /ah collect for the item.");}else CoreUtil.error(p,"Active listing not found or not yours.");}
     List<Database.AuctionRow> rows(){return db.activeAuctions();}
     private Player find(String id){for(Player p:plugin.getServer().getOnlinePlayers())if(CoreUtil.id(p).equals(id))return p;return null;}

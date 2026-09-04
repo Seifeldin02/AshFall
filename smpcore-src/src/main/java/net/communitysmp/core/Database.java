@@ -563,6 +563,62 @@ final class Database implements AutoCloseable {
      *  listings exist. Used by RelicService to confirm "is this specific relic actively escrowed". */
     synchronized List<AuctionRow> activeAuctionsBySeller(String seller){expireAuctions();return list("SELECT * FROM auctions WHERE seller=? AND status='ACTIVE' ORDER BY listed",Database::mapAuction,seller);}
     synchronized boolean markAuctionSold(long id, String buyer) { return update("UPDATE auctions SET status='SOLD',buyer=?,sold_at=? WHERE id=? AND status='ACTIVE' AND expires>?", buyer,System.currentTimeMillis(),id,System.currentTimeMillis()) == 1; }
+
+    /*  AN AUCTION SALE, AS ONE COMMIT.
+     *
+     *  It used to be five, in this order: debit the buyer, mark the listing sold, pay the seller, credit
+     *  the fee, put the item in the buyer's inventory. Every gap between them is a state the database can
+     *  be found in after a crash, and each one loses something different:
+     *
+     *      after the debit, before the sale     the buyer paid and the listing is still for sale
+     *      after the sale, before the payout    the buyer paid, the seller never did get paid
+     *      after the payout, before delivery    everyone is paid and the ITEM no longer exists
+     *
+     *  The last one is the worst, because the listing row IS the escrow -- once it reads SOLD there is
+     *  nothing left holding the item, and an inventory write is not a commit.
+     *
+     *  All four money-and-escrow steps now commit together, and the fifth is not a delivery at all: the
+     *  item lands in the buyer's durable claim stash, the same one Colosseum rewards overflow into. Handing
+     *  it to their inventory afterwards is a convenience on top of a record that already exists. A process
+     *  that dies at any point either did none of this or did all of it, and the item is claimable with
+     *  /orders either way.
+     *
+     *  Returns false if the listing was taken first or the buyer cannot afford it, having changed nothing. */
+    synchronized boolean auctionSettle(long id,String buyer,String seller,double price,double tax,ItemStack item,String detail){
+        boolean own=false;java.sql.Savepoint savepoint=null;
+        try{
+            own=connection.getAutoCommit();
+            if(own)connection.setAutoCommit(false);else savepoint=connection.setSavepoint("auction_settle");
+            long now=System.currentTimeMillis();
+            if(update("UPDATE auctions SET status='SOLD',buyer=?,sold_at=? WHERE id=? AND status='ACTIVE' AND expires>?",buyer,now,id,now)!=1){undo(own,savepoint);return false;}
+            if(!changeBalance(buyer,-roundMoney(price))){undo(own,savepoint);return false;}
+            double net=roundMoney(price-tax);
+            if(net>0&&!changeBalance(seller,net))throw new SQLException("auction seller account missing");
+            if(tax>0)creditBankRevenue(roundMoney(tax),"FEE",seller,detail);
+            stashAddItem(buyer,item);
+            if(own)connection.commit();else if(savepoint!=null)connection.releaseSavepoint(savepoint);
+            return true;
+        }catch(Exception e){undoQuietly(own,savepoint);if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
+        finally{if(own)autoCommitQuietly();}
+    }
+
+    /*  The same shape for reclaiming an expired listing.
+     *
+     *  collectAuction() flipped the row to COLLECTED and the caller then added the item to an inventory. A
+     *  crash in between, or an inventory that filled up after the fit check, destroyed the item -- and the
+     *  caller discarded addItem()'s leftovers entirely, so it would not even have known. */
+    synchronized boolean auctionReclaim(long id,String seller,ItemStack item){
+        boolean own=false;java.sql.Savepoint savepoint=null;
+        try{
+            own=connection.getAutoCommit();
+            if(own)connection.setAutoCommit(false);else savepoint=connection.setSavepoint("auction_reclaim");
+            if(update("UPDATE auctions SET status='COLLECTED' WHERE id=? AND seller=? AND status='EXPIRED'",id,seller)!=1){undo(own,savepoint);return false;}
+            stashAddItem(seller,item);
+            if(own)connection.commit();else if(savepoint!=null)connection.releaseSavepoint(savepoint);
+            return true;
+        }catch(Exception e){undoQuietly(own,savepoint);if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
+        finally{if(own)autoCommitQuietly();}
+    }
     synchronized boolean collectAuction(long id, String seller) { return update("UPDATE auctions SET status='COLLECTED' WHERE id=? AND seller=? AND status='EXPIRED'", id, seller) == 1; }
     synchronized boolean cancelAuction(long id, String seller) { return update("UPDATE auctions SET status='EXPIRED',expires=? WHERE id=? AND seller=? AND status='ACTIVE'", System.currentTimeMillis(), id, seller) == 1; }
     synchronized void expireAuctions() { update("UPDATE auctions SET status='EXPIRED' WHERE status='ACTIVE' AND expires<=?", System.currentTimeMillis()); }
@@ -1346,6 +1402,52 @@ final class Database implements AutoCloseable {
             if(colosseumRun("__selftest_run_poor")!=null&&colosseumRun("__selftest_run_poor").charged())throw new SQLException("a failed charge still marked the run charged - recovery would refund a fee nobody paid");
             if(player("__selftest_a")!=null&&Math.abs(player("__selftest_a").balance()-held)>0.001)throw new SQLException("a failed charge moved money");
             checks.add("Colosseum entry fee is one commit (flag and money cannot disagree): ok");
+
+            /*  AN AUCTION SALE MOVES EVERYTHING OR NOTHING.
+             *
+             *  The old path was five separate commits ending in an inventory write, and every gap between
+             *  them lost something: a buyer charged for a listing still on sale, a seller never paid for a
+             *  listing marked sold, or -- worst -- everyone paid and the item gone, because the listing row
+             *  IS the escrow and an inventory write is not a commit.
+             *
+             *  Checked here by conservation: what leaves the buyer arrives at the seller and the bank, and
+             *  the item is in a durable stash rather than in an inventory nobody can prove. */
+            /** A second fixture account, because a sale needs two sides. */
+            update("INSERT OR IGNORE INTO players(id,name,balance) VALUES('__selftest_b','SelfTestB',50000)");
+            long lot=createAuction("__selftest_a","SelfTestA",new ItemStack(org.bukkit.Material.DIAMOND,7),1000,System.currentTimeMillis()+600000,0);
+            double buyerBefore=player("__selftest_b").balance();
+            double sellerBefore=player("__selftest_a").balance();
+            double bankAtSale=bank().balance();
+            int stashBefore=stashCount("__selftest_b");
+
+            /** A buyer who cannot afford it must change nothing at all. */
+            if(auctionSettle(lot,"__selftest_b","__selftest_a",buyerBefore+1_000_000,0,new ItemStack(org.bukkit.Material.DIAMOND,7),"selftest"))
+                throw new SQLException("an unaffordable auction purchase was accepted");
+            if(!"ACTIVE".equals(auction(lot).status()))throw new SQLException("a failed purchase consumed the listing");
+            if(Math.abs(player("__selftest_b").balance()-buyerBefore)>0.001)throw new SQLException("a failed purchase moved the buyer's money");
+            if(stashCount("__selftest_b")!=stashBefore)throw new SQLException("a failed purchase still owed the buyer an item");
+
+            /** And a sale that goes through conserves every side of it. */
+            if(!auctionSettle(lot,"__selftest_b","__selftest_a",1000,50,new ItemStack(org.bukkit.Material.DIAMOND,7),"selftest"))
+                throw new SQLException("an affordable auction purchase was refused");
+            if(!"SOLD".equals(auction(lot).status()))throw new SQLException("a completed sale left the listing unsold");
+            if(Math.abs((buyerBefore-player("__selftest_b").balance())-1000)>0.001)throw new SQLException("the buyer was not debited exactly the price");
+            if(Math.abs((player("__selftest_a").balance()-sellerBefore)-950)>0.001)throw new SQLException("the seller was not paid the price minus tax");
+            if(Math.abs((bank().balance()-bankAtSale)-50)>0.001)throw new SQLException("the sale tax did not reach the Central Bank");
+            if(stashCount("__selftest_b")!=stashBefore+1)throw new SQLException("the item was not durably owed to the buyer");
+            /** And it cannot be sold twice. */
+            if(auctionSettle(lot,"__selftest_b","__selftest_a",1000,50,new ItemStack(org.bukkit.Material.DIAMOND,7),"selftest"))
+                throw new SQLException("the same listing could be sold twice");
+            checks.add("Auction sale is one commit (buyer, seller, bank and escrow conserved): ok");
+
+            /** Reclaiming an expired listing owes the item durably rather than trusting an inventory write. */
+            long stale=createAuction("__selftest_a","SelfTestA",new ItemStack(org.bukkit.Material.EMERALD,3),200,System.currentTimeMillis()-1000,0);
+            expireAuctions();
+            int sellerStash=stashCount("__selftest_a");
+            if(!auctionReclaim(stale,"__selftest_a",new ItemStack(org.bukkit.Material.EMERALD,3)))throw new SQLException("an expired listing could not be reclaimed");
+            if(stashCount("__selftest_a")!=sellerStash+1)throw new SQLException("a reclaimed item was not durably owed");
+            if(auctionReclaim(stale,"__selftest_a",new ItemStack(org.bukkit.Material.EMERALD,3)))throw new SQLException("the same listing could be reclaimed twice");
+            checks.add("Expired-listing reclaim is one commit and cannot double-deliver: ok");
             if(!colosseumMarkActive("__selftest_run")||colosseumMarkActive("__selftest_run"))throw new SQLException("a run could be committed twice");
             if(!colosseumMarkPaid("__selftest_run")||colosseumMarkPaid("__selftest_run"))throw new SQLException("the prize could be paid twice");
             if(!colosseumResolve("__selftest_run","VICTORY",true,1234)||colosseumResolve("__selftest_run","DEATH",false,1))throw new SQLException("a run could be resolved twice");
