@@ -57,6 +57,8 @@ python run.py --list          # what is available
 python run.py                 # everything
 python run.py charge          # one scenario
 python run.py stash menu-navigation   # several
+python test_guard.py                  # endpoint refusals, no server needed
+python test_lease.py                  # test-lease contention and stale recovery, console only
 ```
 
 Each scenario starts its own client process, so a scenario can disconnect the player on purpose and the
@@ -72,6 +74,7 @@ next one still gets a clean session. Exit status is non-zero if anything failed.
 | `voidworld-entry` | Entering by a raw `/tp` — not the command — still enters the lifecycle; exit returns to the recorded origin, never 0,0 and never inside; dying inside costs no items and leaves no grave. |
 | `inventory` | Full slot/id/count conservation across death mid-encounter, an attempted second encounter, and a disconnect. |
 | `menu-navigation` | Where a click actually lands: the settings preference band never opens a screen or moves the player, each door opens the screen it is drawn as, Back returns, the marketplace section ring advances one step per click, the first page has nowhere to go back to, a closed menu can be clicked without disconnecting anybody, and repeated clicks on one control do one thing repeatedly. |
+| `stash-crash` | Claim delivery aborted at each persistence boundary on purpose, then recovered. Opens the player's own `<uuid>.dat` and checks the receipt is in the same file as the items it records, which is the whole basis of the design. Includes the partial fit -- built by exact slot, not hoped for. |
 | `stash` | The durable claim stash from the collection side: a full inventory holds the claim rather than consuming it, making room delivers exactly what was owed, and collecting again delivers nothing. Drains through the player's own screens first, so it never needs a console command that can delete somebody's unclaimed property. |
 
 ## What it is not
@@ -106,3 +109,13 @@ was handed rather than what the source says was meant -- which is the difference
 rendered result and judging raw colour codes. `Control.screen_dump(name)` reads it back.
 
 It is a capture, not an assertion, and it says nothing about whether the result looks good.
+
+### The staging test lease
+
+`run.py` takes `/ashfall lease acquire harness` for the whole run and refuses to start without it.
+The four destructive in-server suites do the same in reverse: they refuse while somebody else holds
+it, and say who. `selftest` and `duelmap verify` are never gated because they only read.
+
+An RCON caller is named **Rcon**, not CONSOLE. Take the lease with no holder argument and let the
+server name you -- `/ashfall lease status` prints who you are -- or you will lock yourself out of
+your own suites.

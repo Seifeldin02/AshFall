@@ -8,6 +8,7 @@
 The endpoint comes from harness.ini and is validated before anything connects. See README.md.
 """
 import os
+import re
 import subprocess
 import sys
 import time
@@ -79,7 +80,15 @@ def main():
     #  The harness holds the staging test lease for its whole run, so an in-server verifier started
     #  from the console refuses instead of measuring a subsystem this is halfway through changing.
     #  The TTL means a crashed run frees it on its own rather than blocking the next person.
-    rcon.send(['ashfall lease acquire harness scenario-run 3600'], settle=0.4)
+    taken = rcon.send(['ashfall lease acquire harness scenario-run 3600'], settle=0.4)[0][1]
+    if 'Lease held by harness' not in taken:
+        #  Somebody else is mid-suite. Refusing is the whole point: a run that goes ahead anyway is
+        #  what produced three true-but-meaningless verifier failures on 2026-09-04.
+        print('the staging test lease is not available, so nothing was run:')
+        for line in control_module.strip(taken).splitlines():
+            print('   ' + line.strip())
+        return 2
+
     control = control_module.Control(endpoint, workdir=HERE)
     results = []
     for name in chosen:

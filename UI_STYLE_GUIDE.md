@@ -192,6 +192,9 @@ audited screen needed changing, and rearranging one that already worked would ha
 | spawner shop footer and empty state | migrated |
 | orders: claim button, claim screen, escrow confirmation | migrated |
 | ender chest upgrade dialog | migrated, fixed sides |
+| duels: kit/series/stake, map, options, the three-stage footer | migrated; stage one gained the Back and Cancel it never had |
+| Colosseum encounter menu | migrated; an available boss is no longer drawn in the colour for "did not happen" |
+| orders: board, claim screen, escrow confirmation | migrated; footer named in place, see the divergence above |
 | duels: empty states, closed betting, opponent wager panel | migrated |
 | Colosseum encounter menu | audited, unchanged — already the strongest screen on the server |
 | duel setup wizard, wager box, kit layout editor | audited, unchanged — named slots, self-tested, thorough comments |

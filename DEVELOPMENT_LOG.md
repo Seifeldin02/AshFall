@@ -5,6 +5,143 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-05 — The claim boundary closed, addItem pinned, and a lease so tests stop lying
+
+Staging only. No production file, process, configuration, database, console or restart was touched.
+
+### The duplication window is gone, not accepted
+
+Last pass moved claim delivery from delete-first to save-first and wrote the resulting duplicate window up
+as a residual that "fails towards the player". That was a false choice. The two **stores** cannot share a
+transaction — a SQLite row and a playerdata file — but the **receipt** can share one with the inventory.
+
+A player's PersistentDataContainer is serialised into the same `<uuid>.dat` that carries their Inventory,
+written by one save to a temporary file and renamed into place. So a note saying *row 41 was delivered, 6 of
+it did not fit* written before that save either persists with the items or not at all.
+
+    1. reconcile()   settle receipts an earlier crash left behind
+    2. read the rows, touch nothing
+    3. add to the inventory; write a receipt per row with the exact remainder
+    4. saveData()    items and receipts become durable together, or neither does
+    5. apply the receipts: delete what fitted, shrink what half fitted
+    6. clear the receipts
+
+| crash lands | state | what recovery does |
+|---|---|---|
+| before 4 | nothing durable, no receipt, rows intact | nothing happened |
+| between 4 and 5 | items durable, receipts durable, rows alive | apply the receipts; never re-deliver |
+| during 5 | some rows applied, others still carry receipts | finish them |
+| between 5 and 6 | receipts durable, rows already gone | clear them |
+
+All four are idempotent, so recovery runs twice with no effect the second time. `reconcile()` runs on join
+and before every collection. A receipt cannot be misread as a different claim because `smp_order_stash`
+uses `INTEGER PRIMARY KEY AUTOINCREMENT`, which SQLite never reuses.
+
+Nothing can slip between steps 3 and 4 because 2–6 run inside one server tick, and Paper's periodic player
+save runs in the tick loop rather than beside it. Making any of this asynchronous would break it.
+
+**And the test found a hole the design had left open.** A save that *fails* leaves the delivered items in a
+live inventory that nothing has recorded — and Paper persists that inventory the next time the player
+quits, while the row still says they are owed. Adding to an inventory is not a commit, and the only way to
+make it behave like one is to be able to undo it. A failed save now takes back exactly what that call put in.
+
+Claims are also refused inside disposable worlds: a Colosseum arena and a void world swap the real inventory
+out on entry, so anything handed over inside is discarded when the instance is torn down.
+
+`/ashfall stash <player> fail <before-save|after-save|after-apply>` aborts the next delivery at each
+boundary. `scenarios/stash_crash.py` enters all three, then opens the player's own `<uuid>.dat` and checks
+that the receipt is in the same 5 KB file as the items it records. 21 checks, 0 failed.
+
+### What addItem actually does
+
+I asserted twice that `Inventory#addItem` rewrites the stack it is handed. The truth is narrower and worse:
+it does so **only when the insertion is partially accepted**. Placed in a free slot, merged whole, or
+refused outright, the argument comes back untouched. So the one case that mutates is the one nobody reaches
+while testing, because it needs an inventory that is nearly but not quite full.
+
+`inventorySelfTest()` asserts all five outcomes, stacks of 64/16/1, and a round trip of name, lore,
+enchantment, damage and PDC through the stash's own serialisation. It failed twice before I had it right,
+which is the entire reason for writing it rather than describing it.
+
+Twenty-three insertion sites audited, listed in a comment at the top of `SMPCore`:
+
+* **`SMPCore.deliverStash`** compared the leftover against a stack that had *become* the leftover, so a
+  partial delivery read as "nothing fitted", the row stayed full-size, and the part that arrived would have
+  been handed out again. Real, and the reason the partial-fit scenario now exists.
+* **`SpawnerService`** counted `returned += item.getAmount()` after handing the item over — undercounts the
+  "N unsold items delivered" line whenever the inventory is nearly full.
+* **`MerchantService` ×2** reads the scroll it has just sold to decide what to announce. Works today because
+  only the amount is rewritten and it reads meta; hardened anyway.
+* **`ColosseumService`** had a plain duplication with nothing to do with `addItem`: an offline winner's loot
+  was stashed by `giveOrStash` *and* again by the branch after it. Paid twice.
+* Everything else — the hoppers, the shops, the orders, the arena kit fills, the graves — is safe, and the
+  comment records why so the next reader does not redo the work.
+
+`CoreUtil.give` clones, which makes its ninety-odd callers safe by construction.
+
+### A lease, so a verifier stops reporting things that are true and meaningless
+
+`/ashfall colosseum verify` reported three failures on 2026-09-04. All three were correct at the moment they
+were measured — a harness scenario had an encounter running and the verifier found its scheduled task.
+Re-run on a quiet server, 278/0. A suite that fails because something else is legitimately happening is
+worse than one that does not run, because it teaches whoever reads the output to discount failures.
+
+The four destructive suites take an exclusive lease and refuse **before touching anything**, naming what is
+in the way. `selftest` and `duelmap verify` are deliberately never gated — they only read. An expired lease
+is simply taken, so a crashed holder cannot hold it; `break` takes one from a holder that is not coming
+back; and nothing anywhere cancels a real encounter to make room for a test.
+
+The harness holds the lease for its whole run and refuses to start without it. Reproducing the exact overlap
+now gives a refusal naming the holder, and the scenario finishes 5/0 afterwards.
+
+One detail worth the comment it now carries: an RCON caller is named **Rcon**, not CONSOLE. Taking the lease
+under a name of your own choosing locks you out of your own suites, which is how the first run of this went.
+`/ashfall lease status` prints who you are.
+
+### The supervisors were waiting for the console, and the console for them
+
+Two controlled restarts, with every process identified by executable, command line, parent and creation time
+rather than by window title, showed last pass's owner-console check was right and still did not stop the
+leak. A conhost stays alive while anything is attached to it, and the guards are attached to it. Four
+consoles and their supervisors were running from boots hours apart.
+
+The JVM is the thing that actually ends. Each guard resolves the java process inside its **own** console's
+tree at startup and exits when that process is gone — per-server by construction, and not circular.
+`storage-guard` also slept fifteen minutes between looks, so it outlived its server by up to a quarter of an
+hour and held the console chain open for the same length of time; it sleeps in five-second slices now.
+
+After the fix, each boot has exactly one console-guard and one freeze-watchdog, and the previous boot's exit
+with their server. Production's five processes kept the same pids throughout and were never touched. The
+orphans that were cleared were identified by a dead owner and zero children, never by window title.
+
+### Interfaces
+
+The duel setup flow: chosen states read through colour and the glow rather than "✔ SELECTED —" in capitals
+ahead of the name; stake buttons say what the stake *becomes*; and the footer is the same on all three
+stages. Stage one had no Back and no Cancel at all, so the only way out of the first screen was to close it
+— which forfeits. The Colosseum menu stopped drawing an available boss in red, the colour this server uses
+for "did not happen", and its fee and prize lines now say plainly that the fee is kept either way. The
+Orders footer is named where it is rather than moved: it is internally consistent across six screens and its
+stash screen needs 49 for Collect, so half-migrating it is how a Back button ends up cancelling an order.
+
+### Verification
+
+* Suites, under the lease: colosseum verify 278/0, voidworld verify 13/0, selftest 0 failed (64 lines),
+  duelmap verify 0, duelmap canary PASSED, hopper verify 0.
+* Harness: 8 scenarios, 84 checks, 0 failed, as an ordinary player.
+* `test_lease.py` 18 checks 0 failed; `test_guard.py` 10 refusals 0 failed.
+* `check_deploy.py` 43/47 — the four are the two Colosseum artifacts and the two supervisor scripts, each
+  explained in `deploy/PROMOTION_CHECKLIST.md`.
+
+### Still unverified
+
+* **Bedrock.** Nothing has been through Geyser.
+* **The bank front page.** It opens only from the Banker merchant and the harness client cannot interact
+  with an entity, so it has still never been captured from a client. Its code is covered; its appearance is
+  not.
+* **Production's supervisors.** Whether the fixed scripts behave the same on production's process tree can
+  only be seen at production's next restart, which is not mine to perform.
+
 ## Session: 2026-09-04 (part 3) — Menus finish the overhaul, and the claim stash stops losing things
 
 Staging only. No production file, process, configuration, database or restart was touched.

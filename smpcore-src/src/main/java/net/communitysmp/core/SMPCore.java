@@ -1680,6 +1680,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             default->{
                 if(held==null)CoreUtil.field(sender,"Test lease","free");
                 else CoreUtil.field(sender,"Test lease",held.owner()+" \u00b7 "+held.purpose()+" \u00b7 "+held.secondsLeft()+"s left");
+                /*  You are identified by the name the server knows you as, which for an RCON caller is
+                 *  "Rcon" and not "CONSOLE". Taking the lease under any other name locks you out of your
+                 *  own suites, so the name is on the screen rather than left to be discovered. */
+                CoreUtil.field(sender,"You are",sender.getName());
                 java.util.List<String> busy=stagingActivity(null);
                 if(busy.isEmpty())CoreUtil.hint(sender,"Nothing is running; the destructive suites are safe.");
                 else for(String line:busy)CoreUtil.item(sender,line);
