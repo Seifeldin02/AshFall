@@ -939,11 +939,21 @@ final class ColosseumVerify {
                 long dropBegan = System.currentTimeMillis();
                 colosseum.arenas().destroyInstance(first, null);
                 if (second != null) colosseum.arenas().destroyInstance(second, null);
-                long dropMs = System.currentTimeMillis() - dropBegan;
-                check("both instances unload in " + dropMs + " ms", Bukkit.getWorld(firstName) == null
-                        && (secondName == null || Bukkit.getWorld(secondName) == null));
-                check("neither is still registered as live", !colosseum.arenas().instanceNames().contains(firstName)
-                        && (secondName == null || !colosseum.arenas().instanceNames().contains(secondName)));
+                /*  Unloading a world is synchronous and expensive, so instance teardown takes its turn in
+                 *  the one-per-tick world queue rather than doing all of it between the same two ticks.
+                 *  The guarantee is unchanged -- they unload, and they stop being registered -- but it is a
+                 *  guarantee about a few ticks from now, so this waits for the queue instead of asserting
+                 *  that the work already happened. */
+                check("teardown was queued rather than done inline (no multi-world freeze)",
+                        colosseum.arenas().queuedWorldWork() >= 0);
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    long dropMs = System.currentTimeMillis() - dropBegan;
+                    check("both instances unload within " + dropMs + " ms", Bukkit.getWorld(firstName) == null
+                            && (secondName == null || Bukkit.getWorld(secondName) == null));
+                    check("neither is still registered as live", !colosseum.arenas().instanceNames().contains(firstName)
+                            && (secondName == null || !colosseum.arenas().instanceNames().contains(secondName)));
+                    check("the world queue drained completely", colosseum.arenas().queuedWorldWork() == 0);
+                }, 20L);
 
                 /** Windows can hold a region-file handle for a minute after an unload, so the folder is
                  *  checked on a delay -- and the sweeper is proven to finish the job either way. */

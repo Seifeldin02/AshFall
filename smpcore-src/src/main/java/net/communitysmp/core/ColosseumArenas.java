@@ -495,7 +495,7 @@ final class ColosseumArenas {
             catch (IOException e) { plugin.getLogger().warning("[colosseum] clone failed for " + arena.key() + ": " + e.getMessage()); copied = false; }
             long copiedAt = System.currentTimeMillis();
             boolean ok = copied;
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            Bukkit.getScheduler().runTask(plugin, () -> queueWorldWork(() -> {
                 if (!ok) { fs().deleteQuietly(target); done.accept(null, null); return; }
                 DuelMapService.stripIdentity(target);
                 World instance = open(name, environment);
@@ -522,7 +522,7 @@ final class ColosseumArenas {
                             + stats[0] + " ms, " + stats[2] + " chunks)");
                     done.accept(instance, stats);
                 });
-            });
+            }));
         });
     }
 
@@ -542,6 +542,42 @@ final class ColosseumArenas {
 
     /** Unloads and deletes an instance world entirely. Anybody still inside is moved out first -- an
      *  unloading world with a player in it is how somebody ends up at 0,0 in a world that no longer exists. */
+    /*  ---------------------------------------------------------------------------------------------------
+     *  ONE WORLD OPERATION PER TICK.
+     *
+     *  Creating a world and unloading one are both synchronous, and Bukkit offers no asynchronous form of
+     *  either. That is fine for one; it is not fine for four in the same tick, which is what happens when
+     *  the concurrency limit is reached at once.
+     *
+     *  Measured on staging, worst tick in a five-second window, three cycles each:
+     *
+     *      idle                    2.6 - 6.8 ms
+     *      four instances opened   672 - 822 ms      <- one tick
+     *      the four fights         2.4 - 3.7 ms      <- the encounters themselves cost nothing
+     *      four instances dropped  237 - 288 ms
+     *
+     *  The work is unavoidable; doing all of it between the same two ticks is not. Spread one operation per
+     *  tick, the same total cost becomes four ordinary hitches instead of one freeze approaching a second,
+     *  and nothing else on the server has to wait for somebody else's arena to be built. */
+    private final java.util.ArrayDeque<Runnable> worldQueue = new java.util.ArrayDeque<>();
+    private org.bukkit.scheduler.BukkitTask worldQueueDrain;
+
+    private void queueWorldWork(Runnable work) {
+        worldQueue.add(work);
+        if (worldQueueDrain != null) return;
+        worldQueueDrain = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            Runnable next = worldQueue.poll();
+            if (next != null) {
+                try { next.run(); }
+                catch (RuntimeException error) { plugin.getLogger().warning("[colosseum] queued world work failed: " + error); }
+            }
+            if (worldQueue.isEmpty() && worldQueueDrain != null) { worldQueueDrain.cancel(); worldQueueDrain = null; }
+        }, 1L, 1L);
+    }
+
+    /** How much world work is waiting, for the instance report and the verifier. */
+    int queuedWorldWork() { return worldQueue.size(); }
+
     void destroyInstance(World world, Location fallback) {
         if (world == null || !world.getName().startsWith(INSTANCE_PREFIX)) return;
         long began = System.currentTimeMillis();
@@ -552,12 +588,16 @@ final class ColosseumArenas {
         purge(world);
         String name = world.getName();
         File folder = world.getWorldFolder();
-        boolean unloaded = Bukkit.unloadWorld(world, false);
-        liveInstances.remove(name);
-        prepStats.remove(name);
-        if (!unloaded) plugin.getLogger().warning("[colosseum] " + name + " refused to unload; it will be swept shortly.");
-        fs().deleteWithRetry(folder, 30);
-        plugin.getLogger().info("[colosseum] instance " + name + " dropped in " + (System.currentTimeMillis() - began) + " ms");
+        queueWorldWork(() -> {
+            boolean unloaded = Bukkit.unloadWorld(world, false);
+            liveInstances.remove(name);
+            prepStats.remove(name);
+            if (!unloaded) plugin.getLogger().warning("[colosseum] " + name + " refused to unload; it will be swept shortly.");
+            /** Off the main thread: the world is unloaded, so the folder is nobody's, and walking tens of
+             *  megabytes of region files is not a thing to do between two ticks. */
+            fs().deleteAsync(folder, 30);
+            plugin.getLogger().info("[colosseum] instance " + name + " dropped in " + (System.currentTimeMillis() - began) + " ms");
+        });
     }
 
     /** Startup recovery. Every instance world is disposable by definition, so anything on disk at boot is

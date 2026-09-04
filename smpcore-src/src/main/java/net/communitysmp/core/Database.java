@@ -841,15 +841,25 @@ final class Database implements AutoCloseable {
      *  Both halves now commit together or neither does. serverPayment joins the open transaction rather
      *  than starting its own, so the balance check, the bank credit and the flag are one write. */
     synchronized boolean colosseumChargeEntry(String runId,String player,double fee,String detail){
-        boolean own=false;
+        boolean own=false;java.sql.Savepoint savepoint=null;
         try{
-            own=connection.getAutoCommit();if(own)connection.setAutoCommit(false);
-            if(update("UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0",runId)!=1){if(own)connection.rollback();return false;}
-            if(!serverPayment(player,fee,"FEE",detail)){if(own)connection.rollback();return false;}
-            if(own)connection.commit();
+            own=connection.getAutoCommit();
+            /** Owns the transaction when there is none, and nests inside one when there is -- so a caller
+             *  that is already mid-transaction (the selftest, for one) still gets all-or-nothing rather
+             *  than leaving the flag set behind a payment that did not happen. */
+            if(own)connection.setAutoCommit(false);else savepoint=connection.setSavepoint("colosseum_charge");
+            if(update("UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0",runId)!=1){undo(own,savepoint);return false;}
+            if(!serverPayment(player,fee,"FEE",detail)){undo(own,savepoint);return false;}
+            if(own)connection.commit();else if(savepoint!=null)connection.releaseSavepoint(savepoint);
             return true;
-        }catch(Exception e){if(own)rollbackQuietly();if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
+        }catch(Exception e){undoQuietly(own,savepoint);if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
         finally{if(own)autoCommitQuietly();}
+    }
+    private void undo(boolean own,java.sql.Savepoint savepoint)throws SQLException{
+        if(own)connection.rollback();else if(savepoint!=null)connection.rollback(savepoint);
+    }
+    private void undoQuietly(boolean own,java.sql.Savepoint savepoint){
+        try{undo(own,savepoint);}catch(SQLException ignored){}
     }
     synchronized boolean colosseumMarkRefunded(String runId){return update("UPDATE colosseum_runs SET refunded=1 WHERE run_id=? AND charged=1 AND refunded=0",runId)==1;}
     synchronized boolean colosseumMarkPaid(String runId){return update("UPDATE colosseum_runs SET paid=1 WHERE run_id=? AND paid=0",runId)==1;}
