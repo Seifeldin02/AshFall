@@ -862,6 +862,20 @@ final class ColosseumVerify {
                 }
                 check("the arena is empty again after the boss probes", first.getLivingEntities().isEmpty());
 
+                /*  Nothing outside a disposable world may hold a Location pointing into it.
+                 *
+                 *  A death inside an instance used to be recorded as the player's /back origin, which kept
+                 *  the unloaded world object alive for as long as that entry survived and left /back
+                 *  pointing at somewhere that no longer exists. */
+                check("a live instance is recognised as a disposable world", plugin.isDisposableWorld(first));
+                check("the real world is not", !plugin.isDisposableWorld(Bukkit.getWorlds().getFirst()));
+                if (plugin.teleports() != null) {
+                    check("a /back origin inside an instance is refused (no pinned world, no dead destination)",
+                            !plugin.teleports().backWorthy(arena.playerSpawn(first)));
+                    check("...and an ordinary location is still recorded",
+                            plugin.teleports().backWorthy(Bukkit.getWorlds().getFirst().getSpawnLocation()));
+                }
+
                 /** Every mechanic of the three newer encounters, driven for real in this instance. */
                 verifyLiveMechanics(arena, first);
                 colosseum.arenas().purge(first);

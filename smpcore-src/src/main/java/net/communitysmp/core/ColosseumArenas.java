@@ -189,7 +189,17 @@ final class ColosseumArenas {
             World world = open(working, environment);
             if (world == null) { fs().deleteQuietly(workingFolder); return snapshotOf(arena); }
             applyWorldRules(world, false);
-            loadPlayArea(world, arena);
+            /*  Wider than the play area on purpose.
+             *
+             *  Converting only the arena's own chunks left seven still in the old shape -- the world spawn,
+             *  and the ring the engine pulls in around the edges to light them -- and those seven then threw
+             *  on every instance load afterwards. The margin covers them, and converting a few extra chunks
+             *  once costs nothing next to re-lighting them forever. */
+            int[] range = chunkRange(arena);
+            for (int cx = range[0] - 2; cx <= range[2] + 2; cx++)
+                for (int cz = range[1] - 2; cz <= range[3] + 2; cz++)
+                    world.getChunkAt(cx, cz).load(true);
+            world.getChunkAt(0, 0).load(true);
             world.save();
             if (!Bukkit.unloadWorld(world, true)) {
                 plugin.getLogger().warning("[colosseum] conversion world " + working + " would not unload; using the committed snapshot.");

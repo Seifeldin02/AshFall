@@ -829,6 +829,28 @@ final class Database implements AutoCloseable {
     /** Charging is a COMPARE-AND-SET, not an update: the WHERE clause refuses a second charge outright, so a
      *  duplicated callback cannot take the fee twice even if it beats the in-memory guard. */
     synchronized boolean colosseumMarkCharged(String runId){return update("UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0",runId)==1;}
+    /*  THE ENTRY FEE, as one commit.
+     *
+     *  The flag and the money used to be two: mark the run charged, then take the fee. Each half is atomic
+     *  and each half is compare-and-set, and that is still not enough, because the gap between two commits
+     *  is a state the database can be found in. A process that dies in that gap leaves charged=1 with
+     *  nothing debited -- and boot recovery, which refunds any charged run it finds interrupted, would then
+     *  hand back a fee that was never taken and debit the Central Bank to do it. Rare, and it invents money,
+     *  which is the kind of rare that matters.
+     *
+     *  Both halves now commit together or neither does. serverPayment joins the open transaction rather
+     *  than starting its own, so the balance check, the bank credit and the flag are one write. */
+    synchronized boolean colosseumChargeEntry(String runId,String player,double fee,String detail){
+        boolean own=false;
+        try{
+            own=connection.getAutoCommit();if(own)connection.setAutoCommit(false);
+            if(update("UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0",runId)!=1){if(own)connection.rollback();return false;}
+            if(!serverPayment(player,fee,"FEE",detail)){if(own)connection.rollback();return false;}
+            if(own)connection.commit();
+            return true;
+        }catch(Exception e){if(own)rollbackQuietly();if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
+        finally{if(own)autoCommitQuietly();}
+    }
     synchronized boolean colosseumMarkRefunded(String runId){return update("UPDATE colosseum_runs SET refunded=1 WHERE run_id=? AND charged=1 AND refunded=0",runId)==1;}
     synchronized boolean colosseumMarkPaid(String runId){return update("UPDATE colosseum_runs SET paid=1 WHERE run_id=? AND paid=0",runId)==1;}
     synchronized boolean colosseumMarkActive(String runId){return update("UPDATE colosseum_runs SET state='ACTIVE' WHERE run_id=? AND state='PREPARING'",runId)==1;}
@@ -1306,6 +1328,14 @@ final class Database implements AutoCloseable {
              *  guarantee. Asserted directly, because "charge once" is not something a live fight can prove. */
             colosseumRunOpen("__selftest_run","__selftest_a","SelfTestA","__selftest_boss","__selftest_arena",500000,1000000,false,"__selftest_day");
             if(!colosseumMarkCharged("__selftest_run")||colosseumMarkCharged("__selftest_run"))throw new SQLException("the entry fee could be charged twice");
+            /*  And the flag never survives a fee that did not: a charge the player cannot afford must leave
+             *  the run exactly as uncharged as it was, or boot recovery will refund money nobody paid. */
+            colosseumRunOpen("__selftest_run_poor","__selftest_a","SelfTestA","__selftest_boss","__selftest_arena",500000,1000000,false,"__selftest_day");
+            double held=player("__selftest_a")==null?0:player("__selftest_a").balance();
+            if(colosseumChargeEntry("__selftest_run_poor","__selftest_a",held+1000000,"COLOSSEUM_ENTRY:selftest"))throw new SQLException("an unaffordable entry fee was accepted");
+            if(colosseumRun("__selftest_run_poor")!=null&&colosseumRun("__selftest_run_poor").charged())throw new SQLException("a failed charge still marked the run charged - recovery would refund a fee nobody paid");
+            if(player("__selftest_a")!=null&&Math.abs(player("__selftest_a").balance()-held)>0.001)throw new SQLException("a failed charge moved money");
+            checks.add("Colosseum entry fee is one commit (flag and money cannot disagree): ok");
             if(!colosseumMarkActive("__selftest_run")||colosseumMarkActive("__selftest_run"))throw new SQLException("a run could be committed twice");
             if(!colosseumMarkPaid("__selftest_run")||colosseumMarkPaid("__selftest_run"))throw new SQLException("the prize could be paid twice");
             if(!colosseumResolve("__selftest_run","VICTORY",true,1234)||colosseumResolve("__selftest_run","DEATH",false,1))throw new SQLException("a run could be resolved twice");

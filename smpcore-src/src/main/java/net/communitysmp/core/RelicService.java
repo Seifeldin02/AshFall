@@ -32,9 +32,10 @@ import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 final class RelicService implements Listener {
-    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask,anchorTask;
+    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask,anchorTask,hudTask;
 
     /** One armed Skyward Anchor. `peak` is OUR OWN fall tracking rather than Player#getFallDistance,
      *  because vanilla zeroes that constantly while gliding and we need the drop to survive an elytra
@@ -64,12 +65,12 @@ final class RelicService implements Listener {
      *  most of a health bar -- the relic would routinely kill its own user. This is also what was asked for
      *  in so many words: a wind burst should not hand you the full fall back. */
     private final Map<UUID,Long> burstGrace=new java.util.concurrent.ConcurrentHashMap<>();
-    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);anchorTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::anchorTick,1L,1L);}
+    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);anchorTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::anchorTick,1L,1L);hudTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::heldRelicTick,7L,5L);}
     /** Test-only hook for /admin relictest — runs the real periodic lifecycle pass immediately instead of
      *  waiting up to 10 minutes for the next scheduled one. Not used by any normal game logic. */
     void debugForceLifecycleTick(){lifecycleTick();}
-    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();anchors.clear();slamGuard.clear();burstGrace.clear();}
-    void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));}
+    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();if(hudTask!=null)hudTask.cancel();anchors.clear();slamGuard.clear();burstGrace.clear();}
+    void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));cooldownReady.clear();}
     Set<String> keys(){ConfigurationSection section=config.getConfigurationSection("relics");return section==null?Set.of():section.getKeys(false);}
     String displayName(String relicKey){return config.getString("relics."+relicKey+".name",CoreUtil.pretty(relicKey));}
     ItemStack create(String relicKey){String path="relics."+relicKey;Material material=Material.matchMaterial(config.getString(path+".material","PAPER"));if(material==null)material=Material.PAPER;ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(displayName(relicKey),NamedTextColor.GOLD));List<Component> lore=new ArrayList<>();for(String line:config.getStringList(path+".lore"))lore.add(Component.text(line,NamedTextColor.GRAY));lore.add(Component.empty());lore.add(Component.text("Unique Relic • "+relicKey,NamedTextColor.DARK_PURPLE));meta.lore(lore);meta.getPersistentDataContainer().set(key,PersistentDataType.STRING,relicKey);item.setItemMeta(meta);if(relicKey.equals("crown_of_ash")){item.addUnsafeEnchantment(Enchantment.PROTECTION,4);item.addUnsafeEnchantment(Enchantment.FIRE_PROTECTION,4);item.addUnsafeEnchantment(Enchantment.UNBREAKING,3);}if(relicKey.equals("wayfinder"))item.addUnsafeEnchantment(Enchantment.UNBREAKING,1);if(relicKey.equals("oathblade")){item.addUnsafeEnchantment(Enchantment.SHARPNESS,5);item.addUnsafeEnchantment(Enchantment.LOOTING,2);item.addUnsafeEnchantment(Enchantment.UNBREAKING,3);}return item;}
@@ -905,7 +906,6 @@ final class RelicService implements Listener {
 
     /** Per-tick bookkeeping for everyone with the relic armed. */
     private void anchorTick(){
-        heldRelicTick();
         if(anchors.isEmpty())return;
         double maxAngle=config.getDouble("buffs.skyward-anchor.elytra-max-dive-angle",40);
         long life=Math.max(5,config.getLong("buffs.skyward-anchor.arm-seconds",30))*1000L;
@@ -1157,10 +1157,23 @@ final class RelicService implements Listener {
          *  not WRITE a cooldown either, so a creative test cannot lock the relic out for a survival player
          *  afterwards -- these cooldowns are bound to the relic itself, not to whoever is holding it. */
         if(player.getGameMode()==GameMode.CREATIVE)return false;
-        long now=System.currentTimeMillis(),ready=parseLong(db.state("relic_cooldown:"+relicKey));
+        long now=System.currentTimeMillis(),ready=cooldownReadyAt(relicKey);
         if(now<ready){CoreUtil.error(player,displayName(relicKey)+" is not ready yet ("+((ready-now)/1000+1)+"s).");return true;}
-        db.state("relic_cooldown:"+relicKey,Long.toString(now+cooldownMs));return false;
+        db.state("relic_cooldown:"+relicKey,Long.toString(now+cooldownMs));cooldownReady.put(relicKey,now+cooldownMs);return false;
     }
+    /*  The relic cooldown, read from memory instead of from the database.
+     *
+     *  It is still PERSISTED per relic, which is the property that matters -- dropping, relogging, dying,
+     *  trading or restarting cannot reset one. But the countdown on a held relic's action bar was reading
+     *  it back through db.state() on the main thread, inside Database's own lock, once per tick per holder:
+     *  twenty synchronized SELECTs a second, each to render a number that changes once a second. The value
+     *  is written in exactly one place, so holding it in memory cannot drift from the table; a restart or a
+     *  reload re-reads it from disk, which is the only way it ever changes underneath us. */
+    private final Map<String,Long> cooldownReady=new ConcurrentHashMap<>();
+    private long cooldownReadyAt(String relicKey){
+        return cooldownReady.computeIfAbsent(relicKey,key->parseLong(db.state("relic_cooldown:"+key)));
+    }
+
     private long parseLong(String value){try{return value==null||value.isBlank()?0:Long.parseLong(value);}catch(NumberFormatException ignored){return 0;}}
     private void ashenReprisal(Player player,PlayerInteractEvent event){
         event.setCancelled(true);
@@ -1263,7 +1276,7 @@ final class RelicService implements Listener {
             if(anchors.containsKey(player.getUniqueId()))continue;
             String relicKey=keyOf(player.getInventory().getItemInMainHand());
             if(relicKey==null||!isActive(relicKey))continue;
-            long ready=parseLong(db.state("relic_cooldown:"+relicKey)),now=System.currentTimeMillis();
+            long ready=cooldownReadyAt(relicKey),now=System.currentTimeMillis();
             boolean creative=player.getGameMode()==GameMode.CREATIVE;
             Component state=creative||now>=ready
                     ?Component.text("READY",NamedTextColor.GREEN,net.kyori.adventure.text.format.TextDecoration.BOLD)

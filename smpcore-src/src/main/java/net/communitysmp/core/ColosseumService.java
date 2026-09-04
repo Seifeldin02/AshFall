@@ -319,7 +319,7 @@ final class ColosseumService implements Listener {
         if (!run.adminTest) {
             /** Charged exactly once, and only here. The database refuses a second charge for this run
              *  outright; the balance withdrawal itself is atomic and refuses to go negative. */
-            if (!db.colosseumMarkCharged(run.id) || !db.serverPayment(run.player, run.fee, "FEE", "COLOSSEUM_ENTRY:" + def.key())) {
+            if (!db.colosseumChargeEntry(run.id, run.player, run.fee, "COLOSSEUM_ENTRY:" + def.key())) {
                 db.colosseumMarkRefunded(run.id);
                 db.colosseumResolve(run.id, "ABORTED", false, 0);
                 run.moving = true;

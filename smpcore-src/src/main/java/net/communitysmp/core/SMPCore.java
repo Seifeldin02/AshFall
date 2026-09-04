@@ -34,6 +34,20 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     ShopService shop(){return shop;} SpawnerShopService spawnerShop(){return spawnerShop;} SpectacleService spectacle(){return spectacle;}
     double creditEarned(String player,double amount,String detail){if(amount<=0)return 0;if(bank==null){db.changeBalance(player,amount);return amount;}return bank.creditEarned(player,amount,detail);}
     boolean isAdmin(Player p){return trustedAdmins!=null&&trustedAdmins.isAdmin(p);}
+    /*  A world that exists only for as long as the thing happening inside it.
+     *
+     *  Colosseum instances, duel instances, event arenas and void worlds are all created, used and deleted.
+     *  Nothing outside them may keep a Location that points into one: a Location holds its World, so a
+     *  single cached one keeps the whole unloaded world object -- and everything it still references --
+     *  alive for as long as the cache does. It is also a destination that no longer exists, and asking a
+     *  Location for an unloaded world THROWS rather than returning null. */
+    boolean isDisposableWorld(org.bukkit.World world){
+        if(world==null)return false;
+        if(colosseum!=null&&colosseum.isColosseumWorld(world))return true;
+        if(duelMaps!=null&&duelMaps.isInstance(world))return true;
+        if(voidWorlds!=null&&voidWorlds.isVoidWorld(world))return true;
+        return arena!=null&&arena.isArenaWorld(world);
+    }
     boolean privileged(Player p){return isAdmin(p)&&(p.getGameMode()==GameMode.CREATIVE||p.getGameMode()==GameMode.SPECTATOR);}
     String roleName(Player p){return isAdmin(p)?"ADMIN":"MEMBER";}
     boolean isTeleporting(Player p){return teleports!=null&&teleports.isPending(p);}
