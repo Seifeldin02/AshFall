@@ -115,6 +115,12 @@ stale.
 
 After: **0 failures**, and preparation back to ~380 ms.
 
+One operational note, learned by measuring after the fix rather than assuming it: the derived snapshot is a
+cache, and a cache built by an earlier build keeps that build's mistakes. The margin was added after the
+first conversion had already been saved, so Nether instances kept reporting seven failures until the
+derived folder was deleted and rebuilt. Recorded in the manifest. Production has never had one, so it will
+build a correct snapshot the first time.
+
 ### 4. A relic countdown cost a database read every tick, per holder
 
 The action bar on a held relic shows READY or the seconds remaining, and it was rendering it twenty times a

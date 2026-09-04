@@ -132,6 +132,12 @@ sync:
       or treat it as the arena; /ashfall colosseum save <arena> is still the only way to commit a change,
       and committing drops this copy automatically.
 
+      If a <arena>__nether folder already exists that was built before b498d2b, DELETE IT. The conversion
+      originally only re-shaped the arena's own chunks, which left the world spawn and the lighting ring
+      around the edges in the old shape -- seven chunks that then threw on every instance load afterwards.
+      A snapshot converted by the current build reports zero. Production has never had one, so this only
+      applies to a server that ran an intermediate build.
+
       DELIBERATELY SEPARATE from duel-templates. The Colosseum arena was seeded once from the committed
       arena100 duel snapshot and is its own world from that point on; editing one can never alter the other,
       which is the whole reason for the split.
