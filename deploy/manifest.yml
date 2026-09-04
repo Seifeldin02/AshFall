@@ -102,12 +102,35 @@ sync:
       Each boss also carries strength / weakness / counterplay strings that the GUI prints and the selftest
       requires to be non-empty, and max-single-hit-percent, which stops one enormous opening blow skipping
       an encounter's mechanics and announces itself when it fires.
+
+      2026-09-04: the Chainbound Behemoth's charge keys changed shape and a jar swap will not update them.
+      A live colosseum.yml carrying the old block will run a charge that does nothing useful:
+
+        charge.length is now the distance actually RUN, not only the distance drawn. charge.speed is
+        blocks per game tick and a step is twice it (the encounter ticks every 2). probe-distance is gone.
+
+        New and required for the fight to behave: hit-height, step-up, step-down, stuck-grace-steps, and
+        miss-crashes. miss-crashes: true is what makes a dodged charge punishable anywhere in the arena
+        rather than only next to a wall -- turning it off removes the encounter's only real punish window
+        and makes its printed counterplay a lie.
+
+      Copy the shipped colosseum.yml charge block over the live one, then /ashfall reload.
   - path: plugins/SMPCore/colosseum-templates
     note: |
       COMMITTED COLOSSEUM ARENA SNAPSHOTS (added 2026-09-02). Same shape and same rules as duel-templates
       above -- one folder per arena key, a Paper dimension folder with no level.dat -- and the same
       consequence if it is missing: /colosseum offers nothing, and /ashfall selftest reports
       "Colosseum arena snapshots committed: 0/1".
+
+      2026-09-04: a SECOND folder can appear here, named <arena>__nether. It is a DERIVED cache, not a
+      commit: the Overworld snapshot re-shaped for a Nether-environment instance, built automatically the
+      first time a Nether boss is fought and rebuilt whenever the arena is re-committed. An Overworld
+      snapshot cloned straight into a Nether world hands Paper chunks whose light arrays do not fit -- 84
+      "Failed to parse light data" stack traces and a full re-light per instance, measured.
+
+      Safe to delete: it is rebuilt on next use, at the cost of one noisy conversion. Do NOT hand-edit it
+      or treat it as the arena; /ashfall colosseum save <arena> is still the only way to commit a change,
+      and committing drops this copy automatically.
 
       DELIBERATELY SEPARATE from duel-templates. The Colosseum arena was seeded once from the committed
       arena100 duel snapshot and is its own world from that point on; editing one can never alter the other,

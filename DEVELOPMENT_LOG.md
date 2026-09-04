@@ -5,6 +5,218 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-04 - Reliability pass: the charge that never moved, and four other real defects
+
+Staging only. No production file, process, configuration, database or restart was touched.
+
+The brief was a stability, correctness and performance pass with no new gameplay, starting from one
+concrete report: *the Chainbound Behemoth's charge fails every time and stuns it regardless of what I do.*
+It was true, the test suite agreed with the bug, and finding out why turned into the most useful thing in
+this session — not the fix itself, but the reason the fix could not have been found by reading.
+
+### A test client, because configuration checks cannot see gameplay
+
+Everything below was found or confirmed with a real player on the running staging server. Since there was
+no way to automate a player, one was written: a small protocol client (offline mode, protocol 767) that
+joins staging, answers keep-alives and the anticheat's transaction pings, runs commands through the real
+command path, clicks real GUI slots, dies and respawns, and records every entity-position packet it
+receives. That last part matters: polling the server over RCON samples at whatever rate the round trip
+allows, which is far too coarse to see a two-second charge. The client sees what a real client sees, at
+tick resolution.
+
+It is a test harness, not a feature — it lives in the session scratchpad, not in the repository. But it is
+the reason five of the six findings below are measurements rather than opinions.
+
+Two things it cost an hour each to learn, recorded so the next one is cheaper:
+
+* **A dead player cannot run a command, and the server does not say so.** It answers
+  `chat.disabled.options`, which reads like a client setting problem. The client has to send
+  `client_command`/respawn after `player_combat_kill` or everything silently stops working.
+* **SMPCore administration is gated on a named account, not on op.** `/ashfall ...` from an opped
+  non-listed account answers *"Only the configured ADMIN account can use SMPCore administration"*. That is
+  correct and deliberate; it also means an admin-only path cannot be exercised by an ordinary test account,
+  so the tests below use the real paid player path instead — which is better testing anyway.
+
+### 1. The Behemoth's charge never moved a single block
+
+**Reproduced with vanilla commands, on a bare Ravager, with nothing else involved.** Apply `Motion` to a
+mob with AI enabled and it travels 12-13 blocks in a second. Apply the same `Motion` to the same mob with
+`NoAI` set and it travels **exactly zero** — it does not even fall — and the motion simply accumulates on
+the entity, unused.
+
+The charge turns the boss's AI off on purpose: that lock is what makes the telegraph honest, because
+nothing in the engine may steer it once it has committed. It then drove the flight with `setVelocity`. So
+the boss stood perfectly still for the whole charge, its own no-progress guard noticed it was not getting
+anywhere after four steps, and it crash-stunned itself half a second after every charge. The stated
+counterplay — bait the lane, step out, punish the crash — could not happen, because the crash was already
+guaranteed.
+
+**The test agreed with the bug.** `verifyBehemoth` drove `advanceCharge` four hundred times inside a single
+server tick, where nothing can move by construction, and asserted *"a charge ends in a stun"*. The broken
+implementation satisfied that perfectly.
+
+The flight is now stepped along the locked vector by the encounter itself:
+
+* the lane is a distance budget, not a stopwatch, so the lane drawn during the wind-up is the lane run
+* the hit test is against the swept segment rather than the landing point, so a player standing in the lane
+  is hit by the charge passing *through* them — at two blocks a step that is a different question from
+  "where did it stop"
+* a step into the boundary or into something it cannot fit through is a wall, and a wall is a crash; it may
+  climb one block and follow the floor down two, so uneven ground is crossed rather than crashed into
+* running the full lane without touching anybody is a MISS, and a miss crashes — otherwise dodging is only
+  rewarded next to a wall, which is not what the counterplay text promises (`charge.miss-crashes`)
+* the no-progress rule survives as a backstop behind a grace period, so leaving the blocks can never be
+  mistaken for a collision
+
+**Measured in a real encounter, at client tick resolution.** Dodging: five charges, each travelling exactly
+30.0 blocks — the configured lane — in ten steps of ~2.1 blocks over 1.35 s, perfectly straight, each
+ending in a crash. Standing in the lane: eight charges, six connected (closest approach 1.0-1.9 blocks,
+health lost each time); the two that missed had been left by knockback at 4.2 and 10.3 blocks.
+
+The regression now measures distance first and outcome second: an open-lane charge must move the boss more
+than 60% of its lane, must take more steps than the no-progress grace, must stay on the locked vector to
+within half a block, must sweep a point in the lane and miss one beside it, and a charge into the boundary
+must crash short and leave the boss inside the arena. Every one of those fails against the implementation
+being replaced.
+
+### 2. /colosseum leave could not be confirmed
+
+Leaving a paid encounter is confirm-by-repeat: the first call warns and prints *"Run /colosseum leave again
+within 10 seconds to give it up."* The duplicate-command guard cancels any command repeated inside its
+three-second window and answers *"You just ran that — wait a moment."* So the one command that asks to be
+run twice was the one command that could not be. A player following the instruction promptly is refused;
+only a repeat landing in the three-to-ten second gap works.
+
+Admins never saw it, because admins skip the guard. Found by a test client following the instruction.
+
+The guard now exempts confirm-by-repeat commands as well as the confirm-by-click screens it already
+exempted. The list is deliberately one entry long, and the verifier asserts both directions — that
+`/colosseum leave` is exempt and that `/colosseum stats`, `/rtp` and `/home` still are not, because an
+exemption that exempts too much is the same bug facing the other way. Confirmed live: a 1.2-second repeat
+now leaves cleanly.
+
+### 3. A Nether instance re-lit every chunk it loaded
+
+The committed arena snapshot is built in a NORMAL world, which is 24 block sections tall. A Nether world is
+16. Cloning that snapshot straight into a Nether instance hands Paper chunks whose light arrays do not fit,
+and it says so: `Failed to parse light data`, `ArrayIndexOutOfBoundsException: Index 18 out of bounds for
+length 18`, once per chunk.
+
+Measured on staging: **84 failures and about 1,300 log lines per instance**, and **615 ms** to prepare one
+against ~360 ms for an Overworld instance of the same arena. On a server that has already lost a night to a
+full Log4j async queue, that much per-encounter log traffic is not just noise.
+
+A Nether arena now gets its own snapshot, converted once from the committed one by opening it as a Nether
+world, letting the engine re-light it that single time, and saving the result. The conversion loads two
+chunks beyond the play area — converting only the arena's own chunks left seven still in the old shape (the
+world spawn and the ring pulled in for lighting) and those seven then threw on every load afterwards. The
+committed snapshot is never modified, and committing a new one drops the derived copies so they cannot go
+stale.
+
+After: **0 failures**, and preparation back to ~380 ms.
+
+### 4. A relic countdown cost a database read every tick, per holder
+
+The action bar on a held relic shows READY or the seconds remaining, and it was rendering it twenty times a
+second — each render reading the cooldown back through `db.state()`, a synchronized SQLite SELECT on the
+main thread, inside `Database`'s own lock, to produce a number that changes once a second. Ten relic
+holders online is two hundred main-thread queries a second, all of them contending with every other
+database operation on the server.
+
+The cooldown is still persisted per relic, which is the property that matters — dropping, relogging, dying,
+trading or restarting cannot reset one — but it is now held in memory. It is written in exactly one place,
+so it cannot drift, and a reload re-reads it. The HUD moved to its own five-tick task; the anchor tracking
+that genuinely needs every tick kept it. **20 reads/second/holder → 0, and 20 action-bar packets/second →
+4.**
+
+### 5. The Colosseum entry fee was a flag and a payment in two separate commits
+
+`colosseumMarkCharged` committed, then `serverPayment` committed. Each half is atomic and each is
+compare-and-set, and that is still not enough: the gap between two commits is a state the database can be
+found in. A process that died there would leave `charged=1` with nothing debited — and boot recovery, which
+refunds any charged run it finds interrupted, would hand back a fee nobody paid and debit the Central Bank
+to do it. Rare, and it invents money.
+
+Both halves now commit together or neither does, with a savepoint when the caller is already inside a
+transaction so nesting behaves the same way. The selftest asserts it from the failing side: an entry fee
+the player cannot afford must leave the run exactly as uncharged as it was, and must not move a cent.
+
+### 6. Dying in a disposable world pinned that world in memory
+
+`onDeath` recorded where you died as your `/back` origin, and dying happens inside Colosseum instances,
+duel instances, event arenas and void worlds — worlds deleted minutes later. A `Location` holds its
+`World`, so one cached entry kept the whole unloaded world object, and everything it still referenced,
+alive for as long as the player stayed in that map. It also left `/back` pointing into somewhere that no
+longer exists, and asking a `Location` for an unloaded world **throws** rather than returning null, so it
+was not even a clean failure.
+
+Disposable worlds are now a single named concept on the plugin (`SMPCore.isDisposableWorld`), a back origin
+in one is not recorded, and `/back` survives a world that unloaded after the fact. Asserted against a live
+instance: the instance is disposable, the real world is not, an origin inside it is refused, and an
+ordinary one is still kept.
+
+### Performance: the fights are free, the world plumbing is not
+
+Measured before anything was changed, worst tick in a five-second window, three cycles of four concurrent
+instances:
+
+| phase | before | after |
+|---|---:|---:|
+| idle | 2.6 - 6.8 ms | 2.3 - 15.0 ms |
+| four instances opened | **672 - 822 ms** | **301 - 432 ms** |
+| the four fights | 2.4 - 3.7 ms | 4.1 - 25.1 ms |
+| four instances dropped | **237 - 288 ms** | **68 - 96 ms** |
+
+The encounters themselves cost nothing measurable. Everything expensive is `createWorld()` and
+`unloadWorld()`, both synchronous, neither with an asynchronous form. Two changes:
+
+* **The folder delete moved off the main thread.** Once the world is unloaded the folder belongs to nobody.
+  If the process dies mid-delete the folder is left behind, which is exactly what boot recovery sweeps.
+  Honestly, this was the small half — the plugin's own drop timer barely moved, which is how we learned the
+  cost was `unloadWorld` and not the delete.
+* **One world operation per tick.** Opening and unloading instances now queue. Same total work, none of it
+  stacked into a single freeze.
+
+The remaining ~300-430 ms is one `createWorld()`, which is what it costs on this machine; past that is a
+world pool, which is a different design. What is gone is four of them at once.
+
+**Not changed on purpose:** no Bukkit world or entity operation was moved off-thread to make a profile look
+better, and no safety check or audit record was removed to reduce work.
+
+### Live verification
+
+All of this was run against the real server rather than asserted about it.
+
+* **Six real paid encounters, one per boss**, each fought for 70 s with a real player: all six spawn,
+  engage and clean up; instances return empty; 0 orphans afterwards.
+* **The Arcanist reads as inert if you stand still 51 blocks away** — closest approach 51.0 blocks, zero
+  damage in 70 s. That is not a bug: an Evoker has no goal that approaches a player and an explicit one
+  that avoids them, and this boss is a stationary support structure by design ("It does not defend itself.
+  Its seals do."). Fighting it the way a player must — standing next to the thing you are killing —
+  produced damage within seconds. Recorded because the first measurement looked alarming and was wrong.
+* **Voidworld lifecycle, the exact reported reproduction.** Teleported straight into a void world with
+  `/tp`, never using `/voidworld enter` → the lifecycle activated; `/voidworld exit` returned the player to
+  the overworld at the exact spot they left from, not 0,0 and not inside the void world, with the inventory
+  intact. Dying inside left no grave and dropped nothing.
+* **36 create/resolve/destroy operations across 12 cycles**: no instance folders left, no open runs, no
+  held state, no exceptions, no SEVERE lines, no light-data failures, TPS 19.6-19.9 throughout.
+* **Suites**: `/ashfall colosseum verify` 278 checks 0 failures (was 259), `/ashfall voidworld verify` 13/0,
+  `/ashfall selftest` 0 failed, `/ashfall duelmap verify` 0 failed, `/ashfall duelmap canary` PASSED,
+  `/ashfall hopper verify` 0 failed.
+
+### Still unverified, and separated on purpose
+
+* Whether the rewritten charge *feels* right in real gear — whether the lane is obvious enough to bait
+  deliberately, and whether ~300-430 ms of instance creation is noticeable to somebody standing elsewhere.
+* Bedrock/Geyser rendering of the six-slot menu, the confirmation screen and the interrupt bars.
+* The `AshfallProbe` account exists on staging with an AuthMe registration and op. It is a test account, it
+  is not in `trusted-admin.accounts`, and it should be removed before staging is ever handed to anybody.
+* `FactionService.renderEnabledBorders` runs `db.factionOf()` twice a second per player with borders
+  enabled — the same class of main-thread query as the relic HUD, but opt-in and much lower volume. Left
+  alone this session, noted here rather than fixed blind.
+
+---
+
 ## Session: 2026-09-03 - Colosseum bosses 4-6, Nether instances, Shards, and the Voidworld lifecycle
 
 ### The three new encounters
