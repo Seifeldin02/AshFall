@@ -69,6 +69,8 @@ final class AuctionService {
         CoreUtil.msg(player,rows.size()+" auction listing"+(rows.size()==1?"":"s")+" expired while you were away ("
                 +CoreUtil.money(value)+" of goods). Use /ah collect to reclaim them.");
     }
+    int collectibleCount(Player p){return db.collectibleCount(CoreUtil.id(p));}
+
     void collect(Player p){
         List<Database.AuctionRow> rows=db.collectibleAuctions(CoreUtil.id(p));
         if(rows.isEmpty()){CoreUtil.msg(p,"You have no expired listings to collect.");return;}
@@ -86,22 +88,9 @@ final class AuctionService {
         if(held>0)CoreUtil.hint(p,held+" would not fit and is waiting in /orders.");
     }
 
-    /*  Move whatever is owed to this player out of the durable stash and into their hands.
-     *
-     *  Best effort by design: anything that does not fit goes straight back into the stash, so a claim
-     *  survives a full inventory, a disconnect or a restart. Returns how much is still owed. */
-    private int deliverStash(Player player){
-        java.util.List<org.bukkit.inventory.ItemStack> owed=db.stashTake(CoreUtil.id(player));
-        int left=0;
-        for(org.bukkit.inventory.ItemStack item:owed){
-            if(item==null||item.getType().isAir())continue;
-            for(org.bukkit.inventory.ItemStack over:player.getInventory().addItem(item).values()){
-                db.stashAddItem(CoreUtil.id(player),over);
-                left++;
-            }
-        }
-        return left;
-    }
+    /*  Delivery itself lives in SMPCore.deliverStash, because the auction house and the order stash were
+     *  each doing their own version of it and only one of them put the leftovers back. */
+    private int deliverStash(Player player){return plugin.deliverStash(player);}
     void cancel(Player p,long id){Database.AuctionRow row=db.auction(id);if(row!=null&&row.seller().equals(CoreUtil.id(p))&&db.cancelAuction(id,CoreUtil.id(p))){CoreUtil.msg(p,"Listing cancelled. The listing fee is not refunded; use /ah collect for the item.");}else CoreUtil.error(p,"Active listing not found or not yours.");}
     List<Database.AuctionRow> rows(){return db.activeAuctions();}
     private Player find(String id){for(Player p:plugin.getServer().getOnlinePlayers())if(CoreUtil.id(p).equals(id))return p;return null;}

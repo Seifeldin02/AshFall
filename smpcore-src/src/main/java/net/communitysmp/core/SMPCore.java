@@ -112,6 +112,60 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         applyCommandFeedbackPolicy();
         getLogger().info("SMPCore 1.7.0 enabled: marketplace, accessibility settings, shards, faction relations and weekly Dragon are ready.");
     }
+    /*  DELIVERING WHAT THE STASH OWES, WITHOUT LOSING IT ON THE WAY.
+     *
+     *  Two stores that cannot share a transaction: a SQLite row, and a player inventory that is only
+     *  durable once Paper writes it to disk. Something has to happen first, and whichever it is decides
+     *  which way a crash in the middle goes.
+     *
+     *  It used to delete first, which fails towards LOSS: the row is gone, the item is in an inventory
+     *  that has not been saved, and a crash takes it with no record that anybody was owed anything.
+     *
+     *  It now goes the other way round, per item:
+     *
+     *      1. read the row, leave it alone
+     *      2. put the item in the inventory; whatever does not fit stays in the row, resized
+     *      3. flush the player to disk, so what we just handed over is actually durable
+     *      4. only then delete the rows we delivered
+     *
+     *  A crash before (3) leaves every row claimable and nothing durable -- correct. A crash between (3)
+     *  and (4) leaves an item that IS durable and a row that still says it is owed, so it can be claimed
+     *  once more: one DELETE against a local file wide, and only on an abrupt kill. That is the residual,
+     *  it is documented, and it fails towards the player rather than away from them.
+     *
+     *  Collecting twice on purpose still cannot duplicate anything, because step 4 already removed the row
+     *  and stashRemove reports whether it was the one that removed it.
+     *
+     *  Returns how many claims are still outstanding, which is normally a full inventory. */
+    int deliverStash(Player player){
+        java.util.List<Database.StashRow> owed=db.stashRows(CoreUtil.id(player));
+        if(owed.isEmpty())return 0;
+        java.util.List<Long> delivered=new java.util.ArrayList<>();
+        int left=0;
+        for(Database.StashRow row:owed){
+            java.util.Collection<org.bukkit.inventory.ItemStack> over;
+            try{over=player.getInventory().addItem(row.item()).values();}
+            catch(Throwable failure){
+                /*  One unreadable item must not swallow the rest of somebody's claims. Its row is left
+                 *  exactly as it was, and everything after it still gets its turn. */
+                getLogger().warning("Stash row "+row.id()+" for "+player.getName()+" could not be delivered: "+failure);
+                left++;continue;
+            }
+            if(over.isEmpty()){delivered.add(row.id());continue;}
+            org.bukkit.inventory.ItemStack remainder=over.iterator().next();
+            if(remainder.getAmount()>=row.item().getAmount()){left++;continue;}
+            db.stashShrink(row.id(),remainder);
+            left++;
+        }
+        if(!delivered.isEmpty()){
+            /*  The durability point. Without it the delete below can outlive the inventory write it is
+             *  supposed to be recording. */
+            try{player.saveData();}catch(Throwable ignored){}
+            for(long id:delivered)db.stashRemove(id);
+        }
+        return left;
+    }
+
     @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(voidWorlds!=null)voidWorlds.shutdown();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(colosseum!=null)colosseum.shutdown();if(spectacle!=null)spectacle.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
 
     /*  The player-facing half of the temporary event worlds.
@@ -581,6 +635,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"border"->adminBorder(sender,args);
                 case"reload"->{reloadConfig();shop.reload();relics.reload();bosses.reload();shards.reload();factions.refreshClaims();worldBorders.apply();CoreUtil.msg(sender,"Safe SMPCore YAML reloaded.");}
                 case"debug"->{CoreUtil.msg(sender,"Paper "+getServer().getMinecraftVersion()+" | Players "+db.topStats("balance").size()+" ranking rows | Factions "+db.factions().size());CoreUtil.msg(sender,"Vault "+economy.getName()+" | Event "+bosses.uiEventLine()+" | DB migration 1.7.0 active");}
+                case"stash"->adminStash(sender,args);
                 case"selftest"->selfTest(sender);
                 case"vanish"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run this in game.");return true;}boolean now=adminTools.toggleVanish(p);CoreUtil.msg(sender,"Vanish "+(now?"enabled":"disabled")+".");}
                 case"spectate"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run this in game.");return true;}if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall spectate <player>");return true;}Player target=getServer().getPlayerExact(args[1]);if(target==null){CoreUtil.error(sender,"That player is not online.");return true;}adminTools.spectate(p,target);CoreUtil.msg(sender,"Spectating "+target.getName()+". Use /ashfall unspectate to return.");}
@@ -1273,6 +1328,38 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String claimInfo=claim==null?"none":claim.size()+"x"+claim.size()+" | center "+((claim.minX()+claim.maxX())/2)+", "+((claim.minZ()+claim.maxZ())/2)+" | bounds X "+claim.minX()+".."+claim.maxX()+", Z "+claim.minZ()+".."+claim.maxZ();
         CoreUtil.msg(s,target.name()+" — "+f.name()+" ["+f.tag()+"] | members="+String.join(",",db.factionMembers(f.id()))+" | bank="+CoreUtil.money(f.balance())+" | claim="+claimInfo+" | net-worth="+CoreUtil.money(netWorth.value(f.id())));
     }
+    /*  THE CLAIM STASH, FROM THE OUTSIDE.
+     *
+     *  Auction purchases, expired listings and Colosseum reward overflow all land here when they cannot go
+     *  straight into an inventory, and until now nothing could see them: it is a table of serialised item
+     *  blobs. "I bought something and never got it" had no answer that was not a database client.
+     *
+     *  Read-only apart from `grant`, which exists so the delivery path can be exercised against a live
+     *  player -- a full inventory, a second collection, a restart in the middle -- rather than only against
+     *  the row lifecycle in the selftest. It is operator-gated and written to the audit trail like every
+     *  other admin action that creates something. */
+    private void adminStash(CommandSender sender,String[] args){
+        if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall stash <player> [grant <material> <count>]");return;}
+        String who=CoreUtil.id(args[1]);
+        if(args.length>=5&&args[2].equalsIgnoreCase("grant")){
+            org.bukkit.Material material=org.bukkit.Material.matchMaterial(args[3]);
+            if(material==null||material.isAir()){CoreUtil.error(sender,"No such item: "+CoreUtil.safe(args[3]));return;}
+            int count;
+            try{count=Math.max(1,Math.min(material.getMaxStackSize(),Integer.parseInt(args[4])));}
+            catch(NumberFormatException e){CoreUtil.error(sender,"That is not a number.");return;}
+            db.stashAddItem(who,new org.bukkit.inventory.ItemStack(material,count));
+            db.logAudit(sender.getName(),"STASH_GRANT",args[1]+" "+material+" x"+count);
+            CoreUtil.ok(sender,"Owed "+args[1]+" "+count+"x "+CoreUtil.pretty(material.name())+".");
+            return;
+        }
+        java.util.List<Database.StashRow> owed=db.stashRows(who);
+        CoreUtil.heading(sender,"Claim stash",args[1]+" · "+owed.size()+" waiting");
+        if(owed.isEmpty()){CoreUtil.hint(sender,"Nothing is owed to this player.");return;}
+        for(Database.StashRow row:owed)
+            CoreUtil.item(sender,"#"+row.id()+"  "+row.item().getAmount()+"x "+CoreUtil.pretty(row.item().getType().name()));
+        CoreUtil.hint(sender,"Delivered when they use /orders, with room to receive it.");
+    }
+
     private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Colosseum arenas, boss identities, economy and daily cap: "+(colosseum.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Colosseum arena snapshots committed: "+colosseumSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
 
     /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
