@@ -301,6 +301,13 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(owed.isEmpty())return 0;
 
         java.util.LinkedHashMap<Long,Integer> receipts=new java.util.LinkedHashMap<>();
+        /*  Exactly what went into the inventory, kept so it can come back out.
+         *
+         *  Without this, a failed save leaves the items sitting in a live inventory that nobody has
+         *  recorded -- and Paper saves that inventory when the player next quits. The claim row is still
+         *  there, so they would be paid a second time. Adding to an inventory is not a commit, and the
+         *  only way to make it behave like one is to be able to undo it. */
+        java.util.List<org.bukkit.inventory.ItemStack> handedOver=new java.util.ArrayList<>();
         int left=0;
         for(Database.StashRow row:owed){
             /*  addItem writes the remainder back into the stack it is handed, so the amount owed is read
@@ -318,19 +325,24 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             int remaining=over.isEmpty()?0:over.iterator().next().getAmount();
             if(remaining>=wanted){left++;continue;}          // nothing fitted; no receipt, no change
             receipts.put(row.id(),remaining);
+            org.bukkit.inventory.ItemStack taken=row.item().clone();
+            taken.setAmount(wanted-remaining);
+            handedOver.add(taken);
             if(remaining>0)left++;
         }
         if(receipts.isEmpty())return left;
 
-        maybeFail("before-save");
         /*  THE ATOMIC BOUNDARY. The receipts go into the same NBT document as the items they record. */
         writeReceipts(player,receipts);
-        try{player.saveData();}
+        try{maybeFail("before-save");player.saveData();}
         catch(Throwable failure){
-            /*  The save did not happen, so neither did the receipts. Drop them and leave every row alone;
-             *  the items in the live inventory disappear with the unsaved state on the next restart. */
+            /*  The save did not happen, so neither did the receipts -- and the items must not be left in a
+             *  live inventory that the next quit would persist behind the claim's back. Everything this
+             *  call put in comes straight back out, the receipts go, and every row is untouched. */
+            for(org.bukkit.inventory.ItemStack taken:handedOver)player.getInventory().removeItem(taken);
             writeReceipts(player,java.util.Map.of());
-            getLogger().severe("Could not persist a claim delivery for "+player.getName()+"; nothing was consumed: "+failure);
+            getLogger().severe("Could not persist a claim delivery for "+player.getName()
+                    +"; "+handedOver.size()+" item(s) were taken back and nothing was consumed: "+failure);
             return db.stashCount(CoreUtil.id(player));
         }
         maybeFail("after-save");

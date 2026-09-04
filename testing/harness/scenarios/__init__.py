@@ -6,7 +6,7 @@ not break silently again. They run against a live staging server through a real 
 be satisfied by calling a helper method.
 """
 from . import (charge, colosseum_leave, gui_confirm, voidworld_entry, inventory_conservation,
-               menu_navigation, stash_recovery)
+               menu_navigation, stash_recovery, stash_crash)
 
 ALL = {
     'charge': charge,
@@ -16,4 +16,5 @@ ALL = {
     'inventory': inventory_conservation,
     'menu-navigation': menu_navigation,
     'stash': stash_recovery,
+    'stash-crash': stash_crash,
 }
