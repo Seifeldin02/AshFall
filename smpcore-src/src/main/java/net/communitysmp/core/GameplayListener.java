@@ -43,6 +43,13 @@ final class GameplayListener implements Listener {
      *  list is touched here — the numeric online count is untouched, preserving whatever it already was. */
     @EventHandler public void serverList(ServerListPingEvent e){Iterator<Player> shown=e.iterator();while(shown.hasNext())if(plugin.adminTools().isHiddenFromPublic(shown.next()))shown.remove();if(plugin.getConfig().getBoolean("maintenance.enabled",false)){e.motd(net.kyori.adventure.text.Component.text("Server under maintenance",net.kyori.adventure.text.format.NamedTextColor.GOLD));return;}String name=plugin.getConfig().getString("server-name","Ashfall Concord");String line=bosses.serverListEventLine();e.motd(net.kyori.adventure.text.Component.text(name,net.kyori.adventure.text.format.NamedTextColor.GOLD).append(net.kyori.adventure.text.Component.newline()).append(net.kyori.adventure.text.Component.text(line,net.kyori.adventure.text.format.NamedTextColor.GRAY)));}
     @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e){Player p=e.getPlayer();syncSpectatorVisibility(p);if(!p.hasPlayedBefore())firstJoin.add(p.getUniqueId());db.ensurePlayer(CoreUtil.id(p),p.getName(),plugin.getConfig().getDouble("starting-balance",250));db.setIpHash(CoreUtil.id(p),CoreUtil.ipHash(p));if(plugin.getConfig().getBoolean("authentication.auto-authenticate-floodgate",true)&&isFloodgate(p)){plugin.getServer().getScheduler().runTaskLater(plugin,()->{try{AuthMeApi api=AuthMeApi.getInstance();if(!api.isRegistered(p.getName())){plugin.registration().openBedrock(p);return;}api.forceLogin(p);onAuthenticated(p);}catch(Exception ex){plugin.getLogger().severe("Could not authenticate Floodgate player "+p.getName()+": "+ex.getMessage());}},5L);}else if(plugin.getServer().getPluginManager().getPlugin("AuthMe")==null)plugin.getServer().getScheduler().runTask(plugin,()->onAuthenticated(p));}
+    /*  A delivery whose database half never happened leaves receipts in the player's own saved data.
+     *  Settling them on join is what turns a crash mid-collection into a no-op instead of a second
+     *  delivery -- and it has to happen before anything else can read the stash. */
+    @EventHandler(priority=EventPriority.MONITOR) public void settleClaimReceipts(PlayerJoinEvent e){
+        plugin.reconcileStash(e.getPlayer());
+    }
+
     @EventHandler(priority=EventPriority.MONITOR) public void legacySigilMigration(PlayerJoinEvent e){
         if(merchants!=null)plugin.getServer().getScheduler().runTaskLater(plugin,()->{if(e.getPlayer().isOnline())merchants.migrateLegacySigils(e.getPlayer());},40L);}
     @EventHandler(priority=EventPriority.MONITOR) public void login(LoginEvent e){plugin.getServer().getScheduler().runTask(plugin,()->onAuthenticated(e.getPlayer()));}

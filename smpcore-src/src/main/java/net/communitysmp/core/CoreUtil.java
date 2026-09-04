@@ -255,7 +255,21 @@ final class CoreUtil {
         }
     }
 
-    static boolean give(Player p,ItemStack item){Map<Integer,ItemStack> left=p.getInventory().addItem(item);left.values().forEach(i->p.getWorld().dropItemNaturally(p.getLocation(),i));return left.isEmpty();}
+    /*  HANDS AN ITEM OVER WITHOUT CONSUMING THE CALLER'S COPY.
+     *
+     *  Inventory#addItem writes the remainder back into the stack it is given: a stack that fits entirely
+     *  comes back with amount 0, and a stack that half fits comes back holding only the half that did not.
+     *  Callers do not expect that -- the spawner payout counted `returned += item.getAmount()` immediately
+     *  after handing the item over and therefore counted zero, and the merchant read the scroll it had
+     *  just sold to decide what to announce.
+     *
+     *  Giving addItem a clone costs one object and makes every one of the ninety-odd call sites safe by
+     *  construction, including the ones nobody has written yet. */
+    static boolean give(Player p,ItemStack item){
+        Map<Integer,ItemStack> left=p.getInventory().addItem(item.clone());
+        left.values().forEach(i->p.getWorld().dropItemNaturally(p.getLocation(),i));
+        return left.isEmpty();
+    }
     static String ipHash(Player p){try{String ip=p.getAddress()==null?"unknown":p.getAddress().getAddress().getHostAddress();byte[] h=MessageDigest.getInstance("SHA-256").digest(ip.getBytes(StandardCharsets.UTF_8));return HexFormat.of().formatHex(h,0,12);}catch(Exception e){return "unknown";}}
     static boolean unsafeSurface(Block b){Material m=b.getType();return !m.isSolid()||m==Material.MAGMA_BLOCK||m==Material.CACTUS||m==Material.FIRE||m==Material.SOUL_FIRE||m.name().contains("LEAVES");}
     static Location findSafe(World world,int x,int z){Block top=world.getHighestBlockAt(x,z,HeightMap.MOTION_BLOCKING_NO_LEAVES);if(unsafeSurface(top)||top.isLiquid())return null;Biome biome=top.getBiome();String bn=biome.getKey().getKey();if(bn.contains("ocean")||bn.contains("river"))return null;Location l=top.getLocation().add(0.5,1,0.5);if(!l.getBlock().isPassable()||!l.clone().add(0,1,0).getBlock().isPassable())return null;return l;}

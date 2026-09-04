@@ -2448,6 +2448,10 @@ final class ArenaService implements Listener {
         }
     }
 
+    /** How many duels are live right now. Read by the staging test lease, which refuses to run a
+     *  destructive suite while real matches are in progress. */
+    int liveDuelCount() { return duels.size(); }
+
     private Duel find(int id) { return duels.stream().filter(d -> d.id == id).findFirst().orElse(null); }
 
     /** Every current match, clickable to open its spectator/betting window. */

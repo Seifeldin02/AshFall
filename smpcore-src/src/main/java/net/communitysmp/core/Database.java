@@ -1073,6 +1073,16 @@ final class Database implements AutoCloseable {
             }catch(Throwable ignored){}
         return out;
     }
+    /** One claim by id, for the receipt-settling path, which knows the id but not the owner. */
+    synchronized StashRow stashRow(long id){
+        for(Object[] row:list("SELECT id,item FROM smp_order_stash WHERE id=?",
+                rs->new Object[]{rs.getLong(1),rs.getBytes(2)},id))
+            try{
+                for(ItemStack item:ItemStack.deserializeItemsFromBytes((byte[])row[1]))
+                    if(item!=null&&!item.getType().isAir())return new StashRow((Long)row[0],item);
+            }catch(Throwable ignored){}
+        return null;
+    }
     /** Delivered. Returns false if somebody else already removed it, which is what makes a second
      *  collection a no-op rather than a second delivery. */
     synchronized boolean stashRemove(long id){return update("DELETE FROM smp_order_stash WHERE id=?",id)==1;}

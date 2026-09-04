@@ -137,37 +137,224 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
      *  and stashRemove reports whether it was the one that removed it.
      *
      *  Returns how many claims are still outstanding, which is normally a full inventory. */
+    /*  ================================================================================================
+     *  DELIVERING A CLAIM ACROSS TWO STORES THAT CANNOT SHARE A TRANSACTION.
+     *
+     *  A claim lives in SQLite. The inventory it is delivered into lives in playerdata, which Paper writes
+     *  as a separate file. One of them has to be written first, and whichever it is decides what a crash
+     *  in the gap costs.
+     *
+     *      delete the row first    the row is gone, the item is in an unsaved inventory:  LOSS
+     *      save the player first   the item is durable, the row still says it is owed:    DUPLICATE
+     *
+     *  The previous pass chose the second and documented the duplicate as a residual. It is not a residual
+     *  any more, because the choice was a false one: the two stores cannot share a transaction, but the
+     *  RECEIPT can share a transaction with the inventory.
+     *
+     *  A player's PersistentDataContainer is serialised into the same <uuid>.dat that carries their
+     *  Inventory, written by one PlayerDataStorage.save() to a temporary file and renamed into place. So a
+     *  note saying "row 41 was delivered" written into the PDC before that save either persists WITH the
+     *  items or not at all. That is the atomic boundary this needs, and it already exists.
+     *
+     *  THE PROTOCOL, per collection:
+     *
+     *      1. reconcile()  -- settle any receipts left behind by an earlier crash
+     *      2. read the rows; do not touch them
+     *      3. for each row: add to the inventory, and write a receipt recording the row id and exactly
+     *         how much of it did NOT fit
+     *      4. saveData()   -- inventory and receipts become durable together, or neither does
+     *      5. apply the receipts to the database: delete what fully fitted, shrink what partly fitted
+     *      6. clear the receipts
+     *
+     *  WHERE A CRASH LANDS:
+     *
+     *      before 4    nothing durable, no receipt, rows untouched.        Nothing happened.
+     *      between 4   items durable, receipts durable, rows still there.  reconcile() applies the
+     *      and 5       receipts on the next join: delete/shrink, no second delivery.
+     *      during 5    some rows applied, the rest still carry receipts.   reconcile() finishes them.
+     *      between 5   receipts durable, rows already gone.                reconcile() clears them.
+     *      and 6
+     *
+     *  Every one of those is idempotent, so running recovery twice does nothing the second time.
+     *
+     *  WHY NOTHING CAN SLIP BETWEEN 3 AND 4: steps 2-6 run inside a single server tick. Paper's periodic
+     *  player save runs in the tick loop, not concurrently, so it cannot land in the middle and make an
+     *  item durable behind a receipt's back. Anything that made this asynchronous would break it.
+     *
+     *  WHY A RECEIPT CANNOT BE READ AS THE WRONG CLAIM: smp_order_stash uses INTEGER PRIMARY KEY
+     *  AUTOINCREMENT, which SQLite guarantees never reuses a rowid. A receipt for id 41 can only ever mean
+     *  the claim that was id 41. */
+    /*  EVERY INVENTORY INSERTION PATH IN THIS PLUGIN, AUDITED 2026-09-04.
+     *
+     *  Inventory#addItem rewrites the stack it is handed -- but ONLY when the insertion is partially
+     *  accepted. A stack that is placed, merged whole, or refused outright comes back untouched. That is
+     *  asserted by inventorySelfTest() below rather than believed, because I had it wrong twice.
+     *
+     *  A caller is therefore wrong if it reuses, compares, persists or logs that stack afterwards AND can
+     *  ever meet a nearly-full inventory. Twenty-three call sites; the ones that could are listed first,
+     *  and the rest are recorded so the next reader does not have to work it out again.
+     *
+     *      WRONG, now fixed
+     *        SMPCore.deliverStash       compared the leftover against the stack that HAD BECOME the leftover,
+     *                                   so a partial delivery read as "nothing fitted", the row stayed at
+     *                                   full size, and the part that arrived would be handed out again
+     *        SpawnerService payout      `returned += item.getAmount()` after CoreUtil.give undercounts the
+     *                                   "N unsold items delivered" line whenever the inventory is nearly full
+     *
+     *      FRAGILE RATHER THAN WRONG, hardened anyway by cloning inside CoreUtil.give
+     *        MerchantService x2         reads the scroll it has just sold to decide what to announce. Only
+     *                                   the amount is rewritten and it reads meta, so it works today -- and
+     *                                   it is exactly the shape that stops working
+     *
+     *      SAFE, and why
+     *        CoreUtil.give              clones now, which covers every one of its ninety-odd callers
+     *        ColosseumService.giveOrStash / ArenaService.giveOrStash   use the returned leftover, never the input
+     *        ShopService.buy            counts from a separate `amount`, never from the stack
+     *        OrdersService.deliver      subtracts from `remaining` BEFORE handing the stack over
+     *        OrdersService.returnInserted / GraveService.syncCompass / ShardService kit fill  do not reuse it
+     *        ArenaService kit fills     kitHotbar/kitExtra build fresh stacks per call, so nothing is shared
+     *        IndustrialHopper x7        every one moves a `piece = item.clone()` and counts a saved `take`
+     *        DuelMapService.put         loot placement; the caller does not read the stack afterwards
+     *
+     *  ColosseumService also had a separate duplication: an offline winner's loot was stashed by
+     *  giveOrStash AND again by the branch that followed it. */
+    static final String STASH_RECEIPT_KEY="stash_receipts";
+
+    private org.bukkit.NamespacedKey receiptKey(){return new org.bukkit.NamespacedKey(this,STASH_RECEIPT_KEY);}
+
+    /** "id:remaining" pairs. remaining 0 means the whole row was taken. */
+    private java.util.LinkedHashMap<Long,Integer> readReceipts(Player player){
+        java.util.LinkedHashMap<Long,Integer> out=new java.util.LinkedHashMap<>();
+        String raw=player.getPersistentDataContainer().get(receiptKey(),org.bukkit.persistence.PersistentDataType.STRING);
+        if(raw==null||raw.isBlank())return out;
+        for(String part:raw.split(",")){
+            int colon=part.indexOf(':');
+            if(colon<=0)continue;
+            try{out.put(Long.parseLong(part.substring(0,colon).trim()),Integer.parseInt(part.substring(colon+1).trim()));}
+            catch(NumberFormatException ignored){}
+        }
+        return out;
+    }
+    private void writeReceipts(Player player,java.util.Map<Long,Integer> receipts){
+        if(receipts.isEmpty()){player.getPersistentDataContainer().remove(receiptKey());return;}
+        StringBuilder text=new StringBuilder();
+        for(java.util.Map.Entry<Long,Integer> entry:receipts.entrySet()){
+            if(text.length()>0)text.append(',');
+            text.append(entry.getKey()).append(':').append(entry.getValue());
+        }
+        player.getPersistentDataContainer().set(receiptKey(),org.bukkit.persistence.PersistentDataType.STRING,text.toString());
+    }
+
+    /*  Settle receipts from a delivery whose database half never happened.
+     *
+     *  A receipt means the items ARE in a saved inventory. So the row must be applied, never re-delivered.
+     *  Runs on join and at the start of every collection; doing it twice is a no-op both times. */
+    int reconcileStash(Player player){
+        java.util.LinkedHashMap<Long,Integer> receipts=readReceipts(player);
+        if(receipts.isEmpty())return 0;
+        int settled=0;
+        for(java.util.Map.Entry<Long,Integer> entry:receipts.entrySet()){
+            long id=entry.getKey();
+            int remaining=Math.max(0,entry.getValue());
+            try{
+                if(remaining<=0){if(db.stashRemove(id))settled++;}
+                else{
+                    Database.StashRow row=db.stashRow(id);
+                    /*  The row may already be the right size if the crash landed after the shrink. Only
+                     *  shrink when it is still the pre-delivery size, so this cannot cut it twice. */
+                    if(row!=null&&row.item().getAmount()>remaining){
+                        org.bukkit.inventory.ItemStack rest=row.item().clone();
+                        rest.setAmount(remaining);
+                        if(db.stashShrink(id,rest))settled++;
+                    }
+                }
+            }catch(Throwable failure){
+                getLogger().warning("Could not settle claim receipt "+id+" for "+player.getName()+": "+failure);
+            }
+        }
+        writeReceipts(player,java.util.Map.of());
+        if(settled>0)getLogger().info("[stash] settled "+settled+" claim receipt(s) for "+player.getName()
+                +" left behind by an interrupted delivery.");
+        return settled;
+    }
+
+    /** Set by the failure-injection command only. Aborts a delivery at a named boundary so the recovery
+     *  path can be exercised for real instead of argued about. Never set in normal operation. */
+    volatile String stashFailPoint=null;
+
+    private void maybeFail(String point){
+        if(point.equals(stashFailPoint)){stashFailPoint=null;throw new IllegalStateException("injected stash failure at "+point);}
+    }
+
+    /*  Returns how many claims are still outstanding -- normally a full inventory. */
     int deliverStash(Player player){
+        reconcileStash(player);
+        /*  A disposable world's inventory IS the disposable part: Colosseum arenas and void worlds swap the
+         *  real one out on entry and restore it on exit, so anything handed over inside is discarded when
+         *  the instance is torn down. The claim stays where it is, and says why. */
+        if(isDisposableWorld(player.getWorld())){
+            CoreUtil.warn(player,"Claims cannot be collected in here — anything handed over would be left behind when this world closes.");
+            CoreUtil.hint(player,"Leave first, then collect. Nothing expires.");
+            return db.stashCount(CoreUtil.id(player));
+        }
         java.util.List<Database.StashRow> owed=db.stashRows(CoreUtil.id(player));
         if(owed.isEmpty())return 0;
-        java.util.List<Long> delivered=new java.util.ArrayList<>();
+
+        java.util.LinkedHashMap<Long,Integer> receipts=new java.util.LinkedHashMap<>();
         int left=0;
         for(Database.StashRow row:owed){
-            /*  CraftInventory.addItem writes the remainder back into the stack it was handed, so "how much
-             *  was owed" has to be read BEFORE the call. Comparing against row.item() afterwards compares
-             *  the leftover with itself, which reads as "nothing fitted" for every partial delivery -- and
-             *  a partial delivery recorded as nothing fitted is a duplicate on the next collection. */
+            /*  addItem writes the remainder back into the stack it is handed, so the amount owed is read
+             *  first and the stack itself is a clone -- the row's copy stays pristine for the failure path. */
             int wanted=row.item().getAmount();
+            org.bukkit.inventory.ItemStack giving=row.item().clone();
             java.util.Collection<org.bukkit.inventory.ItemStack> over;
-            try{over=player.getInventory().addItem(row.item()).values();}
+            try{over=player.getInventory().addItem(giving).values();}
             catch(Throwable failure){
-                /*  One unreadable item must not swallow the rest of somebody's claims. Its row is left
-                 *  exactly as it was, and everything after it still gets its turn. */
+                /*  One unreadable claim must not swallow the rest. Its row is untouched and everything
+                 *  after it still gets its turn. */
                 getLogger().warning("Stash row "+row.id()+" for "+player.getName()+" could not be delivered: "+failure);
                 left++;continue;
             }
-            if(over.isEmpty()){delivered.add(row.id());continue;}
-            org.bukkit.inventory.ItemStack remainder=over.iterator().next();
-            if(remainder.getAmount()>=wanted){left++;continue;}
-            db.stashShrink(row.id(),remainder);
-            left++;
+            int remaining=over.isEmpty()?0:over.iterator().next().getAmount();
+            if(remaining>=wanted){left++;continue;}          // nothing fitted; no receipt, no change
+            receipts.put(row.id(),remaining);
+            if(remaining>0)left++;
         }
-        if(!delivered.isEmpty()){
-            /*  The durability point. Without it the delete below can outlive the inventory write it is
-             *  supposed to be recording. */
-            try{player.saveData();}catch(Throwable ignored){}
-            for(long id:delivered)db.stashRemove(id);
+        if(receipts.isEmpty())return left;
+
+        maybeFail("before-save");
+        /*  THE ATOMIC BOUNDARY. The receipts go into the same NBT document as the items they record. */
+        writeReceipts(player,receipts);
+        try{player.saveData();}
+        catch(Throwable failure){
+            /*  The save did not happen, so neither did the receipts. Drop them and leave every row alone;
+             *  the items in the live inventory disappear with the unsaved state on the next restart. */
+            writeReceipts(player,java.util.Map.of());
+            getLogger().severe("Could not persist a claim delivery for "+player.getName()+"; nothing was consumed: "+failure);
+            return db.stashCount(CoreUtil.id(player));
         }
+        maybeFail("after-save");
+
+        for(java.util.Map.Entry<Long,Integer> entry:receipts.entrySet()){
+            long id=entry.getKey();
+            int remaining=entry.getValue();
+            try{
+                if(remaining<=0)db.stashRemove(id);
+                else{
+                    Database.StashRow row=db.stashRow(id);
+                    if(row!=null&&row.item().getAmount()>remaining){
+                        org.bukkit.inventory.ItemStack rest=row.item().clone();
+                        rest.setAmount(remaining);
+                        db.stashShrink(id,rest);
+                    }
+                }
+            }catch(Throwable failure){
+                /*  Left as a receipt. reconcile() will finish it on the next join. */
+                getLogger().warning("Claim "+id+" was delivered but its row could not be updated: "+failure);
+            }
+        }
+        maybeFail("after-apply");
+        writeReceipts(player,java.util.Map.of());
         return left;
     }
 
@@ -532,6 +719,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                      *  args[2], every branch answers the sender, and every verb is offered by tab complete.
                      *  `enter` is player-only because it moves somebody; the rest work from console. */
                     if(args.length>=2&&args[1].equalsIgnoreCase("verify")){
+                        if(!testGate(sender,"voidworld verify"))return true;
                         CoreUtil.msg(sender,"Verifying the void world entry/exit lifecycle:");
                         for(String line:voidWorlds.verify())CoreUtil.msg(sender,line);
                         return true;
@@ -613,7 +801,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                             line->{CoreUtil.msg(sender,"  "+line);getLogger().info("[IH-live] "+line);});
                     return true;
                 }
-                if(args.length>=2&&args[1].equalsIgnoreCase("verify")){CoreUtil.msg(sender,"Verifying Industrial Hopper parity against a live rig:");for(String line:new IndustrialHopperVerify(this,industrialHoppers).run())CoreUtil.msg(sender,"  "+line);return true;}if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
+                if(args.length>=2&&args[1].equalsIgnoreCase("verify")){if(!testGate(sender,"hopper verify"))return true;CoreUtil.msg(sender,"Verifying Industrial Hopper parity against a live rig:");for(String line:new IndustrialHopperVerify(this,industrialHoppers).run())CoreUtil.msg(sender,"  "+line);return true;}if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
                 case"vault"->{int page=1;if(args.length>1)try{page=Math.max(1,Integer.parseInt(args[1]));}catch(NumberFormatException ignored){}CoreUtil.msg(sender,vault.summaryLine());vault.show(sender,page);}
                 case"balance"->adminBalance(sender,args);
                 case"boss"->adminBoss(sender,args);
@@ -640,6 +828,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"border"->adminBorder(sender,args);
                 case"reload"->{reloadConfig();shop.reload();relics.reload();bosses.reload();shards.reload();factions.refreshClaims();worldBorders.apply();CoreUtil.msg(sender,"Safe SMPCore YAML reloaded.");}
                 case"debug"->{CoreUtil.msg(sender,"Paper "+getServer().getMinecraftVersion()+" | Players "+db.topStats("balance").size()+" ranking rows | Factions "+db.factions().size());CoreUtil.msg(sender,"Vault "+economy.getName()+" | Event "+bosses.uiEventLine()+" | DB migration 1.7.0 active");}
+                case"lease"->adminLease(sender,args);   /* staging test coordination; see testGate */
                 case"stash"->adminStash(sender,args);
                 case"selftest"->selfTest(sender);
                 case"vanish"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run this in game.");return true;}boolean now=adminTools.toggleVanish(p);CoreUtil.msg(sender,"Vanish "+(now?"enabled":"disabled")+".");}
@@ -707,7 +896,15 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"duelmap","duelmaps"->adminCommands(s,"Duel Maps","/ashfall duelmap <"+String.join("|",DUELMAP_SUBS)+">",
                 "  build/import/save commit a template; test/dryrun/loot clone one; drop removes an instance.",
                 "  canary = template persistence proof, verify = full pipeline.");
-            case"maintenance","debug"->adminCommands(s,"Debug / Maintenance","/ashfall border status","/ashfall border apply","/ashfall border restore","/ashfall setspawn","/ashfall reload","/ashfall debug","/ashfall selftest","/ashfall grave repair");
+            case"maintenance","debug"->adminCommands(s,"Debug / Maintenance","/ashfall border status","/ashfall border apply","/ashfall border restore","/ashfall setspawn","/ashfall reload","/ashfall debug","/ashfall selftest","/ashfall grave repair",
+                    "/ashfall lease status                            who is running staging tests, and what is live",
+                    "/ashfall lease acquire <purpose> [seconds]       take the exclusive test window",
+                    "/ashfall lease release                           give it back",
+                    "/ashfall lease break                             take it from a crashed holder",
+                    "/ashfall stash <player>                          what the claim stash owes somebody",
+                    "/ashfall stash <player> receipts                 undelivered claim receipts in their playerdata",
+                    "/ashfall stash <player> reconcile                settle those receipts now",
+                    "/ashfall stash <player> fail <boundary>          abort the next delivery, to exercise recovery");
             default->adminHelp(s);
         }
     }
@@ -1016,6 +1213,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 });
             }
             case"canary"->{
+                if(!testGate(sender,"duelmap canary"))return;
                 CoreUtil.msg(sender,"Duel template persistence canary - building, saving, unloading, reloading and cloning:");
                 for(String line:new DuelMapCanary(this,svc).run())CoreUtil.msg(sender,"  "+line);
             }
@@ -1206,6 +1404,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                     +colosseum.bosses().all().size()+" boss(es))"+(ended>0?"; "+ended+" running encounter(s) were interrupted and refunded.":"."));
             }
             case"verify"->{
+                if(!testGate(sender,"colosseum verify"))return;
                 CoreUtil.msg(sender,"Verifying the Colosseum end to end - this creates and destroys its own instances:");
                 new ColosseumVerify(this,colosseum).run(line->CoreUtil.msg(sender,"  "+line));
             }
@@ -1343,9 +1542,163 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
      *  player -- a full inventory, a second collection, a restart in the middle -- rather than only against
      *  the row lifecycle in the selftest. It is operator-gated and written to the audit trail like every
      *  other admin action that creates something. */
+    /*  ================================================================================================
+     *  THE STAGING TEST LEASE.
+     *
+     *  /ashfall colosseum verify reported three failures on 2026-09-04, and every one of them was true at
+     *  the moment it looked: a harness scenario had an encounter running, and the verifier's "no scheduled
+     *  task survives its encounter" check found a scheduled task, belonging to somebody else's encounter.
+     *  Re-run on a quiet server it was 278/0.
+     *
+     *  A verifier that fails because something else is legitimately happening is worse than one that does
+     *  not run: it teaches whoever reads it to discount failures. So the destructive suites take an
+     *  exclusive lease, and refuse -- BEFORE touching anything -- when they cannot have it, naming what is
+     *  in the way.
+     *
+     *  What is deliberately NOT gated: /ashfall selftest (one transaction, rolled back) and
+     *  /ashfall duelmap verify (reads the registry). Read-only work should not queue behind a lease.
+     *
+     *  A crashed holder cannot keep it: the lease carries an expiry and an expired one is simply taken.
+     *  Nothing here ever cancels a real player's encounter to make room for a test. */
+    record TestLease(String owner,String purpose,long expiresAt){
+        boolean expired(){return System.currentTimeMillis()>expiresAt;}
+        long secondsLeft(){return Math.max(0,(expiresAt-System.currentTimeMillis())/1000);}
+    }
+    private static final String LEASE_STATE="staging_test_lease";
+
+    TestLease testLease(){
+        String raw=db.state(LEASE_STATE);
+        if(raw==null||raw.isBlank())return null;
+        String[] parts=raw.split("\\|",3);
+        if(parts.length<3)return null;
+        try{
+            TestLease lease=new TestLease(parts[0],parts[1],Long.parseLong(parts[2]));
+            return lease.expired()?null:lease;
+        }catch(NumberFormatException e){return null;}
+    }
+    boolean testLeaseAcquire(String owner,String purpose,long ttlSeconds){
+        TestLease held=testLease();
+        if(held!=null&&!held.owner().equalsIgnoreCase(owner))return false;
+        long ttl=Math.max(30,Math.min(3600,ttlSeconds));
+        db.state(LEASE_STATE,owner+"|"+purpose.replace('|','/')+"|"+(System.currentTimeMillis()+ttl*1000L));
+        return true;
+    }
+    boolean testLeaseRelease(String owner){
+        TestLease held=testLease();
+        if(held!=null&&!held.owner().equalsIgnoreCase(owner))return false;
+        db.state(LEASE_STATE,"");
+        return true;
+    }
+
+    /*  Everything that would make a destructive suite unsafe or unreliable right now, in words.
+     *
+     *  Deliberately reports rather than resolves. "Somebody is fighting a boss" is a reason to come back
+     *  later, never a reason to end their encounter. */
+    java.util.List<String> stagingActivity(String requester){
+        java.util.List<String> busy=new java.util.ArrayList<>();
+        java.util.List<String> others=new java.util.ArrayList<>();
+        for(Player online:getServer().getOnlinePlayers())
+            if(requester==null||!online.getName().equalsIgnoreCase(requester))others.add(online.getName());
+        if(!others.isEmpty())busy.add(others.size()+" other player"+(others.size()==1?"":"s")+" online: "+String.join(", ",others));
+        if(colosseum!=null&&colosseum.liveRunCount()>0)
+            busy.add(colosseum.liveRunCount()+" Colosseum encounter(s) running");
+        if(arena!=null&&arena.liveDuelCount()>0)
+            busy.add(arena.liveDuelCount()+" duel(s) in progress");
+        return busy;
+    }
+
+    /** Returns true when the suite may proceed. Otherwise it has already told the sender why, and nothing
+     *  has been touched. */
+    boolean testGate(CommandSender sender,String suite){
+        String requester=sender.getName();
+        TestLease held=testLease();
+        if(held!=null&&!held.owner().equalsIgnoreCase(requester)){
+            CoreUtil.error(sender,"The staging test lease is held by "+held.owner()+" for "+held.purpose()+".",
+                    "It frees itself in "+held.secondsLeft()+"s, or /ashfall lease break to take it.");
+            return false;
+        }
+        java.util.List<String> busy=stagingActivity(requester);
+        if(!busy.isEmpty()&&held==null){
+            CoreUtil.error(sender,suite+" would not be reliable right now, so it has not run.","Nothing was changed.");
+            for(String line:busy)CoreUtil.item(sender,line);
+            CoreUtil.hint(sender,"Take the lease first if this is a deliberate test window: /ashfall lease acquire "+suite);
+            return false;
+        }
+        return true;
+    }
+
+    private void adminLease(CommandSender sender,String[] args){
+        String verb=args.length>1?args[1].toLowerCase(Locale.ROOT):"status";
+        TestLease held=testLease();
+        switch(verb){
+            case"acquire"->{
+                String purpose=args.length>2?String.join(" ",java.util.Arrays.copyOfRange(args,2,args.length)):"staging tests";
+                long ttl=900;
+                if(args.length>3)try{ttl=Long.parseLong(args[args.length-1]);purpose=String.join(" ",java.util.Arrays.copyOfRange(args,2,args.length-1));}catch(NumberFormatException ignored){}
+                if(!testLeaseAcquire(sender.getName(),purpose,ttl)){
+                    TestLease other=testLease();
+                    CoreUtil.error(sender,"Held by "+(other==null?"somebody":other.owner())+" for "+(other==null?"?":other.purpose())+".",
+                            other==null?null:"Free in "+other.secondsLeft()+"s.");
+                    return;
+                }
+                TestLease now=testLease();
+                CoreUtil.ok(sender,"Lease held for "+(now==null?ttl:now.secondsLeft())+"s \u2014 "+purpose+".");
+                java.util.List<String> busy=stagingActivity(sender.getName());
+                if(!busy.isEmpty()){
+                    CoreUtil.warn(sender,"Live activity the suites will not wait for:");
+                    for(String line:busy)CoreUtil.item(sender,line);
+                }
+            }
+            case"release"->{
+                if(!testLeaseRelease(sender.getName())){
+                    CoreUtil.error(sender,"That lease belongs to "+(held==null?"nobody":held.owner())+".");return;
+                }
+                CoreUtil.ok(sender,"Lease released.");
+            }
+            case"break"->{
+                db.state(LEASE_STATE,"");
+                db.logAudit(sender.getName(),"TEST_LEASE_BREAK",held==null?"none":held.owner()+" / "+held.purpose());
+                CoreUtil.ok(sender,held==null?"There was no lease to break.":"Took the lease from "+held.owner()+".");
+            }
+            default->{
+                if(held==null)CoreUtil.field(sender,"Test lease","free");
+                else CoreUtil.field(sender,"Test lease",held.owner()+" \u00b7 "+held.purpose()+" \u00b7 "+held.secondsLeft()+"s left");
+                java.util.List<String> busy=stagingActivity(null);
+                if(busy.isEmpty())CoreUtil.hint(sender,"Nothing is running; the destructive suites are safe.");
+                else for(String line:busy)CoreUtil.item(sender,line);
+            }
+        }
+    }
+
     private void adminStash(CommandSender sender,String[] args){
         if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall stash <player> [grant <material> <count>]");return;}
         String who=CoreUtil.id(args[1]);
+        if(args.length>=4&&args[2].equalsIgnoreCase("fail")){
+            /*  Aborts the next delivery at a named persistence boundary, so the crash windows can be
+             *  entered on purpose. Operator-gated, audited, and cleared the moment it fires. */
+            String point=args[3].toLowerCase(Locale.ROOT);
+            if(!java.util.Set.of("before-save","after-save","after-apply","off").contains(point)){
+                CoreUtil.error(sender,"Boundaries: before-save, after-save, after-apply, off.");return;
+            }
+            stashFailPoint="off".equals(point)?null:point;
+            db.logAudit(sender.getName(),"STASH_FAIL_POINT",point);
+            CoreUtil.ok(sender,stashFailPoint==null?"Failure injection off.":"The next claim delivery will abort at "+point+".");
+            return;
+        }
+        if(args.length>=3&&args[2].equalsIgnoreCase("reconcile")){
+            Player target=getServer().getPlayerExact(args[1]);
+            if(target==null){CoreUtil.error(sender,"That player is not online.");return;}
+            CoreUtil.ok(sender,"Settled "+reconcileStash(target)+" claim receipt(s) for "+target.getName()+".");
+            return;
+        }
+        if(args.length>=3&&args[2].equalsIgnoreCase("receipts")){
+            Player target=getServer().getPlayerExact(args[1]);
+            if(target==null){CoreUtil.error(sender,"That player is not online.");return;}
+            String raw=target.getPersistentDataContainer().get(new org.bukkit.NamespacedKey(this,STASH_RECEIPT_KEY),
+                    org.bukkit.persistence.PersistentDataType.STRING);
+            CoreUtil.field(sender,"Receipts",raw==null||raw.isBlank()?"none":raw);
+            return;
+        }
         if(args.length>=5&&args[2].equalsIgnoreCase("grant")){
             org.bukkit.Material material=org.bukkit.Material.matchMaterial(args[3]);
             if(material==null||material.isAir()){CoreUtil.error(sender,"No such item: "+CoreUtil.safe(args[3]));return;}
@@ -1365,7 +1718,109 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         CoreUtil.hint(sender,"Delivered when they use /orders, with room to receive it.");
     }
 
-    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Colosseum arenas, boss identities, economy and daily cap: "+(colosseum.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Colosseum arena snapshots committed: "+colosseumSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
+    /*  WHAT addItem ACTUALLY DOES, pinned.
+     *
+     *  Every bug in the audit above came from one undocumented behaviour, so it is asserted here rather
+     *  than described: exactly enough room, no room, room for part of a stack, room split across slots, and
+     *  a round trip through the stash's own serialisation with every kind of item data attached. */
+    String inventorySelfTest(){
+        try{
+            org.bukkit.inventory.Inventory scratch=getServer().createInventory(null,27);
+
+            /*  WHAT addItem ACTUALLY DOES ON THIS PAPER BUILD, asserted rather than assumed.
+             *
+             *  I asserted in an earlier pass that addItem always writes the remainder back into the stack it
+             *  is handed. It does not, and the truth is worse: on this build the argument survives being
+             *  PLACED in a free slot, MERGED entirely into a partial stack, and REFUSED outright -- and is
+             *  overwritten with the remainder only when the insertion is PARTIALLY accepted.
+             *
+             *  So the one case that mutates is the one nobody reaches while testing, because it needs an
+             *  inventory that is nearly, but not quite, full. That is how the delivery path came to compare
+             *  the leftover against a stack that had by then BECOME the leftover -- a partial delivery read
+             *  as "nothing fitted", the row was left at full size, and the part that did arrive would have
+             *  been handed out again.
+             *
+             *  The delivery path is written not to care which is true: it hands addItem a clone and reads
+             *  only the map it returns. That is the one report that is correct under both contracts. */
+            ItemStack placed=new ItemStack(Material.DIAMOND,64);
+            if(!scratch.addItem(placed).isEmpty())return "an empty inventory refused a full stack";
+            if(placed.getAmount()!=64)return "placing into a free slot changed the caller's stack";
+            if(scratch.getItem(0).getAmount()!=64)return "the placed stack did not arrive whole";
+
+            /** Merged entirely into an existing partial stack. */
+            scratch.clear();
+            scratch.setItem(0,new ItemStack(Material.DIAMOND,40));
+            ItemStack merged=new ItemStack(Material.DIAMOND,20);
+            if(!scratch.addItem(merged).isEmpty())return "a stack that fits by merging was refused";
+            if(scratch.getItem(0).getAmount()!=60)return "the merge did not land in the partial stack";
+            if(merged.getAmount()!=20)return "merging changed the caller's stack";
+
+            /** No room at all: the map reports the whole amount back. */
+            scratch.clear();
+            for(int slot=0;slot<27;slot++)scratch.setItem(slot,new ItemStack(Material.STONE,64));
+            ItemStack refused=new ItemStack(Material.DIAMOND,16);
+            java.util.Map<Integer,ItemStack> back=scratch.addItem(refused);
+            if(back.size()!=1||back.values().iterator().next().getAmount()!=16)return "a full inventory did not report the whole stack back";
+            if(refused.getAmount()!=16)return "a refused stack was modified";
+
+            /** Room for only part of it: the map reports exactly the remainder. */
+            scratch.clear();
+            for(int slot=0;slot<26;slot++)scratch.setItem(slot,new ItemStack(Material.STONE,64));
+            scratch.setItem(26,new ItemStack(Material.DIAMOND,60));
+            ItemStack partial=new ItemStack(Material.DIAMOND,10);
+            java.util.Map<Integer,ItemStack> rest=scratch.addItem(partial);
+            if(rest.size()!=1||rest.values().iterator().next().getAmount()!=6)return "a partial fit did not report the exact remainder";
+            if(scratch.getItem(26).getAmount()!=64)return "a partial fit did not fill the slot it topped up";
+            /*  THE ONE THAT MUTATES. Asserted in the direction it actually goes, so a future Paper that
+             *  stops doing this fails here loudly instead of quietly changing what callers can rely on. */
+            if(partial.getAmount()!=6)return "a partial fit no longer rewrites the caller's stack (contract changed)";
+
+            /** Split across several slots: partials topped up first, then a free slot. */
+            scratch.clear();
+            scratch.setItem(0,new ItemStack(Material.DIAMOND,60));
+            scratch.setItem(1,new ItemStack(Material.DIAMOND,60));
+            ItemStack wide=new ItemStack(Material.DIAMOND,64);
+            if(!scratch.addItem(wide).isEmpty())return "a stack that fits across three slots was refused";
+            if(scratch.getItem(0).getAmount()!=64||scratch.getItem(1).getAmount()!=64||scratch.getItem(2).getAmount()!=56)
+                return "a split insertion did not distribute correctly";
+            /** Two partial merges then a placement, so the argument carries the tail that was placed. */
+            if(wide.getAmount()!=56)return "a split insertion left the caller's stack in an unexpected state";
+
+            /** The stack sizes a claim actually carries. */
+            for(int size:new int[]{64,16,1}){
+                scratch.clear();
+                ItemStack one=new ItemStack(Material.COOKED_BEEF,size);
+                if(!scratch.addItem(one).isEmpty())return "an empty inventory refused a stack of "+size;
+                if(scratch.getItem(0).getAmount()!=size)return "a stack of "+size+" did not arrive whole";
+            }
+
+            /*  And a claim keeps every piece of item data across the stash's own serialisation, which is
+             *  what a claim row physically is. */
+            ItemStack fancy=new ItemStack(Material.DIAMOND_SWORD);
+            org.bukkit.inventory.meta.ItemMeta meta=fancy.getItemMeta();
+            meta.displayName(net.kyori.adventure.text.Component.text("Test Blade"));
+            meta.lore(java.util.List.of(net.kyori.adventure.text.Component.text("a line of lore")));
+            meta.addEnchant(org.bukkit.enchantments.Enchantment.SHARPNESS,4,true);
+            ((org.bukkit.inventory.meta.Damageable)meta).setDamage(37);
+            meta.getPersistentDataContainer().set(new org.bukkit.NamespacedKey(this,"selftest_marker"),
+                    org.bukkit.persistence.PersistentDataType.STRING,"kept");
+            fancy.setItemMeta(meta);
+            ItemStack[] round=ItemStack.deserializeItemsFromBytes(ItemStack.serializeItemsAsBytes(new ItemStack[]{fancy}));
+            if(round.length!=1||round[0]==null)return "a serialised claim came back as nothing";
+            if(!round[0].isSimilar(fancy))return "a serialised claim came back as a different item";
+            org.bukkit.inventory.meta.ItemMeta kept=round[0].getItemMeta();
+            if(kept.getEnchantLevel(org.bukkit.enchantments.Enchantment.SHARPNESS)!=4)return "an enchantment was lost in the claim stash";
+            if(((org.bukkit.inventory.meta.Damageable)kept).getDamage()!=37)return "durability was lost in the claim stash";
+            if(!"kept".equals(kept.getPersistentDataContainer().get(new org.bukkit.NamespacedKey(this,"selftest_marker"),
+                    org.bukkit.persistence.PersistentDataType.STRING)))return "PDC data was lost in the claim stash";
+            return null;
+        }catch(Throwable failure){
+            getLogger().warning("inventory self test could not run: "+failure);
+            return "threw "+failure;
+        }
+    }
+
+    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));String inventoryResult=inventorySelfTest();CoreUtil.msg(s,"Inventory insertion semantics (exact/none/partial/split/64,16,1) and claim item fidelity: "+(inventoryResult==null?"ok":"FAILED at "+inventoryResult));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Colosseum arenas, boss identities, economy and daily cap: "+(colosseum.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Colosseum arena snapshots committed: "+colosseumSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
 
     /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
     /** /duels -- where each piece of a duel kit sits when the match starts. A standing preference, so it
@@ -1561,6 +2016,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));
                 case"elite"->filter(args[1],List.of("stats","uncommon","rare","epic","legendary","miniboss"));
                 case"event"->filter(args[1],List.of("resource","elitehunt","taskmaster","worldboss","stop"));
+                case"lease"->filter(args[1],List.of("status","acquire","release","break"));
+                case"stash"->filter(args[1],getServer().getOnlinePlayers().stream().map(Player::getName).toList());
                 case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete","open","close","verify"));
                 case"hopper"->filter(args[1],List.of("verify","livesuite","live","watch","create","rig","count"));
                 case"economy"->filter(args[1],List.of("report"));

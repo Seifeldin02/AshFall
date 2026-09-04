@@ -553,9 +553,11 @@ final class ColosseumService implements Listener {
             int left = Math.max(0, dailyLimit() - rewardedToday(player));
             CoreUtil.msg(player, "  Rewarded victories left today: " + left + " of " + dailyLimit() + (left == 0 ? " — resets " + resetsIn() : "") + ".");
             sound(player, "victory");
-        } else {
-            for (ItemStack item : loot) db.stashAddItem(run.player, item);
         }
+        /*  There used to be an `else` here that stashed the whole loot list again for an offline winner --
+         *  and giveOrStash() above already stashes every item when the player is offline, because that is
+         *  the entire point of it. A player who disconnected before their victory resolved was paid their
+         *  loot TWICE. Nothing needs doing on this branch; the loot is already owed exactly once. */
         db.history("SERVER", null, "COLOSSEUM", run.playerName + " defeated " + (def == null ? run.bossKey : def.name())
                 + " in the Colosseum (" + timeText(duration / 1000) + ").");
         if (config != null && config.getBoolean("economy.broadcast-victories", true))
