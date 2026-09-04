@@ -151,6 +151,110 @@ final class CoreUtil {
         return result.toString();
     }
     static ItemStack named(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));if(lore!=null)meta.lore(lore.stream().map(s->Component.text(s,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
+
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE ASHFALL MENU VOCABULARY
+     *
+     *  Chest icons had exactly one style -- a gold name over grey lore -- from named() above and from eight
+     *  verbatim private copies of it scattered through the services. Everything looked equally important and
+     *  equally clickable, so a screen could not say "this does something", "this is only information",
+     *  "this is switched on" or "you cannot do this yet". It could only say all four the same way.
+     *
+     *  Six roles, and the colour carries the whole signal:
+     *
+     *      heading   ember       what this screen is, or the thing being confirmed. Never clickable.
+     *      action    white       something you can do right now.
+     *      info      grey        information; clicking does nothing and it does not pretend otherwise.
+     *      state     green/red   a switch, showing the state it is in now.
+     *      blocked   dark grey   present so the option stays discoverable, with a red line saying in words
+     *                            why it will not work -- instead of failing silently when clicked.
+     *      danger    red         spends money, deletes something, or cannot be undone.
+     *
+     *  CONFIRM AND CANCEL HAVE FIXED SIDES, and that is why this block exists at all. The universal
+     *  confirmation dialog put Cancel at 11 and Confirm at 15. The Bank's repayment dialog, the Ender Chest
+     *  upgrade and the Orders escrow dialog put Confirm at 11 and Cancel at 15 -- mirrored. A player who
+     *  learned where Cancel lives from the dialog they see most would press Confirm on a loan repayment
+     *  while meaning to back out. Nobody had to move an icon for that; the layouts drifted apart one screen
+     *  at a time. Both sides are named constants now, and every dialog reads the names. */
+    static final class Menu {
+        private Menu(){}
+        /** The 27-slot confirmation dialog. Cancel is always left, confirm is always right, everywhere. */
+        static final int SUBJECT=13, CANCEL=11, CONFIRM=15;
+        /** The bottom row of a 27-slot screen. */
+        static final int BACK_SMALL=22;
+        /** The bottom row of a 54-slot browse screen. */
+        static final int PREV=45, SEARCH=47, BACK=49, SORT=51, NEXT=53;
+        /** The 54-slot sell basket: fill the top, read the total, confirm on the right. The ordinary shop
+         *  and the spawner shop had landed on the same three numbers independently; they share them now. */
+        static final int SELL_CANCEL=47, SELL_TOTAL=49, SELL_CONFIRM=51;
+
+        private static final net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer LEGACY =
+                net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection();
+
+        /** Legacy colour codes render, and italics are forced off, so a line reads the same on Java and
+         *  through Geyser on Bedrock. A lore line that brings no colour of its own is body text. */
+        static ItemStack of(Material material,String name,List<String> lore){
+            ItemStack item=new ItemStack(material);
+            ItemMeta meta=item.getItemMeta();
+            meta.displayName(line(name));
+            if(lore!=null)meta.lore(lore.stream().map(text->line(text.indexOf('§')<0?C_BODY+text:text)).toList());
+            item.setItemMeta(meta);
+            return item;
+        }
+        private static Component line(String text){
+            return LEGACY.deserialize(text).decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC,false);
+        }
+        static ItemStack heading(Material m,String name,List<String> lore){return of(m,C_EMBER+name,lore);}
+        static ItemStack action(Material m,String name,List<String> lore){return of(m,C_TEXT+name,lore);}
+        static ItemStack info(Material m,String name,List<String> lore){return of(m,C_BODY+name,lore);}
+        static ItemStack danger(Material m,String name,List<String> lore){return of(m,C_BAD+name,lore);}
+
+        /** A switch that shows the state it is in, not the state it would move to -- the old bare "ON"/"OFF"
+         *  lore line was ambiguous about which of the two it meant. */
+        static ItemStack state(Material m,String name,boolean on,String detail){
+            List<String> lore=new ArrayList<>();
+            lore.add(on?C_GOOD+"On":C_BAD+"Off");
+            if(detail!=null&&!detail.isBlank())lore.add(detail);
+            lore.add(C_MUTE+"Click to turn it "+(on?"off":"on")+".");
+            return of(m,(on?C_TEXT:C_BODY)+name,lore);
+        }
+        /** Kept on screen, greyed, with the reason underneath. An option that silently does nothing when
+         *  clicked teaches a player that the menu is broken. */
+        static ItemStack blocked(Material m,String name,String reason,List<String> lore){
+            List<String> full=new ArrayList<>();
+            if(lore!=null)full.addAll(lore);
+            full.add(C_BAD+"Unavailable "+C_BODY+reason);
+            return of(m,C_MUTE+name,full);
+        }
+        static ItemStack confirm(String what,List<String> detail){
+            List<String> lore=new ArrayList<>();
+            if(detail!=null)lore.addAll(detail);
+            return of(Material.LIME_CONCRETE,C_GOOD+"Confirm"+(what==null||what.isBlank()?"":C_BODY+"  "+what),lore);
+        }
+        static ItemStack cancel(String detail){
+            return of(Material.RED_CONCRETE,C_BAD+"Cancel",
+                    List.of(detail==null||detail.isBlank()?"Nothing is charged.":detail));
+        }
+        static ItemStack back(String where){
+            return of(Material.ARROW,C_BODY+"Back",where==null||where.isBlank()?List.of():List.of(where));
+        }
+        /** Page arrows that say whether there IS another page, rather than two identical arrows either side
+         *  of a screen that will not move when you click them. */
+        static ItemStack page(int page,int pages,boolean forward){
+            boolean can=forward?page+1<pages:page>0;
+            return of(can?Material.ARROW:Material.GRAY_DYE,
+                    (can?C_TEXT:C_MUTE)+(forward?"Next":"Previous"),
+                    List.of(C_BODY+"Page "+C_TEXT+(page+1)+C_BODY+" of "+C_TEXT+pages,
+                            can?C_MUTE+"Click to go "+(forward?"forward.":"back.")
+                               :C_MUTE+(forward?"This is the last page.":"This is the first page.")));
+        }
+        /** Nothing here yet -- and what to do about it. An empty screen with no explanation is the most
+         *  common way a menu fails, and every list on this server needs one of these. */
+        static ItemStack nothing(String what,List<String> how){
+            return of(Material.LIGHT_GRAY_STAINED_GLASS_PANE,C_BODY+what,how);
+        }
+    }
+
     static boolean give(Player p,ItemStack item){Map<Integer,ItemStack> left=p.getInventory().addItem(item);left.values().forEach(i->p.getWorld().dropItemNaturally(p.getLocation(),i));return left.isEmpty();}
     static String ipHash(Player p){try{String ip=p.getAddress()==null?"unknown":p.getAddress().getAddress().getHostAddress();byte[] h=MessageDigest.getInstance("SHA-256").digest(ip.getBytes(StandardCharsets.UTF_8));return HexFormat.of().formatHex(h,0,12);}catch(Exception e){return "unknown";}}
     static boolean unsafeSurface(Block b){Material m=b.getType();return !m.isSolid()||m==Material.MAGMA_BLOCK||m==Material.CACTUS||m==Material.FIRE||m==Material.SOUL_FIRE||m.name().contains("LEAVES");}

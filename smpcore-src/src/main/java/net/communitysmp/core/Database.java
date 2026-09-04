@@ -557,6 +557,10 @@ final class Database implements AutoCloseable {
     synchronized List<AuctionRow> activeAuctions() { expireAuctions(); return list("SELECT * FROM auctions WHERE status='ACTIVE' ORDER BY price ASC, listed ASC LIMIT 200", Database::mapAuction); }
     synchronized AuctionRow auction(long id) { expireAuctions(); return one("SELECT * FROM auctions WHERE id=?", Database::mapAuction, id); }
     synchronized int activeAuctionCount(String seller) { expireAuctions(); return integer("SELECT COUNT(*) FROM auctions WHERE seller=? AND status='ACTIVE'", seller); }
+    /** How many expired listings are sitting in escrow for this seller. Counts rather than materialising
+     *  every row's ItemStack, because the marketplace footer asks on every render. Expiry is still lazy and
+     *  still runs inside the query, exactly as activeAuctionCount does. */
+    synchronized int collectibleCount(String seller) { expireAuctions(); return integer("SELECT COUNT(*) FROM auctions WHERE seller=? AND status='EXPIRED'", seller); }
     synchronized List<AuctionRow> collectibleAuctions(String seller) { expireAuctions(); return list("SELECT * FROM auctions WHERE seller=? AND status='EXPIRED' ORDER BY expires", Database::mapAuction, seller); }
     /** Seller-scoped, unlike activeAuctions() (which caps at 200 rows server-wide, ordered by price) — a
      *  relic listing checked against that global list could be missed entirely if 200 unrelated cheaper
@@ -1039,6 +1043,45 @@ final class Database implements AutoCloseable {
             update("INSERT INTO smp_order_stash(owner,item,created_at) VALUES(?,?,?)",owner,ItemStack.serializeItemsAsBytes(new ItemStack[]{stack}),System.currentTimeMillis());
         }
     }
+    /** One thing the stash owes somebody, with the row that owes it. */
+    record StashRow(long id,ItemStack item){}
+
+    /*  READ WITHOUT DELETING.
+     *
+     *  stashTake() below is the old shape: read every row, delete every row, hand the items back to a
+     *  caller who then writes them into an inventory. Three ways that loses somebody's property:
+     *
+     *      the rows are committed gone the instant the read returns, but the inventory holding the items
+     *      is not durable until Paper next writes player data -- which can be minutes away. A crash in
+     *      between destroys every claim with no record anywhere that it existed.
+     *
+     *      it is per-OWNER, so one call takes auction goods, Colosseum loot and order deliveries together.
+     *      An exception on the third item abandons the fourth and fifth, whose rows are already deleted.
+     *
+     *      a full inventory relied on the caller putting the leftovers back. One caller did. One dropped
+     *      them on the floor, where they despawn in five minutes -- or vanish with the world, if the
+     *      player happened to be standing in a disposable arena.
+     *
+     *  Delivery reads with this, writes to the inventory, and only then removes the row it delivered. */
+    synchronized List<StashRow> stashRows(String owner){
+        List<StashRow> out=new ArrayList<>();
+        for(Object[] row:list("SELECT id,item FROM smp_order_stash WHERE owner=? ORDER BY id",
+                rs->new Object[]{rs.getLong(1),rs.getBytes(2)},owner))
+            try{
+                for(ItemStack item:ItemStack.deserializeItemsFromBytes((byte[])row[1]))
+                    if(item!=null&&!item.getType().isAir())out.add(new StashRow((Long)row[0],item));
+            }catch(Throwable ignored){}
+        return out;
+    }
+    /** Delivered. Returns false if somebody else already removed it, which is what makes a second
+     *  collection a no-op rather than a second delivery. */
+    synchronized boolean stashRemove(long id){return update("DELETE FROM smp_order_stash WHERE id=?",id)==1;}
+    /** Part of a stack fitted and the rest did not. The row keeps its place in the queue and its id, so a
+     *  half-delivered stack can never be counted as a fresh claim. */
+    synchronized boolean stashShrink(long id,ItemStack remainder){
+        return update("UPDATE smp_order_stash SET item=? WHERE id=?",
+                ItemStack.serializeItemsAsBytes(new ItemStack[]{remainder}),id)==1;
+    }
     synchronized int stashCount(String owner){return integer("SELECT COUNT(*) FROM smp_order_stash WHERE owner=?",owner);}
     synchronized List<ItemStack> stashOf(String owner){
         List<ItemStack> out=new ArrayList<>();
@@ -1046,7 +1089,9 @@ final class Database implements AutoCloseable {
             try{for(ItemStack item:ItemStack.deserializeItemsFromBytes(raw))if(item!=null&&!item.getType().isAir())out.add(item);}catch(Throwable ignored){}
         return out;
     }
-    /** Read and delete together, so a stash cannot be collected twice. */
+    /** Read and delete together. Kept for the admin/selftest paths that genuinely want the stash emptied
+     *  in one statement; player-facing delivery goes through stashRows/stashRemove instead, because this
+     *  shape commits the deletion before anything has actually received the items. */
     synchronized List<ItemStack> stashTake(String owner){
         List<ItemStack> out=stashOf(owner);
         update("DELETE FROM smp_order_stash WHERE owner=?",owner);
@@ -1448,6 +1493,37 @@ final class Database implements AutoCloseable {
             if(stashCount("__selftest_a")!=sellerStash+1)throw new SQLException("a reclaimed item was not durably owed");
             if(auctionReclaim(stale,"__selftest_a",new ItemStack(org.bukkit.Material.EMERALD,3)))throw new SQLException("the same listing could be reclaimed twice");
             checks.add("Expired-listing reclaim is one commit and cannot double-deliver: ok");
+
+            /*  A STASH IS ONLY AS GOOD AS ITS COLLECTION.
+             *
+             *  Settling an auction into a durable stash protects the SALE. It does nothing for the
+             *  delivery, and delivery is where the old code lost things: it deleted every row for the
+             *  owner and then wrote to an inventory that is not durable until Paper next saves the player.
+             *
+             *  These assert the row lifecycle delivery now depends on -- reading does not consume, only
+             *  removal does, removing twice cannot deliver twice, and a stack that only half fitted keeps
+             *  its own row rather than becoming a second claim. */
+            int owedBefore=stashCount("__selftest_b");
+            stashAddItem("__selftest_b",new ItemStack(org.bukkit.Material.DIAMOND,64));
+            List<StashRow> owedRows=stashRows("__selftest_b");
+            if(owedRows.size()!=owedBefore+1)throw new SQLException("the stash did not report everything it owes");
+            if(stashCount("__selftest_b")!=owedBefore+1)throw new SQLException("reading the stash consumed it");
+            StashRow claim=owedRows.get(owedRows.size()-1);
+            if(claim.item().getAmount()!=64)throw new SQLException("a stashed stack came back the wrong size");
+
+            /** Half of it fitted. The rest stays owed, on the same row. */
+            if(!stashShrink(claim.id(),new ItemStack(org.bukkit.Material.DIAMOND,20)))throw new SQLException("a part-delivered stack could not be resized");
+            if(stashCount("__selftest_b")!=owedBefore+1)throw new SQLException("resizing a claim created a second one");
+            List<StashRow> afterShrink=stashRows("__selftest_b");
+            StashRow shrunk=afterShrink.get(afterShrink.size()-1);
+            if(shrunk.id()!=claim.id())throw new SQLException("a part-delivered stack lost its place in the queue");
+            if(shrunk.item().getAmount()!=20)throw new SQLException("a part-delivered stack did not keep the remainder");
+
+            /** And it can be cleared exactly once. */
+            if(!stashRemove(claim.id()))throw new SQLException("a delivered claim could not be cleared");
+            if(stashRemove(claim.id()))throw new SQLException("the same claim could be delivered twice");
+            if(stashCount("__selftest_b")!=owedBefore)throw new SQLException("clearing one claim disturbed the others");
+            checks.add("Claim stash: reading does not consume it, and no claim can be delivered twice: ok");
             if(!colosseumMarkActive("__selftest_run")||colosseumMarkActive("__selftest_run"))throw new SQLException("a run could be committed twice");
             if(!colosseumMarkPaid("__selftest_run")||colosseumMarkPaid("__selftest_run"))throw new SQLException("the prize could be paid twice");
             if(!colosseumResolve("__selftest_run","VICTORY",true,1234)||colosseumResolve("__selftest_run","DEATH",false,1))throw new SQLException("a run could be resolved twice");
