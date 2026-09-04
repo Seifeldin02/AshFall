@@ -143,6 +143,11 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         java.util.List<Long> delivered=new java.util.ArrayList<>();
         int left=0;
         for(Database.StashRow row:owed){
+            /*  CraftInventory.addItem writes the remainder back into the stack it was handed, so "how much
+             *  was owed" has to be read BEFORE the call. Comparing against row.item() afterwards compares
+             *  the leftover with itself, which reads as "nothing fitted" for every partial delivery -- and
+             *  a partial delivery recorded as nothing fitted is a duplicate on the next collection. */
+            int wanted=row.item().getAmount();
             java.util.Collection<org.bukkit.inventory.ItemStack> over;
             try{over=player.getInventory().addItem(row.item()).values();}
             catch(Throwable failure){
@@ -153,7 +158,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             }
             if(over.isEmpty()){delivered.add(row.id());continue;}
             org.bukkit.inventory.ItemStack remainder=over.iterator().next();
-            if(remainder.getAmount()>=row.item().getAmount()){left++;continue;}
+            if(remainder.getAmount()>=wanted){left++;continue;}
             db.stashShrink(row.id(),remainder);
             left++;
         }
