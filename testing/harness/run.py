@@ -76,6 +76,10 @@ def main():
         print('unknown scenario(s): %s' % ', '.join(unknown))
         return 2
 
+    #  The harness holds the staging test lease for its whole run, so an in-server verifier started
+    #  from the console refuses instead of measuring a subsystem this is halfway through changing.
+    #  The TTL means a crashed run frees it on its own rather than blocking the next person.
+    rcon.send(['ashfall lease acquire harness scenario-run 3600'], settle=0.4)
     control = control_module.Control(endpoint, workdir=HERE)
     results = []
     for name in chosen:
@@ -106,6 +110,7 @@ def main():
         results.append(report)
         print('')
 
+    rcon.send(['ashfall lease release harness'], settle=0.4)
     print('---')
     bad = 0
     for report in results:

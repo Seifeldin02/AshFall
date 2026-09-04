@@ -1644,17 +1644,21 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         TestLease held=testLease();
         switch(verb){
             case"acquire"->{
-                String purpose=args.length>2?String.join(" ",java.util.Arrays.copyOfRange(args,2,args.length)):"staging tests";
+                /*  An explicit holder, because every RCON caller is CONSOLE: without it the harness and a
+                 *  person running a suite from the console are indistinguishable, which is exactly the
+                 *  collision this lease exists to stop. */
+                String holder=args.length>2?args[2]:sender.getName();
+                String purpose=args.length>3?String.join(" ",java.util.Arrays.copyOfRange(args,3,args.length)):"staging tests";
                 long ttl=900;
-                if(args.length>3)try{ttl=Long.parseLong(args[args.length-1]);purpose=String.join(" ",java.util.Arrays.copyOfRange(args,2,args.length-1));}catch(NumberFormatException ignored){}
-                if(!testLeaseAcquire(sender.getName(),purpose,ttl)){
+                if(args.length>4)try{ttl=Long.parseLong(args[args.length-1]);purpose=String.join(" ",java.util.Arrays.copyOfRange(args,3,args.length-1));}catch(NumberFormatException ignored){}
+                if(!testLeaseAcquire(holder,purpose,ttl)){
                     TestLease other=testLease();
                     CoreUtil.error(sender,"Held by "+(other==null?"somebody":other.owner())+" for "+(other==null?"?":other.purpose())+".",
                             other==null?null:"Free in "+other.secondsLeft()+"s.");
                     return;
                 }
                 TestLease now=testLease();
-                CoreUtil.ok(sender,"Lease held for "+(now==null?ttl:now.secondsLeft())+"s \u2014 "+purpose+".");
+                CoreUtil.ok(sender,"Lease held by "+holder+" for "+(now==null?ttl:now.secondsLeft())+"s \u2014 "+purpose+".");
                 java.util.List<String> busy=stagingActivity(sender.getName());
                 if(!busy.isEmpty()){
                     CoreUtil.warn(sender,"Live activity the suites will not wait for:");
@@ -1662,7 +1666,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 }
             }
             case"release"->{
-                if(!testLeaseRelease(sender.getName())){
+                String holder=args.length>2?args[2]:sender.getName();
+                if(!testLeaseRelease(holder)){
                     CoreUtil.error(sender,"That lease belongs to "+(held==null?"nobody":held.owner())+".");return;
                 }
                 CoreUtil.ok(sender,"Lease released.");
