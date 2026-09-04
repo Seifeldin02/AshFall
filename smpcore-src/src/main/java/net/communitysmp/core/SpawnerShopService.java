@@ -183,22 +183,26 @@ final class SpawnerShopService implements Listener {
         for (int slot = PAGE_SIZE; slot < 54; slot++) inv.setItem(slot, filler());
         for (int index = shown * PAGE_SIZE, slot = 0; index < rows.size() && slot < PAGE_SIZE; index++, slot++)
             inv.setItem(slot, icon(rows.get(index).getKey(), rows.get(index).getValue()));
-        if (rows.isEmpty()) inv.setItem(22, CoreUtil.named(Material.BARRIER, "Nothing in stock",
-                List.of("Spawners blown up, burnt or left to despawn",
-                        "end up here instead of being lost.",
-                        "Nothing has been recovered yet.")));
-        inv.setItem(45, CoreUtil.named(Material.ARROW, shown > 0 ? "Previous page" : " ",
-                shown > 0 ? List.of("Page " + shown + " of " + pages) : List.of()));
-        inv.setItem(49, CoreUtil.named(Material.EMERALD, "Switch to Normal Shop", List.of("Cycle on through the shops.")));
+        if (rows.isEmpty()) inv.setItem(22, CoreUtil.Menu.nothing("Nothing in stock",
+                List.of("Spawners blown up, burnt or left to despawn end up",
+                        "here instead of being lost for good.",
+                        CoreUtil.C_MUTE + "Nothing has been recovered yet.")));
+        /*  A disabled arrow used to be an ARROW named " " with no lore at all -- a blank icon that looked
+         *  like a rendering fault. */
+        inv.setItem(CoreUtil.Menu.PREV, CoreUtil.Menu.page(shown, pages, false));
+        inv.setItem(CoreUtil.Menu.BACK, CoreUtil.Menu.action(Material.EMERALD, "Switch section", List.of(
+                CoreUtil.C_BODY + "Next: " + CoreUtil.C_TEXT + "Normal Shop",
+                CoreUtil.C_MUTE + "Cycles on through the shops.")));
         /** Same slots the rest of the shop family uses: 43 sell basket, 49 switch, 51 sort, 45/53 paging.
          *  The switch and the sort were the wrong way round against every other shop screen. */
-        inv.setItem(43, CoreUtil.named(Material.HOPPER, "Sell Spawners", List.of(
+        inv.setItem(43, CoreUtil.Menu.action(Material.HOPPER, "Sell spawners", List.of(
                 "Opens a sale basket, the same as /shop.",
                 "Drop spawners in and confirm.",
-                "Pays a fifth of the buy price.")));
-        inv.setItem(51, CoreUtil.named(Material.HOPPER, "Sort: " + sort.label(), List.of("Click to change the order.")));
-        inv.setItem(53, CoreUtil.named(Material.ARROW, shown < pages - 1 ? "Next page" : " ",
-                shown < pages - 1 ? List.of("Page " + (shown + 2) + " of " + pages) : List.of()));
+                CoreUtil.C_MUTE + "Pays a fifth of the buy price.")));
+        /*  HOPPER was also the Sell Spawners button four slots away. */
+        inv.setItem(CoreUtil.Menu.SORT, CoreUtil.Menu.action(Material.COMPARATOR, "Sort", List.of(
+                CoreUtil.C_TEXT + sort.label(), CoreUtil.C_MUTE + "Click to cycle.")));
+        inv.setItem(CoreUtil.Menu.NEXT, CoreUtil.Menu.page(shown, pages, true));
         player.openInventory(inv);
     }
 
@@ -258,7 +262,7 @@ final class SpawnerShopService implements Listener {
         int slot = event.getRawSlot();
         if (slot == 45) { if (holder.page() > 0) { plugin.settings().uiSound(player, "page"); open(player, holder.page() - 1, holder.sort()); } return; }
         if (slot == 53) { plugin.settings().uiSound(player, "page"); open(player, holder.page() + 1, holder.sort()); return; }
-        if (slot == 51) { plugin.settings().uiSound(player, "select"); open(player, 0, holder.sort().next()); return; }
+        if (slot == CoreUtil.Menu.SORT) { plugin.settings().uiSound(player, "select"); open(player, 0, holder.sort().next()); return; }
         if (slot == 49) { plugin.settings().uiSound(player, "back"); plugin.shop().open(player); return; }
         if (slot == 43) { plugin.settings().uiSound(player, "select"); openSellBasket(player); return; }
         if (slot < 0 || slot >= PAGE_SIZE) return;
@@ -346,18 +350,28 @@ final class SpawnerShopService implements Listener {
     void openSellBasket(Player player) {
         Inventory inv = plugin.getServer().createInventory(new BasketHolder(true), 54,
                 Component.text("Spawner Sale Basket", NamedTextColor.DARK_GREEN));
-        inv.setItem(47, CoreUtil.named(Material.BARRIER, "Cancel", List.of("Return every spawner.")));
-        inv.setItem(49, basketTotal(0, 0));
-        inv.setItem(51, CoreUtil.named(Material.LIME_CONCRETE, "Confirm Sale",
-                List.of("Sells every spawner in the basket.", "Anything else is handed back.")));
+        inv.setItem(CoreUtil.Menu.SELL_CANCEL, CoreUtil.Menu.cancel("Every spawner comes straight back to you."));
+        inv.setItem(CoreUtil.Menu.SELL_TOTAL, basketTotal(0, 0));
+        inv.setItem(CoreUtil.Menu.SELL_CONFIRM, basketConfirm(0, 0));
         player.openInventory(inv);
     }
 
     private ItemStack basketTotal(int count, double value) {
-        return CoreUtil.named(Material.GOLD_INGOT, "Total: " + CoreUtil.money(value),
-                List.of(count + " spawner(s) in the basket",
-                        "Each pays a fifth of its buy price.",
-                        plugin.bank().deficit() ? "Central Bank deficit: payouts are halved." : "Drop spawners into the top rows."));
+        List<String> lore = new ArrayList<>();
+        lore.add(CoreUtil.C_TEXT + count + CoreUtil.C_BODY + " spawner" + (count == 1 ? "" : "s") + " in the basket");
+        lore.add(CoreUtil.C_MUTE + "Each pays a fifth of its buy price.");
+        if (plugin.bank().deficit()) lore.add(CoreUtil.C_WARN + "Central Bank deficit — payouts are halved.");
+        return CoreUtil.Menu.heading(Material.GOLD_INGOT, "Sale total  " + CoreUtil.money(value), lore);
+    }
+
+    /** The button that takes the spawners says what it pays for them. */
+    private ItemStack basketConfirm(int count, double value) {
+        if (count <= 0) return CoreUtil.Menu.blocked(Material.GRAY_CONCRETE, "Sell",
+                "the basket is empty.", List.of("Drop spawners into the top rows.",
+                        CoreUtil.C_MUTE + "Anything that is not a spawner is handed back."));
+        return CoreUtil.Menu.confirm(CoreUtil.money(value), List.of(
+                CoreUtil.C_BODY + "Sells " + CoreUtil.C_TEXT + count + CoreUtil.C_BODY + " spawner" + (count == 1 ? "" : "s"),
+                CoreUtil.C_MUTE + "Anything else in the basket is handed back."));
     }
 
     /** What the basket is currently worth, and how many sellable spawners are in it. */
@@ -383,14 +397,16 @@ final class SpawnerShopService implements Listener {
          *  a basket. Only the control bar is locked. */
         if (raw >= BASKET_INPUT_END && raw < 54) {
             event.setCancelled(true);
-            if (raw == 47) { plugin.settings().uiSound(player, "cancel"); player.closeInventory(); }
-            else if (raw == 51) confirmBasket(player, event.getInventory());
+            if (raw == CoreUtil.Menu.SELL_CANCEL) { plugin.settings().uiSound(player, "cancel"); player.closeInventory(); }
+            else if (raw == CoreUtil.Menu.SELL_CONFIRM) confirmBasket(player, event.getInventory());
             return;
         }
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof BasketHolder) {
                 double[] quote = quoteBasket(player.getOpenInventory().getTopInventory());
-                player.getOpenInventory().getTopInventory().setItem(49, basketTotal((int) quote[0], quote[1]));
+                org.bukkit.inventory.Inventory top = player.getOpenInventory().getTopInventory();
+                top.setItem(CoreUtil.Menu.SELL_TOTAL, basketTotal((int) quote[0], quote[1]));
+                top.setItem(CoreUtil.Menu.SELL_CONFIRM, basketConfirm((int) quote[0], quote[1]));
             }
         });
     }
@@ -402,7 +418,9 @@ final class SpawnerShopService implements Listener {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             if (player.getOpenInventory().getTopInventory().getHolder(false) instanceof BasketHolder) {
                 double[] quote = quoteBasket(player.getOpenInventory().getTopInventory());
-                player.getOpenInventory().getTopInventory().setItem(49, basketTotal((int) quote[0], quote[1]));
+                org.bukkit.inventory.Inventory top = player.getOpenInventory().getTopInventory();
+                top.setItem(CoreUtil.Menu.SELL_TOTAL, basketTotal((int) quote[0], quote[1]));
+                top.setItem(CoreUtil.Menu.SELL_CONFIRM, basketConfirm((int) quote[0], quote[1]));
             }
         });
     }

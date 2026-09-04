@@ -193,7 +193,7 @@ final class ProgressService implements Listener {
     }
     String rankLabel(Player player){refreshRanks(player,false);return RANK_NAMES.get(effectiveRank(CoreUtil.id(player)));}
     double multiplierView(Player player){refreshRanks(player,false);String id=CoreUtil.id(player);return multiplier(id,db.milestones(id),db.progressMetrics(id));}
-    private ItemStack icon(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
+    private ItemStack icon(Material material,String name,List<String> lore){return CoreUtil.Menu.action(material,name,lore);}
     void eliteParticipation(Player player,String tier){String key=tier.equalsIgnoreCase("legendary")?"LEGENDARY_PARTICIPANT":tier.equalsIgnoreCase("epic")?"EPIC_PARTICIPANT":null;if(key!=null){db.markMilestone(CoreUtil.id(player),key);refreshRanks(player,true);}}
     void eventParticipated(Player player){refreshRanks(player,true);}
     void inspectLoadout(Player player,boolean announce){

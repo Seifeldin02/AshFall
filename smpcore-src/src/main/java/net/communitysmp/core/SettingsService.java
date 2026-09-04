@@ -396,7 +396,7 @@ final class SettingsService implements Listener {
     private void openNativeAutoTpaAdd(Player player){
         try{
             Dialog dialog=Dialog.create(builder->builder.empty()
-                    .base(DialogBase.builder(Component.text("ADD TO AUTO-TPA",NamedTextColor.GOLD))
+                    .base(DialogBase.builder(Component.text("Add to Auto-TPA",NamedTextColor.GOLD))
                             .canCloseWithEscape(true).pause(false).afterAction(DialogBase.DialogAfterAction.NONE)
                             .body(List.of(DialogBody.plainMessage(Component.text("They will be able to /tpa straight to you, with no request to accept.",NamedTextColor.GRAY))))
                             .inputs(List.of(DialogInput.text("name",Component.text("Player name")).maxLength(16).width(200).build()))
@@ -511,39 +511,68 @@ final class SettingsService implements Listener {
         renderChest(inv,player,page);
         player.openInventory(inv);
     }
-    private static final int[] MAIN_SLOTS={10,11,12,13,14,15,16,19,20,24};
+    /*  THE SETTINGS SCREEN, GROUPED.
+     *
+     *  The ten toggles used to be laid out {10..16, 19, 20, 24} -- the last one separated from its nine
+     *  siblings by the TPA sub-screen, the Nametag sub-screen and the particle cycler. Preferences, doors
+     *  to other screens and things that happen immediately were interleaved with nothing to tell them
+     *  apart, and "Random Travel" -- which closes the menu and teleports you -- sat in the middle of them.
+     *
+     *  Three bands now, and what a click does depends only on which band it is in:
+     *      rows 2-3    ten switches. Clicking flips a preference and nothing else.
+     *      row 4       six doors. Clicking opens another screen.
+     *      row 6       two actions. Clicking moves you, or puts you in a queue to be moved.  */
+    private static final int[] MAIN_SLOTS={10,11,12,13,14,15,16,19,20,21};
+    private static final int DOOR_PARTICLES=28, DOOR_TPA=29, DOOR_NAMETAGS=30, DOOR_CONFIRMATIONS=31,
+            DOOR_COSMETICS=32, DOOR_ACCOUNT=33;
+    private static final int ACT_RTP=48, ACT_QUEUE=50;
+    /** The TPA sub-screen. AUTO_ACCEPT is only meaningful while FACTION is on. */
+    private static final int TPA_OTHER=20, TPA_FACTION=21, TPA_AUTO=22, TPA_ALLOWLIST=24;
     private void renderChest(Inventory inv,Player player,Page page){
         inv.clear();
         if(page==Page.MAIN){
             List<Toggle> mt=mainToggles(player);for(int i=0;i<mt.size();i++){Toggle toggle=mt.get(i);inv.setItem(MAIN_SLOTS[i],toggle(toggle.icon(),toggle.title(),enabled(player,toggle.key(),toggle.fallback())));}
-            inv.setItem(21,button(Material.ENDER_PEARL,"TPA Requests",List.of("Configure who can send you teleport requests.")));
-            inv.setItem(22,button(Material.NAME_TAG,"Nametags",List.of("Show balances or faction tags under player names.")));
-            inv.setItem(23,cycle(Material.FIREWORK_STAR,"Particle Intensity",particles(player)));
-            inv.setItem(31,button(Material.REPEATER,"Confirmations",List.of("Configure each marketplace section.")));
-            inv.setItem(39,button(Material.ENDER_PEARL,"Random Travel",List.of("Travel safely in your current dimension.")));
+            inv.setItem(DOOR_PARTICLES,CoreUtil.Menu.action(Material.FIREWORK_STAR,"Particle intensity",List.of(
+                    CoreUtil.C_TEXT+particles(player),CoreUtil.C_MUTE+"Click to cycle.")));
+            inv.setItem(DOOR_TPA,CoreUtil.Menu.action(Material.ENDER_PEARL,"Teleport requests",List.of(
+                    "Who may /tpa to you, and who skips the request entirely.")));
+            inv.setItem(DOOR_NAMETAGS,CoreUtil.Menu.action(Material.NAME_TAG,"Nametags",List.of(
+                    "Balances, faction tags and hearts under player names.")));
+            inv.setItem(DOOR_CONFIRMATIONS,CoreUtil.Menu.action(Material.REPEATER,"Confirmations",List.of(
+                    "Which purchases stop and ask you first.",
+                    CoreUtil.C_MUTE+"Some always ask, whatever you set here.")));
+            inv.setItem(DOOR_COSMETICS,CoreUtil.Menu.action(Material.PLAYER_HEAD,"Cosmetics",List.of(
+                    "Pick one of the cosmetics you have unlocked with Shards.")));
+            inv.setItem(DOOR_ACCOUNT,CoreUtil.Menu.action(Material.WRITABLE_BOOK,"Account",List.of(
+                    "Password and registration.")));
+            /*  Below the settings, because these two do not save a preference -- they move you. */
+            inv.setItem(ACT_RTP,CoreUtil.Menu.action(Material.ENDER_PEARL,"Travel somewhere random",List.of(
+                    CoreUtil.C_WARN+"Teleports you as soon as you click.",
+                    "Somewhere safe in the dimension you are in now.")));
             boolean queued=plugin.teleports().isQueuedForRtp(player);
-            inv.setItem(40,button(queued?Material.LIME_DYE:Material.COMPASS,"RTP Queue",List.of(queued?"§aQueued — click to leave.":"Click to join the queue.","Pairs you with another queued player","in the same dimension.")));
-            inv.setItem(41,button(Material.PLAYER_HEAD,"Cosmetics",List.of("Choose an unlocked Shard cosmetic.")));
-            inv.setItem(49,button(Material.NAME_TAG,"Account",List.of("Password and registration settings.")));
+            inv.setItem(ACT_QUEUE,CoreUtil.Menu.state(queued?Material.LIME_DYE:Material.COMPASS,"Travel with a stranger",queued,
+                    queued?CoreUtil.C_WARN+"You will be moved when somebody else joins."
+                          :"Pairs you with the next player who queues in this dimension."));
         }else if(page==Page.CONFIRMATIONS){
             inv.setItem(13,toggle(Material.REPEATER,"All Routine Confirmations",allConfirmations(player)));
             int slot=19;for(ConfirmationKind kind:ConfirmationKind.values()){inv.setItem(slot++,stateBlock(prettyConfirmation(kind),confirmationEnabled(player,kind)));}
-            inv.setItem(49,button(Material.ARROW,"Back",List.of()));
+            inv.setItem(CoreUtil.Menu.BACK,CoreUtil.Menu.back("Return to settings."));
         }else if(page==Page.NAMETAGS){
             int nameSlot=20;
             for(NametagKind kind:NametagKind.values())inv.setItem(nameSlot++,tpaChestItem(prettyNametag(kind),nametagHint(kind),enabled(player,kind.key,kind.fallback)));
-            inv.setItem(49,button(Material.ARROW,"Back",List.of()));
+            inv.setItem(CoreUtil.Menu.BACK,CoreUtil.Menu.back("Return to settings."));
         }else{
             boolean factionOn=enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback);
-            inv.setItem(20,tpaChestItem(prettyTpa(TpaKind.OTHER),"Requests from outside your faction.",enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback)));
-            inv.setItem(21,tpaChestItem(prettyTpa(TpaKind.FACTION),"/tpa and /tpahere from faction members.",factionOn));
-            inv.setItem(24,button(Material.ENDER_PEARL,"Auto-TPA Allowlist",List.of(
-                    "Named players teleport straight to you,",
-                    "with no request to accept.",
-                    "Master: "+(autoTpaMaster(player)?"ON":"OFF")+"  |  Players: "+autoTpaEntries(player).size(),
-                    "Separate from Faction Auto-Accept.")));
-            inv.setItem(22,factionOn?tpaChestItem(prettyTpa(TpaKind.AUTO_ACCEPT),"Auto-accepts only /tpa (never /tpahere)\nfrom faction members.",enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback)):tpaDisabledChestItem());
-            inv.setItem(49,button(Material.ARROW,"Back",List.of()));
+            inv.setItem(TPA_OTHER,tpaChestItem(prettyTpa(TpaKind.OTHER),"Requests from outside your faction.",enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback)));
+            inv.setItem(TPA_FACTION,tpaChestItem(prettyTpa(TpaKind.FACTION),"/tpa and /tpahere from faction members.",factionOn));
+            inv.setItem(TPA_ALLOWLIST,CoreUtil.Menu.action(Material.ENDER_PEARL,"Auto-TPA allowlist",List.of(
+                    CoreUtil.C_BODY+"Switch "+(autoTpaMaster(player)?CoreUtil.C_GOOD+"on":CoreUtil.C_BAD+"off")
+                            +CoreUtil.C_BODY+"  \u00b7  "+CoreUtil.C_TEXT+autoTpaEntries(player).size()+CoreUtil.C_BODY+" players",
+                    "Named players teleport straight to you, with no",
+                    "request for you to accept.",
+                    CoreUtil.C_MUTE+"Nothing to do with Faction Auto-Accept below.")));
+            inv.setItem(TPA_AUTO,factionOn?tpaChestItem(prettyTpa(TpaKind.AUTO_ACCEPT),"Auto-accepts only /tpa (never /tpahere)\nfrom faction members.",enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback)):tpaDisabledChestItem());
+            inv.setItem(CoreUtil.Menu.BACK,CoreUtil.Menu.back("Return to settings."));
         }
         if(page==Page.AUTOTPA)renderAutoTpa(inv,player);
         if(page==Page.AUTOTPA_REMOVE)renderAutoTpaRemove(inv,player);
@@ -615,14 +644,14 @@ final class SettingsService implements Listener {
         if(holder.page==Page.AUTOTPA_REMOVE){autoTpaRemoveClick(event,player,slot);return;}
         if(holder.page==Page.MAIN){
             List<Toggle> mt=mainToggles(player);for(int i=0;i<mt.size();i++)if(slot==MAIN_SLOTS[i]){Toggle toggle=mt.get(i);set(player,toggle.key(),!enabled(player,toggle.key(),toggle.fallback()));renderChest(event.getInventory(),player,Page.MAIN);return;}
-            if(slot==21)openChest(player,Page.TPA);
-            else if(slot==22)openChest(player,Page.NAMETAGS);
-            else if(slot==23){cycleParticles(player);renderChest(event.getInventory(),player,Page.MAIN);}
-            else if(slot==31)openChest(player,Page.CONFIRMATIONS);
-            else if(slot==39){player.closeInventory();plugin.teleports().rtp(player);}
-            else if(slot==40){plugin.teleports().toggleRtpQueue(player);renderChest(event.getInventory(),player,Page.MAIN);}
-            else if(slot==41)plugin.shards().openCosmetics(player);
-            else if(slot==49)plugin.account().open(player);
+            if(slot==DOOR_TPA)openChest(player,Page.TPA);
+            else if(slot==DOOR_NAMETAGS)openChest(player,Page.NAMETAGS);
+            else if(slot==DOOR_PARTICLES){cycleParticles(player);renderChest(event.getInventory(),player,Page.MAIN);}
+            else if(slot==DOOR_CONFIRMATIONS)openChest(player,Page.CONFIRMATIONS);
+            else if(slot==DOOR_COSMETICS)plugin.shards().openCosmetics(player);
+            else if(slot==DOOR_ACCOUNT)plugin.account().open(player);
+            else if(slot==ACT_RTP){player.closeInventory();plugin.teleports().rtp(player);}
+            else if(slot==ACT_QUEUE){plugin.teleports().toggleRtpQueue(player);renderChest(event.getInventory(),player,Page.MAIN);}
         }else if(holder.page==Page.NAMETAGS){
             if(slot>=20&&slot<20+NametagKind.values().length){NametagKind kind=NametagKind.values()[slot-20];set(player,kind.key,!enabled(player,kind.key,kind.fallback));renderChest(event.getInventory(),player,Page.NAMETAGS);}
             else if(slot==49)openChest(player,Page.MAIN);
@@ -631,11 +660,23 @@ final class SettingsService implements Listener {
             else if(slot>=19&&slot<19+ConfirmationKind.values().length){ConfirmationKind kind=ConfirmationKind.values()[slot-19];set(player,kind.key,!confirmationEnabled(player,kind));renderChest(event.getInventory(),player,Page.CONFIRMATIONS);}
             else if(slot==49)openChest(player,Page.MAIN);
         }else{
-            if(slot==20){set(player,TpaKind.OTHER.key,!enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback));renderChest(event.getInventory(),player,Page.TPA);}
-            else if(slot==21){set(player,TpaKind.FACTION.key,!enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback));renderChest(event.getInventory(),player,Page.TPA);}
-            else if(slot==22){set(player,TpaKind.AUTO_ACCEPT.key,!enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback));renderChest(event.getInventory(),player,Page.TPA);}
-            else if(slot==24){uiSound(player,"select");openChest(player,Page.AUTOTPA);}
-            else if(slot==49)openChest(player,Page.MAIN);
+            if(slot==TPA_OTHER){set(player,TpaKind.OTHER.key,!enabled(player,TpaKind.OTHER.key,TpaKind.OTHER.fallback));renderChest(event.getInventory(),player,Page.TPA);}
+            else if(slot==TPA_FACTION){set(player,TpaKind.FACTION.key,!enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback));renderChest(event.getInventory(),player,Page.TPA);}
+            else if(slot==TPA_AUTO){
+                /*  Auto-Accept was drawn greyed out and labelled UNAVAILABLE when Faction TPA Requests was
+                 *  off -- and stayed fully wired underneath, so clicking it flipped a preference the player
+                 *  could not see, on a screen that did not change. It looked like a broken menu. It now says
+                 *  what has to happen first, and changes nothing until it does. */
+                if(!enabled(player,TpaKind.FACTION.key,TpaKind.FACTION.fallback)){
+                    uiSound(player,"failed");
+                    CoreUtil.warn(player,"Turn on Faction TPA Requests first \u2014 Auto-Accept only ever applies to faction members.");
+                }else{
+                    set(player,TpaKind.AUTO_ACCEPT.key,!enabled(player,TpaKind.AUTO_ACCEPT.key,TpaKind.AUTO_ACCEPT.fallback));
+                    renderChest(event.getInventory(),player,Page.TPA);
+                }
+            }
+            else if(slot==TPA_ALLOWLIST){uiSound(player,"select");openChest(player,Page.AUTOTPA);}
+            else if(slot==CoreUtil.Menu.BACK)openChest(player,Page.MAIN);
         }
     }
 
@@ -793,7 +834,9 @@ final class SettingsService implements Listener {
 
     private String prettyNametag(NametagKind kind){return switch(kind){case BALANCES->"Show Balances";case FACTIONS->"Show Faction Tags";case HEARTS->"Show Hearts";};}
     private String nametagHint(NametagKind kind){return switch(kind){case BALANCES->"Show each player's balance under their name.";case FACTIONS->"Show each player's faction tag beside their name.";case HEARTS->"Show the health line. Always shown when every option here is off.";};}
-    private String pageTitle(Page page){return switch(page){case MAIN->"ASHEN SETTINGS";case CONFIRMATIONS->"CONFIRMATIONS";case TPA->"TPA REQUESTS";case NAMETAGS->"NAMETAGS";case AUTOTPA->"AUTO-TPA ALLOWLIST";case AUTOTPA_REMOVE->"REMOVE FROM AUTO-TPA";};}
+    /** Sentence case. A window title in capitals is the loudest thing on a screen whose whole job is to
+     *  be scanned, and there are six of them one click apart. */
+    private String pageTitle(Page page){return switch(page){case MAIN->"Settings";case CONFIRMATIONS->"Confirmations";case TPA->"Teleport requests";case NAMETAGS->"Nametags";case AUTOTPA->"Auto-TPA allowlist";case AUTOTPA_REMOVE->"Remove from Auto-TPA";};}
 
     private void nightVisionTick(){
         for(Player player:plugin.getServer().getOnlinePlayers()){
@@ -948,25 +991,24 @@ final class SettingsService implements Listener {
     private boolean tpaSelfTest(){return TpaKind.values().length==3&&defaultFor(TpaKind.OTHER.key)&&defaultFor(TpaKind.FACTION.key)&&!defaultFor(TpaKind.AUTO_ACCEPT.key)&&TpaKind.OTHER.key.equals("tpa_requests");}
     private double particleScaleFor(String value){return switch(value){case"REDUCED"->.45;case"MINIMAL"->.15;default->1;};}
 
-    private ItemStack toggle(Material icon,String title,boolean enabled){ItemStack item=new ItemStack(icon);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(title,NamedTextColor.GOLD));meta.lore(List.of(Component.text(enabled?"ON":"OFF",enabled?NamedTextColor.GREEN:NamedTextColor.RED),Component.text("Click to change.",NamedTextColor.DARK_GRAY)));item.setItemMeta(meta);return item;}
+    private ItemStack toggle(Material icon,String title,boolean enabled){return CoreUtil.Menu.state(icon,title,enabled,null);}
     private ItemStack stateBlock(String title,boolean enabled){return toggle(enabled?Material.LIME_CONCRETE:Material.RED_CONCRETE,title,enabled);}
-    private ItemStack cycle(Material icon,String title,String value){return button(icon,title,List.of(value,"Click to change."));}
-    private ItemStack button(Material material,String title,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(title,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
+    private ItemStack button(Material material,String title,List<String> lore){return CoreUtil.Menu.action(material,title,lore);}
     private ItemStack tpaChestItem(String title,String description,boolean enabled){
-        ItemStack item=new ItemStack(enabled?Material.LIME_DYE:Material.RED_DYE);ItemMeta meta=item.getItemMeta();
-        meta.displayName(Component.text(title,NamedTextColor.GOLD));
-        List<Component> lore=new ArrayList<>();lore.add(Component.text(enabled?"ON":"OFF",enabled?NamedTextColor.GREEN:NamedTextColor.RED));
-        for(String line:description.split("\n"))lore.add(Component.text(line,NamedTextColor.GRAY));
-        lore.add(Component.text("Click to change.",NamedTextColor.DARK_GRAY));
-        meta.lore(lore);item.setItemMeta(meta);return item;
+        List<String> lore=new ArrayList<>();
+        lore.add(enabled?CoreUtil.C_GOOD+"On":CoreUtil.C_BAD+"Off");
+        for(String line:description.split("\n"))lore.add(line);
+        lore.add(CoreUtil.C_MUTE+"Click to turn it "+(enabled?"off":"on")+".");
+        return CoreUtil.Menu.of(enabled?Material.LIME_DYE:Material.RED_DYE,(enabled?CoreUtil.C_TEXT:CoreUtil.C_BODY)+title,lore);
     }
     /** Chest slots can't be cleanly "hidden" the way a native Dialog's button list can (an empty slot next to
      *  Faction TPA would just look broken, with no clue why), so this is the "otherwise show it disabled and
      *  clearly explain the dependency" branch of the spec for the chest/Bedrock surfaces. */
     private ItemStack tpaDisabledChestItem(){
-        ItemStack item=new ItemStack(Material.GRAY_DYE);ItemMeta meta=item.getItemMeta();
-        meta.displayName(Component.text("Auto-Accept Faction TPA",NamedTextColor.GRAY));
-        meta.lore(List.of(Component.text("UNAVAILABLE",NamedTextColor.DARK_GRAY),Component.text("Requires Faction TPA Requests to be ON.",NamedTextColor.GRAY),Component.text("Auto-accepts only /tpa (never /tpahere)",NamedTextColor.DARK_GRAY),Component.text("from faction members.",NamedTextColor.DARK_GRAY)));
-        item.setItemMeta(meta);return item;
+        return CoreUtil.Menu.blocked(Material.GRAY_DYE,"Auto-Accept Faction TPA",
+                "Faction TPA Requests is off.",
+                List.of("Auto-accepts only /tpa, never /tpahere, and only",
+                        "from members of your own faction.",
+                        CoreUtil.C_TEXT+"Turn on Faction TPA Requests to use it."));
     }
 }

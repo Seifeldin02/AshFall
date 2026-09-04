@@ -64,6 +64,8 @@ final class MarketplaceService implements Listener {
     private record Input(InputType type,Section section,long expires) {}
 
     private static final int PAGE_SIZE=43;
+    /** The three section-specific footer buttons, named once so the builder and the click switch agree. */
+    private static final int ACT_LEFT=43, ACT_MID=44, ACT_RIGHT=46;
     private final SMPCore plugin;private final ShopService shop;private final AuctionService auctions;private final ShardService shards;
     private final Map<UUID,Session> sessions=new ConcurrentHashMap<>();
     private final Map<UUID,Input> inputs=new ConcurrentHashMap<>();
@@ -85,14 +87,50 @@ final class MarketplaceService implements Listener {
         case SPAWNERS->0;case SHOP,LUXURY->renderShop(player,inv,holder,view,session.section==Section.LUXURY);case AUCTION->renderAuctions(player,inv,holder,view);case SHARDS->renderShards(player,inv,holder,view);};
         int pages=Math.max(1,(total+PAGE_SIZE-1)/PAGE_SIZE),requestedPage=view.page;view.page=Math.max(0,Math.min(view.page,pages-1));
         if(requestedPage!=view.page){render(player,session);return;}
-        if(session.section==Section.SHOP){inv.setItem(43,button(Material.HOPPER,"Sell Basket",List.of("Place items, review, and confirm.")));inv.setItem(44,button(Material.PAPER,"Selling",List.of("Right-click an item to sell.","Full value becomes 50% after its daily threshold.")));inv.setItem(46,button(Material.GOLD_INGOT,"Quick Sell",List.of("Sell every supported ordinary item","in your inventory.")));}
-        else if(session.section==Section.AUCTION){inv.setItem(43,button(Material.ANVIL,"List Held Item",List.of("Hold the stack you want to list.")));inv.setItem(44,button(Material.HOPPER,"Collect Expired",List.of("Retrieve returned listings.")));}
-        inv.setItem(45,button(Material.ARROW,"Previous",List.of("Page "+(view.page+1)+" / "+pages)));
-        inv.setItem(47,button(Material.SPYGLASS,"Search / Filter",filterLore(view)));
+        if(session.section==Section.SHOP){
+            inv.setItem(ACT_LEFT,CoreUtil.Menu.action(Material.HOPPER,"Sell basket",List.of(
+                    "Put items in, see what they are worth, then confirm.")));
+            inv.setItem(ACT_MID,CoreUtil.Menu.info(Material.PAPER,"How selling works",List.of(
+                    CoreUtil.C_TEXT+"Right-click"+CoreUtil.C_BODY+" any item here to sell one.",
+                    CoreUtil.C_TEXT+"Shift-right-click"+CoreUtil.C_BODY+" to sell sixteen.",
+                    CoreUtil.C_MUTE+"Past its daily threshold an item pays half.")));
+            inv.setItem(ACT_RIGHT,CoreUtil.Menu.action(Material.GOLD_INGOT,"Quick sell",List.of(
+                    "Sells every ordinary item in your inventory at once.",
+                    CoreUtil.C_MUTE+"Asks you to confirm the total first.")));
+        }else if(session.section==Section.AUCTION){
+            inv.setItem(ACT_LEFT,CoreUtil.Menu.action(Material.ANVIL,"List the item you are holding",List.of(
+                    "Hold the stack first, then click here to set a price.")));
+            int waiting=auctions.collectibleCount(player);
+            inv.setItem(ACT_MID,waiting>0
+                    ?CoreUtil.Menu.action(Material.HOPPER,"Collect expired listings",List.of(
+                            CoreUtil.C_TEXT+waiting+CoreUtil.C_BODY+" waiting for you",
+                            CoreUtil.C_MUTE+"Anything that will not fit stays claimable."))
+                    :CoreUtil.Menu.info(Material.HOPPER,"Collect expired listings",List.of(
+                            CoreUtil.C_MUTE+"Nothing of yours has expired.")));
+        }
+        /*  Both arrows used to be ARROW, both said "Page 1 / 4", and neither said whether it would move.
+         *  On page one, Previous looked exactly as live as Next and did nothing when clicked. */
+        inv.setItem(CoreUtil.Menu.PREV,CoreUtil.Menu.page(view.page,pages,false));
+        inv.setItem(CoreUtil.Menu.NEXT,CoreUtil.Menu.page(view.page,pages,true));
+        inv.setItem(CoreUtil.Menu.SEARCH,CoreUtil.Menu.action(Material.SPYGLASS,"Search and filter",filterLore(view)));
+        /*  It said where the one button would take you, never where you already were, and there are five
+         *  sections in the ring -- so "Switch to Luxury Shop" left you counting clicks to reach the Shard
+         *  Shop. The whole ring is written out, with the section you are in marked. */
         Section next=nextSection(session.section);
-        inv.setItem(49,button(sectionIcon(next),"Switch to "+sectionName(next),List.of()));
-        inv.setItem(51,button(Material.HOPPER,"Sort: "+sortName(view.sort),List.of("Click to change.")));
-        inv.setItem(53,button(Material.ARROW,"Next",List.of("Page "+(view.page+1)+" / "+pages)));
+        List<String> ring=new ArrayList<>();
+        ring.add(CoreUtil.C_BODY+"Next: "+CoreUtil.C_TEXT+sectionName(next));
+        ring.add("");
+        Section each=session.section;
+        do{
+            ring.add(each==session.section?CoreUtil.C_EMBER+CoreUtil.MARK+" "+sectionName(each)
+                                          :CoreUtil.C_MUTE+"  "+sectionName(each));
+            each=nextSection(each);
+        }while(each!=session.section);
+        inv.setItem(CoreUtil.Menu.BACK,CoreUtil.Menu.action(sectionIcon(next),"Switch section",ring));
+        /*  Was a HOPPER, which is also the sell basket AND the collect button on the same screen. */
+        inv.setItem(CoreUtil.Menu.SORT,CoreUtil.Menu.action(Material.COMPARATOR,"Sort",List.of(
+                CoreUtil.C_TEXT+sortName(view.sort),CoreUtil.C_MUTE+"Click to cycle.")));
+        if(total==0)inv.setItem(22,CoreUtil.Menu.nothing(emptyTitle(session.section,view),emptyHelp(session.section,view)));
         player.openInventory(inv);
     }
 
@@ -173,14 +211,17 @@ final class MarketplaceService implements Listener {
         Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());if(!session.loaded)loadPreferences(player,session);session.section=holder.section;View view=session.view();int slot=event.getRawSlot();ItemRef item=holder.items.get(slot);
         if(item!=null){handleItem(player,session,item,event.isShiftClick(),event.isRightClick());return;}
         switch(slot){
-            case 43->{if(session.section==Section.SHOP)shop.openSellBasket(player,view.merchant);else if(session.section==Section.AUCTION)prompt(player,InputType.LIST_PRICE);}
-            case 44->{if(session.section==Section.AUCTION)auctions.collect(player);}
-            case 46->{if(session.section==Section.SHOP)shop.requestQuickSell(player,view.merchant,()->render(player,session));}
-            case 45->{view.page=Math.max(0,view.page-1);render(player,session);}
-            case 47->openFilters(player,session);
-            case 49->switchSection(player,session,nextSection(session.section),false);
-            case 51->{view.sort=Sort.values()[(view.sort.ordinal()+1)%Sort.values().length];view.page=0;savePreference(player,session.section,"sort",view.sort.name());render(player,session);}
-            case 53->{view.page++;render(player,session);}
+            case ACT_LEFT->{if(session.section==Section.SHOP)shop.openSellBasket(player,view.merchant);else if(session.section==Section.AUCTION)prompt(player,InputType.LIST_PRICE);}
+            case ACT_MID->{if(session.section==Section.AUCTION)auctions.collect(player);}
+            case ACT_RIGHT->{if(session.section==Section.SHOP)shop.requestQuickSell(player,view.merchant,()->render(player,session));}
+            case CoreUtil.Menu.PREV->{if(view.page>0){view.page--;render(player,session);}}
+            case CoreUtil.Menu.SEARCH->openFilters(player,session);
+            case CoreUtil.Menu.BACK->switchSection(player,session,nextSection(session.section),false);
+            case CoreUtil.Menu.SORT->{view.sort=Sort.values()[(view.sort.ordinal()+1)%Sort.values().length];view.page=0;savePreference(player,session.section,"sort",view.sort.name());render(player,session);}
+            /*  render() already clamps an over-large page and redraws, so clicking Next on the last page
+             *  was harmless -- but it also rebuilt the whole screen for nothing, and the arrow that did it
+             *  now says plainly that there is nowhere to go. */
+            case CoreUtil.Menu.NEXT->{view.page++;render(player,session);}
             default->{}
         }
     }
@@ -349,7 +390,28 @@ final class MarketplaceService implements Listener {
     private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";case SPAWNERS->"Spawner Shop";};}
     private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;case SPAWNERS->Material.SPAWNER;};}
     private String sortName(Sort sort){return switch(sort){case STOCK->"In Stock First";case CATEGORY->"Category";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
+    /** Every list screen needs one of these: what would be here, and what to do about it. */
+    private String emptyTitle(Section section,View view){
+        boolean filtered=!view.query.isBlank()||!view.seller.isBlank()||!"ALL".equalsIgnoreCase(view.category);
+        if(filtered)return "Nothing matches that filter";
+        return switch(section){
+            case AUCTION->"Nobody is selling anything right now";
+            case SHARDS->"No Shard rewards are available";
+            case LUXURY->"The luxury shelf is empty";
+            default->"Nothing to show here";
+        };
+    }
+    private List<String> emptyHelp(Section section,View view){
+        if(!view.query.isBlank()||!view.seller.isBlank()||!"ALL".equalsIgnoreCase(view.category))
+            return List.of("Clear the search or pick a different category",
+                    CoreUtil.C_TEXT+"Search and filter"+CoreUtil.C_BODY+", below.");
+        if(section==Section.AUCTION)return List.of("Hold something and use the anvil below to list it.",
+                CoreUtil.C_MUTE+"Listings expire and come back to you if nobody buys.");
+        if(section==Section.SHOP)return List.of("The shop stocks what players sell to it.",
+                CoreUtil.C_MUTE+"Sort by In Stock to hide the empty shelves.");
+        return List.of(CoreUtil.C_MUTE+"Try again later.");
+    }
     private List<String> filterLore(View view){List<String> lore=new ArrayList<>();lore.add("Category: "+CoreUtil.pretty(view.category));if(!view.query.isBlank())lore.add("Item: "+view.query);if(!view.seller.isBlank())lore.add("Seller: "+view.seller);return lore;}
     private ItemStack nav(Material material,String name,boolean selected){return button(selected?Material.LIME_STAINED_GLASS_PANE:material,name,List.of(selected?"Current section":"Open section"));}
-    private ItemStack button(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
+    private ItemStack button(Material material,String name,List<String> lore){return CoreUtil.Menu.action(material,name,lore);}
 }

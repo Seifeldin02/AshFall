@@ -470,8 +470,13 @@ final class EnderChestService implements Listener {
         double cost=tierPrice(next)*plugin.bank().buyFactor();
         Inventory inventory=plugin.getServer().createInventory(new UpgradeHolder(CoreUtil.id(player),returnPage),27,
                 Component.text("Ender Storage Upgrade",NamedTextColor.DARK_PURPLE));
-        inventory.setItem(11,CoreUtil.named(Material.LIME_CONCRETE,"Confirm",List.of(CoreUtil.money(cost),tierCapacity(next)+" slots total")));
-        inventory.setItem(15,CoreUtil.named(Material.RED_CONCRETE,"Cancel",List.of()));
+        inventory.setItem(CoreUtil.Menu.SUBJECT,CoreUtil.Menu.heading(Material.ENDER_CHEST,"Ender Storage upgrade",List.of(
+                CoreUtil.C_BODY+"Now "+CoreUtil.C_TEXT+capacity(player)+CoreUtil.C_BODY+" slots",
+                CoreUtil.C_BODY+"After "+CoreUtil.C_TEXT+tierCapacity(next)+CoreUtil.C_BODY+" slots",
+                CoreUtil.C_BODY+"Cost "+CoreUtil.C_EMBER+CoreUtil.money(cost))));
+        inventory.setItem(CoreUtil.Menu.CANCEL,CoreUtil.Menu.cancel("Back to your storage."));
+        inventory.setItem(CoreUtil.Menu.CONFIRM,CoreUtil.Menu.confirm(CoreUtil.money(cost),List.of(
+                CoreUtil.C_BODY+"Unlocks "+CoreUtil.C_TEXT+(tierCapacity(next)-capacity(player))+CoreUtil.C_BODY+" more slots, permanently.")));
         player.openInventory(inventory);
     }
 
@@ -555,8 +560,8 @@ final class EnderChestService implements Listener {
         if(raw instanceof UpgradeHolder holder){
             event.setCancelled(true);
             if(!holder.player().equals(CoreUtil.id(viewer)))return;
-            if(event.getRawSlot()==11)purchase(viewer,holder.returnPage());
-            else if(event.getRawSlot()==15)openPage(viewer,holder.returnPage());
+            if(event.getRawSlot()==CoreUtil.Menu.CONFIRM)purchase(viewer,holder.returnPage());
+            else if(event.getRawSlot()==CoreUtil.Menu.CANCEL)openPage(viewer,holder.returnPage());
             return;
         }
         if(raw instanceof ChunkHolder holder){

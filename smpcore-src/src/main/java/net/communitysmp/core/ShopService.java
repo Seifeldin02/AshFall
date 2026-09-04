@@ -109,9 +109,9 @@ final class ShopService {
     void openSellBasket(Player p,boolean premium){
         double multiplier=premium?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1;
         SellHolder holder=new SellHolder(multiplier);Inventory inv=plugin.getServer().createInventory(holder,54,Component.text("Sell Basket",NamedTextColor.DARK_GREEN));
-        inv.setItem(47,CoreUtil.named(Material.BARRIER,"Cancel",List.of("Return every item.")));
-        inv.setItem(49,totalIcon(new SaleQuote(0,0,0)));
-        inv.setItem(51,CoreUtil.named(Material.LIME_CONCRETE,"Confirm Sale",List.of("Only supported ordinary items will be sold.")));
+        inv.setItem(CoreUtil.Menu.SELL_CANCEL,CoreUtil.Menu.cancel("Every item comes straight back to you."));
+        inv.setItem(CoreUtil.Menu.SELL_TOTAL,totalIcon(new SaleQuote(0,0,0)));
+        inv.setItem(CoreUtil.Menu.SELL_CONFIRM,confirmIcon(new SaleQuote(0,0,0)));
         p.openInventory(inv);
     }
 
@@ -129,8 +129,8 @@ final class ShopService {
         if(raw>=0&&raw<INPUT_END){plugin.getServer().getScheduler().runTask(plugin,()->refreshBasket(e.getInventory(),p));return;}
         if(raw>=INPUT_END&&raw<e.getInventory().getSize()){
             e.setCancelled(true);
-            if(raw==47){holder.finalized=true;returnItems(p,e.getInventory());p.closeInventory();}
-            else if(raw==51)confirmBasket(p,e.getInventory(),holder);
+            if(raw==CoreUtil.Menu.SELL_CANCEL){holder.finalized=true;returnItems(p,e.getInventory());p.closeInventory();}
+            else if(raw==CoreUtil.Menu.SELL_CONFIRM)confirmBasket(p,e.getInventory(),holder);
             return;
         }
         if(e.isShiftClick()&&e.getCurrentItem()!=null&&!e.getCurrentItem().getType().isAir()){
@@ -141,8 +141,31 @@ final class ShopService {
     void drag(InventoryDragEvent e){if(e.getInventory().getHolder(false) instanceof SellHolder&&e.getRawSlots().stream().anyMatch(slot->slot>=INPUT_END&&slot<54))e.setCancelled(true);if(e.getInventory().getHolder(false) instanceof SellHolder&&e.getWhoClicked() instanceof Player p)plugin.getServer().getScheduler().runTask(plugin,()->refreshBasket(e.getInventory(),p));}
     void close(InventoryCloseEvent e){if(e.getInventory().getHolder(false) instanceof SellHolder holder&&!holder.finalized&&e.getPlayer() instanceof Player p){holder.finalized=true;returnItems(p,e.getInventory());}}
 
-    private void refreshBasket(Inventory inv,Player p){if(!(inv.getHolder(false) instanceof SellHolder holder)||holder.finalized)return;inv.setItem(49,totalIcon(quote(inv,p,holder.multiplier)));}
-    private ItemStack totalIcon(SaleQuote quote){List<String> lore=new ArrayList<>();lore.add("Total: "+CoreUtil.money(quote.earned()));lore.add(quote.sellable()+" item"+(quote.sellable()==1?"":"s")+" accepted");if(quote.unsupported()>0)lore.add(quote.unsupported()+" item"+(quote.unsupported()==1?"":"s")+" will be returned");return CoreUtil.named(Material.GOLD_INGOT,"Sale Total",lore);}
+    /*  Both the summary AND the button repaint. The amount you are about to be paid used to live only in
+     *  the lore of a separate icon two slots away from the button that took the money, so the thing you
+     *  clicked never said what it would do. */
+    private void refreshBasket(Inventory inv,Player p){
+        if(!(inv.getHolder(false) instanceof SellHolder holder)||holder.finalized)return;
+        SaleQuote quote=quote(inv,p,holder.multiplier);
+        inv.setItem(CoreUtil.Menu.SELL_TOTAL,totalIcon(quote));
+        inv.setItem(CoreUtil.Menu.SELL_CONFIRM,confirmIcon(quote));
+    }
+    private ItemStack confirmIcon(SaleQuote quote){
+        if(quote.sellable()<=0)return CoreUtil.Menu.blocked(Material.GRAY_CONCRETE,"Sell",
+                "the basket is empty.",List.of("Drop items into the top rows.",
+                        CoreUtil.C_MUTE+"Shift-click from your inventory to move a whole stack."));
+        return CoreUtil.Menu.confirm(CoreUtil.money(quote.earned()),List.of(
+                CoreUtil.C_BODY+"Sells "+CoreUtil.C_TEXT+quote.sellable()+CoreUtil.C_BODY+" item"+(quote.sellable()==1?"":"s"),
+                quote.unsupported()>0?CoreUtil.C_WARN+quote.unsupported()+" the shop will not take come back to you"
+                                     :CoreUtil.C_MUTE+"Paid into your balance immediately."));
+    }
+    private ItemStack totalIcon(SaleQuote quote){
+        List<String> lore=new ArrayList<>();
+        lore.add(CoreUtil.C_TEXT+quote.sellable()+CoreUtil.C_BODY+" item"+(quote.sellable()==1?"":"s")+" the shop will buy");
+        if(quote.unsupported()>0)lore.add(CoreUtil.C_WARN+quote.unsupported()+CoreUtil.C_BODY+" it will not — handed back");
+        lore.add(CoreUtil.C_MUTE+"Past its daily threshold an item pays half.");
+        return CoreUtil.Menu.heading(Material.GOLD_INGOT,"Sale total  "+CoreUtil.money(quote.earned()),lore);
+    }
     private SaleQuote quote(Inventory inv,Player p,double multiplier){
         Map<Material,Integer> counts=new LinkedHashMap<>();int unsupported=0;
         for(int slot=0;slot<INPUT_END;slot++){ItemStack item=inv.getItem(slot);if(item==null||item.getType().isAir())continue;Price price=prices.get(item.getType());if(price==null||price.luxury()||price.sell()<0||!ordinary(item)){unsupported+=item.getAmount();continue;}counts.merge(item.getType(),item.getAmount(),Integer::sum);}

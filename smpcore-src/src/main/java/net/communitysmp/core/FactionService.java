@@ -107,33 +107,88 @@ final class FactionService {
         }
         return true;
     }
+    /*  Slot numbers for the faction screens live here rather than being written out twice.
+     *
+     *  Every one of these used to appear as a bare number in the builder AND again in the click handler's
+     *  switch, and slot 34 shows what that costs: the Faction Bank icon was drawn but never given a case,
+     *  so it looked like a button and did nothing at all when clicked. */
+    private static final int MAIN_INFO=10, MAIN_WORTH=12, MAIN_BORDERS=14, MAIN_MEMBERS=16,
+            MAIN_CLAIM=28, MAIN_RELATIONS=30, MAIN_HOMES=32, MAIN_BANK=34;
+    /** The no-faction screen: the two ways in. */
+    private static final int JOIN_CREATE=20, JOIN_ACCEPT=24;
+    /** Faction members are drawn from here, contiguously, and read back the same way. */
+    private static final int MEMBER_FIRST=10, MEMBER_LAST=CoreUtil.Menu.BACK_SMALL-1;
+
     private void openMain(Player player){
         Database.FactionRow faction=db.factionOf(CoreUtil.id(player));
         Inventory inv=plugin.getServer().createInventory(new MainHolder(player.getUniqueId()),45,Component.text("Faction",NamedTextColor.DARK_GREEN));
         if(faction==null){
-            inv.setItem(20,button(Material.WHITE_BANNER,"Create a Faction",List.of("Use /f create <name>.")));
-            inv.setItem(24,button(Material.WRITABLE_BOOK,"Pending Invitation",List.of("Use /f accept after an invitation.")));
+            /*  Both of these are commands, not buttons -- there is no create-a-faction screen to open. They
+             *  are drawn as information now instead of as two clickable-looking icons that do nothing. */
+            inv.setItem(JOIN_CREATE,CoreUtil.Menu.info(Material.WHITE_BANNER,"Start a faction",List.of(
+                    "Claim land, share a bank and a home, and set relations",
+                    "with other factions.",
+                    CoreUtil.C_TEXT+"/f create <name>")));
+            inv.setItem(JOIN_ACCEPT,CoreUtil.Menu.info(Material.WRITABLE_BOOK,"Join one instead",List.of(
+                    "A leader has to invite you first.",
+                    CoreUtil.C_TEXT+"/f accept <faction>")));
             player.openInventory(inv);return;
         }
         Claim claim=claimOf(faction);
-        inv.setItem(10,button(Material.PAPER,faction.name()+" ["+faction.tag()+"]",List.of(roleLabel(player,faction),db.factionMemberCount(faction.id())+" / "+plugin.getConfig().getInt("factions.max-members",3)+" members")));
-        inv.setItem(12,button(Material.GOLD_BLOCK,"Net Worth",List.of(CoreUtil.money(plugin.netWorth().value(faction.id())))));
-        inv.setItem(14,button(Material.BARRIER,"Faction Borders",List.of(borderEnabled(player)?"ON":"OFF")));
-        inv.setItem(16,button(Material.PLAYER_HEAD,"Members & Co-Leader",List.of("Manage faction roles.")));
-        inv.setItem(28,button(claim==null?Material.GOLDEN_SHOVEL:Material.RECOVERY_COMPASS,claim==null?"Claim Territory":"Expand Territory",List.of(claim==null?"Centers the free claim at your position.":claim.size()+" × "+claim.size())));
-        inv.setItem(30,button(Material.WHITE_BANNER,"Relations",List.of("Alliances and truces.")));
-        inv.setItem(32,button(Material.RED_BED,"Faction Homes",List.of(String.join(", ",db.homes(Long.toString(faction.id()),"FACTION").stream().map(Database.HomeRow::name).toList()))));
-        inv.setItem(34,button(Material.CHEST,"Faction Bank",List.of(CoreUtil.money(faction.balance()),"Use /f deposit or /f withdraw.")));
+        int members=db.factionMemberCount(faction.id()),cap=plugin.getConfig().getInt("factions.max-members",3);
+        boolean leader=isLeader(player,faction);
+        inv.setItem(MAIN_INFO,CoreUtil.Menu.heading(Material.PAPER,faction.name()+" ["+faction.tag()+"]",List.of(
+                CoreUtil.C_BODY+"You are "+CoreUtil.C_TEXT+roleLabel(player,faction),
+                CoreUtil.C_BODY+"Members "+CoreUtil.C_TEXT+members+CoreUtil.C_BODY+" of "+CoreUtil.C_TEXT+cap,
+                CoreUtil.C_MUTE+"Click for the full summary.")));
+        inv.setItem(MAIN_WORTH,CoreUtil.Menu.action(Material.GOLD_BLOCK,"Net worth",List.of(
+                CoreUtil.C_EMBER+CoreUtil.money(plugin.netWorth().value(faction.id())),
+                CoreUtil.C_MUTE+"Click for the breakdown.")));
+        /*  This was a BARRIER, which is what every other screen on this server uses for "you cannot do
+         *  this". It is a working switch, and it now looks like one and says what it draws. */
+        inv.setItem(MAIN_BORDERS,CoreUtil.Menu.state(Material.MAP,"Territory outline",borderEnabled(player),
+                "Draws your claim edges where you are standing."));
+        inv.setItem(MAIN_MEMBERS,CoreUtil.Menu.action(Material.PLAYER_HEAD,"Members",List.of(
+                leader?"Appoint or remove a co-leader.":"See who is in the faction.")));
+        inv.setItem(MAIN_CLAIM,claim==null
+                ?CoreUtil.Menu.action(Material.GOLDEN_SHOVEL,"Claim territory",List.of(
+                        "Centres your free claim where you are standing.",
+                        CoreUtil.C_MUTE+"Stand where you want the middle of it."))
+                :CoreUtil.Menu.action(Material.RECOVERY_COMPASS,"Expand territory",List.of(
+                        CoreUtil.C_BODY+"Now "+CoreUtil.C_TEXT+claim.size()+" × "+claim.size()+CoreUtil.C_BODY+" blocks",
+                        CoreUtil.C_MUTE+"Expanding keeps the same centre.")));
+        inv.setItem(MAIN_RELATIONS,CoreUtil.Menu.action(Material.WHITE_BANNER,"Relations",List.of(
+                CoreUtil.C_BODY+"Allies "+CoreUtil.C_TEXT+db.allianceCount(faction.id())+CoreUtil.C_BODY+" of "+CoreUtil.C_TEXT+allianceLimit(),
+                "Truces and alliances with other factions.")));
+        /*  An empty faction printed one blank grey lore line here, because the names were joined without
+         *  checking whether there were any. */
+        List<String> homes=db.homes(Long.toString(faction.id()),"FACTION").stream().map(Database.HomeRow::name).toList();
+        inv.setItem(MAIN_HOMES,CoreUtil.Menu.action(Material.RED_BED,"Faction homes",homes.isEmpty()
+                ?List.of(CoreUtil.C_MUTE+"None set yet.",CoreUtil.C_TEXT+"/f sethome <name>")
+                :List.of(CoreUtil.C_BODY+homes.size()+" of "+faction.homeSlots()+CoreUtil.C_MUTE+"  "+String.join(", ",homes))));
+        /*  Not a button: there is no faction-bank screen, and there never was one behind this icon. */
+        inv.setItem(MAIN_BANK,CoreUtil.Menu.info(Material.CHEST,"Faction bank",List.of(
+                CoreUtil.C_EMBER+CoreUtil.money(faction.balance()),
+                CoreUtil.C_TEXT+"/f deposit <amount>"+CoreUtil.C_BODY+"  anyone",
+                CoreUtil.C_TEXT+"/f withdraw <amount>"+CoreUtil.C_BODY+"  leader only")));
         player.openInventory(inv);
     }
     private void openMembers(Player player,Database.FactionRow faction){
         Inventory inv=plugin.getServer().createInventory(new MembersHolder(faction.id()),27,Component.text("Faction Members",NamedTextColor.DARK_GREEN));
-        int slot=10;for(Database.FactionMemberRow member:db.factionMemberRows(faction.id())){
+        List<Database.FactionMemberRow> members=db.factionMemberRows(faction.id());
+        boolean leader=isLeader(player,faction);
+        /*  Bounded by MEMBER_LAST so a raised factions.max-members can never draw a member head on top of
+         *  the Back arrow -- which would have made "go back" promote somebody instead. */
+        int slot=MEMBER_FIRST;
+        for(Database.FactionMemberRow member:members){
+            if(slot>MEMBER_LAST)break;
             List<String> lore=new ArrayList<>();lore.add(CoreUtil.pretty(member.role()));
-            if(isLeader(player,faction)&&!"LEADER".equals(member.role()))lore.add("Click to "+("CO_LEADER".equals(member.role())?"remove Co-Leader":"appoint Co-Leader")+".");
-            inv.setItem(slot++,button(Material.PLAYER_HEAD,member.playerName(),lore));
+            if("LEADER".equals(member.role()))lore.add(CoreUtil.C_MUTE+"The leader cannot be changed here.");
+            else if(leader)lore.add(CoreUtil.C_TEXT+"Click to "+("CO_LEADER".equals(member.role())?"remove them as Co-Leader":"make them Co-Leader"));
+            else lore.add(CoreUtil.C_MUTE+"Only the leader can change roles.");
+            inv.setItem(slot++,CoreUtil.Menu.action(Material.PLAYER_HEAD,member.playerName(),lore));
         }
-        inv.setItem(22,button(Material.ARROW,"Back",List.of()));player.openInventory(inv);
+        inv.setItem(CoreUtil.Menu.BACK_SMALL,CoreUtil.Menu.back("Return to the faction screen."));player.openInventory(inv);
     }
     private String roleLabel(Player player,Database.FactionRow faction){return isLeader(player,faction)?"Leader":isCoLeader(player,faction)?"Co-Leader":"Member";}
     private void requestRelation(Player player,Database.FactionRow own,String targetName,String type){
@@ -158,24 +213,82 @@ final class FactionService {
 
     private void openRelations(Player player,Database.FactionRow faction){
         Inventory inv=plugin.getServer().createInventory(new RelationsHolder(faction.id()),54,Component.text("Faction Relations",NamedTextColor.DARK_GREEN));int slot=0;
-        for(Database.FactionRow other:db.factions()){if(other.id()==faction.id()||slot>=45)continue;Database.RelationRow row=db.relation(faction.id(),other.id());String status=row==null?"No relation":row.active()?CoreUtil.pretty(row.type())+(row.sharedStorage()?" • shared storage":"")+(row.sharedHomes()?" • home access":""):row.pendingType()!=null?"Pending "+CoreUtil.pretty(row.pendingType()):"No relation";inv.setItem(slot++,button(Material.WHITE_BANNER,other.name()+" ["+other.tag()+"]",List.of(status,"Click to manage.")));}
-        inv.setItem(49,button(Material.PAPER,"Alliance Limit",List.of(db.allianceCount(faction.id())+" / "+allianceLimit())));player.openInventory(inv);
+        for(Database.FactionRow other:db.factions()){if(other.id()==faction.id()||slot>=RELATIONS_CAPACITY)continue;Database.RelationRow row=db.relation(faction.id(),other.id());String status=row==null?"No relation":row.active()?CoreUtil.pretty(row.type())+(row.sharedStorage()?" • shared storage":"")+(row.sharedHomes()?" • home access":""):row.pendingType()!=null?"Pending "+CoreUtil.pretty(row.pendingType()):"No relation";inv.setItem(slot++,button(Material.WHITE_BANNER,other.name()+" ["+other.tag()+"]",List.of(status,"Click to manage.")));}
+        if(slot==0)inv.setItem(22,CoreUtil.Menu.nothing("No other factions yet",List.of(
+                "Nobody else has started one, so there is nothing to",
+                "ally with or declare a truce against.")));
+        inv.setItem(RELATIONS_NOTE,CoreUtil.Menu.info(Material.PAPER,"Alliance limit",List.of(
+                CoreUtil.C_BODY+"Using "+CoreUtil.C_TEXT+db.allianceCount(faction.id())+CoreUtil.C_BODY+" of "+CoreUtil.C_TEXT+allianceLimit(),
+                "Truces do not count towards this.")));player.openInventory(inv);
     }
+    private static final int REL_TRUCE=11, REL_ALLY=13, REL_STORAGE=15, REL_HOMES=17, REL_END=31, REL_BACK=40;
+    /** A relations page holds 45 faction tiles; the alliance-limit note sits below them at 49. */
+    private static final int RELATIONS_CAPACITY=45, RELATIONS_NOTE=49;
+
     private void openRelation(Player player,Database.FactionRow faction,Database.FactionRow other){
         Database.RelationRow row=db.relation(faction.id(),other.id());Inventory inv=plugin.getServer().createInventory(new RelationHolder(faction.id(),other.id()),45,Component.text(other.name()+" Relations",NamedTextColor.DARK_GREEN));
-        inv.setItem(11,button(Material.WHITE_WOOL,"Request Truce",List.of("PvP disabled; no access privileges.")));
-        inv.setItem(13,button(Material.LIGHT_BLUE_WOOL,"Request Alliance",List.of("PvP disabled; doors and controls allowed.")));
-        boolean shared=row!=null&&row.sharedStorage(),approved=row!=null&&row.storageApproval(faction.id());inv.setItem(15,button(shared?Material.LIME_CONCRETE:approved?Material.YELLOW_CONCRETE:Material.RED_CONCRETE,"Shared Storage",List.of(shared?"ACTIVE":approved?"Waiting for other leader":"Both leaders must approve.")));
-        boolean sharedHomes=row!=null&&row.sharedHomes(),homesApproved=row!=null&&row.homesApproval(faction.id());inv.setItem(17,button(sharedHomes?Material.LIME_CONCRETE:homesApproved?Material.YELLOW_CONCRETE:Material.RED_CONCRETE,"Home Access",List.of(sharedHomes?"ACTIVE — members can set/use homes in both territories":homesApproved?"Waiting for other leader":"Both leaders must approve.")));
-        if(row!=null&&(row.active()||row.pendingType()!=null))inv.setItem(31,button(Material.BARRIER,"End / Withdraw Relation",List.of("Immediately removes the relation or request.")));
-        inv.setItem(40,button(Material.ARROW,"Back",List.of()));player.openInventory(inv);
+        String active=row!=null&&row.active()?row.type():null;
+        boolean allied="ALLIANCE".equals(active),pending=row!=null&&row.pendingType()!=null;
+        /*  Every one of these four was drawn identically whether it would work or not. Requesting a truce
+         *  you already have, or shared storage without an alliance, printed an error AFTER the click. The
+         *  reason is on the icon now, and the ones that would fail are grey. */
+        inv.setItem(REL_TRUCE,"TRUCE".equals(active)
+                ?CoreUtil.Menu.blocked(Material.WHITE_WOOL,"Truce","you already have one.",List.of("No PvP; no access to each other's land."))
+                :allied?CoreUtil.Menu.blocked(Material.WHITE_WOOL,"Truce","an alliance already covers this.",List.of("An alliance includes everything a truce gives you."))
+                :CoreUtil.Menu.action(Material.WHITE_WOOL,"Request a truce",List.of(
+                        "No PvP between you. No access to each other's land.",
+                        CoreUtil.C_MUTE+"Their leader has to accept it.")));
+        inv.setItem(REL_ALLY,allied
+                ?CoreUtil.Menu.blocked(Material.LIGHT_BLUE_WOOL,"Alliance","you are already allied.",List.of())
+                :db.allianceCount(faction.id())>=allianceLimit()
+                ?CoreUtil.Menu.blocked(Material.LIGHT_BLUE_WOOL,"Alliance","you are at "+allianceLimit()+" alliances.",List.of("End one first."))
+                :CoreUtil.Menu.action(Material.LIGHT_BLUE_WOOL,"Request an alliance",List.of(
+                        "No PvP, and doors and controls in both territories.",
+                        CoreUtil.C_MUTE+"Their leader has to accept it.")));
+        boolean shared=row!=null&&row.sharedStorage(),approved=row!=null&&row.storageApproval(faction.id());
+        inv.setItem(REL_STORAGE,!allied
+                ?CoreUtil.Menu.blocked(Material.RED_CONCRETE,"Shared storage","it needs an active alliance.",List.of())
+                :CoreUtil.Menu.state(shared?Material.LIME_CONCRETE:approved?Material.YELLOW_CONCRETE:Material.RED_CONCRETE,
+                        "Shared storage",shared,shared?"Both factions can open each other's containers."
+                                :approved?CoreUtil.C_WARN+"You approved. Waiting for their leader."
+                                :"Both leaders have to approve it."));
+        boolean sharedHomes=row!=null&&row.sharedHomes(),homesApproved=row!=null&&row.homesApproval(faction.id());
+        inv.setItem(REL_HOMES,!allied
+                ?CoreUtil.Menu.blocked(Material.RED_CONCRETE,"Home access","it needs an active alliance.",List.of())
+                :CoreUtil.Menu.state(sharedHomes?Material.LIME_CONCRETE:homesApproved?Material.YELLOW_CONCRETE:Material.RED_CONCRETE,
+                        "Home access",sharedHomes,sharedHomes?"Members can set and use homes in both territories."
+                                :homesApproved?CoreUtil.C_WARN+"You approved. Waiting for their leader."
+                                :"Both leaders have to approve it."));
+        if(active!=null||pending)inv.setItem(REL_END,CoreUtil.Menu.danger(Material.BARRIER,
+                pending&&active==null?"Withdraw the request":"End the "+CoreUtil.pretty(active),
+                List.of("Takes effect immediately, for both factions.",
+                        CoreUtil.C_MUTE+"Shared storage and home access end with it.")));
+        inv.setItem(REL_BACK,CoreUtil.Menu.back("Return to the faction list."));player.openInventory(inv);
     }
     void click(InventoryClickEvent event){
-        if(event.getInventory().getHolder(false) instanceof MainHolder holder){event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player)||!holder.player().equals(player.getUniqueId()))return;Database.FactionRow faction=db.factionOf(CoreUtil.id(player));if(faction==null)return;switch(event.getRawSlot()){case 10->command(player,new String[]{"info"});case 12->plugin.netWorth().open(player,faction);case 14->{command(player,new String[]{"borders"});openMain(player);}case 16->openMembers(player,faction);case 28->command(player,new String[]{faction.tier()<0?"claim":"expand"});case 30->openRelations(player,faction);case 32->command(player,new String[]{"homes"});default->{}}return;}
-        if(event.getInventory().getHolder(false) instanceof MembersHolder holder){event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;Database.FactionRow faction=db.faction(holder.faction());if(faction==null)return;if(event.getRawSlot()==22){openMain(player);return;}int index=event.getRawSlot()-10;List<Database.FactionMemberRow> members=db.factionMemberRows(faction.id());if(index<0||index>=members.size()||!isLeader(player,faction))return;Database.FactionMemberRow member=members.get(index);if("LEADER".equals(member.role()))return;if("CO_LEADER".equals(member.role()))db.setCoLeader(faction.id(),null);else db.setCoLeader(faction.id(),member.player());openMembers(player,db.faction(faction.id()));return;}
-        if(event.getInventory().getHolder(false) instanceof RelationsHolder holder){event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;Database.FactionRow faction=db.faction(holder.faction());if(faction==null)return;int slot=event.getRawSlot(),index=0;for(Database.FactionRow other:db.factions()){if(other.id()==faction.id())continue;if(index++==slot){openRelation(player,faction,other);return;}}return;}
+        if(event.getInventory().getHolder(false) instanceof MainHolder holder){event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player)||!holder.player().equals(player.getUniqueId()))return;Database.FactionRow faction=db.factionOf(CoreUtil.id(player));if(faction==null)return;int clicked=event.getRawSlot();
+            if(clicked==MAIN_INFO)command(player,new String[]{"info"});
+            else if(clicked==MAIN_WORTH)plugin.netWorth().open(player,faction);
+            else if(clicked==MAIN_BORDERS){command(player,new String[]{"borders"});openMain(player);}
+            else if(clicked==MAIN_MEMBERS)openMembers(player,faction);
+            else if(clicked==MAIN_CLAIM)command(player,new String[]{faction.tier()<0?"claim":"expand"});
+            else if(clicked==MAIN_RELATIONS)openRelations(player,faction);
+            else if(clicked==MAIN_HOMES)command(player,new String[]{"homes"});
+            return;}
+        if(event.getInventory().getHolder(false) instanceof MembersHolder holder){event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;Database.FactionRow faction=db.faction(holder.faction());if(faction==null)return;if(event.getRawSlot()==CoreUtil.Menu.BACK_SMALL){openMain(player);return;}int index=event.getRawSlot()-MEMBER_FIRST;List<Database.FactionMemberRow> members=db.factionMemberRows(faction.id());if(event.getRawSlot()>MEMBER_LAST||index<0||index>=members.size()||!isLeader(player,faction))return;Database.FactionMemberRow member=members.get(index);if("LEADER".equals(member.role()))return;if("CO_LEADER".equals(member.role()))db.setCoLeader(faction.id(),null);else db.setCoLeader(faction.id(),member.player());openMembers(player,db.faction(faction.id()));return;}
+        if(event.getInventory().getHolder(false) instanceof RelationsHolder holder){event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;Database.FactionRow faction=db.faction(holder.faction());if(faction==null)return;int slot=event.getRawSlot(),index=0;
+            /*  Only the tile grid is clickable. Without this bound the alliance-limit note at 49 would open
+             *  the 50th faction's relations page on a server with enough factions. */
+            if(slot<0||slot>=RELATIONS_CAPACITY)return;
+            for(Database.FactionRow other:db.factions()){if(other.id()==faction.id())continue;if(index++==slot){openRelation(player,faction,other);return;}}return;}
         if(!(event.getInventory().getHolder(false) instanceof RelationHolder holder))return;event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;Database.FactionRow faction=db.faction(holder.faction()),other=db.faction(holder.other());if(faction==null||other==null||!canManage(player,faction)){CoreUtil.error(player,"Only faction leadership can manage relations.");player.closeInventory();return;}
-        switch(event.getRawSlot()){case 11->{requestRelation(player,faction,other.name(),"TRUCE");openRelation(player,faction,other);}case 13->{requestRelation(player,faction,other.name(),"ALLIANCE");openRelation(player,faction,other);}case 15->{toggleStorage(player,faction,other.name());openRelation(player,faction,other);}case 17->{toggleHomeAccess(player,faction,other.name());openRelation(player,faction,other);}case 31->{db.clearRelation(faction.id(),other.id());relationBroadcast(faction,other,"The relation between "+faction.name()+" and "+other.name()+" ended.");openRelation(player,faction,other);}case 40->openRelations(player,faction);default->{}}}
+        int clicked=event.getRawSlot();
+        if(clicked==REL_TRUCE){requestRelation(player,faction,other.name(),"TRUCE");openRelation(player,faction,other);}
+        else if(clicked==REL_ALLY){requestRelation(player,faction,other.name(),"ALLIANCE");openRelation(player,faction,other);}
+        else if(clicked==REL_STORAGE){toggleStorage(player,faction,other.name());openRelation(player,faction,other);}
+        else if(clicked==REL_HOMES){toggleHomeAccess(player,faction,other.name());openRelation(player,faction,other);}
+        else if(clicked==REL_END){db.clearRelation(faction.id(),other.id());relationBroadcast(faction,other,"The relation between "+faction.name()+" and "+other.name()+" ended.");openRelation(player,faction,other);}
+        else if(clicked==REL_BACK)openRelations(player,faction);}
     private ItemStack button(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
 
     private int rememberedTier(long factionId){String raw=db.state("faction_remembered_tier:"+factionId);if(raw==null||raw.isBlank())return -1;try{return Integer.parseInt(raw);}catch(NumberFormatException e){return -1;}}

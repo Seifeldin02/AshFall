@@ -1935,7 +1935,7 @@ final class ArenaService implements Listener {
             if (picked) glow(ico);
             menu.inv.setItem(slots[i], ico);
         }
-        if (maps.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, "No maps are ready",
+        if (maps.isEmpty()) menu.inv.setItem(22, CoreUtil.Menu.nothing("No maps are ready",
                 List.of("An admin must build and save a duel map", "before matches can be played on one.")));
         DuelMapService.DuelMap chosen = selectedMap(duel);
         stageFooter(menu, duel, player, chosen == null ? "Pick a map first" : "Confirm " + chosen.name());
@@ -2218,7 +2218,8 @@ final class ArenaService implements Listener {
         for (int i = 0; i < items.size() && i < 45; i++) menu.inv.setItem(i, items.get(i));
         for (int slot = 45; slot < 54; slot++) menu.inv.setItem(slot, filler());
         menu.inv.setItem(49, icon(Material.ARROW, "Back", List.of("Duel setup")));
-        if (items.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, themName + " has not wagered anything", List.of()));
+        if (items.isEmpty()) menu.inv.setItem(22, CoreUtil.Menu.nothing(themName + " has not wagered anything",
+                List.of("Nothing is staked on their side yet.")));
         transition(player, () -> player.openInventory(menu.inv));
     }
 
@@ -2249,7 +2250,8 @@ final class ArenaService implements Listener {
             box.setItem(53, icon(Material.SPYGLASS, "+" + (theirs.size() - shown) + " more stack(s)",
                     List.of("Click to see " + themName + "'s full wager", "Unconfirmed items are returned")));
         else if (theirs.isEmpty())
-            box.setItem(WAGER_VIEW + 4, icon(Material.BARRIER, themName + " has not wagered anything", List.of("Nothing staked on their side yet")));
+            box.setItem(WAGER_VIEW + 4, CoreUtil.Menu.nothing(themName + " has not wagered anything",
+                    List.of("Nothing is staked on their side yet.")));
         box.setItem(35, icon(Material.SHIELD, themName + "'s wager", List.of("Shown in the bottom two rows", "View only \u2014 " + theirs.size() + " stack(s)")));
     }
 
@@ -2466,7 +2468,9 @@ final class ArenaService implements Listener {
             card.setItemMeta(meta);
             menu.inv.setItem(slot++, card);
         }
-        if (duels.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, "No matches right now", List.of("Challenge someone with /duel <player>")));
+        if (duels.isEmpty()) menu.inv.setItem(22, CoreUtil.Menu.nothing("No matches right now", List.of(
+                "Nobody is duelling at the moment.",
+                CoreUtil.C_TEXT + "/duel <player>" + CoreUtil.C_BODY + " to challenge somebody.")));
         transition(player, () -> player.openInventory(menu.inv));
     }
 
@@ -2514,7 +2518,9 @@ final class ArenaService implements Listener {
             menu.inv.setItem(38, icon(Material.EMERALD, "Confirm " + scopeLabel + " wager", List.of("Backing " + (st[0] == 0 ? duel.aName : st[0] == 1 ? duel.bName : "nobody yet"),
                     "Amount " + CoreUtil.money(st[1]), "On: " + scopeLabel, "Changing this scope refunds the old wager")));
         } else {
-            menu.inv.setItem(31, icon(Material.BARRIER, "Betting is closed", List.of("Opens again at the next round's ready-gate")));
+            menu.inv.setItem(31, CoreUtil.Menu.blocked(Material.BARRIER, "Betting", "the round is under way.",
+                    List.of("It opens again when both duellists ready up",
+                            "for the next round.")));
         }
         List<Wager> mineAll = new ArrayList<>();
         for (Wager w : duel.wagers) if (w.player().equals(id)) mineAll.add(w);
