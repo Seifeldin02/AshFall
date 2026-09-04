@@ -384,26 +384,67 @@ final class ColosseumVerify {
             check("hitting its front is reduced (" + Math.round(frontHit) + " vs " + Math.round(flankHit) + " from the flank)",
                     frontHit < flankHit - 0.001);
 
-            /*  A real charge, aimed at the boundary, advanced until something ends it. This is the crash
-             *  detection driven for real rather than assumed -- if the probe, the bounds test and the
-             *  no-progress fallback all failed, this loop would simply never stun. */
-            state.charging = true;
-            state.chargeOrigin = boss.getLocation().clone();
-            state.chargeUntil = now + 60_000;
-            Vector toWall = new Vector(0, 0, 1);
-            /** Point it at the nearest boundary so the crash is the outcome under test. */
-            if (Math.abs(arena.bounds()[5] - boss.getLocation().getZ()) > Math.abs(arena.bounds()[2] - boss.getLocation().getZ()))
-                toWall = new Vector(0, 0, -1);
-            state.chargeDirection = toWall;
-            state.lockedYaw = (float) Math.toDegrees(Math.atan2(-toWall.getX(), toWall.getZ()));
-            boss.setAI(false);
-            int steps = 0;
-            while (state.charging && steps++ < 400) colosseum.bosses().advanceCharge(def, state, null, System.currentTimeMillis());
-            check("a charge aimed at the boundary ends in a crash within " + steps + " steps", !state.charging && state.stunUntil > 0);
+            /*  ------------------------------------------------------------------------------------------
+             *  THE CHARGE, DRIVEN FOR REAL.
+             *
+             *  This is written the way it is because the version before it was not. It asserted that a
+             *  charge ends in a stun -- which it did, every single time, after travelling exactly zero
+             *  blocks: the flight turned the boss's AI off so nothing could steer it, and an AI-less mob
+             *  ignores applied velocity entirely, so the charge never moved and its own no-progress guard
+             *  stunned it within half a second. In game that read as "the charge fails every time no matter
+             *  what I do", and the test agreed with the bug because "did it stun" was the only question it
+             *  asked.
+             *
+             *  So the question here is DISTANCE first and outcome second. The flight is stepped by hand
+             *  along the locked vector now, which means driving it in a loop reproduces the real trajectory
+             *  exactly -- nothing about it depends on the server ticking in between. */
+            double lane = def.ability("charge.length", 30);
+            Location origin = boss.getLocation().clone();
+
+            /*  --- 1. an unobstructed lane: it must actually go somewhere, and a clean miss must punish --- */
+            Vector down = openLane(arena, origin, lane);
+            List<Location> path = new ArrayList<>();
+            int steps = driveCharge(def, state, boss, down, path);
+            double travelled = origin.distance(boss.getLocation());
+            check("a charge down an open lane genuinely MOVES the boss (" + String.format("%.1f", travelled)
+                            + " blocks of a " + (long) lane + " block lane, over " + steps + " steps)",
+                    travelled > lane * 0.6);
+            check("it took more than the no-progress guard's grace to end, so the launch is not mistaken for a collision",
+                    steps > def.abilityInt("charge.stuck-grace-steps", 3) + def.abilityInt("charge.stuck-ticks", 4));
+            check("a clean miss still crashes, so the stated counterplay works away from the walls",
+                    !state.charging && state.stunUntil > 0);
             check("the crash opens a vulnerability window above 1x (" + String.format("%.1f", state.vulnerableMultiplier) + "x)",
                     state.vulnerableMultiplier > 1);
-            check("the boss is left inside the arena, not wedged outside it",
+
+            /*  --- 2. it cannot steer: every step stays on the locked vector --- */
+            double drift = 0;
+            for (Location at : path) drift = Math.max(drift, ColosseumBosses.distanceToSegment(at, origin,
+                    origin.clone().add(down.clone().multiply(lane + 4))));
+            check("every step of the flight stays on the locked vector (max drift "
+                    + String.format("%.2f", drift) + " blocks), so the telegraph cannot lie", drift < 0.5);
+
+            /*  --- 3. a player standing in the lane is genuinely swept; one standing aside is not --- */
+            double hitRadius = def.ability("charge.hit-radius", 2.6);
+            Location inLane = origin.clone().add(down.clone().multiply(Math.min(lane - 2, 12)));
+            Location aside = inLane.clone().add(new Vector(-down.getZ(), 0, down.getX()).multiply(hitRadius + 3));
+            check("a player standing in the lane is inside the swept path (would be hit)",
+                    sweptWithin(path, origin, inLane) <= hitRadius);
+            check("a player who steps " + String.format("%.1f", hitRadius + 3) + " blocks aside is outside it (would not be)",
+                    sweptWithin(path, origin, aside) > hitRadius);
+
+            /*  --- 4. and a lane that ends in a wall crashes at the wall, still inside the arena --- */
+            boss.teleport(nearWall(arena, world, origin, down));
+            state.stunUntil = 0;
+            state.stunImmuneUntil = 0;
+            Location wallOrigin = boss.getLocation().clone();
+            List<Location> intoWall = new ArrayList<>();
+            int wallSteps = driveCharge(def, state, boss, down, intoWall);
+            check("a charge into the boundary crashes short of its full lane (" + wallSteps + " steps, "
+                            + String.format("%.1f", wallOrigin.distance(boss.getLocation())) + " blocks)",
+                    !state.charging && state.stunUntil > 0 && wallOrigin.distance(boss.getLocation()) < lane);
+            check("and it is left INSIDE the arena, not wedged in the wall",
                     arena.inBounds(boss.getLocation().getX(), boss.getLocation().getY(), boss.getLocation().getZ()));
+            boss.teleport(origin);
 
             long during = System.currentTimeMillis();
             double stunnedFront = colosseum.bosses().applyDefences(def, state, 100, true, false, during);
@@ -425,6 +466,69 @@ final class ColosseumVerify {
             colosseum.bosses().despawn(state);
             check("the Behemoth and everything it made are gone", !boss.isValid() && colosseum.bosses().trackedEntities(state) == 0);
         }
+    }
+
+
+    /*  ---------------------------------------------------------------------------------------------------
+     *  Charge harness. Kept next to the check that uses it because it exists for exactly one encounter. */
+
+    /** Drives one whole charge and records where the boss stood at every step. Stepping it in a loop is a
+     *  faithful reproduction of the real flight: the boss is AI-less throughout and moves only when the
+     *  encounter moves it, so nothing here depends on the server ticking in between. */
+    private int driveCharge(ColosseumBosses.BossDef def, ColosseumBosses.BossState state, LivingEntity boss,
+                            Vector direction, List<Location> path) {
+        state.charging = true;
+        state.chargeOrigin = boss.getLocation().clone();
+        state.chargeUntil = System.currentTimeMillis() + 60_000;
+        state.chargeSteps = 0;
+        state.chargeStuckTicks = 0;
+        state.lastChargeProgress = -1;
+        state.chargeDirection = direction.clone();
+        state.lockedYaw = (float) Math.toDegrees(Math.atan2(-direction.getX(), direction.getZ()));
+        boss.setAI(false);
+        path.add(boss.getLocation().clone());
+        int steps = 0;
+        while (state.charging && steps++ < 400) {
+            colosseum.bosses().advanceCharge(def, state, null, System.currentTimeMillis());
+            path.add(boss.getLocation().clone());
+        }
+        return steps;
+    }
+
+    /** A horizontal direction with the most room in front of it, so "an unobstructed lane" is a fact about
+     *  this arena rather than an assumption about its shape. */
+    private static Vector openLane(ColosseumArenas.Arena arena, Location from, double lane) {
+        Vector best = new Vector(0, 0, 1);
+        double room = -1;
+        for (Vector candidate : List.of(new Vector(0, 0, 1), new Vector(0, 0, -1), new Vector(1, 0, 0), new Vector(-1, 0, 0))) {
+            double reach = 0;
+            while (reach < lane + 6 && arena.inBounds(from.getX() + candidate.getX() * (reach + 1), from.getY(),
+                    from.getZ() + candidate.getZ() * (reach + 1))) reach++;
+            if (reach > room) { room = reach; best = candidate; }
+        }
+        return best;
+    }
+
+    /** A standing position close enough to the boundary that a charge in the given direction must reach it. */
+    private static Location nearWall(ColosseumArenas.Arena arena, World world, Location like, Vector direction) {
+        int[] bounds = arena.bounds();
+        double edge = direction.getZ() > 0 ? bounds[5] : direction.getZ() < 0 ? bounds[2]
+                : direction.getX() > 0 ? bounds[3] : bounds[0];
+        Location at = like.clone();
+        if (direction.getZ() != 0) at.setZ(edge - direction.getZ() * 6);
+        else at.setX(edge - direction.getX() * 6);
+        return at;
+    }
+
+    /** How close the swept path ever came to a point -- the question "would this player have been hit". */
+    private static double sweptWithin(List<Location> path, Location origin, Location point) {
+        double closest = Double.MAX_VALUE;
+        Location previous = origin;
+        for (Location at : path) {
+            closest = Math.min(closest, ColosseumBosses.distanceToSegment(point, previous, at));
+            previous = at;
+        }
+        return closest;
     }
 
     /** The Arcanist's design: exactly three seals, a real reduction that is never total, and a channel that

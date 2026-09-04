@@ -292,21 +292,43 @@ bosses:
         arc-degrees: 110
         damage-multiplier: 0.3
       # HEADLONG CHARGE. Facing is locked a full 1.5s before it moves and cannot change afterwards, so a
-      # player can deliberately stand in the lane and leave it. A miss that reaches the boundary, a solid
-      # block, or simply stops making progress is a CRASH: stunned, no frontal armour, double damage taken.
+      # player can deliberately stand in the lane and leave it. Any MISS is a CRASH: stunned, no frontal
+      # armour, double damage taken. It misses by hitting the boundary, hitting a solid block it cannot fit
+      # through, or running the full lane without touching anybody.
+      #
+      # The boss is stepped along the locked vector by the encounter itself rather than shoved with
+      # velocity. That is not a style choice: the charge turns the boss's AI off so nothing in the engine
+      # can steer it, and an AI-less mob ignores applied velocity completely -- it would stand still for
+      # the whole charge and then trip its own no-progress guard.
       charge:
         cooldown-seconds: 16
         telegraph-ticks: 30
         min-range: 8.0
         max-range: 34.0
+        # The lane, in blocks. This is BOTH the distance drawn during the wind-up and the distance actually
+        # run, so what the telegraph promises is what happens.
         length: 30.0
+        # Blocks per game tick. The encounter ticks every 2, so a step is twice this.
         speed: 1.05
+        # A hard ceiling on the flight. length / speed is ~29 ticks, so this only ever catches the pathological.
         duration-ticks: 45
         hit-radius: 2.6
+        # Vertical reach of the charge, so it cannot hit somebody standing on a pillar above the lane.
+        hit-height: 3.0
         damage: 14.0
         knockback: 1.4
-        probe-distance: 1.6
+        # How far it can climb, and follow the floor down, in one step. This is what lets the lane cross
+        # uneven ground instead of stopping at the first stair or running out over a drop.
+        step-up: 1
+        step-down: 2
+        # A missed charge crashes. Turning this off makes an unobstructed miss a plain recovery instead,
+        # which removes the encounter's only real punish window -- the counterplay text would then be a lie.
+        miss-crashes: true
+        # Backstop only: if the boss somehow stops making progress despite a step having been resolved, it
+        # crashes rather than grinding in place. The grace covers the launch, so leaving the blocks is never
+        # mistaken for a collision.
         stuck-ticks: 4
+        stuck-grace-steps: 3
         recovery-ticks: 20
         stun-ticks: 100
         crash-vulnerability: 2.0

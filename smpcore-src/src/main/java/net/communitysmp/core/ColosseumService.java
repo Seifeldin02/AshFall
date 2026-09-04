@@ -80,6 +80,13 @@ import java.util.concurrent.ConcurrentHashMap;
  *  participation records, the active-boss restriction, natural spawning or world-boss cleanup. */
 final class ColosseumService implements Listener {
 
+    /*  How often an encounter's own ticker runs, in game ticks.
+     *
+     *  It is a constant because it is not only a scheduling detail: an ability that advances the boss a
+     *  fixed distance per step has to know how much of a second a step is worth, and a literal 2 in two
+     *  files is a literal 2 that will eventually disagree with itself. */
+    static final long TICK_PERIOD = 2L;
+
     // ------------------------------------------------------------------ run
 
     /** One encounter. Everything the fight owns hangs off this and dies with it -- the world, the boss, the
@@ -367,7 +374,7 @@ final class ColosseumService implements Listener {
                 + (run.adminTest ? " (ADMIN TEST, no charge)" : " for " + CoreUtil.money(run.fee)));
         /** ONE task for the whole encounter, cancelled by resolve(). Every ability, the clock, the health
          *  bar and the boundary check ride on it, so there is nothing else that can outlive the fight. */
-        run.ticker = Bukkit.getScheduler().runTaskTimer(plugin, () -> tick(run, def, arena), 2L, 2L);
+        run.ticker = Bukkit.getScheduler().runTaskTimer(plugin, () -> tick(run, def, arena), TICK_PERIOD, TICK_PERIOD);
     }
 
     // ------------------------------------------------------------------ the encounter loop

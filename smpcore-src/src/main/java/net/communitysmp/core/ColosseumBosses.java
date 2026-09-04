@@ -67,6 +67,7 @@ final class ColosseumBosses {
         double engineHealth() { return Math.max(1, Math.min(ENGINE_MAX_HEALTH, health)); }
         double ability(String path, double fallback) { return abilities == null ? fallback : abilities.getDouble(path, fallback); }
         int abilityInt(String path, int fallback) { return abilities == null ? fallback : abilities.getInt(path, fallback); }
+        boolean abilityFlag(String path, boolean fallback) { return abilities == null ? fallback : abilities.getBoolean(path, fallback); }
         long cooldownMs(String ability, double fallbackSeconds) { return (long) (ability(ability + ".cooldown-seconds", fallbackSeconds) * 1000); }
         boolean has(String ability) { return abilities != null && abilities.isConfigurationSection(ability); }
     }
@@ -108,6 +109,7 @@ final class ColosseumBosses {
         long chargeUntil;
         float lockedYaw;
         int chargeStuckTicks;
+        int chargeSteps;
         double lastChargeProgress = -1;
 
         /** How far the charge has actually travelled. Compared tick to tick, this is what notices a boss
@@ -552,50 +554,124 @@ final class ColosseumBosses {
         LivingEntity boss = state.entity;
         Vector direction = state.chargeDirection == null ? boss.getLocation().getDirection().setY(0).normalize() : state.chargeDirection;
         boss.setRotation(state.lockedYaw, 0f);
+        ColosseumArenas.Arena arena = plugin.colosseum().arenas().arenaOfWorld(boss.getWorld());
 
-        if (now >= state.chargeUntil) { endCharge(def, state, player, now, false); return; }
+        /*  THE LANE IS A BUDGET, NOT A STOPWATCH.
+         *
+         *  It runs exactly the distance the telegraph drew and not a block further, so "the lane it showed
+         *  you" and "the lane it ran" are the same sentence. Reaching the end of it without touching anybody
+         *  is a MISS -- and a missed charge is the entire counterplay, so it crashes. */
+        double lane = Math.max(1, def.ability("charge.length", 30));
+        double travelled = state.chargeOriginDistance(boss.getLocation());
+        boolean missCrashes = def.abilityFlag("charge.miss-crashes", true);
+        if (travelled >= lane - 0.01) {
+            endCharge(def, state, player, now, missCrashes, "thunders past and overruns its own lane");
+            return;
+        }
+        /** A hard ceiling on the flight, so no obstruction nobody thought of can leave one running forever. */
+        if (now >= state.chargeUntil) { endCharge(def, state, player, now, missCrashes, "runs out of momentum"); return; }
 
-        double speed = def.ability("charge.speed", 1.05);
-        boss.setVelocity(new Vector(direction.getX() * speed, Math.max(-0.4, boss.getVelocity().getY()), direction.getZ() * speed));
-        boss.getWorld().spawnParticle(Particle.CLOUD, boss.getLocation().add(0, 0.2, 0), 6, 0.4, 0.1, 0.4, 0.01);
-        boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_RAVAGER_STEP, 0.9f, 0.7f);
+        /*  MOVED BY HAND, ON PURPOSE.
+         *
+         *  A charging boss has its AI off so that nothing in the engine can steer it, and that lock is what
+         *  makes the telegraph honest. But an AI-less mob is frozen solid: it ignores applied velocity
+         *  entirely and does not move an inch, so a velocity-driven charge travels zero blocks and then
+         *  trips its own no-progress guard. Stepping it along the locked vector is the only way to have both
+         *  a charge that cannot steer and a charge that actually goes somewhere. */
+        double step = Math.min(def.ability("charge.speed", 1.05) * ColosseumService.TICK_PERIOD, lane - travelled);
+        Location from = boss.getLocation();
+        Location to = chargeStep(def, arena, from, direction, step);
+        Location end = to == null ? from : to;
 
-        /** Connected. Heavy, knocked back, and explicitly not lethal from full health. A charge whose
-         *  fighter has gone offline mid-flight simply never connects, and still crashes normally. */
-        if (player != null && player.isOnline() && player.getLocation().distance(boss.getLocation()) <= def.ability("charge.hit-radius", 2.6)) {
+        /*  CONNECTED. Tested against the whole segment it is about to sweep rather than the point it lands
+         *  on, so a player standing in the lane is hit by the charge passing THROUGH them -- which at two
+         *  blocks a step is a different question from "where did it stop". */
+        if (player != null && player.isOnline() && player.getWorld().equals(boss.getWorld())
+                && distanceToSegment(player.getLocation(), from, end) <= def.ability("charge.hit-radius", 2.6)
+                && Math.abs(player.getLocation().getY() - end.getY()) <= def.ability("charge.hit-height", 3.0)) {
             hurt(player, boss, def.ability("charge.damage", 14), true);
             Vector away = direction.clone().multiply(def.ability("charge.knockback", 1.4));
             away.setY(0.5);
             player.setVelocity(player.getVelocity().add(away));
             boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_RAVAGER_ATTACK, 1.4f, 0.8f);
-            endCharge(def, state, player, now, false);
+            if (to != null) boss.teleport(to);
+            endCharge(def, state, player, now, false, null);
             return;
         }
 
-        /** Out of arena, or into something solid. Probed ahead rather than waited for. */
-        ColosseumArenas.Arena arena = plugin.colosseum().arenas().arenaOfWorld(boss.getWorld());
-        Location ahead = boss.getLocation().add(direction.clone().multiply(def.ability("charge.probe-distance", 1.6)));
-        boolean blocked = arena != null && !arena.inBounds(ahead.getX(), ahead.getY(), ahead.getZ());
-        if (!blocked) {
-            Material feet = boss.getWorld().getBlockAt(ahead.getBlockX(), ahead.getBlockY(), ahead.getBlockZ()).getType();
-            Material head = boss.getWorld().getBlockAt(ahead.getBlockX(), ahead.getBlockY() + 1, ahead.getBlockZ()).getType();
-            blocked = feet.isSolid() && head.isSolid();
-        }
-        /** Or simply not getting anywhere, which covers every obstruction nobody thought of. */
+        /** Out of the arena, or into something it cannot fit through. Probed, never waited for. */
+        if (to == null) { endCharge(def, state, player, now, true, "crashes headlong into the wall"); return; }
+
+        boss.teleport(to);
+        boss.getWorld().spawnParticle(Particle.CLOUD, to.clone().add(0, 0.2, 0), 6, 0.4, 0.1, 0.4, 0.01);
+        boss.getWorld().playSound(to, Sound.ENTITY_RAVAGER_STEP, 0.9f, 0.7f);
+
+        /*  And a backstop underneath all of it: a boss that is somehow not getting anywhere despite a step
+         *  having been resolved has met an obstruction nobody thought of, and it crashes rather than
+         *  grinding in place. It cannot fire during the first few steps, so a charge leaving the blocks is
+         *  never mistaken for a collision. */
         double progress = state.chargeOriginDistance(boss.getLocation());
-        if (!blocked) {
-            if (state.lastChargeProgress >= 0 && progress - state.lastChargeProgress < 0.08) state.chargeStuckTicks++;
-            else state.chargeStuckTicks = 0;
-            state.lastChargeProgress = progress;
-            if (state.chargeStuckTicks >= def.abilityInt("charge.stuck-ticks", 4)) blocked = true;
+        state.chargeSteps++;
+        if (state.lastChargeProgress >= 0 && progress - state.lastChargeProgress < step * 0.25) state.chargeStuckTicks++;
+        else state.chargeStuckTicks = 0;
+        state.lastChargeProgress = progress;
+        if (state.chargeSteps > def.abilityInt("charge.stuck-grace-steps", 3)
+                && state.chargeStuckTicks >= Math.max(2, def.abilityInt("charge.stuck-ticks", 4)))
+            endCharge(def, state, player, now, true, "grinds to a halt");
+    }
+
+    /*  One step of the lane, resolved against the arena rather than against the physics engine.
+     *
+     *  Returns where the boss may stand after this step, or null if that step is into the boundary or into
+     *  something it cannot fit through -- which is a wall, and a wall is a crash. It may climb `step-up`
+     *  blocks and follow the floor down `step-down`, so a lane across uneven ground neither runs through the
+     *  air nor stops dead at a single stair. */
+    private Location chargeStep(BossDef def, ColosseumArenas.Arena arena, Location from, Vector direction, double step) {
+        World world = from.getWorld();
+        if (world == null) return null;
+        Location to = from.clone().add(direction.clone().multiply(step));
+        if (arena != null && !arena.inBounds(to.getX(), to.getY(), to.getZ())) return null;
+        int climb = Math.max(0, def.abilityInt("charge.step-up", 1));
+        for (int lift = 0; lift <= climb; lift++) {
+            Location candidate = to.clone().add(0, lift, 0);
+            if (!fits(world, candidate)) continue;
+            if (arena != null && !arena.inBounds(candidate.getX(), candidate.getY(), candidate.getZ())) continue;
+            return grounded(world, candidate, def.abilityInt("charge.step-down", 2), arena);
         }
-        if (blocked) endCharge(def, state, player, now, true);
+        return null;
+    }
+
+    /** Two blocks of clear space at a standing position -- the same question the engine asks, asked here so
+     *  the answer is known before the boss is committed to the move rather than after. */
+    private static boolean fits(World world, Location at) {
+        int x = at.getBlockX(), y = at.getBlockY(), z = at.getBlockZ();
+        if (y < world.getMinHeight() || y + 2 >= world.getMaxHeight()) return false;
+        return !world.getBlockAt(x, y, z).getType().isSolid() && !world.getBlockAt(x, y + 1, z).getType().isSolid();
+    }
+
+    /** Follows the floor down a short drop, so a lane crossing a step does not leave the boss walking on air
+     *  until something else pulls it down. */
+    private static Location grounded(World world, Location at, int maxDrop, ColosseumArenas.Arena arena) {
+        for (int drop = 0; drop < Math.max(0, maxDrop); drop++) {
+            int below = at.getBlockY() - 1;
+            if (below < world.getMinHeight()) break;
+            if (world.getBlockAt(at.getBlockX(), below, at.getBlockZ()).getType().isSolid()) break;
+            Location lower = at.clone().add(0, -1, 0);
+            if (arena != null && !arena.inBounds(lower.getX(), lower.getY(), lower.getZ())) break;
+            at = lower;
+        }
+        return at;
     }
 
     private void endCharge(BossDef def, BossState state, Player player, long now, boolean crashed) {
+        endCharge(def, state, player, now, crashed, crashed ? "crashes headlong" : null);
+    }
+
+    private void endCharge(BossDef def, BossState state, Player player, long now, boolean crashed, String reason) {
         LivingEntity boss = state.entity;
         state.charging = false;
         state.chargeStuckTicks = 0;
+        state.chargeSteps = 0;
         state.lastChargeProgress = -1;
         boss.setVelocity(new Vector(0, boss.getVelocity().getY(), 0));
         if (!crashed) {
@@ -620,7 +696,7 @@ final class ColosseumBosses {
         world.playSound(boss.getLocation(), Sound.BLOCK_ANVIL_LAND, 1.2f, 0.5f);
         world.spawnParticle(Particle.BLOCK, boss.getLocation().add(0, 1, 0), 60, 0.9, 0.9, 0.9, 0.1, Material.STONE.createBlockData());
         world.spawnParticle(Particle.CRIT, boss.getLocation().add(0, 1.6, 0), 40, 0.6, 0.6, 0.6, 0.2);
-        tell(player, def.name() + " crashes headlong and is STUNNED for " + Math.round(stun / 1000.0)
+        tell(player, def.name() + " " + (reason == null ? "crashes headlong" : reason) + " and is STUNNED for " + Math.round(stun / 1000.0)
                 + "s — its front plate is open and it takes " + String.format("%.1f", state.vulnerableMultiplier) + "x damage. Hit it now.");
         /*  Backed off the wall it just hit.
          *
@@ -1088,6 +1164,7 @@ final class ColosseumBosses {
                 state.charging = true;
                 state.chargeUntil = now + def.abilityInt("charge.duration-ticks", 45) * 50L;
                 state.chargeStuckTicks = 0;
+                state.chargeSteps = 0;
                 state.lastChargeProgress = -1;
                 state.chargeOrigin = boss.getLocation().clone();
                 state.stateLabel = "CHARGING";
