@@ -360,7 +360,7 @@ final class SpawnerShopService implements Listener {
 
     void openSellBasket(Player player) {
         Inventory inv = plugin.getServer().createInventory(new BasketHolder(true), 54,
-                Component.text("Spawner Sale Basket", NamedTextColor.DARK_GREEN));
+                Component.text("Sell Basket", CoreUtil.EMBER));
         inv.setItem(CoreUtil.Menu.SELL_CANCEL, CoreUtil.Menu.cancel("Every spawner comes straight back to you."));
         inv.setItem(CoreUtil.Menu.SELL_TOTAL, basketTotal(0, 0));
         inv.setItem(CoreUtil.Menu.SELL_CONFIRM, basketConfirm(0, 0));

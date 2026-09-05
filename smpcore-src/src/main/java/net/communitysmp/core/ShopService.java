@@ -108,7 +108,7 @@ final class ShopService {
 
     void openSellBasket(Player p,boolean premium){
         double multiplier=premium?plugin.getConfig().getDouble("merchants.shop.sell-multiplier",1.075):1;
-        SellHolder holder=new SellHolder(multiplier);Inventory inv=plugin.getServer().createInventory(holder,54,Component.text("Sell Basket",NamedTextColor.DARK_GREEN));
+        SellHolder holder=new SellHolder(multiplier);Inventory inv=plugin.getServer().createInventory(holder,54,Component.text("Sell Basket",CoreUtil.EMBER));
         inv.setItem(CoreUtil.Menu.SELL_CANCEL,CoreUtil.Menu.cancel("Every item comes straight back to you."));
         inv.setItem(CoreUtil.Menu.SELL_TOTAL,totalIcon(new SaleQuote(0,0,0)));
         inv.setItem(CoreUtil.Menu.SELL_CONFIRM,confirmIcon(new SaleQuote(0,0,0)));

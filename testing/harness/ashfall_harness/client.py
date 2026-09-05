@@ -413,6 +413,28 @@ class Bot(object):
                 with io.open('ui_%s.txt' % name, 'w', encoding='utf-8') as f:
                     f.write(str(len(self.sidebar_events)) + chr(10))
                 self.note('sidebar row packets since reset: %d' % len(self.sidebar_events))
+            elif line.startswith('interact:near:'):
+                #  RIGHT-CLICKING AN NPC, WHICH IS THE ONLY WAY INTO SOME SCREENS.
+                #
+                #  The Bank front page opens from the Central Banker and from nothing else -- no command
+                #  reaches it -- so without this packet a whole screen stays uncapturable and the coverage
+                #  note saying so never goes away. ServerboundInteractPacket is entity id, type (0 =
+                #  interact), hand, then the secondary-action flag.
+                #
+                #  The target is chosen by position rather than by "the one that just appeared": mobs spawn
+                #  while a test runs, and interacting with whatever arrived most recently is how a test
+                #  ends up right-clicking a cow and reporting the bank as broken.
+                target = [float(v) for v in line.split(':', 2)[2].split(',')]
+                best, best_gap = None, 9e9
+                for eid, (kind, x, y, z) in self.entities.items():
+                    gap = (x - target[0]) ** 2 + (y - target[1]) ** 2 + (z - target[2]) ** 2
+                    if gap < best_gap:
+                        best, best_gap = eid, gap
+                if best is None:
+                    self.note('no tracked entity to interact with')
+                else:
+                    self.send(0x16, varint(best) + varint(0) + varint(0) + bytes([0]))
+                    self.note('interacted with entity %d, %.1f blocks away' % (best, best_gap ** 0.5))
             elif line == 'close':
                 self.send(0x0F, varint(self.window))
                 self.note('closed window %d' % self.window)

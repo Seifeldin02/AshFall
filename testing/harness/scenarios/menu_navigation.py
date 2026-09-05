@@ -123,3 +123,51 @@ def run(control, report):
                  all('Confirmations' in line for line in _titles(control, mark)))
     control.say('close')
     time.sleep(1.5)
+
+    #  --- the Bank front page, through the only door it has ---------------------------------------
+    #
+    #  It opens from the Central Banker and from nothing else: no command reaches it, which is why it went
+    #  two batches without ever being captured from a client. A banker is spawned for this test and removed
+    #  again, and the right-click itself is made as an ORDINARY player -- the admin grant covers the spawn
+    #  and the cleanup and nothing in between.
+    where = control.where()
+    if where[1] is None:
+        report.check('the player has a position to spawn a banker at', False)
+        return
+    try:
+        control.as_admin()
+        control.say('cmd:ashfall merchant spawn banker')
+        time.sleep(3)
+    finally:
+        control.drop_admin()
+    report.check('the test account is an ordinary player again before the interaction',
+                 control.assert_ordinary())
+
+    mark = control.chat_mark()
+    control.say('interact:near:%f,%f,%f' % where[1])
+    time.sleep(3)
+    landed = _titles(control, mark)
+    report.check('right-clicking the Central Banker opens the Bank front page',
+                 len(landed) == 1 and 'Bank' in landed[0])
+    report.note('bank screen: ' + (_title(landed[0]) if landed else '(nothing opened)'))
+
+    control.say('screen:dump:bank')
+    time.sleep(2)
+    dump = control.screen_dump('bank')
+    report.check('the front page names the treasury, the debt and the interest rate',
+                 all(word in dump for word in ('Treasury', 'Interest rate', 'borrow')))
+    report.check('a control that cannot be used says why, rather than failing silently',
+                 'Unavailable' not in dump or 'you have no loan to repay' in dump
+                 or 'you already have a loan open' in dump
+                 or 'your credit will not cover' in dump
+                 or 'you have already borrowed today' in dump)
+    control.say('close')
+    time.sleep(1.5)
+
+    try:
+        control.as_admin()
+        control.say('cmd:ashfall merchant remove nearest')
+        time.sleep(2.5)
+    finally:
+        control.drop_admin()
+    report.check('the test banker was removed again', control.assert_ordinary())

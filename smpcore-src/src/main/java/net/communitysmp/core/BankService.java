@@ -42,8 +42,12 @@ final class BankService implements Listener {
         Database.LoanRow loan=accrue(player);
         Database.BankRow bank=db.bank();
         double available=available(player,loan,bank);
+        //  Read once. It was read twice in a lore line on the Repay button -- once to null-check the
+        //  row and once to take the balance off it -- on every open of the screen.
+        Database.PlayerRow purseRow=db.player(CoreUtil.id(player));
+        double purse=purseRow==null?0:purseRow.balance();
         Holder holder=new Holder(Page.MAIN);
-        Inventory inv=plugin.getServer().createInventory(holder,27,Component.text("Ashfall Central Bank",NamedTextColor.DARK_GREEN));
+        Inventory inv=plugin.getServer().createInventory(holder,27,Component.text("Central Bank",CoreUtil.EMBER));
         inv.setItem(SUMMARY_TREASURY,CoreUtil.Menu.heading(Material.GOLD_BLOCK,"Central Treasury  "+CoreUtil.money(bank.balance()),List.of(
                 "Server payments in, shop payouts out.",
                 CoreUtil.C_MUTE+"Loans are funded from this, so it caps what you can borrow.")));
@@ -70,7 +74,7 @@ final class BankService implements Listener {
         inv.setItem(ACT_REPAY,loan==null
                 ?CoreUtil.Menu.blocked(Material.GOLD_INGOT,"Repay","you have no loan to repay.",List.of())
                 :CoreUtil.Menu.action(Material.GOLD_INGOT,"Repay",List.of(
-                        CoreUtil.C_BODY+"Up to "+CoreUtil.C_TEXT+CoreUtil.money(Math.min(loan.debt(),db.player(CoreUtil.id(player))==null?0:db.player(CoreUtil.id(player)).balance())),
+                        CoreUtil.C_BODY+"Up to "+CoreUtil.C_TEXT+CoreUtil.money(Math.min(loan.debt(),purse)),
                         CoreUtil.C_MUTE+"Repaying early stops the interest.")));
         player.openInventory(inv);
     }

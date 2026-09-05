@@ -177,7 +177,24 @@ final class GameplayListener implements Listener {
     @EventHandler public void changedWorld(PlayerChangedWorldEvent e){progress.worldChanged(e.getPlayer(),e.getPlayer().getWorld().getEnvironment());teleports.leaveRtpQueueOnWorldChange(e.getPlayer());}
     @EventHandler public void held(PlayerItemHeldEvent e){plugin.getServer().getScheduler().runTask(plugin,()->scanImportant(e.getPlayer()));}
     @EventHandler(priority=EventPriority.LOWEST) public void kick(PlayerKickEvent event){String cause=event.getCause().name();if(cause.contains("KICK_COMMAND")||cause.contains("BANNED")||cause.contains("WHITELIST")||cause.contains("DUPLICATE"))exemptDisconnects.add(event.getPlayer().getUniqueId());}
-    @EventHandler public void quit(PlayerQuitEvent e){Player player=e.getPlayer();db.updateLastLocation(CoreUtil.id(player),player.getLocation());if(!Bukkit.isStopping()&&!player.isDead()&&!exemptDisconnects.remove(player.getUniqueId())&&teleports.combatRemaining(player)>0){Player opponent=teleports.latestLivingOpponent(player);if(opponent!=null){combatLogKillers.put(player.getUniqueId(),opponent.getUniqueId());player.setKiller(opponent);player.setHealth(0);}}teleports.quit(player);plugin.messaging().quit(player);plugin.shards().quit(player);factions.clearChatMode(player);firstJoin.remove(player.getUniqueId());relics.confirmInventory(player);progress.quit(player);plugin.ui().remove(player);db.forgetPreferences(CoreUtil.id(player));db.forgetPreferences("uuid:"+player.getUniqueId());bosses.playerQuit(player.getUniqueId());plugin.registration().quit(player);plugin.getServer().getScheduler().runTaskLater(plugin,()->{for(Player online:plugin.getServer().getOnlinePlayers())online.updateCommands();},1L);}
+    @EventHandler public void quit(PlayerQuitEvent e){Player player=e.getPlayer();db.updateLastLocation(CoreUtil.id(player),player.getLocation());if(!Bukkit.isStopping()&&!player.isDead()&&!exemptDisconnects.remove(player.getUniqueId())&&teleports.combatRemaining(player)>0){Player opponent=teleports.latestLivingOpponent(player);if(opponent!=null){combatLogKillers.put(player.getUniqueId(),opponent.getUniqueId());player.setKiller(opponent);player.setHealth(0);}}teleports.quit(player);plugin.messaging().quit(player);plugin.shards().quit(player);factions.clearChatMode(player);firstJoin.remove(player.getUniqueId());relics.confirmInventory(player);progress.quit(player);plugin.ui().remove(player);db.forgetPreferences(CoreUtil.id(player));db.forgetPreferences("uuid:"+player.getUniqueId());bosses.playerQuit(player.getUniqueId());plugin.registration().quit(player);forgetPerPlayerState(player.getUniqueId());plugin.getServer().getScheduler().runTaskLater(plugin,()->{for(Player online:plugin.getServer().getOnlinePlayers())online.updateCommands();},1L);}
+    /*  FIVE MAPS THAT ONLY EVER GREW.
+     *
+     *  chatStates, lastCommand, lastCommandAt, lastCommands and commandViolations are all keyed by
+     *  player UUID and none of them were ever removed from. They are small individually -- a couple of
+     *  longs, a string, and a Deque of violation timestamps -- but they hold an entry for every account
+     *  that has joined since the last restart, forever, and their whole purpose is short-lived rate
+     *  limiting: nothing in them means anything once the player is gone, and keeping it would make a
+     *  returning player inherit a spam counter from hours ago.
+     *
+     *  combatLogKillers is deliberately NOT cleared here. This handler puts an entry in it and then
+     *  triggers the death that consumes it, so clearing it at the end of the same method would be a
+     *  race with the one thing that reads it -- and losing that race costs a player the kill
+     *  attribution for somebody who logged out mid-fight. One stranded UUID pair is the cheaper bug. */
+    private void forgetPerPlayerState(UUID id){
+        chatStates.remove(id);lastCommand.remove(id);lastCommandAt.remove(id);
+        lastCommands.remove(id);commandViolations.remove(id);
+    }
     @EventHandler public void death(PlayerDeathEvent e){Player victim=e.getEntity(),killer=victim.getKiller();UUID logged=combatLogKillers.remove(victim.getUniqueId());if(logged!=null){Player opponent=plugin.getServer().getPlayer(logged);if(opponent!=null)killer=opponent;e.deathMessage(net.kyori.adventure.text.Component.text(plugin.nicknames().displayName(victim)+" tried to escape the fight"+(killer==null?"":(" with "+plugin.nicknames().displayName(killer)))+" and paid the price.",net.kyori.adventure.text.format.NamedTextColor.RED));}teleports.onDeath(victim);db.incrementStat(CoreUtil.id(victim),"deaths");
         /** A duel death is not a real death. The arena hands every item back, the stake is the wager and
          *  nothing else, and charging the ordinary balance penalty on top meant losing a friendly duel cost
