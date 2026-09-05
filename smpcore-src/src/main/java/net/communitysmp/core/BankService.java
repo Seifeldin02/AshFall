@@ -42,19 +42,62 @@ final class BankService implements Listener {
         Database.LoanRow loan=accrue(player);
         Database.BankRow bank=db.bank();
         double available=available(player,loan,bank);
+        //  Read once. It was read twice in a lore line on the Repay button -- once to null-check the
+        //  row and once to take the balance off it -- on every open of the screen.
+        Database.PlayerRow purseRow=db.player(CoreUtil.id(player));
+        double purse=purseRow==null?0:purseRow.balance();
         Holder holder=new Holder(Page.MAIN);
-        Inventory inv=plugin.getServer().createInventory(holder,27,Component.text("Ashfall Central Bank",NamedTextColor.DARK_GREEN));
-        inv.setItem(4,icon(Material.GOLD_BLOCK,"Central Treasury",CoreUtil.money(bank.balance()),"Server payments in • shop payouts out"));
-        inv.setItem(10,icon(Material.WRITABLE_BOOK,"Your Debt",loan==null?"None":CoreUtil.money(loan.debt()),loan==null?"No active loan.":"Principal: "+CoreUtil.money(loan.principal())));
-        inv.setItem(12,icon(Material.CLOCK,"Interest",loan==null?"—":CoreUtil.money(loan.interest()),formatPercent(plugin.getConfig().getDouble("bank.loans.daily-interest-percent",1))+" per day"));
-        inv.setItem(14,icon(loan!=null&&loan.overdue()?Material.REDSTONE_TORCH:Material.LANTERN,"Due Status",dueLine(loan),loan!=null&&loan.overdue()?"Future income is partially garnished.":""));
-        inv.setItem(16,icon(Material.EMERALD,"Available Loan",CoreUtil.money(available),
-                "Credit standing: "+creditBand(player),
-                "Grows with the economy you generate,",
-                "your repayment record, and treasury funds."));
-        inv.setItem(21,icon(Material.EMERALD_BLOCK,"Borrow",available>0?"View available amounts":"Unavailable",loan!=null?"Repay the current loan first.":""));
-        inv.setItem(23,icon(Material.GOLD_INGOT,"Repay",loan==null?"No active loan":"Choose a repayment amount","Payments return funds to the treasury."));
+        Inventory inv=plugin.getServer().createInventory(holder,27,Component.text("Central Bank",CoreUtil.EMBER));
+        inv.setItem(SUMMARY_TREASURY,CoreUtil.Menu.heading(Material.GOLD_BLOCK,"Central Treasury  "+CoreUtil.money(bank.balance()),List.of(
+                "Server payments in, shop payouts out.",
+                CoreUtil.C_MUTE+"Loans are funded from this, so it caps what you can borrow.")));
+        inv.setItem(SUMMARY_DEBT,CoreUtil.Menu.info(Material.WRITABLE_BOOK,loan==null?"No debt":"You owe  "+CoreUtil.money(loan.debt()),
+                loan==null?List.of(CoreUtil.C_MUTE+"You have no active loan."):List.of(
+                        CoreUtil.C_BODY+"Borrowed "+CoreUtil.C_TEXT+CoreUtil.money(loan.principal()),
+                        CoreUtil.C_BODY+"Interest so far "+CoreUtil.C_TEXT+CoreUtil.money(loan.interest()))));
+        inv.setItem(SUMMARY_INTEREST,CoreUtil.Menu.info(Material.CLOCK,"Interest rate",List.of(
+                CoreUtil.C_TEXT+formatPercent(plugin.getConfig().getDouble("bank.loans.daily-interest-percent",1))+CoreUtil.C_BODY+" per day",
+                loan==null?CoreUtil.C_MUTE+"Charged daily while a loan is open."
+                          :CoreUtil.C_BODY+"Added so far "+CoreUtil.C_TEXT+CoreUtil.money(loan.interest()))));
+        inv.setItem(SUMMARY_DUE,loan!=null&&loan.overdue()
+                ?CoreUtil.Menu.of(Material.REDSTONE_TORCH,CoreUtil.C_BAD+"Overdue",List.of(
+                        CoreUtil.C_BODY+dueLine(loan),
+                        CoreUtil.C_WARN+"A share of everything you earn goes to the debt.",
+                        CoreUtil.C_MUTE+"That stops the moment it is repaid."))
+                :CoreUtil.Menu.info(Material.LANTERN,"Due",List.of(CoreUtil.C_TEXT+dueLine(loan))));
+        inv.setItem(SUMMARY_AVAILABLE,CoreUtil.Menu.info(Material.EMERALD,"You could borrow  "+CoreUtil.money(available),List.of(
+                CoreUtil.C_BODY+"Credit standing "+CoreUtil.C_TEXT+creditBand(player),
+                "Grows with the economy you generate, your repayment",
+                "record, and what is in the treasury.")));
+        /*  It said "Unavailable" and left you to work out which of three reasons it was. */
+        inv.setItem(ACT_BORROW,borrowIcon(player,loan,available));
+        inv.setItem(ACT_REPAY,loan==null
+                ?CoreUtil.Menu.blocked(Material.GOLD_INGOT,"Repay","you have no loan to repay.",List.of())
+                :CoreUtil.Menu.action(Material.GOLD_INGOT,"Repay",List.of(
+                        CoreUtil.C_BODY+"Up to "+CoreUtil.C_TEXT+CoreUtil.money(Math.min(loan.debt(),purse)),
+                        CoreUtil.C_MUTE+"Repaying early stops the interest.")));
         player.openInventory(inv);
+    }
+
+    private static final int SUMMARY_TREASURY=4, SUMMARY_DEBT=10, SUMMARY_INTEREST=12, SUMMARY_DUE=14,
+            SUMMARY_AVAILABLE=16, ACT_BORROW=21, ACT_REPAY=23;
+    /** The borrow button, with the actual reason it will not work today. */
+    private ItemStack borrowIcon(Player player,Database.LoanRow loan,double available){
+        if(loan!=null)return CoreUtil.Menu.blocked(Material.EMERALD_BLOCK,"Borrow",
+                "you already have a loan open.",List.of("Repay it and you can borrow again."));
+        int perDay=Math.max(1,plugin.getConfig().getInt("bank.loans.max-per-day",1));
+        if(db.loansIssuedSince(CoreUtil.id(player),loanDayStart())>=perDay)return CoreUtil.Menu.blocked(Material.EMERALD_BLOCK,"Borrow",
+                "you have already borrowed today.",List.of("The allowance resets at "
+                        +plugin.getConfig().getInt("bank.loans.reset-hour",12)+":00 server time."));
+        if(available<minimumLoan())return CoreUtil.Menu.blocked(Material.EMERALD_BLOCK,"Borrow",
+                "your credit will not cover the smallest loan yet.",List.of(
+                        CoreUtil.C_BODY+"Smallest loan "+CoreUtil.C_TEXT+CoreUtil.money(minimumLoan()),
+                        "Earn, trade and repay on time to raise it."));
+        return CoreUtil.Menu.action(Material.EMERALD_BLOCK,"Borrow",List.of(
+                CoreUtil.C_BODY+"Up to "+CoreUtil.C_TEXT+CoreUtil.money(available),
+                CoreUtil.C_BODY+formatPercent(plugin.getConfig().getDouble("bank.loans.daily-interest-percent",1))+" a day, due in "
+                        +plugin.getConfig().getInt("bank.loans.due-days",7)+" days",
+                CoreUtil.C_MUTE+"Overdue loans garnish what you earn."));
     }
 
     private void openBorrow(Player player){
@@ -65,7 +108,7 @@ final class BankService implements Listener {
         int[] slots={10,12,14};
         for(int i=0;i<amounts.size();i++){double amount=amounts.get(i);inv.setItem(slots[i],icon(Material.EMERALD,i==amounts.size()-1?"Borrow Maximum":"Borrow "+CoreUtil.money(amount),CoreUtil.money(amount),formatPercent(plugin.getConfig().getDouble("bank.loans.daily-interest-percent",1))+" daily interest","Due in "+plugin.getConfig().getInt("bank.loans.due-days",7)+" days"));holder.amounts.put(slots[i],amount);}
         inv.setItem(16,icon(Material.NAME_TAG,"Custom Borrow Amount","Type an exact amount in chat"));
-        inv.setItem(22,icon(Material.ARROW,"Back","Return to account summary"));
+        inv.setItem(CoreUtil.Menu.BACK_SMALL,CoreUtil.Menu.back("Return to your account."));
         player.openInventory(inv);
     }
 
@@ -76,27 +119,34 @@ final class BankService implements Listener {
         List<Double> amounts=distinctRepayments(affordable,loan.debt());int[] slots={11,13,15};
         for(int i=0;i<amounts.size();i++){double amount=amounts.get(i);inv.setItem(slots[i],icon(Material.GOLD_INGOT,i==amounts.size()-1?"Repay Maximum":"Repay "+CoreUtil.money(amount),CoreUtil.money(amount)));holder.amounts.put(slots[i],amount);}
         inv.setItem(16,icon(Material.NAME_TAG,"Custom Amount","Type an exact repayment in chat"));
-        inv.setItem(4,icon(Material.WRITABLE_BOOK,"Outstanding Debt",CoreUtil.money(loan.debt()),loan.overdue()?"OVERDUE":dueLine(loan)));
-        inv.setItem(22,icon(Material.ARROW,"Back","Return to account summary"));
+        inv.setItem(SUMMARY_TREASURY,CoreUtil.Menu.heading(Material.WRITABLE_BOOK,"You owe  "+CoreUtil.money(loan.debt()),
+                List.of(loan.overdue()?CoreUtil.C_BAD+"Overdue "+CoreUtil.C_BODY+dueLine(loan):CoreUtil.C_BODY+dueLine(loan),
+                        CoreUtil.C_MUTE+"Repaying early stops the interest on what you repay.")));
+        inv.setItem(CoreUtil.Menu.BACK_SMALL,CoreUtil.Menu.back("Return to your account."));
         player.openInventory(inv);
     }
 
     private void openRepayConfirmation(Player player,double amount){
         Database.LoanRow loan=accrue(player);if(loan==null){openMain(player);return;}
-        Holder holder=new Holder(Page.REPAY_CONFIRM);holder.amounts.put(11,amount);
+        Holder holder=new Holder(Page.REPAY_CONFIRM);holder.amounts.put(CoreUtil.Menu.CONFIRM,amount);
         Inventory inv=plugin.getServer().createInventory(holder,27,Component.text("Confirm Repayment",NamedTextColor.GOLD));
-        inv.setItem(4,icon(Material.WRITABLE_BOOK,"Repayment",CoreUtil.money(amount),"Debt after payment: "+CoreUtil.money(Math.max(0,loan.debt()-amount))));
-        inv.setItem(11,icon(Material.LIME_CONCRETE,"Confirm",CoreUtil.money(amount)));
-        inv.setItem(15,icon(Material.RED_CONCRETE,"Cancel","Return to repayment options"));
+        double after=Math.max(0,loan.debt()-amount);
+        inv.setItem(CoreUtil.Menu.SUBJECT,CoreUtil.Menu.heading(Material.WRITABLE_BOOK,"Repay "+CoreUtil.money(amount),List.of(
+                CoreUtil.C_BODY+"Debt now "+CoreUtil.C_TEXT+CoreUtil.money(loan.debt()),
+                CoreUtil.C_BODY+"Debt after "+CoreUtil.C_TEXT+CoreUtil.money(after),
+                after<=0?CoreUtil.C_GOOD+"This clears the loan.":CoreUtil.C_BODY+"Interest keeps accruing on the rest.")));
+        inv.setItem(CoreUtil.Menu.CANCEL,CoreUtil.Menu.cancel("Back to the repayment amounts."));
+        inv.setItem(CoreUtil.Menu.CONFIRM,CoreUtil.Menu.confirm(CoreUtil.money(amount),List.of(
+                CoreUtil.C_BODY+"Comes out of your balance now.")));
         player.openInventory(inv);
     }
 
     void click(InventoryClickEvent event){
         if(!(event.getInventory().getHolder(false) instanceof Holder holder))return;
         event.setCancelled(true);if(!(event.getWhoClicked() instanceof Player player))return;int slot=event.getRawSlot();
-        if(holder.page==Page.MAIN){if(slot==21)openBorrow(player);else if(slot==23)openRepay(player);return;}
-        if(holder.page==Page.REPAY_CONFIRM){if(slot==11){Double amount=holder.amounts.get(11);if(amount!=null)repay(player,amount);}else if(slot==15)openRepay(player);return;}
-        if(slot==22){openMain(player);return;}
+        if(holder.page==Page.MAIN){if(slot==ACT_BORROW)openBorrow(player);else if(slot==ACT_REPAY)openRepay(player);return;}
+        if(holder.page==Page.REPAY_CONFIRM){if(slot==CoreUtil.Menu.CONFIRM){Double amount=holder.amounts.get(CoreUtil.Menu.CONFIRM);if(amount!=null)repay(player,amount);}else if(slot==CoreUtil.Menu.CANCEL)openRepay(player);return;}
+        if(slot==CoreUtil.Menu.BACK_SMALL){openMain(player);return;}
         if(holder.page==Page.BORROW&&slot==16){startCustom(player,InputKind.BORROW);return;}
         if(holder.page==Page.REPAY&&slot==16){startCustom(player,InputKind.REPAY);return;}
         Double amount=holder.amounts.get(slot);if(amount==null)return;
@@ -309,6 +359,6 @@ final class BankService implements Listener {
     private void garnishNotice(Player player,double paid){long now=System.currentTimeMillis();if(now-garnishNotices.getOrDefault(player.getUniqueId(),0L)>10000){garnishNotices.put(player.getUniqueId(),now);player.sendActionBar(Component.text(CoreUtil.money(paid)+" applied to overdue bank debt",NamedTextColor.GOLD));}}
     private String dueLine(Database.LoanRow loan){if(loan==null)return "No payment due";if(loan.overdue())return "OVERDUE";long millis=Math.max(0,loan.dueAt()-System.currentTimeMillis());long days=Math.max(1,(millis+86399999L)/86400000L);return "Due in "+days+" day"+(days==1?"":"s");}
     private String formatPercent(double value){return (Math.rint(value)==value?Integer.toString((int)value):String.format(Locale.US,"%.1f",value))+"%";}
-    private ItemStack icon(Material material,String name,String... lines){return CoreUtil.named(material,name,Arrays.stream(lines).filter(line->line!=null&&!line.isBlank()).toList());}
+    private ItemStack icon(Material material,String name,String... lines){return CoreUtil.Menu.action(material,name,Arrays.stream(lines).filter(line->line!=null&&!line.isBlank()).toList());}
     private Player find(String id){for(Player player:plugin.getServer().getOnlinePlayers())if(CoreUtil.id(player).equals(id))return player;return null;}
 }

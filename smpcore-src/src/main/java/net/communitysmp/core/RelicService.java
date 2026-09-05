@@ -32,9 +32,10 @@ import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 final class RelicService implements Listener {
-    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask,anchorTask;
+    private final SMPCore plugin;private final Database db;private final NamespacedKey key;private YamlConfiguration config;private BukkitTask lifecycleTask,buffTask,anchorTask,hudTask;
 
     /** One armed Skyward Anchor. `peak` is OUR OWN fall tracking rather than Player#getFallDistance,
      *  because vanilla zeroes that constantly while gliding and we need the drop to survive an elytra
@@ -64,12 +65,12 @@ final class RelicService implements Listener {
      *  most of a health bar -- the relic would routinely kill its own user. This is also what was asked for
      *  in so many words: a wind burst should not hand you the full fall back. */
     private final Map<UUID,Long> burstGrace=new java.util.concurrent.ConcurrentHashMap<>();
-    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);anchorTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::anchorTick,1L,1L);}
+    RelicService(SMPCore plugin){this.plugin=plugin;this.db=plugin.db();this.key=new NamespacedKey(plugin,"relic");reload();lifecycleTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::lifecycleTick,1200L,12000L);buffTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::buffTick,20L,40L);anchorTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::anchorTick,1L,1L);hudTask=plugin.getServer().getScheduler().runTaskTimer(plugin,this::heldRelicTick,7L,5L);}
     /** Test-only hook for /admin relictest — runs the real periodic lifecycle pass immediately instead of
      *  waiting up to 10 minutes for the next scheduled one. Not used by any normal game logic. */
     void debugForceLifecycleTick(){lifecycleTick();}
-    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();anchors.clear();slamGuard.clear();burstGrace.clear();}
-    void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));}
+    void shutdown(){if(lifecycleTask!=null)lifecycleTask.cancel();if(buffTask!=null)buffTask.cancel();if(anchorTask!=null)anchorTask.cancel();if(hudTask!=null)hudTask.cancel();anchors.clear();slamGuard.clear();burstGrace.clear();}
+    void reload(){config=YamlConfiguration.loadConfiguration(new File(plugin.getDataFolder(),"relics.yml"));cooldownReady.clear();}
     Set<String> keys(){ConfigurationSection section=config.getConfigurationSection("relics");return section==null?Set.of():section.getKeys(false);}
     String displayName(String relicKey){return config.getString("relics."+relicKey+".name",CoreUtil.pretty(relicKey));}
     ItemStack create(String relicKey){String path="relics."+relicKey;Material material=Material.matchMaterial(config.getString(path+".material","PAPER"));if(material==null)material=Material.PAPER;ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(displayName(relicKey),NamedTextColor.GOLD));List<Component> lore=new ArrayList<>();for(String line:config.getStringList(path+".lore"))lore.add(Component.text(line,NamedTextColor.GRAY));lore.add(Component.empty());lore.add(Component.text("Unique Relic • "+relicKey,NamedTextColor.DARK_PURPLE));meta.lore(lore);meta.getPersistentDataContainer().set(key,PersistentDataType.STRING,relicKey);item.setItemMeta(meta);if(relicKey.equals("crown_of_ash")){item.addUnsafeEnchantment(Enchantment.PROTECTION,4);item.addUnsafeEnchantment(Enchantment.FIRE_PROTECTION,4);item.addUnsafeEnchantment(Enchantment.UNBREAKING,3);}if(relicKey.equals("wayfinder"))item.addUnsafeEnchantment(Enchantment.UNBREAKING,1);if(relicKey.equals("oathblade")){item.addUnsafeEnchantment(Enchantment.SHARPNESS,5);item.addUnsafeEnchantment(Enchantment.LOOTING,2);item.addUnsafeEnchantment(Enchantment.UNBREAKING,3);}return item;}
@@ -106,7 +107,7 @@ final class RelicService implements Listener {
      *  same ELIGIBLE end state lifecycleTick() would arrive at on its own once eligible_at passes. */
     boolean forceEligible(String relicKey){
         Database.RelicLifecycleRow row=db.relicLifecycle(relicKey);
-        if(row==null||!"LOST".equals(row.status()))return false;
+        if(row==null||!("LOST".equals(row.status())||"RECLAIMED".equals(row.status())))return false;
         db.makeRelicEligible(relicKey);
         plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(relicKey)+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
         db.history("SERVER",null,"RELIC",displayName(relicKey)+" was forced to become eligible to resurface by an admin.");
@@ -290,6 +291,14 @@ final class RelicService implements Listener {
              *  relic was deliberately RECYCLED and released for anyone to re-find, so a stale physical copy
              *  in the previous owner's hands is exactly what has to be removed. Reinstating on ELIGIBLE
              *  would silently cancel the recycle and hand the relic straight back to whoever lost it. */
+            /*  LOST only. Never RECLAIMED.
+             *
+             *  LOST means "we believe this was destroyed" -- if its own tracked owner turns up holding it,
+             *  that belief was wrong and the ledger is corrected. RECLAIMED means the server took it back
+             *  on purpose because the owner stopped playing, and a returning owner holding one is the
+             *  EXPECTED case, not evidence of a mistake. Reinstating there is what silently cancelled every
+             *  inactivity reclaim this server has ever made. Falling through removes the stale copy, which
+             *  is what makes the reclaim real even though it happened while they were offline. */
             if("LOST".equals(row.status())&&CoreUtil.id(player).equals(row.owner())){
                 db.confirmRelic(relicKey,CoreUtil.id(player),player.getName());
                 plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reappeared in its tracked owner's hands ("+player.getName()+", tracked status was "+row.status()+"); reinstating rather than removing it.");
@@ -301,6 +310,40 @@ final class RelicService implements Listener {
             db.history("SERVER",null,"RELIC",displayName(relicKey)+": a duplicate/stale physical copy was removed from "+player.getName()+" during a routine check (tracked owner: "+row.ownerName()+", status: "+row.status()+").");
         }
     }
+    /*  Remove every physical copy this server can actually reach, with the owner offline.
+     *
+     *  A reclaim has to be more than a ledger edit, and the reason the old one was not is that it only
+     *  looked at online players' inventories -- the one place guaranteed to be unreachable, since an owner
+     *  who has not logged in for seven days is by definition offline.
+     *
+     *  Swept here, because each is reachable with the owner offline: any ONLINE player's inventory (a
+     *  traded or looted copy), uncollected graves and dropped item entities in loaded chunks. Auction
+     *  escrow is handled by the caller, which reclaims the listing itself.
+     *
+     *  NOT swept here, and deliberately so: the offline owner's own inventory and Ender Storage, and a
+     *  duel stash. Those need the player object or a live match, and rewriting a player .dat behind Paper's
+     *  back is not a trade worth making. They are covered instead by the RECLAIMED status surviving in the
+     *  ledger -- confirmInventory strips a RECLAIMED relic the instant its holder logs in, before it can be
+     *  used, which is the guarantee that matters. Returns how many copies were physically removed. */
+    private int sweepPhysicalCopies(String relicKey,String owner){
+        int removed=0;
+        for(Player player:plugin.getServer().getOnlinePlayers())
+            for(ItemStack item:player.getInventory().getContents())
+                if(relicKey.equals(keyOf(item))){item.setAmount(0);removed++;}
+        /** Graves the owner never collected -- database-backed, so reachable with them offline. */
+        for(Database.GraveRow grave:db.graves(owner)){
+            java.util.List<ItemStack> items=db.graveItems(grave.id());
+            java.util.List<ItemStack> kept=new java.util.ArrayList<>();
+            for(ItemStack item:items){ if(relicKey.equals(keyOf(item)))removed++; else kept.add(item); }
+            if(kept.size()!=items.size())db.saveGraveItems(grave.id(),kept);
+        }
+        /** Dropped on the floor somewhere loaded. */
+        for(World world:plugin.getServer().getWorlds())
+            for(Entity entity:world.getEntities())
+                if(entity instanceof Item dropped&&relicKey.equals(keyOf(dropped.getItemStack()))){dropped.remove();removed++;}
+        return removed;
+    }
+
     private enum CopyState { PRESENT, ABSENT, UNKNOWN }
     /** Whether the tracked owner still demonstrably has their copy. Auction escrow counts as present (the
      *  item really is there); an offline owner is UNKNOWN rather than ABSENT, since their saved inventory
@@ -337,6 +380,16 @@ final class RelicService implements Listener {
         long now=System.currentTimeMillis();
         for(Database.RelicLifecycleRow row:db.relicLifecycles()){
             if("LOST".equals(row.status()))lostTick(row,now);
+            /** A reclaimed relic runs the same countdown back into circulation, but never through
+             *  lostTick's auction-escrow self-heal: that exists to undo a MISTAKEN loss, and a reclaim is
+             *  not a mistake. Nothing here can return it to its previous owner. */
+            else if("RECLAIMED".equals(row.status())){
+                if(row.eligibleAt()>0&&now>=row.eligibleAt()){
+                    db.makeRelicEligible(row.key());
+                    plugin.getServer().broadcast(Component.text("Rumors speak of "+displayName(row.key())+" resurfacing somewhere in Ashfall...",NamedTextColor.LIGHT_PURPLE));
+                    db.history("SERVER",null,"RELIC",displayName(row.key())+" became eligible to resurface after being reclaimed for inactivity.");
+                }
+            }
             else if("ACTIVE".equals(row.status())&&!"hidden".equals(row.owner())){checkReclaim(row,now);checkStillExists(row);}
             else if("ELIGIBLE".equals(row.status()))eligibleTick(row);
         }
@@ -432,11 +485,13 @@ final class RelicService implements Listener {
             plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed from "+row.ownerName()+"'s expired, uncollected auction listing #"+expired.id()+" after "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days without a login since expiry.");
             db.history("SERVER",null,"RELIC",displayName(relicKey)+" was reclaimed from an expired, uncollected auction listing (last owner: "+row.ownerName()+").");
         }else{
-            for(Player player:plugin.getServer().getOnlinePlayers())for(ItemStack item:player.getInventory().getContents())if(relicKey.equals(keyOf(item)))item.setAmount(0);
-            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed — "+row.ownerName()+" has not logged in for "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days.");
+            int swept=sweepPhysicalCopies(relicKey,owner);
+            plugin.getLogger().info("[RelicLifecycle] "+relicKey+" reclaimed — "+row.ownerName()+" has not logged in for "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days"
+                    +(swept>0?"; removed "+swept+" physical copy/copies from reachable storage":"; the owner is offline, so their copy is removed on their next login")+".");
             db.history("SERVER",null,"RELIC",displayName(relicKey)+" was reclaimed after "+config.getLong("lifecycle.reclaim-after-real-days",7)+" real days without a login (last owner: "+row.ownerName()+").");
         }
-        itemLostByKey(relicKey);
+        /** RECLAIMED, not LOST. This is the line the whole bug turned on. */
+        db.markRelicReclaimed(relicKey,System.currentTimeMillis()+config.getLong("lifecycle.resurface-after-real-days",2)*86400000L);
     }
     /** Admin removal of the physical item(s) — not a permanent retirement. deactivateRelic() (still present
      *  in Database.java but deliberately never called from anywhere) sets a terminal 'RETIRED' status
@@ -453,12 +508,12 @@ final class RelicService implements Listener {
     void list(Player p){
         List<Database.RelicLifecycleRow> rows=db.relicLifecycles();
         if(rows.isEmpty()){CoreUtil.msg(p,"No relics have entered the chronicle yet.");return;}
-        CoreUtil.msg(p,"Relic chronicle:");
+        CoreUtil.heading(p,"Relic chronicle",rows.size()+" relic"+(rows.size()==1?"":"s"));
         long now=System.currentTimeMillis();
         for(Database.RelicLifecycleRow row:rows){
             String suffix="";
             if("LOST".equals(row.status())&&row.eligibleAt()>0)suffix=" — resurfaces in "+formatRemaining(row.eligibleAt()-now);
-            CoreUtil.msg(p,"• "+displayName(row.key())+" — "+plugin.nicknames().displayName(row.ownerName())+" ["+CoreUtil.pretty(row.status())+"]"+suffix);
+            CoreUtil.item(p,displayName(row.key())+CoreUtil.C_MUTE+"  held by "+CoreUtil.C_BODY+CoreUtil.safe(plugin.nicknames().displayName(row.ownerName()))+CoreUtil.C_MUTE+"  "+CoreUtil.pretty(row.status())+suffix);
         }
     }
     private String formatRemaining(long millis){
@@ -851,7 +906,6 @@ final class RelicService implements Listener {
 
     /** Per-tick bookkeeping for everyone with the relic armed. */
     private void anchorTick(){
-        heldRelicTick();
         if(anchors.isEmpty())return;
         double maxAngle=config.getDouble("buffs.skyward-anchor.elytra-max-dive-angle",40);
         long life=Math.max(5,config.getLong("buffs.skyward-anchor.arm-seconds",30))*1000L;
@@ -1012,13 +1066,35 @@ final class RelicService implements Listener {
          *
          *  Only the i-frame case is touched. A normal combo -- the overwhelming majority -- takes the
          *  branch above and behaves precisely as before. */
-        if(event.getEntity() instanceof LivingEntity framed&&framed.getNoDamageTicks()>0&&framed.getLastDamage()>0){
+        /*  Test the OUTCOME, not vanilla's bookkeeping.
+         *
+         *  The previous version asked whether the target looked invulnerable -- getNoDamageTicks() > 0 AND
+         *  getLastDamage() > 0 -- and it did not fire when it mattered. Straight out of the production log:
+         *
+         *    gliding=true | mace base 1.02 -> applied 19.03 (x2.00 = 2.04, slam = 19.03) | final 0.00
+         *
+         *  The handler did its job and raised the hit to 19.03, and the target still took nothing. So at
+         *  least one of those two fields was not set the way the guard assumed at the moment the event
+         *  fired, and guessing which one again would be the third theory in a row.
+         *
+         *  There is no need to guess. getFinalDamage() already tells us what the target is about to take,
+         *  with vanilla's i-frame subtraction folded in. If that is materially less than what this handler
+         *  decided to apply, the hit is being swallowed -- whatever the reason -- and the answer is the same
+         *  one every other damage path here uses: clear the window and deal it properly.
+         *
+         *  Only a swallowed hit takes this branch. A combo landing for its full value never enters it. */
+        double reaching=event.getFinalDamage();
+        if(event.getEntity() instanceof LivingEntity framed&&reaching<applied-.01){
             event.setCancelled(true);
             framed.setNoDamageTicks(0);
             framed.setLastDamage(0);
             /** Re-entrant by design and safe: the anchor was already removed above, so this handler returns
              *  immediately on the way back in and cannot loop. */
             framed.damage(applied,player);
+            if(config.getBoolean("buffs.skyward-anchor.log-combo",true))
+                plugin.getLogger().info(String.format(java.util.Locale.US,
+                        "[anchor-combo] rescued a swallowed hit on %s: %.2f was reaching the target, re-dealt %.2f",
+                        event.getEntity().getType(),reaching,applied));
         }
         /** The thing you actually landed on takes the FULL stagger, whatever the geometry says -- it was hit
          *  directly, not caught in the blast. Only the surrounding area damage scales with distance. */
@@ -1081,10 +1157,23 @@ final class RelicService implements Listener {
          *  not WRITE a cooldown either, so a creative test cannot lock the relic out for a survival player
          *  afterwards -- these cooldowns are bound to the relic itself, not to whoever is holding it. */
         if(player.getGameMode()==GameMode.CREATIVE)return false;
-        long now=System.currentTimeMillis(),ready=parseLong(db.state("relic_cooldown:"+relicKey));
+        long now=System.currentTimeMillis(),ready=cooldownReadyAt(relicKey);
         if(now<ready){CoreUtil.error(player,displayName(relicKey)+" is not ready yet ("+((ready-now)/1000+1)+"s).");return true;}
-        db.state("relic_cooldown:"+relicKey,Long.toString(now+cooldownMs));return false;
+        db.state("relic_cooldown:"+relicKey,Long.toString(now+cooldownMs));cooldownReady.put(relicKey,now+cooldownMs);return false;
     }
+    /*  The relic cooldown, read from memory instead of from the database.
+     *
+     *  It is still PERSISTED per relic, which is the property that matters -- dropping, relogging, dying,
+     *  trading or restarting cannot reset one. But the countdown on a held relic's action bar was reading
+     *  it back through db.state() on the main thread, inside Database's own lock, once per tick per holder:
+     *  twenty synchronized SELECTs a second, each to render a number that changes once a second. The value
+     *  is written in exactly one place, so holding it in memory cannot drift from the table; a restart or a
+     *  reload re-reads it from disk, which is the only way it ever changes underneath us. */
+    private final Map<String,Long> cooldownReady=new ConcurrentHashMap<>();
+    private long cooldownReadyAt(String relicKey){
+        return cooldownReady.computeIfAbsent(relicKey,key->parseLong(db.state("relic_cooldown:"+key)));
+    }
+
     private long parseLong(String value){try{return value==null||value.isBlank()?0:Long.parseLong(value);}catch(NumberFormatException ignored){return 0;}}
     private void ashenReprisal(Player player,PlayerInteractEvent event){
         event.setCancelled(true);
@@ -1187,7 +1276,7 @@ final class RelicService implements Listener {
             if(anchors.containsKey(player.getUniqueId()))continue;
             String relicKey=keyOf(player.getInventory().getItemInMainHand());
             if(relicKey==null||!isActive(relicKey))continue;
-            long ready=parseLong(db.state("relic_cooldown:"+relicKey)),now=System.currentTimeMillis();
+            long ready=cooldownReadyAt(relicKey),now=System.currentTimeMillis();
             boolean creative=player.getGameMode()==GameMode.CREATIVE;
             Component state=creative||now>=ready
                     ?Component.text("READY",NamedTextColor.GREEN,net.kyori.adventure.text.format.TextDecoration.BOLD)

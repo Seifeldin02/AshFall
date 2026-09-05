@@ -164,6 +164,18 @@ def main() -> int:
     # the correct state and must not be reported as one.
     for entry in man.get("staging_only", []):
         rel = entry["path"]
+        if entry.get("repo_relative"):
+            #  Lives in the repository working copy rather than on a server -- the test harness endpoint
+            #  is the case this exists for. It is git-ignored, so its ABSENCE is normal on a fresh clone;
+            #  what matters is that it never appears on production.
+            here = Path(__file__).resolve().parent.parent / rel
+            if (prod / rel).exists():
+                rows.append((DIFF, rel, "present on PRODUCTION but is a repo-side staging-only file"))
+            elif here.exists():
+                rows.append((OK, rel, "present in the working copy, git-ignored, absent from production"))
+            else:
+                rows.append((OK, rel, "not created yet (git-ignored; harness refuses to run without it)"))
+            continue
         if not (stag / rel).exists():
             rows.append((MISSING, rel, "absent on STAGING (staging-only artifact)"))
         elif (prod / rel).exists():

@@ -43,6 +43,13 @@ final class GameplayListener implements Listener {
      *  list is touched here — the numeric online count is untouched, preserving whatever it already was. */
     @EventHandler public void serverList(ServerListPingEvent e){Iterator<Player> shown=e.iterator();while(shown.hasNext())if(plugin.adminTools().isHiddenFromPublic(shown.next()))shown.remove();if(plugin.getConfig().getBoolean("maintenance.enabled",false)){e.motd(net.kyori.adventure.text.Component.text("Server under maintenance",net.kyori.adventure.text.format.NamedTextColor.GOLD));return;}String name=plugin.getConfig().getString("server-name","Ashfall Concord");String line=bosses.serverListEventLine();e.motd(net.kyori.adventure.text.Component.text(name,net.kyori.adventure.text.format.NamedTextColor.GOLD).append(net.kyori.adventure.text.Component.newline()).append(net.kyori.adventure.text.Component.text(line,net.kyori.adventure.text.format.NamedTextColor.GRAY)));}
     @EventHandler(priority=EventPriority.MONITOR) public void join(PlayerJoinEvent e){Player p=e.getPlayer();syncSpectatorVisibility(p);if(!p.hasPlayedBefore())firstJoin.add(p.getUniqueId());db.ensurePlayer(CoreUtil.id(p),p.getName(),plugin.getConfig().getDouble("starting-balance",250));db.setIpHash(CoreUtil.id(p),CoreUtil.ipHash(p));if(plugin.getConfig().getBoolean("authentication.auto-authenticate-floodgate",true)&&isFloodgate(p)){plugin.getServer().getScheduler().runTaskLater(plugin,()->{try{AuthMeApi api=AuthMeApi.getInstance();if(!api.isRegistered(p.getName())){plugin.registration().openBedrock(p);return;}api.forceLogin(p);onAuthenticated(p);}catch(Exception ex){plugin.getLogger().severe("Could not authenticate Floodgate player "+p.getName()+": "+ex.getMessage());}},5L);}else if(plugin.getServer().getPluginManager().getPlugin("AuthMe")==null)plugin.getServer().getScheduler().runTask(plugin,()->onAuthenticated(p));}
+    /*  A delivery whose database half never happened leaves receipts in the player's own saved data.
+     *  Settling them on join is what turns a crash mid-collection into a no-op instead of a second
+     *  delivery -- and it has to happen before anything else can read the stash. */
+    @EventHandler(priority=EventPriority.MONITOR) public void settleClaimReceipts(PlayerJoinEvent e){
+        plugin.reconcileStash(e.getPlayer());
+    }
+
     @EventHandler(priority=EventPriority.MONITOR) public void legacySigilMigration(PlayerJoinEvent e){
         if(merchants!=null)plugin.getServer().getScheduler().runTaskLater(plugin,()->{if(e.getPlayer().isOnline())merchants.migrateLegacySigils(e.getPlayer());},40L);}
     @EventHandler(priority=EventPriority.MONITOR) public void login(LoginEvent e){plugin.getServer().getScheduler().runTask(plugin,()->onAuthenticated(e.getPlayer()));}
@@ -127,7 +134,19 @@ final class GameplayListener implements Listener {
      *  fully absorbed — a shield block, or armor/enchantments/Resistance reducing it to nothing — without the
      *  event being cancelled at all; getFinalDamage() is 0 either way. Neither case is a real fight, so
      *  neither should start the PvP teleport lock or the Ender Chest combat lock. */
-    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void pvpTag(EntityDamageByEntityEvent e){if(e.getFinalDamage()<=0)return;if(e.getEntity() instanceof Player victim&&!isSelfEnderPearl(e,victim)){Player attacker=playerDamager(e.getDamager());if(attacker!=null&&!plugin.privileged(attacker)&&!plugin.privileged(victim)&&!(plugin.arena()!=null&&plugin.arena().areDuelOpponents(attacker,victim))){teleports.onPvpHit(attacker,victim);plugin.enderChests().combatStarted(attacker);plugin.enderChests().combatStarted(victim);}}}
+    @EventHandler(priority=EventPriority.MONITOR,ignoreCancelled=true) public void pvpTag(EntityDamageByEntityEvent e){
+        /*  Being hit is combat, whatever the arithmetic came to.
+         *
+         *  This used to bail on getFinalDamage() <= 0, which reads as "no damage, no fight" and is wrong for
+         *  the case that was reported: punched while wearing full Netherite and never put into PvP lockout.
+         *  A hit that lands inside another hit's invulnerability window has vanilla's previous lastHurt
+         *  subtracted from it and can reach the target as exactly zero -- the same mechanic that was
+         *  swallowing the Skyward Anchor combo. Enchantment protection and absorption can land on zero too.
+         *
+         *  None of those mean nobody swung. The event is ignoreCancelled, so a hit that was blocked outright
+         *  never arrives here at all; anything that does arrive is a real attack that connected, and it
+         *  starts the lockout. */
+        if(e.getEntity() instanceof Player victim&&!isSelfEnderPearl(e,victim)){Player attacker=playerDamager(e.getDamager());if(attacker!=null&&!plugin.privileged(attacker)&&!plugin.privileged(victim)&&!(plugin.arena()!=null&&plugin.arena().areDuelOpponents(attacker,victim))){teleports.onPvpHit(attacker,victim);plugin.enderChests().combatStarted(attacker);plugin.enderChests().combatStarted(victim);}}}
     /** Teleport warmup is cancelled here, at MONITOR, rather than in damaged() at HIGH.
      *
      *  combat() cancels friendly fire at HIGH, and damaged() also ran at HIGH. EntityDamageByEntityEvent
@@ -158,13 +177,33 @@ final class GameplayListener implements Listener {
     @EventHandler public void changedWorld(PlayerChangedWorldEvent e){progress.worldChanged(e.getPlayer(),e.getPlayer().getWorld().getEnvironment());teleports.leaveRtpQueueOnWorldChange(e.getPlayer());}
     @EventHandler public void held(PlayerItemHeldEvent e){plugin.getServer().getScheduler().runTask(plugin,()->scanImportant(e.getPlayer()));}
     @EventHandler(priority=EventPriority.LOWEST) public void kick(PlayerKickEvent event){String cause=event.getCause().name();if(cause.contains("KICK_COMMAND")||cause.contains("BANNED")||cause.contains("WHITELIST")||cause.contains("DUPLICATE"))exemptDisconnects.add(event.getPlayer().getUniqueId());}
-    @EventHandler public void quit(PlayerQuitEvent e){Player player=e.getPlayer();db.updateLastLocation(CoreUtil.id(player),player.getLocation());if(!Bukkit.isStopping()&&!player.isDead()&&!exemptDisconnects.remove(player.getUniqueId())&&teleports.combatRemaining(player)>0){Player opponent=teleports.latestLivingOpponent(player);if(opponent!=null){combatLogKillers.put(player.getUniqueId(),opponent.getUniqueId());player.setKiller(opponent);player.setHealth(0);}}teleports.quit(player);plugin.messaging().quit(player);plugin.shards().quit(player);factions.clearChatMode(player);firstJoin.remove(player.getUniqueId());relics.confirmInventory(player);progress.quit(player);plugin.ui().remove(player);db.forgetPreferences(CoreUtil.id(player));db.forgetPreferences("uuid:"+player.getUniqueId());bosses.playerQuit(player.getUniqueId());plugin.registration().quit(player);plugin.getServer().getScheduler().runTaskLater(plugin,()->{for(Player online:plugin.getServer().getOnlinePlayers())online.updateCommands();},1L);}
+    @EventHandler public void quit(PlayerQuitEvent e){Player player=e.getPlayer();db.updateLastLocation(CoreUtil.id(player),player.getLocation());if(!Bukkit.isStopping()&&!player.isDead()&&!exemptDisconnects.remove(player.getUniqueId())&&teleports.combatRemaining(player)>0){Player opponent=teleports.latestLivingOpponent(player);if(opponent!=null){combatLogKillers.put(player.getUniqueId(),opponent.getUniqueId());player.setKiller(opponent);player.setHealth(0);}}teleports.quit(player);plugin.messaging().quit(player);plugin.shards().quit(player);factions.clearChatMode(player);firstJoin.remove(player.getUniqueId());relics.confirmInventory(player);progress.quit(player);plugin.ui().remove(player);db.forgetPreferences(CoreUtil.id(player));db.forgetPreferences("uuid:"+player.getUniqueId());bosses.playerQuit(player.getUniqueId());plugin.registration().quit(player);forgetPerPlayerState(player.getUniqueId());plugin.getServer().getScheduler().runTaskLater(plugin,()->{for(Player online:plugin.getServer().getOnlinePlayers())online.updateCommands();},1L);}
+    /*  FIVE MAPS THAT ONLY EVER GREW.
+     *
+     *  chatStates, lastCommand, lastCommandAt, lastCommands and commandViolations are all keyed by
+     *  player UUID and none of them were ever removed from. They are small individually -- a couple of
+     *  longs, a string, and a Deque of violation timestamps -- but they hold an entry for every account
+     *  that has joined since the last restart, forever, and their whole purpose is short-lived rate
+     *  limiting: nothing in them means anything once the player is gone, and keeping it would make a
+     *  returning player inherit a spam counter from hours ago.
+     *
+     *  combatLogKillers is deliberately NOT cleared here. This handler puts an entry in it and then
+     *  triggers the death that consumes it, so clearing it at the end of the same method would be a
+     *  race with the one thing that reads it -- and losing that race costs a player the kill
+     *  attribution for somebody who logged out mid-fight. One stranded UUID pair is the cheaper bug. */
+    private void forgetPerPlayerState(UUID id){
+        chatStates.remove(id);lastCommand.remove(id);lastCommandAt.remove(id);
+        lastCommands.remove(id);commandViolations.remove(id);
+    }
     @EventHandler public void death(PlayerDeathEvent e){Player victim=e.getEntity(),killer=victim.getKiller();UUID logged=combatLogKillers.remove(victim.getUniqueId());if(logged!=null){Player opponent=plugin.getServer().getPlayer(logged);if(opponent!=null)killer=opponent;e.deathMessage(net.kyori.adventure.text.Component.text(plugin.nicknames().displayName(victim)+" tried to escape the fight"+(killer==null?"":(" with "+plugin.nicknames().displayName(killer)))+" and paid the price.",net.kyori.adventure.text.format.NamedTextColor.RED));}teleports.onDeath(victim);db.incrementStat(CoreUtil.id(victim),"deaths");
         /** A duel death is not a real death. The arena hands every item back, the stake is the wager and
          *  nothing else, and charging the ordinary balance penalty on top meant losing a friendly duel cost
          *  money even when neither side had wagered anything -- reported live. The kit, the graves and the
          *  drops are all handled by ArenaService; this listener simply must not tax it. */
         boolean duelDeath=plugin.arena()!=null&&plugin.arena().inArena(victim);
+        /** A Colosseum death is not a real death either. The fee is the stake, the belongings are restored
+         *  from the capture, and taxing the balance on top would charge twice for one loss. */
+        if(plugin.colosseum()!=null&&plugin.colosseum().isColosseumWorld(victim.getWorld()))duelDeath=true;
         double percent=duelDeath?0:plugin.getConfig().getDouble("death.balance-loss-percent",10),cap=plugin.getConfig().getDouble("death.balance-loss-cap",10000),lost=percent<=0?0:db.takeFraction(CoreUtil.id(victim),percent/100.0*plugin.bank().buyFactor(),cap*plugin.bank().buyFactor());if(lost>0)CoreUtil.error(victim,"Death cost you "+CoreUtil.money(lost)+".");e.getDrops().removeIf(item->item.getType()==Material.PLAYER_HEAD);if(killer!=null&&plugin.getConfig().getBoolean("pvp.drop-player-head",true)){ItemStack head=new ItemStack(Material.PLAYER_HEAD);SkullMeta meta=(SkullMeta)head.getItemMeta();meta.setOwningPlayer(victim);meta.displayName(net.kyori.adventure.text.Component.text(plugin.nicknames().displayName(victim)+"'s Head",net.kyori.adventure.text.format.NamedTextColor.RED));meta.lore(List.of(net.kyori.adventure.text.Component.text("Claimed by "+plugin.nicknames().displayName(killer),net.kyori.adventure.text.format.NamedTextColor.GRAY)));head.setItemMeta(meta);e.getDrops().add(head);}boolean awarded=bounties.onPlayerKill(victim,killer,lost);if(lost>0&&!awarded){plugin.bank().creditSink(lost,CoreUtil.id(victim),"DEATH_PENALTY");db.recordEconomy(CoreUtil.id(victim),"DEATH_SINK",-lost,"NON_PVP");}graves.create(victim,e.getDrops(),victim.getLocation());}
     /** Trial Chamber spawner mobs are tagged here (SpawnReason.TRIAL_SPAWNER is unambiguous — it's set only
      *  for mobs the vanilla trial spawner mechanic itself spawns, never for an ordinary hostile that wanders
@@ -220,7 +259,20 @@ if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason
         Player player=e.getPlayer();if(plugin.isAdmin(player)||commandExempt(e.getMessage()))return;long now=System.currentTimeMillis(),minimum=Math.max(250,plugin.getConfig().getLong("rate-limits.commands.minimum-interval-ms",500)),last=lastCommands.getOrDefault(player.getUniqueId(),0L);if(now-last>=minimum){lastCommands.put(player.getUniqueId(),now);return;}e.setCancelled(true);
         Deque<Long> violations=commandViolations.computeIfAbsent(player.getUniqueId(),key->new ArrayDeque<>());synchronized(violations){while(!violations.isEmpty()&&now-violations.peekFirst()>5000)violations.removeFirst();violations.addLast(now);if(violations.size()==3)CoreUtil.error(player,"Commands are being sent too quickly.");}
     }
-    private boolean commandExempt(String raw){String lower=raw.toLowerCase(Locale.ROOT).trim();String root=lower.split("\\s+")[0];return Set.of("/login","/l","/register","/reg","/email","/captcha","/2fa","/authme","/tpaccept","/tpdeny","/settings","/shop").contains(root)||lower.matches(".*\\s(confirm|cancel)$");}
+    /*  Commands whose REPEAT is the confirmation.
+     *
+     *  /colosseum leave prints "Run /colosseum leave again within 10 seconds to give it up" and then the
+     *  duplicate-command guard cancelled the repeat with "You just ran that - wait a moment", because a
+     *  command sent twice on purpose looks exactly like a double-tap. So the one command that asks to be
+     *  run twice was the one command that could not be -- and it is the way out of a paid encounter, which
+     *  is the worst possible place to tell somebody to wait. Admins never saw it: they skip the guard.
+     *
+     *  Confirm-by-click screens are already covered by the "confirm"/"cancel" suffix rule below; this list
+     *  is only for confirm-by-repeat, and it should stay short for the same reason the guard exists. */
+    static final Set<String> CONFIRM_BY_REPEAT=Set.of("/colosseum leave");
+    private boolean commandExempt(String raw){return exemptCommand(raw);}
+    /** Package-visible so the Colosseum verifier can assert the exemption rather than trust it. */
+    static boolean exemptCommand(String raw){String lower=raw.toLowerCase(Locale.ROOT).trim();String root=lower.split("\\s+")[0];return Set.of("/login","/l","/register","/reg","/email","/captcha","/2fa","/authme","/tpaccept","/tpdeny","/settings","/shop").contains(root)||lower.matches(".*\\s(confirm|cancel)$")||CONFIRM_BY_REPEAT.contains(lower);}
     @EventHandler(priority=EventPriority.HIGHEST) public void restrictedCommand(PlayerCommandPreprocessEvent e){
         String root=e.getMessage().substring(1).split("\\s+")[0].toLowerCase(Locale.ROOT);
         if(Set.of("gamemode","minecraft:gamemode").contains(root)){if(!plugin.isAdmin(e.getPlayer())){e.setCancelled(true);CoreUtil.error(e.getPlayer(),"That command is console-only.");}return;}
@@ -242,7 +294,11 @@ if((e.getSpawnReason()==CreatureSpawnEvent.SpawnReason.NATURAL||e.getSpawnReason
             if(viewer.getGameMode()==GameMode.SPECTATOR)changed.hidePlayer(plugin,viewer);else changed.showPlayer(plugin,viewer);
         }
     }
-    @EventHandler public void mobDeath(EntityDeathEvent e){netWorth.entityRemoved(e.getEntity());if(!(e.getEntity() instanceof Player)&&e.getEntity().getKiller()!=null)db.incrementStat(CoreUtil.id(e.getEntity().getKiller()),"mob_kills");bosses.onDeath(e);}
+    /** A Colosseum boss dying is not a mob kill. It pays no mob money, counts toward no kill statistic and
+     *  never reaches the world-boss reward path -- the encounter pays its own prize, once, from its own
+     *  table, after the player's belongings are back. Without this guard a boss worth a million dollars
+     *  would ALSO pay ordinary combat income on the way down. */
+    @EventHandler public void mobDeath(EntityDeathEvent e){if(plugin.colosseum()!=null&&plugin.colosseum().isColosseumWorld(e.getEntity().getWorld()))return;netWorth.entityRemoved(e.getEntity());if(!(e.getEntity() instanceof Player)&&e.getEntity().getKiller()!=null)db.incrementStat(CoreUtil.id(e.getEntity().getKiller()),"mob_kills");bosses.onDeath(e);}
     @EventHandler(ignoreCancelled=true) public void transform(EntityTransformEvent e){netWorth.entityRemoved(e.getEntity());bosses.onTransform(e);plugin.getServer().getScheduler().runTask(plugin,()->{for(Entity entity:e.getTransformedEntities())if(entity instanceof Villager villager)netWorth.villagerChanged(villager);});}
     @EventHandler public void entitiesLoad(org.bukkit.event.world.EntitiesLoadEvent e){bosses.onEntitiesLoaded(e.getEntities());netWorth.entitiesLoaded(e.getEntities());}
     @EventHandler(ignoreCancelled=true) public void villagerCareer(VillagerCareerChangeEvent e){plugin.getServer().getScheduler().runTask(plugin,()->netWorth.villagerChanged(e.getEntity()));}

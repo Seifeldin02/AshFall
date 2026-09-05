@@ -5,6 +5,1530 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-05 (later) — The sidebar was budgeted in characters, and one shop was not in the ring
+
+Built and tested on staging, then merged to `main` and promoted to production with an announced restart.
+
+### A panel is as wide as its widest row
+
+The sidebar bounded its names with `trim(name, 16)`, which bounds nothing the client cares about.
+Minecraft's font is not fixed-width: sixteen characters is 96 pixels of "Illicit Ember" and 112 of
+"MMMMMMMMMMMMMMMM", so one ordinary line decided the width of the whole panel and the other fourteen sat
+in the empty half it left behind. That is the whole of "the spacing is off" — it is a measurable claim.
+
+`CoreUtil.width()` now knows what a string renders to (the vanilla ASCII advances, the narrow glyphs, bold,
+and section codes costing nothing), `fit()` cuts to a pixel budget carrying the colour codes with it, and
+`padTo()` makes the label column a pixel column rather than a character count — "Balance" and "Shards"
+differ by three pixels, which is most of a space.
+
+Every row now fits 104 pixels. The composition changed with it:
+
+* The three standings at the bottom were six rows: a short grey header, then a value. Half of them were
+  two words in a panel sized for sixteen characters, which is where most of the empty space came from. The
+  number moves up onto the label row where it fills it, the name it belongs to keeps the row underneath,
+  and a standing with nothing to show collapses to one row instead of a header over "none".
+* The leading blank row is gone. Nothing chose it; it was the separator before a section that had been
+  removed, and it pushed everything down by one.
+* Blank separators are bare colour codes — unique (scoreboard rows are keyed by their own text), invisible,
+  and genuinely zero-width. The old space padding made a "blank" row twelve pixels wide.
+* "Bounty" appeared twice meaning two different things. Yours is what you are: `Wanted`.
+* The event block is two rows when the name and the countdown fit on one and three when they do not, rather
+  than three always. Cutting the name to make room for the timer would be the wrong trade.
+
+### 150 packets for a number that never changed
+
+Same workload against both builds — one player standing still, six balance changes four seconds apart,
+counted at the client from real scoreboard packets:
+
+| | rows | row packets | per change |
+|---|---:|---:|---:|
+| before | 11 | 150 | 25.0 |
+| after | 9 | 1 | 0.2 |
+
+The old code reset every row and re-added every row whenever any single one differed, so it repainted the
+whole panel because a balance had moved by $137 — and in that run the *printed* value never changed once,
+because it is compacted. Rows are diffed now: still present and still in the same position means untouched.
+A change that is actually visible costs two packets, a reset and a set, which is the whole cost. (The 150
+undercounts the old build: its reset packets were not being recorded at all, which is a harness bug fixed
+in the same batch — Bukkit's `resetScores(entry)` sends the form with no objective name, and the sniffer
+only read the form that carries one.)
+
+The refresh also stopped reading the database per player. Balance and shards were two synchronised SQLite
+round trips per online player every two seconds — and `shardBalance()` is not read-only, it INSERT OR
+IGNOREs the account row first, so a full server wrote N rows every two seconds for a number nobody had
+changed. Two statements per cycle now, whatever the population.
+
+And five maps in `GameplayListener` were never removed from: `chatStates`, `lastCommand`, `lastCommandAt`,
+`lastCommands`, `commandViolations`, all keyed by player UUID, all holding an entry for every account that
+had joined since the last restart. They are short-lived rate limiting; nothing in them means anything once
+the player is gone, and keeping it would make a returning player inherit a spam counter from hours ago.
+
+### Four shops and an outlier
+
+Leaving the Spawner Shop did not look or behave like arriving at it, and the reason is that four of the
+five are sections of one class and the fifth is its own. That is an implementation detail the player should
+never be able to feel, and they could: a two-line switch button naming the next stop against the whole ring
+with your position marked; the going-backwards bass note on a button that goes forwards; a grey pane border
+on one screen and bare slots on the other; and 45 item slots where the others have 43 — which put the Sell
+button on top of the 44th spawner in stock, drawn and unclickable, its slot claimed by the click handler
+before the buy path ever saw it. Nobody had hit it because the recovery list has never been that long.
+
+The ring is declared once now, on the `Section` enum, with the icon and the name on the constant.
+`switchButton()` draws it and `openSection()` opens it, in both directions. Titles are the section names in
+one colour — "Marketplace • Shop" over a button offering the "Normal Shop", next to a Spawner Shop carrying
+no "Marketplace" at all, was three names for one family. `Menu.footer()` paints the band before anything
+goes in it, so the Luxury shelf stops showing three empty holes where the Shop shows three buttons. The
+shard balance was a white action name on a redstone block; it is information and now looks like it.
+
+`shop-navigation` walks all twenty routes from all five starting points and reads the balance and a marked
+inventory either side of the whole matrix. Two of its assertions were wrong on the first run and both are
+worth remembering: a burst of clicks cannot open five screens, because every click after the first
+addresses a window that no longer exists — asserting otherwise is asserting a protocol violation; and the
+balance was being read with `ashfall balance <player>`, which is the admin ADJUST command and answers a
+usage line that compares equal to itself. A check that cannot fail is worse than no check, because it is
+still counted.
+
+### The Bank front page, and why it is still not captured
+
+It opens from the Central Banker and from nothing else. Three routes were tried:
+
+* **Spawn a banker from the test account.** `/ashfall merchant spawn` needs a Player, so the console cannot
+  run it, and SMPCore refuses admin commands from anyone but the *configured admin account* — opping the
+  test account is not enough.
+* **Right-click the real one at spawn.** The harness client can send the interact packets now, and it does:
+  `INTERACT_AT` with the hit point then `INTERACT`, standing two blocks back and facing it. They are
+  acknowledged and no event fires. Not the anticheat — identical with operator, which carries the exempt.
+  This client speaks protocol 767 to a Minecraft 26.2 server through ViaVersion, and entity interaction is
+  the one thing on that path that does not survive.
+* **Add a command that opens it.** Refused. A public gameplay command that exists only so a test can reach
+  a screen is a worse thing to ship than an uncaptured screen.
+
+So the door is asserted — a Central Banker within reach of spawn, still carrying the tag that makes it one
+— and the screen's appearance stays a human check. The page itself was read and changed: its title joins
+the one colour the rest of the family uses and drops the brand off the front, and a lore line that read the
+player's row twice on every open now reads it once.
+
+---
+
+## Session: 2026-09-05 — The claim boundary closed, addItem pinned, and a lease so tests stop lying
+
+Staging only. No production file, process, configuration, database, console or restart was touched.
+
+### The duplication window is gone, not accepted
+
+Last pass moved claim delivery from delete-first to save-first and wrote the resulting duplicate window up
+as a residual that "fails towards the player". That was a false choice. The two **stores** cannot share a
+transaction — a SQLite row and a playerdata file — but the **receipt** can share one with the inventory.
+
+A player's PersistentDataContainer is serialised into the same `<uuid>.dat` that carries their Inventory,
+written by one save to a temporary file and renamed into place. So a note saying *row 41 was delivered, 6 of
+it did not fit* written before that save either persists with the items or not at all.
+
+    1. reconcile()   settle receipts an earlier crash left behind
+    2. read the rows, touch nothing
+    3. add to the inventory; write a receipt per row with the exact remainder
+    4. saveData()    items and receipts become durable together, or neither does
+    5. apply the receipts: delete what fitted, shrink what half fitted
+    6. clear the receipts
+
+| crash lands | state | what recovery does |
+|---|---|---|
+| before 4 | nothing durable, no receipt, rows intact | nothing happened |
+| between 4 and 5 | items durable, receipts durable, rows alive | apply the receipts; never re-deliver |
+| during 5 | some rows applied, others still carry receipts | finish them |
+| between 5 and 6 | receipts durable, rows already gone | clear them |
+
+All four are idempotent, so recovery runs twice with no effect the second time. `reconcile()` runs on join
+and before every collection. A receipt cannot be misread as a different claim because `smp_order_stash`
+uses `INTEGER PRIMARY KEY AUTOINCREMENT`, which SQLite never reuses.
+
+Nothing can slip between steps 3 and 4 because 2–6 run inside one server tick, and Paper's periodic player
+save runs in the tick loop rather than beside it. Making any of this asynchronous would break it.
+
+**And the test found a hole the design had left open.** A save that *fails* leaves the delivered items in a
+live inventory that nothing has recorded — and Paper persists that inventory the next time the player
+quits, while the row still says they are owed. Adding to an inventory is not a commit, and the only way to
+make it behave like one is to be able to undo it. A failed save now takes back exactly what that call put in.
+
+Claims are also refused inside disposable worlds: a Colosseum arena and a void world swap the real inventory
+out on entry, so anything handed over inside is discarded when the instance is torn down.
+
+`/ashfall stash <player> fail <before-save|after-save|after-apply>` aborts the next delivery at each
+boundary. `scenarios/stash_crash.py` enters all three, then opens the player's own `<uuid>.dat` and checks
+that the receipt is in the same 5 KB file as the items it records. 21 checks, 0 failed.
+
+### What addItem actually does
+
+I asserted twice that `Inventory#addItem` rewrites the stack it is handed. The truth is narrower and worse:
+it does so **only when the insertion is partially accepted**. Placed in a free slot, merged whole, or
+refused outright, the argument comes back untouched. So the one case that mutates is the one nobody reaches
+while testing, because it needs an inventory that is nearly but not quite full.
+
+`inventorySelfTest()` asserts all five outcomes, stacks of 64/16/1, and a round trip of name, lore,
+enchantment, damage and PDC through the stash's own serialisation. It failed twice before I had it right,
+which is the entire reason for writing it rather than describing it.
+
+Twenty-three insertion sites audited, listed in a comment at the top of `SMPCore`:
+
+* **`SMPCore.deliverStash`** compared the leftover against a stack that had *become* the leftover, so a
+  partial delivery read as "nothing fitted", the row stayed full-size, and the part that arrived would have
+  been handed out again. Real, and the reason the partial-fit scenario now exists.
+* **`SpawnerService`** counted `returned += item.getAmount()` after handing the item over — undercounts the
+  "N unsold items delivered" line whenever the inventory is nearly full.
+* **`MerchantService` ×2** reads the scroll it has just sold to decide what to announce. Works today because
+  only the amount is rewritten and it reads meta; hardened anyway.
+* **`ColosseumService`** had a plain duplication with nothing to do with `addItem`: an offline winner's loot
+  was stashed by `giveOrStash` *and* again by the branch after it. Paid twice.
+* Everything else — the hoppers, the shops, the orders, the arena kit fills, the graves — is safe, and the
+  comment records why so the next reader does not redo the work.
+
+`CoreUtil.give` clones, which makes its ninety-odd callers safe by construction.
+
+### A lease, so a verifier stops reporting things that are true and meaningless
+
+`/ashfall colosseum verify` reported three failures on 2026-09-04. All three were correct at the moment they
+were measured — a harness scenario had an encounter running and the verifier found its scheduled task.
+Re-run on a quiet server, 278/0. A suite that fails because something else is legitimately happening is
+worse than one that does not run, because it teaches whoever reads the output to discount failures.
+
+The four destructive suites take an exclusive lease and refuse **before touching anything**, naming what is
+in the way. `selftest` and `duelmap verify` are deliberately never gated — they only read. An expired lease
+is simply taken, so a crashed holder cannot hold it; `break` takes one from a holder that is not coming
+back; and nothing anywhere cancels a real encounter to make room for a test.
+
+The harness holds the lease for its whole run and refuses to start without it. Reproducing the exact overlap
+now gives a refusal naming the holder, and the scenario finishes 5/0 afterwards.
+
+One detail worth the comment it now carries: an RCON caller is named **Rcon**, not CONSOLE. Taking the lease
+under a name of your own choosing locks you out of your own suites, which is how the first run of this went.
+`/ashfall lease status` prints who you are.
+
+### The supervisors were waiting for the console, and the console for them
+
+Two controlled restarts, with every process identified by executable, command line, parent and creation time
+rather than by window title, showed last pass's owner-console check was right and still did not stop the
+leak. A conhost stays alive while anything is attached to it, and the guards are attached to it. Four
+consoles and their supervisors were running from boots hours apart.
+
+The JVM is the thing that actually ends. Each guard resolves the java process inside its **own** console's
+tree at startup and exits when that process is gone — per-server by construction, and not circular.
+`storage-guard` also slept fifteen minutes between looks, so it outlived its server by up to a quarter of an
+hour and held the console chain open for the same length of time; it sleeps in five-second slices now.
+
+After the fix, each boot has exactly one console-guard and one freeze-watchdog, and the previous boot's exit
+with their server. Production's five processes kept the same pids throughout and were never touched. The
+orphans that were cleared were identified by a dead owner and zero children, never by window title.
+
+### Interfaces
+
+The duel setup flow: chosen states read through colour and the glow rather than "✔ SELECTED —" in capitals
+ahead of the name; stake buttons say what the stake *becomes*; and the footer is the same on all three
+stages. Stage one had no Back and no Cancel at all, so the only way out of the first screen was to close it
+— which forfeits. The Colosseum menu stopped drawing an available boss in red, the colour this server uses
+for "did not happen", and its fee and prize lines now say plainly that the fee is kept either way. The
+Orders footer is named where it is rather than moved: it is internally consistent across six screens and its
+stash screen needs 49 for Collect, so half-migrating it is how a Back button ends up cancelling an order.
+
+### Verification
+
+* Suites, under the lease: colosseum verify 278/0, voidworld verify 13/0, selftest 0 failed (64 lines),
+  duelmap verify 0, duelmap canary PASSED, hopper verify 0.
+* Harness: 8 scenarios, 84 checks, 0 failed, as an ordinary player.
+* `test_lease.py` 18 checks 0 failed; `test_guard.py` 10 refusals 0 failed.
+* `check_deploy.py` 43/47 — the four are the two Colosseum artifacts and the two supervisor scripts, each
+  explained in `deploy/PROMOTION_CHECKLIST.md`.
+
+### Still unverified
+
+* **Bedrock.** Nothing has been through Geyser.
+* **The bank front page.** It opens only from the Banker merchant and the harness client cannot interact
+  with an entity, so it has still never been captured from a client. Its code is covered; its appearance is
+  not.
+* **Production's supervisors.** Whether the fixed scripts behave the same on production's process tree can
+  only be seen at production's next restart, which is not mine to perform.
+
+## Session: 2026-09-04 (part 3) — Menus finish the overhaul, and the claim stash stops losing things
+
+Staging only. No production file, process, configuration, database or restart was touched.
+
+### The menus
+
+The last pass fixed chat and left the chest screens alone, on the grounds that slot numbers appear in the
+builder, the click handler and the verifier at once and moving an icon is how a different slot ends up
+performing a purchase. That reasoning was right about the risk and wrong about the conclusion: the risk is
+an argument for naming the numbers, not for leaving them.
+
+Four screens had already drifted apart without anybody moving anything.
+
+| screen | Cancel | Confirm |
+|---|---:|---:|
+| the universal confirmation dialog | 11 | 15 |
+| Bank — confirm repayment | 15 | **11** |
+| Ender Chest — upgrade | 15 | **11** |
+| Orders — pay into escrow | 15 | **11** |
+
+Three of the four were mirrored against the one a player sees most. Somebody who learns "the left button
+is Cancel" from the dialog that asks about every purchase would press Confirm on a loan repayment while
+meaning to back out. Nobody caused it; four screens were written at four different times.
+
+`CoreUtil.Menu` now owns the numbers — `SUBJECT`/`CANCEL`/`CONFIRM`, `BACK_SMALL`, the 54-slot browse
+footer, the sell basket — and every builder and click handler reads them from there instead of writing
+them out twice. Cancel is on the left everywhere.
+
+It also owns the icon vocabulary, which is the menu half of what `msg()` and `error()` did for chat. Every
+icon on this server came from `CoreUtil.named` or one of **eight verbatim private copies** of it, all
+producing a gold name over grey lore. Everything looked equally important and equally clickable, so a
+screen could not say "this does something", "this is only information", "this is switched on" or "you
+cannot do this yet" — it could only say all four the same way. Six roles now: `heading`, `action`, `info`,
+`state`, `blocked`, `danger`, plus `nothing()` for empty lists and `page()` for arrows that say whether
+they will move.
+
+And all eight copies left the lore **italic**, because Minecraft italicises custom item text unless you
+turn it off. One file in the codebase knew that and said so in a comment. Every icon on the server is
+upright now.
+
+Captured from the wire — what the client was actually handed, not what the source says we meant:
+
+```
+before   color | gold  | text | Faction Borders          (a BARRIER, the "you cannot do this" icon)
+         color | gray  | text | ON
+         color | gold  | text | Borrow
+         color | gray  | text | Unavailable
+         color | gold  | text | Previous                 (identical to Next, on page one)
+         color | gray  | text | Page 1 / 4
+
+after    italic | color | white     | text | Territory outline
+         italic | color | green     | text | On
+         italic | color | dark_gray | text | Click to turn it off.
+         italic | color | dark_gray | text | Borrow
+         italic | color | red       | text | Unavailable  you already have a loan open.
+         italic | color | dark_gray | text | Previous
+         italic | color | dark_gray | text | This is the first page.
+```
+
+Screens that were already good were left alone. The Colosseum encounter menu explains every boss's
+strength, weakness and counterplay before its price and refuses to ship a boss without them; the duel
+setup wizard and wager box have named slots, a self test asserting them, and comments recording the
+duplication bug each guard exists to prevent. Rearranging either would have been churn.
+
+### What the menus were actually doing wrong
+
+Beyond the mirrored dialogs:
+
+* **A button that did nothing.** The faction screen drew "Faction Bank" at slot 34 and the click handler's
+  switch had no case for it. It looked like a button and was inert.
+* **A blank lore line.** Faction homes joined the home names without checking whether there were any, so a
+  faction with no homes got one empty grey line.
+* **A BARRIER that was a working switch.** Faction borders used the icon every other screen on this server
+  uses for "unavailable".
+* **A disabled control that was still live.** Settings drew Auto-Accept greyed and labelled UNAVAILABLE
+  when Faction TPA was off — and left it fully wired, so clicking it flipped a preference the player could
+  not see, on a screen that did not change. It read as a broken menu.
+* **An action hiding among the preferences.** "Random Travel" teleports you the moment you click it and sat
+  in the middle of the toggle rows. The screen is three bands now: ten switches, six doors, two things that
+  move you.
+* **One icon meaning three things.** HOPPER was the sell basket, the collect button *and* the sort control
+  on the same marketplace screen.
+* **Two identical arrows.** Previous and Next were both ARROW and both said "Page 1 / 4"; on page one,
+  Previous looked exactly as live as Next. The spawner shop's disabled arrow was worse — an ARROW named
+  `" "` with no lore, which reads as a rendering fault.
+* **A one-button ring with no map.** Five marketplace sections, one "Switch to X" button, and no way to
+  know where you were. The whole ring is listed now, with your position marked.
+* **A price two slots from the button that charges it.** Both sell baskets showed the total on a separate
+  icon; the button just said "Confirm Sale". It says the amount now, and greys out when the basket is empty.
+* **Unavailability without a reason.** The bank said "Borrow / Unavailable" for three different causes —
+  an open loan, today's allowance already used, or credit below the minimum. It names which one.
+* **Window titles in capitals** on the six settings screens: ASHEN SETTINGS, CONFIRMATIONS, TPA REQUESTS…
+
+### The claim stash was losing things on the way out
+
+Last pass moved auction settlement into one commit and landed the item in the durable claim stash. That
+protects the **sale**. It does nothing for the **delivery**, and delivery was where property actually went
+missing:
+
+```java
+List<ItemStack> owed = db.stashTake(owner);      // deletes every row, commits
+for (ItemStack item : owed) inventory.addItem(item);
+```
+
+Three ways that loses somebody's property:
+
+* the rows are committed gone the instant the read returns, but the inventory holding the items is not
+  durable until Paper next writes player data — which can be minutes away. A crash in between destroys
+  every claim with no record anywhere that it existed;
+* it is per-**owner**, so one call takes auction goods, Colosseum loot and order deliveries together. An
+  exception on the third item abandons the fourth and fifth, whose rows are already deleted;
+* a full inventory relied on the caller putting the leftovers back. The auction path did. `OrdersService`
+  used `CoreUtil.give`, which drops what will not fit on the floor — five minutes from despawning, or gone
+  with the world if the player happened to be standing in a Colosseum arena or a void world.
+
+Two stores that cannot share a transaction. Something has to go first, and whichever it is decides which
+way a crash in the middle falls. Delete-first fails towards **loss**. It now goes the other way, per item:
+read the row and leave it alone, write to the inventory, keep whatever did not fit in the same row resized,
+flush the player to disk with `saveData()`, and only then delete the rows that were delivered.
+
+A crash before the flush leaves every row claimable and nothing durable — correct. A crash between the
+flush and the delete leaves an item that *is* durable and a row that still says it is owed, so it could be
+claimed once more: one DELETE against a local file wide, on an abrupt kill only, and it fails towards the
+player rather than away from them. That is the residual and it is documented in the code. Collecting twice
+on purpose still cannot duplicate anything, because the row is already gone.
+
+`/ashfall stash <player>` reads the table, because "I bought something and never got it" had no answer that
+was not a database client. `grant` seeds one, operator-gated and audited, so the delivery path can be
+exercised against a live player instead of only against the row lifecycle.
+
+### Verification
+
+* `/ashfall selftest` — the row lifecycle: reading does not consume, resizing keeps the row and its place
+  in the queue, removal is what consumes, removing twice returns false.
+* `testing/harness/run.py stash` — the same thing with a real player and 32 marked diamonds: a full
+  inventory holds the claim, making room delivers exactly 32, and collecting five more times delivers
+  nothing.
+* `testing/harness/run.py menu-navigation` — 16 checks through a real client: the preference band never
+  opens a screen and never moves the player, each door opens the screen it is drawn as, Back returns,
+  the section ring advances one step per click, the first page has nowhere to go back to, clicking a
+  closed menu does not disconnect anybody, and five rapid clicks on one control open five of the same
+  screen and nothing else.
+
+The client can now write down what the server put on a screen (`screen:dump`), because the icon names and
+their colours arrive as text components and the printable runs out of the raw payload are the real thing
+the client was handed. That is where the before/after above comes from.
+
+Suites: colosseum verify 278/0, voidworld verify 13/0, selftest 0 failed, duelmap verify 0 failed, duelmap
+canary PASSED, hopper verify 0 failed. Harness: 7 scenarios, 63 checks, 0 failed, as an ordinary player.
+
+### Still unverified
+
+* **Bedrock/Geyser.** Geyser is installed on staging and nothing in any of this has been through it. The
+  harness client speaks the Java protocol directly.
+* **The bank front page, visually.** It opens only from the Banker merchant, so the capture pass could not
+  reach it. Its behaviour is covered; its appearance is not captured.
+* **Whether it looks good.** The harness asserts where a click lands and what it costs. That is the half
+  that can take somebody's money, and it is not a judgement of visual quality.
+
+## Session: 2026-09-04 (part 2) - Interface overhaul, the harness becomes real, and three more money gaps
+
+Staging only. No production file, process, configuration, database or restart was touched.
+
+### The interface
+
+The presentation problem was not spread across a hundred screens — it was in two functions. Every
+player-facing line on this server goes through `CoreUtil.msg()` or `CoreUtil.error()`, about 1,350 call
+sites, so the look of the whole thing was decided in two places and both were wrong in the same way.
+
+`msg()` opened every message with the word **Ashfall**. Repeated that often it is not identity, it is
+margin noise: the relic chronicle printed it five times down the left-hand side of five consecutive lines.
+`error()` painted the entire line red, brand included, so a failure arrived as a wall of red with no shape
+and no hint of what to do instead.
+
+Captured from a real client, before and after:
+
+```
+before   §6Ashfall §8› §fBalance: $60,710,750
+         §cAshfall › Home not found. Use /home list.
+         §6Ashfall §8› §f• Warlord's Ember — osjad [Eligible]          (five times)
+         §6§lASHFALL   /   §eFactions: §f/f create, /f claim, ...
+         net $-8,000,000
+
+after    §8› §7Balance: $60,710,750
+         §c› §fHome not found. Use /home list.
+         §6Relic chronicle§8  5 relics
+         §8  · §7Warlord's Ember§8  held by §7osjad§8  Eligible        (five times)
+         §6Ashfall§8  commands   /   §8Factions §7/f create, /f claim, ...
+         net -$8,000,000
+```
+
+`UI_STYLE_GUIDE.md` is the rule set. Seven colours, each meaning exactly one thing: ember is Ashfall and
+money, white is the value you are looking for, grey is body, dark grey is labels and hints, green happened,
+yellow needs attention, red did not happen. The marker glyph is the one the old prefix already used, so it
+is known to render on both clients — no new font, no resource pack.
+
+New shapes for cases that were all being flattened into two: `ok()`, `warn()`, `error(problem, next)`,
+`heading()`, `item()`, `field()`, `hint()`. And `safe()`, because a nickname or faction tag carrying a
+section sign could recolour or hide the rest of the line it appeared in — including the part that says what
+something costs.
+
+The sidebar was five all-caps section headers in five colours (gold, purple, dark red, pink, aqua) with
+three more in the value rows. Nine colours in fifteen permanently on-screen lines meant none of them meant
+anything, and it set the tone for everything else. It is one quiet column now, and the only thing allowed
+to be ember is a live event or a world boss, because that is the only thing that is actually urgent.
+
+Applied beyond the chokepoint to the screens where the old shape was most visible: `/smphelp`, `/stats`,
+`/relics`, `/homes`, leaderboards, the Colosseum list and record, the admin economy window and the bulletin
+list. `money()` also stopped rendering a loss as `$-8,000,000`.
+
+**Not covered, and why.** The chest-GUI layouts were not restructured. Slot numbers appear in the menu
+builder, the click handler and the verifiers at once, and moving an icon without moving all three is how a
+different slot ends up performing a purchase — the risk is real and the benefit is cosmetic. Menu *items*
+inherit the palette through `CoreUtil.named`, and `gui-confirm` now guards the behaviour of the controls
+that matter. Sounds were audited rather than rewritten: two consistent vocabularies already exist
+(`marketSound` and the Colosseum's), both respect the player's sound setting, and no HUD path plays one.
+
+### The harness is repository tooling now
+
+`testing/harness/` — the client, RCON, the NBT chat decoder and five scenarios, no third-party
+dependencies, no build step.
+
+The safety rail mattered most. The endpoint is never defaulted, guessed or inherited: it comes from
+`harness.ini`, which is git-ignored, and `guard.py` refuses ports 25565 and 25575, the production
+hostnames, a blank password and the real administrator account names **before a socket is opened**. That
+refusal is not configurable, because a config file that can switch the safety off is not a safety.
+`test_guard.py` asserts all ten refusals and needs no server.
+
+The test account is an **ordinary player** by default. `colosseum-leave` asserts that before doing anything
+else, because admin-only testing is exactly what hid the bug it covers. The one scenario needing operator
+grants it around the step that needs it and revokes it in a `finally`. Cleanup removes only the worlds the
+run created.
+
+Scenarios: `charge`, `colosseum-leave`, `gui-confirm`, `voidworld-entry`, `inventory`. 38 checks, 0 failed.
+
+Two things it is **not**: Bedrock coverage (the client speaks Java protocol directly; nothing has been
+through Geyser) and a judgement of visual quality.
+
+### Three more money gaps, same shape as the entry fee
+
+An auction sale ran as five separate commits ending in an inventory write. Every gap is a state the
+database can be found in:
+
+| crash point | what is lost |
+|---|---|
+| after the debit, before the sale | buyer paid, listing still for sale |
+| after the sale, before the payout | buyer paid, seller never paid |
+| after the payout, before delivery | everyone paid, **and the item is gone** |
+
+The last is the worst because the listing row *is* the escrow — once it reads SOLD nothing holds the item,
+and an inventory write is not a commit. `Database.auctionSettle()` now does the listing, the debit, the
+seller payout, the tax and the escrow hand-off in one transaction, with a savepoint when the caller is
+already inside one. The item lands in the buyer's durable claim stash (the same one Colosseum reward
+overflow uses); moving it into their inventory afterwards is a convenience on top of a record that already
+exists.
+
+`collect()` had the plainer version: it flipped the row to COLLECTED and then called `addItem`, discarding
+the leftovers `addItem` returns — so a crash, or an inventory that filled after the fit check, destroyed
+the item with nothing noticing. `auctionReclaim()` is one commit, and what does not fit stays claimable.
+
+The selftest asserts conservation from both sides: an unaffordable purchase moves nothing and leaves the
+listing ACTIVE; a completed one debits exactly the price, pays exactly price-minus-tax, puts exactly the tax
+in the Central Bank, and owes exactly one item. Neither a sale nor a reclaim can happen twice.
+
+### Hot paths
+
+The faction border overlay ran a JOIN across `factions` and `faction_members` **twice a second per player
+with borders on**, on the main thread, inside the database lock — to redraw a decoration. Cached for three
+seconds, dropped whenever claims refresh or membership changes (all three mutation sites wired), and
+deliberately used **only for drawing**: nothing that decides whether somebody may build, open a container or
+spend faction money reads the cache. A stale border for three seconds is invisible; a stale permission is a
+bug.
+
+### World-operation pauses: measured, and deliberately not pooled
+
+Decomposed from the server's own instrumentation, six single-instance preparations:
+
+| component | mean | range | thread |
+|---|---:|---:|---|
+| total preparation | 423 ms | 384–468 | |
+| snapshot copy | 54 ms | 24–77 | worker (already off the main thread) |
+| open + sliced chunk load | 369 ms | 351–394 | main |
+
+Tick distribution across three equivalent 45-second windows (97 samples each):
+
+| window | mean | p50 | p95 | worst tick |
+|---|---:|---:|---:|---:|
+| idle | 0.77 ms | 0.70 | 1.00 | 11 ms |
+| four instances, whole cycle | 2.55 ms | 0.90 | 12.60 | 298 ms |
+| idle again | 0.89 ms | 0.80 | 1.40 | 125 ms |
+
+**p50 is essentially unchanged.** The entire cost lives in the tail: one ~300 ms hitch when a world is
+created, and the chunk load either side of it is already sliced across ticks and already spaced one world
+operation per tick from the previous pass.
+
+**A prewarmed pool was considered and rejected on these numbers.** It would have to pool by template
+revision *and* environment, reserve atomically, invalidate after a template commit, prove a complete reset
+before ever reusing a played instance, and bound loaded worlds, chunks, disk and pending preparations —
+and creating the replacement still costs the same 369 ms, just at a different moment. That is a large
+amount of new machinery, with a genuinely dangerous failure mode (a player fighting in a dirty arena), to
+move a single 300 ms hitch to a different moment.
+
+**Correction to how that hitch was described.** It was written up as landing "while the player who caused
+it is on a loading screen", which is wrong in the way that matters: `createWorld` runs on the main thread,
+so the pause stops the *whole server*. Everybody else on it loses those ~300 ms too — they just have no
+loading screen to hide it behind, and no reason to associate the stutter with somebody else entering an
+arena. The measurement still does not justify a pool, because a pool moves the same main-thread pause to
+the moment the replacement is built rather than removing it. But the reason is the arithmetic, not the
+idea that the cost falls on one player who is not looking.
+
+### Verification
+
+* Suites: `colosseum verify` 278/0, `voidworld verify` 13/0, `selftest` 0 failed, `duelmap verify` 0
+  failed, `duelmap canary` PASSED, `hopper verify` 0 failed.
+* Harness: 5 scenarios, 38 checks, 0 failed, run as an ordinary player.
+* Guard: 10 refusals asserted, no server needed.
+
+### Still unverified
+
+* **Bedrock/Geyser.** Nothing in this session went through Geyser. The palette avoids hex-only colours and
+  the marker glyph is one the server already used, but Bedrock dims further and renders the sidebar
+  differently — the sidebar column and the confirmation screens need a human on a Bedrock client.
+* Whether the quieter sidebar reads as *informative* rather than *empty* during a live world boss.
+* GUI layouts are unchanged, so no menu needs re-acceptance — but the redesigned chat around them does.
+
+---
+
+## Session: 2026-09-04 - Reliability pass: the charge that never moved, and four other real defects
+
+Staging only. No production file, process, configuration, database or restart was touched.
+
+The brief was a stability, correctness and performance pass with no new gameplay, starting from one
+concrete report: *the Chainbound Behemoth's charge fails every time and stuns it regardless of what I do.*
+It was true, the test suite agreed with the bug, and finding out why turned into the most useful thing in
+this session — not the fix itself, but the reason the fix could not have been found by reading.
+
+### A test client, because configuration checks cannot see gameplay
+
+Everything below was found or confirmed with a real player on the running staging server. Since there was
+no way to automate a player, one was written: a small protocol client (offline mode, protocol 767) that
+joins staging, answers keep-alives and the anticheat's transaction pings, runs commands through the real
+command path, clicks real GUI slots, dies and respawns, and records every entity-position packet it
+receives. That last part matters: polling the server over RCON samples at whatever rate the round trip
+allows, which is far too coarse to see a two-second charge. The client sees what a real client sees, at
+tick resolution.
+
+It is a test harness, not a feature — it lives in the session scratchpad, not in the repository. But it is
+the reason five of the six findings below are measurements rather than opinions.
+
+Two things it cost an hour each to learn, recorded so the next one is cheaper:
+
+* **A dead player cannot run a command, and the server does not say so.** It answers
+  `chat.disabled.options`, which reads like a client setting problem. The client has to send
+  `client_command`/respawn after `player_combat_kill` or everything silently stops working.
+* **SMPCore administration is gated on a named account, not on op.** `/ashfall ...` from an opped
+  non-listed account answers *"Only the configured ADMIN account can use SMPCore administration"*. That is
+  correct and deliberate; it also means an admin-only path cannot be exercised by an ordinary test account,
+  so the tests below use the real paid player path instead — which is better testing anyway.
+
+### 1. The Behemoth's charge never moved a single block
+
+**Reproduced with vanilla commands, on a bare Ravager, with nothing else involved.** Apply `Motion` to a
+mob with AI enabled and it travels 12-13 blocks in a second. Apply the same `Motion` to the same mob with
+`NoAI` set and it travels **exactly zero** — it does not even fall — and the motion simply accumulates on
+the entity, unused.
+
+The charge turns the boss's AI off on purpose: that lock is what makes the telegraph honest, because
+nothing in the engine may steer it once it has committed. It then drove the flight with `setVelocity`. So
+the boss stood perfectly still for the whole charge, its own no-progress guard noticed it was not getting
+anywhere after four steps, and it crash-stunned itself half a second after every charge. The stated
+counterplay — bait the lane, step out, punish the crash — could not happen, because the crash was already
+guaranteed.
+
+**The test agreed with the bug.** `verifyBehemoth` drove `advanceCharge` four hundred times inside a single
+server tick, where nothing can move by construction, and asserted *"a charge ends in a stun"*. The broken
+implementation satisfied that perfectly.
+
+The flight is now stepped along the locked vector by the encounter itself:
+
+* the lane is a distance budget, not a stopwatch, so the lane drawn during the wind-up is the lane run
+* the hit test is against the swept segment rather than the landing point, so a player standing in the lane
+  is hit by the charge passing *through* them — at two blocks a step that is a different question from
+  "where did it stop"
+* a step into the boundary or into something it cannot fit through is a wall, and a wall is a crash; it may
+  climb one block and follow the floor down two, so uneven ground is crossed rather than crashed into
+* running the full lane without touching anybody is a MISS, and a miss crashes — otherwise dodging is only
+  rewarded next to a wall, which is not what the counterplay text promises (`charge.miss-crashes`)
+* the no-progress rule survives as a backstop behind a grace period, so leaving the blocks can never be
+  mistaken for a collision
+
+**Measured in a real encounter, at client tick resolution.** Dodging: five charges, each travelling exactly
+30.0 blocks — the configured lane — in ten steps of ~2.1 blocks over 1.35 s, perfectly straight, each
+ending in a crash. Standing in the lane: eight charges, six connected (closest approach 1.0-1.9 blocks,
+health lost each time); the two that missed had been left by knockback at 4.2 and 10.3 blocks.
+
+The regression now measures distance first and outcome second: an open-lane charge must move the boss more
+than 60% of its lane, must take more steps than the no-progress grace, must stay on the locked vector to
+within half a block, must sweep a point in the lane and miss one beside it, and a charge into the boundary
+must crash short and leave the boss inside the arena. Every one of those fails against the implementation
+being replaced.
+
+### 2. /colosseum leave could not be confirmed
+
+Leaving a paid encounter is confirm-by-repeat: the first call warns and prints *"Run /colosseum leave again
+within 10 seconds to give it up."* The duplicate-command guard cancels any command repeated inside its
+three-second window and answers *"You just ran that — wait a moment."* So the one command that asks to be
+run twice was the one command that could not be. A player following the instruction promptly is refused;
+only a repeat landing in the three-to-ten second gap works.
+
+Admins never saw it, because admins skip the guard. Found by a test client following the instruction.
+
+The guard now exempts confirm-by-repeat commands as well as the confirm-by-click screens it already
+exempted. The list is deliberately one entry long, and the verifier asserts both directions — that
+`/colosseum leave` is exempt and that `/colosseum stats`, `/rtp` and `/home` still are not, because an
+exemption that exempts too much is the same bug facing the other way. Confirmed live: a 1.2-second repeat
+now leaves cleanly.
+
+### 3. A Nether instance re-lit every chunk it loaded
+
+The committed arena snapshot is built in a NORMAL world, which is 24 block sections tall. A Nether world is
+16. Cloning that snapshot straight into a Nether instance hands Paper chunks whose light arrays do not fit,
+and it says so: `Failed to parse light data`, `ArrayIndexOutOfBoundsException: Index 18 out of bounds for
+length 18`, once per chunk.
+
+Measured on staging: **84 failures and about 1,300 log lines per instance**, and **615 ms** to prepare one
+against ~360 ms for an Overworld instance of the same arena. On a server that has already lost a night to a
+full Log4j async queue, that much per-encounter log traffic is not just noise.
+
+A Nether arena now gets its own snapshot, converted once from the committed one by opening it as a Nether
+world, letting the engine re-light it that single time, and saving the result. The conversion loads two
+chunks beyond the play area — converting only the arena's own chunks left seven still in the old shape (the
+world spawn and the ring pulled in for lighting) and those seven then threw on every load afterwards. The
+committed snapshot is never modified, and committing a new one drops the derived copies so they cannot go
+stale.
+
+After: **0 failures**, and preparation back to ~380 ms.
+
+One operational note, learned by measuring after the fix rather than assuming it: the derived snapshot is a
+cache, and a cache built by an earlier build keeps that build's mistakes. The margin was added after the
+first conversion had already been saved, so Nether instances kept reporting seven failures until the
+derived folder was deleted and rebuilt. Recorded in the manifest. Production has never had one, so it will
+build a correct snapshot the first time.
+
+### 4. A relic countdown cost a database read every tick, per holder
+
+The action bar on a held relic shows READY or the seconds remaining, and it was rendering it twenty times a
+second — each render reading the cooldown back through `db.state()`, a synchronized SQLite SELECT on the
+main thread, inside `Database`'s own lock, to produce a number that changes once a second. Ten relic
+holders online is two hundred main-thread queries a second, all of them contending with every other
+database operation on the server.
+
+The cooldown is still persisted per relic, which is the property that matters — dropping, relogging, dying,
+trading or restarting cannot reset one — but it is now held in memory. It is written in exactly one place,
+so it cannot drift, and a reload re-reads it. The HUD moved to its own five-tick task; the anchor tracking
+that genuinely needs every tick kept it. **20 reads/second/holder → 0, and 20 action-bar packets/second →
+4.**
+
+### 5. The Colosseum entry fee was a flag and a payment in two separate commits
+
+`colosseumMarkCharged` committed, then `serverPayment` committed. Each half is atomic and each is
+compare-and-set, and that is still not enough: the gap between two commits is a state the database can be
+found in. A process that died there would leave `charged=1` with nothing debited — and boot recovery, which
+refunds any charged run it finds interrupted, would hand back a fee nobody paid and debit the Central Bank
+to do it. Rare, and it invents money.
+
+Both halves now commit together or neither does, with a savepoint when the caller is already inside a
+transaction so nesting behaves the same way. The selftest asserts it from the failing side: an entry fee
+the player cannot afford must leave the run exactly as uncharged as it was, and must not move a cent.
+
+### 6. Dying in a disposable world pinned that world in memory
+
+`onDeath` recorded where you died as your `/back` origin, and dying happens inside Colosseum instances,
+duel instances, event arenas and void worlds — worlds deleted minutes later. A `Location` holds its
+`World`, so one cached entry kept the whole unloaded world object, and everything it still referenced,
+alive for as long as the player stayed in that map. It also left `/back` pointing into somewhere that no
+longer exists, and asking a `Location` for an unloaded world **throws** rather than returning null, so it
+was not even a clean failure.
+
+Disposable worlds are now a single named concept on the plugin (`SMPCore.isDisposableWorld`), a back origin
+in one is not recorded, and `/back` survives a world that unloaded after the fact. Asserted against a live
+instance: the instance is disposable, the real world is not, an origin inside it is refused, and an
+ordinary one is still kept.
+
+### Performance: the fights are free, the world plumbing is not
+
+Measured before anything was changed, worst tick in a five-second window, three cycles of four concurrent
+instances:
+
+| phase | before | after |
+|---|---:|---:|
+| idle | 2.6 - 6.8 ms | 2.3 - 15.0 ms |
+| four instances opened | **672 - 822 ms** | **301 - 432 ms** |
+| the four fights | 2.4 - 3.7 ms | 4.1 - 25.1 ms |
+| four instances dropped | **237 - 288 ms** | **68 - 96 ms** |
+
+The encounters themselves cost nothing measurable. Everything expensive is `createWorld()` and
+`unloadWorld()`, both synchronous, neither with an asynchronous form. Two changes:
+
+* **The folder delete moved off the main thread.** Once the world is unloaded the folder belongs to nobody.
+  If the process dies mid-delete the folder is left behind, which is exactly what boot recovery sweeps.
+  Honestly, this was the small half — the plugin's own drop timer barely moved, which is how we learned the
+  cost was `unloadWorld` and not the delete.
+* **One world operation per tick.** Opening and unloading instances now queue. Same total work, none of it
+  stacked into a single freeze.
+
+The remaining ~300-430 ms is one `createWorld()`, which is what it costs on this machine; past that is a
+world pool, which is a different design. What is gone is four of them at once.
+
+**Not changed on purpose:** no Bukkit world or entity operation was moved off-thread to make a profile look
+better, and no safety check or audit record was removed to reduce work.
+
+### Live verification
+
+All of this was run against the real server rather than asserted about it.
+
+* **Six real paid encounters, one per boss**, each fought for 70 s with a real player: all six spawn,
+  engage and clean up; instances return empty; 0 orphans afterwards.
+* **The Arcanist reads as inert if you stand still 51 blocks away** — closest approach 51.0 blocks, zero
+  damage in 70 s. That is not a bug: an Evoker has no goal that approaches a player and an explicit one
+  that avoids them, and this boss is a stationary support structure by design ("It does not defend itself.
+  Its seals do."). Fighting it the way a player must — standing next to the thing you are killing —
+  produced damage within seconds. Recorded because the first measurement looked alarming and was wrong.
+* **Voidworld lifecycle, the exact reported reproduction.** Teleported straight into a void world with
+  `/tp`, never using `/voidworld enter` → the lifecycle activated; `/voidworld exit` returned the player to
+  the overworld at the exact spot they left from, not 0,0 and not inside the void world, with the inventory
+  intact. Dying inside left no grave and dropped nothing.
+* **36 create/resolve/destroy operations across 12 cycles**: no instance folders left, no open runs, no
+  held state, no exceptions, no SEVERE lines, no light-data failures, TPS 19.6-19.9 throughout.
+* **Suites**: `/ashfall colosseum verify` 278 checks 0 failures (was 259), `/ashfall voidworld verify` 13/0,
+  `/ashfall selftest` 0 failed, `/ashfall duelmap verify` 0 failed, `/ashfall duelmap canary` PASSED,
+  `/ashfall hopper verify` 0 failed.
+
+### Still unverified, and separated on purpose
+
+* Whether the rewritten charge *feels* right in real gear — whether the lane is obvious enough to bait
+  deliberately, and whether ~300-430 ms of instance creation is noticeable to somebody standing elsewhere.
+* Bedrock/Geyser rendering of the six-slot menu, the confirmation screen and the interrupt bars.
+* The `AshfallProbe` account exists on staging with an AuthMe registration and op. It is a test account, it
+  is not in `trusted-admin.accounts`, and it should be removed before staging is ever handed to anybody.
+* `FactionService.renderEnabledBorders` runs `db.factionOf()` twice a second per player with borders
+  enabled — the same class of main-thread query as the relic HUD, but opt-in and much lower volume. Left
+  alone this session, noted here rather than fixed blind.
+
+---
+
+## Session: 2026-09-03 - Colosseum bosses 4-6, Nether instances, Shards, and the Voidworld lifecycle
+
+### The three new encounters
+
+Six bosses now, all independently selectable, all sharing one daily limit. The new three are built around
+a question rather than a stat line: *where do you stand*, *what is actually keeping it alive*, and *when do
+you spend your burst*.
+
+| Boss | Entity | Style | Pool | Melee | Armour | Limit | Arena |
+|---|---|---|---:|---:|---:|---|---|
+| **Chainbound Behemoth** | Ravager | Charging bruiser | 3,000 | 22 | 10 | 7m | Overworld |
+| **Cinderveil Arcanist** | Evoker | Warded caster | 2,400 | 12 | 6 | 7m | Overworld |
+| **Ashglass Alchemist** | Witch | Zoning apothecary | 2,200 | 13 | 7 | 7m | Overworld |
+
+**Chainbound Behemoth — positional baiting.** Armoured across a 110° frontal arc (hits from the front are
+cut to 30%) and at 0.9 knockback resistance, so standing in front of it and trading is the slowest way to
+kill it. *Headlong Charge* locks its facing 1.5 seconds before it moves — AI off, yaw pinned — and cannot
+steer afterwards, which is what makes a bait possible at all: stand in the drawn lane, step out, and it
+sprints past you into the wall. A charge that reaches the boundary, meets a solid block, or simply stops
+making progress **crashes**: five seconds stunned, frontal armour gone entirely, taking 2×.
+
+Crash detection is explicit encounter logic, not a hope that vanilla collision reports it — a bounds probe
+1.6 blocks ahead, a solid-block probe at feet and head, and a no-progress fallback that catches every
+obstruction nobody thought of. The last one is also what stops a Ravager wedging itself against a barrier
+for the rest of the fight; on crashing it is nudged two blocks back, if that step is inside the arena. A
+`stun-immunity-ticks` window halves any crash that lands immediately after one, so the stun cannot chain.
+
+*Chain Sweep* is a low ring with two drawn answers — be outside it, or be above `safe-height`. *Trample
+Line* marks a 1.6-block lane and surges down it; one step sideways is the whole counterplay.
+
+**Cinderveil Arcanist — target priority.** *Triune Ward* raises exactly three Cinder Seals: real attackable
+Shulkers, AI off and peeked open (so projectiles are not silently halved), each with its health written into
+its own name because particles are not feedback on Bedrock. Each seal soaks 18% of every hit the caster
+takes, capped at 60% — it is **never** an unexplained invulnerability phase, and the ward announces its own
+count and percentage the first time you hit into it.
+
+*Ashen Circuit* energises 1.1-block lines between the caster and each surviving seal, drawn a second and a
+half before they go live; everything that is not a line is safe ground, and almost all of the arena is.
+*Rekindle* is a four-second channel to rebuild **one** seal — never all three, never a fourth under any
+circumstance. 55 damage during the channel breaks it, restores nothing, and staggers the caster at 1.8×.
+
+Vanilla Evoker spellcasting is suppressed outright (`EntitySpellCastEvent`), so there are no Vexes and no
+untelegraphed fangs — every effect a player sees comes from a configured, telegraphed ability.
+
+**Ashglass Alchemist — reading and timing.** Deliberately not the Warden with different particles: the
+Warden owns space by hitting it, the Alchemist makes it *cost something to stand in*. *Volatile Mixture*
+paints at most three colour-coded zones — orange burns, blue slows, purple weakens — and they are pure
+state. No thrown potion entity, no lingering cloud, no fire is ever created, which is why clearing the list
+**is** the cleanup.
+
+*Ashglass Distillation* stops it fighting entirely for 4.5 seconds and heals 12% if it finishes — a real
+setback, never a reset to full. 65 damage during the channel shatters the brew instead: it takes 6% of its
+own pool, is weakened, and opens a 1.9× window. *Unstable Catalyst* arms once at 45% and is spent on the
+**next** mixture rather than becoming a permanent enrage. Its cleanse is rate-limited to 22s, so crowd
+control stays worth using without being invalidated.
+
+Its vanilla potion throwing and self-drinking are both suppressed (`ProjectileLaunchEvent`,
+`EntityPotionEffectEvent` on `POTION_DRINK`) — a witch healing itself on its own schedule would quietly
+compete with the Distillation the whole fight is built around.
+
+### Preventing a big opening hit from skipping the mechanics
+
+Every new boss carries `max-single-hit-percent: 0.12`. A mace dropped from height can carry several hundred
+damage; against a boss whose defining mechanics only start once its health moves, one blow could skip the
+encounter outright — seals never raised, charge never baited, brew never interrupted.
+
+It is deliberately generous (no ordinary weapon comes near 12% of a 3,000 pool), configurable, off by
+default, and it **announces itself in the action bar when it fires**. Damage that vanishes without
+explanation is exactly what this is carefully not doing. Protection, Resistance, absorption and totems are
+all on the other side of the fight and untouched.
+
+The whole defence chain is now one pure function, `applyDefences`, in a fixed order: pool divisor → stance →
+veil → frontal → ward → vulnerability window → single-hit cap. The verifier calls it directly at exact
+boundaries, which is how "baiting the charge really does beat trading with its face" became an assertion
+rather than an opinion.
+
+### Nether-capable instances, and the audit
+
+Bosses declare `environment: NORMAL | NETHER`, chosen at world creation and never mutated afterwards —
+there is no safe way to change a loaded world's dimension underneath the entities standing in it. The arena
+is unchanged either way: same committed template, same blocks, same bounds, same barriers, because terrain
+comes from the void generator and the region files, not from the environment. No Nether landscape is
+generated, and the verifier asserts that by sampling a block 30 outside the bounds.
+
+**The audit of all six put exactly one in the Nether:**
+
+| Boss | Entity | Environment | Why |
+|---|---|---|---|
+| Emberbound Duelist | Wither Skeleton | **NETHER** | Nether-native; burns in Overworld daylight |
+| Warden of Cinders | Iron Golem | NORMAL | Overworld-native |
+| Ashfallen Revenant | Vindicator | NORMAL | Overworld-native |
+| Chainbound Behemoth | Ravager | NORMAL | Overworld-native |
+| Cinderveil Arcanist | Evoker | NORMAL | Overworld-native |
+| Ashglass Alchemist | Witch | NORMAL | Overworld-native |
+
+The Duelist is the honest finding. It was never *breaking* — the arena pins its time to 18000 and turns the
+daylight cycle off, so it never caught fire. But that is an **incidental** protection: one edit to that line
+and the boss starts burning. Running it in a Nether instance makes the protection structural instead.
+
+`/ashfall colosseum verify` checks the actual `World.Environment` of a loaded instance, not the config text,
+and spawns the Nether-native boss in it to confirm it is stable and unlit.
+
+Dimension-specific escapes are closed in both: `PortalCreateEvent` and `BlockIgniteEvent` are refused in any
+Colosseum world, and interacting with a bed or a respawn anchor is cancelled — the two things that behave
+differently in the Nether and could otherwise damage arena infrastructure.
+
+### Shards: one service, one allowance
+
+A rewarded victory pays 3 Shards through the **same `ShardService.award()`** and the **same daily cap** a
+world boss uses. No separate Colosseum balance, no second allowance, no parallel cap implementation —
+`rewardColosseum()` hands the amount to the existing choke point and lets the one existing limit decide what
+lands. Shards from a world boss reduce what a Colosseum win can pay, and the reverse; the verifier asserts
+that in both directions against the same counter.
+
+No cooldown is claimed. The Colosseum already has its own brake — three rewarded victories per day — and
+stacking a source cooldown on top would silently pay nothing on the second win of the day with no way for
+the player to tell why. If the allowance is spent the win pays zero Shards and **says so**; the cash and
+loot are unaffected. Granted inside the `paid` flag, after restoration, alongside the other rewards — never
+for a loss, timeout, disconnect, abort, admin test or recovery refund.
+
+The menu and the confirmation screen both show the Shard reward and the remaining allowance before the
+player pays.
+
+### Reward parity, measured in money
+
+Six themed pools, compared by **expected shop value**, not item count — a table of forty experience bottles
+and a table of two netherite ingots are nothing alike by count and can be nearly identical by value. The
+first pass failed on item count (1.87×) and passed on value, which is the right way round; the check now
+uses value and the tables were left thematically distinct.
+
+| Boss | Expected stacks | Expected items | Expected loot value |
+|---|---:|---:|---:|
+| Emberbound Duelist | 4.90 | 55.6 | $4,000 |
+| Warden of Cinders | 4.72 | 62.8 | $3,240 |
+| Ashfallen Revenant | 6.40 | 63.0 | $3,684 |
+| Chainbound Behemoth | 6.54 | 73.9 | $4,309 |
+| Cinderveil Arcanist | 7.44 | 97.2 | $3,698 |
+| Ashglass Alchemist | 6.36 | 104.1 | $3,543 |
+
+Spread 1.33×, inside the 1.5× tolerance the verifier enforces. Every boss pays the identical
+$500,000 in / $1,000,000 out, so loot is the only difference between them and none is the correct farm.
+No relics, no progression-breaking gear, no guaranteed god items, no new currency.
+
+### THE VOIDWORLD BUG, and what it actually was
+
+**Reported:** teleported directly to a friend inside a void world rather than entering through the command;
+on leaving, was placed at 0,0 **inside** the void world while already holding restored normal-world
+belongings. A normal player could have stepped off the platform and lost everything they owned.
+
+**Cause.** The snapshot was written from `PlayerChangedWorldEvent`. That event fires **after** the crossing
+and carries the world you left but not the *place*. So `player.getLocation()` there recorded the
+**destination** — and "where you came from" became the void world's own spawn plateau at 0,65,0.
+`/voidworld exit` then dutifully teleported them back to it, cleared the snapshot in a `finally` block
+regardless of whether anything had worked, and the follow-up nudge saw them *still inside* and sent them to
+the same coordinates again.
+
+Three separate defects in one line of reasoning: the origin was read too late, restoration ran before the
+player was confirmed out, and the snapshot was deleted unconditionally.
+
+**The fix is one lifecycle both directions route through.**
+
+*Entry* is idempotent and takes the origin as an **argument**. A new `MONITOR`-priority
+`PlayerTeleportEvent` handler records the true origin from `getFrom()` **before** the crossing — which
+covers `/tp`, admin teleports, other plugins, ender pearls and portals alike, including routes nobody has
+thought of yet. A player who already holds a snapshot never captures again: that is what makes hopping
+between two void worlds keep the original return destination instead of overwriting a real inventory with
+the empty one they are standing in. A void world is refused as an origin outright, at both ends.
+
+*Exit* runs in the only safe order:
+
+1. resolve a destination **outside** the void world, and refuse to proceed without one
+2. destroy everything found inside
+3. teleport
+4. **verify they actually left**
+5. only now restore the belongings
+6. only now delete the snapshot
+
+A failure anywhere leaves the session fully intact and the player stood safely on the platform, rather than
+half-restored. Never raw 0,0: the recorded spot if it is still standable, a verified safe surface in the
+same world if it is not, then the configured server spawn.
+
+A player found inside with no session leaves empty-handed — which is the state they are already in — and is
+never handed normal-world belongings while over the void.
+
+Void-to-void now honours the closed-world rule as well, so an open world cannot be used as a lobby into a
+closed one; access control was tightened by this work, not weakened. Graves are refused in void worlds for
+the third time and the same reason they already are in duels and the Colosseum.
+
+`/ashfall voidworld verify` — **13 checks, 0 failures** — asserts the reported defect as a property: a
+snapshot pointing inside a void world is impossible to create and impossible to return to.
+
+### Verification
+
+`/ashfall colosseum verify` — **259 checks, 0 failures** (was 128). New coverage:
+
+- every ability's telegraph provably precedes its effect, and its cooldown outlasts its wind-up
+- worst simultaneous burst per boss is below a full-health player's 20
+- the ward raises exactly three seals and refuses a fourth however many times it is asked
+- three seals materially reduce damage; the caster is never immune; breaking one measurably weakens it
+- interrupts fire at **exactly** their threshold and not one point before (asserted at the boundary)
+- an interrupted Rekindle restores no seal; an uninterrupted one restores exactly one
+- a real charge aimed at the boundary crashes, and while stunned the front plate is gone and damage more
+  than doubles — so baiting is provably better than trading
+- the vulnerability window ends when it says it does; a stun-immunity window exists
+- zones are bounded, expire on their own clock, and cover under 25% of the arena even catalysed
+- no thrown potion, area-effect cloud or fire entity exists in the arena at any point
+- both environments asserted against the **loaded world**, plus the Nether instance being the same arena
+- reward pools compared by money; shard allowance shared with world bosses in both directions
+- every boss and seal removed on despawn — and by **tag** across the arena, not only by list
+
+Regression after: `/ashfall selftest` 55 checks 0 failures · `/ashfall duelmap verify` 0 failures ·
+`/ashfall duelmap canary` PASSED · `/ashfall voidworld verify` 13/0.
+
+**One real cleanup gap the verifier found:** the Arcanist check cleared its seal list without removing the
+entities, and the "no Cinder Seal survives" assertion caught it. That was a bug in the test — but it
+revealed that `despawn()` trusted its own bookkeeping. It now also sweeps by **PDC tag** across the arena,
+so "no seal survives" is a property of resolution rather than of the list having stayed accurate.
+
+### Performance
+
+Four concurrent Chainbound Behemoth encounters — the heaviest new boss, at the concurrency limit:
+
+| | Value |
+|---|---|
+| Preparation | 1,317 ms wall for four (mean 1,226 ms each) |
+| Loaded chunks | 376 across 4 worlds (94 each) |
+| Force-loaded chunks | **0** |
+| Entities per instance | 1 boss (+ ≤3 seals or ≤3 fireballs, never both) |
+| Repeating tasks per encounter | **1** |
+| Worst-case particles/tick per encounter | 90, computed from configuration |
+| Teardown | 139 ms for all four; 0 leftovers after the sweep |
+| MSPT delta | +0.25 ms |
+| TPS delta | −0.30 |
+
+**15 cycles × 3 concurrent instances = 45 create/resolve/destroy operations** across all three new bosses:
+zero leftover folders, zero live instance worlds, zero unresolved runs, zero held player state, zero errors
+in the log, TPS flat between 19.4 and 19.9 throughout.
+
+### What genuinely needs a human
+
+Everything above is asserted without a player. These cannot be:
+
+- Whether each new fight *reads* in real gear — especially whether the charge lane is obvious enough to
+  bait deliberately, and whether the interrupt bars are legible mid-fight.
+- The six-slot menu, the strength/weakness/counterplay lines and the confirmation screen through Geyser on
+  Bedrock.
+- The Voidworld scenarios end to end with two real accounts: `/tp` to somebody inside, an admin teleporting
+  a third party in, dying after a direct-teleport entry, and a disconnect/reconnect from inside.
+- Whether 3,000 effective HP on the Behemoth is the right length of fight once a player is actually baiting
+  charges rather than trading.
+
+---
+
+## Session: 2026-09-02 (part 3) - The Boss Colosseum
+
+A paid, solo boss fight in a disposable arena clone, using the player's own real equipment. Three bosses
+with distinct identities and combat styles, their own configuration, reward tables, statistics and
+lifecycle. Staging only; production is untouched.
+
+### What it is, and what it deliberately is not
+
+It is NOT the world-boss system in a smaller room. A Colosseum encounter never creates, reads or clears
+world-boss state, participation records, the active-boss restriction, natural or event spawning, or
+world-boss cleanup — the two systems are invisible to each other, and `/ashfall colosseum verify` asserts
+that directly by checking a spawned Colosseum boss is not tagged as a world boss.
+
+What IS shared is arithmetic that was already proven here: Minecraft caps the `MAX_HEALTH` attribute at
+1024, so a bigger pool has to be carried as a damage divisor. Same technique as the world bosses, same
+1024 clamp, and the verifier asserts `engineHealth x toughness == configured health` for every boss so the
+two halves can never silently disagree.
+
+### The three bosses
+
+| Boss | Entity | Style | Pool | Melee | Armour | Limit |
+|---|---|---|---:|---:|---:|---|
+| **Emberbound Duelist** | Wither Skeleton | Duellist | 1,800 | 17 | 6 | 5m |
+| **Warden of Cinders** | Iron Golem | Area control | 2,600 | 20 | 12 | 7m |
+| **Ashfallen Revenant** | Vindicator | Mobile skirmisher | 1,500 | 14 | 4 | 5m |
+
+- **Emberbound Duelist** — *Riposte* (telegraphed stance: melee is cut to 25% and 35% of it comes back,
+  capped at 8; the counterplay is simply to stop swinging for two seconds), *Lunge* (closes from range,
+  then stands slowed — that recovery window is the reward), *Flurry* (three spaced sword strikes).
+- **Warden of Cinders** — *Fissure* (marks a ring of ground, erupts 1.5s later; step off the marks),
+  *Bulwark* (anchors: 20% damage taken but cannot move or attack — free repositioning in exchange for a
+  damage window you cannot win), *Slam* (radial shove, worst at point-blank).
+- **Ashfallen Revenant** — *Blink* (telegraphed at BOTH ends, so the destination is visible before it
+  arrives), *Volley* (exactly three small fireballs, bounded and tracked), *Veil* (below 35% it gains speed
+  and shrugs off projectiles, forcing the last third to be closed out in melee).
+
+Every ability is telegraphed with a sound and particles at least 0.75s ahead, has an explicit answer, edits
+no blocks, summons nothing and cannot one-shot a full-health player. `mechanicsSelfTest()` asserts all four
+of those properties from configuration, so a well-meaning config edit cannot quietly break any of them.
+
+**Ability damage is dealt as MAGIC on purpose.** Full Protection IV netherite cuts a 20-damage physical hit
+to under two, so an area ability that respected armour would be pure decoration against the exact gear
+this is balanced for. Protection, Resistance, absorption, totems and healing all still apply, and every one
+of these lands a second or more after a telegraph that says exactly where it will be — but none of them can
+be ignored. Sword strikes stay physical, as they should.
+
+There is no hidden player-count scaling anywhere. A `BossDef` carries no participant field at all.
+
+### The money, and why it is shaped this way
+
+$500,000 in, $1,000,000 out, fee never refunded on a win, so a victory nets $500,000. Three rewarded
+victories per player per real day across the whole Colosseum, resetting at Riyadh midnight like every other
+daily boundary here — that caps Colosseum profit at $1.5M/day/player, and it is the entire brake on this
+becoming a money printer.
+
+**Nothing is charged until the world exists, the state is captured, and the player is verifiably standing
+in the arena.** Not "did `teleport()` return true" — `world.equals(player.getWorld())`, because a teleport
+can be cancelled or redirected and charging for a fight somebody is not in is the failure this order of
+operations exists to make impossible. The charge is the last step before commitment, so any failure during
+preparation costs exactly nothing.
+
+Every money flag is a **compare-and-set in SQL**, not a boolean in memory:
+
+```sql
+UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0
+```
+
+A duplicated callback, a double click, a reconnect, a duplicate death event, instance cleanup and boot
+recovery can all try to resolve the same run. The first one wins; the rest are no-ops that the caller can
+see are no-ops. The verifier attempts every one of them twice on purpose and requires the second to fail.
+
+The fee moves through `serverPayment`/`refundServerPayment` — the atomic debit-and-credit pair the rest of
+the economy already uses. A fee that only debits the player and a refund that only credits them are not
+inverses: the first destroys money and the second creates it. The prize goes through `creditEarned`, so an
+overdue bank loan is garnished from a Colosseum prize exactly as from any other income.
+
+### Belongings: a copy in, the original back
+
+A fighter carries a **copy** of their equipment. Durability, eaten golden apples, spent rockets, arena
+drops and boss loot are all discarded; the captured original is restored exactly on every exit path.
+
+Which means every route out of the inventory has to be closed while inside, or a copy becomes a duplicate.
+Rather than enumerate Ender Chests, shulkers, auctions, orders, faction vaults and trades and hope nobody
+adds a twelfth next month, **the rule is inverted**: the only inventory a player may open inside an
+encounter is their own, and commands are an allowlist rather than a blocklist. A system added tomorrow is
+covered without anybody remembering to come back here.
+
+Two failure modes that took specific work:
+
+- **A corpse cannot be teleported.** `destroyInstance()` moves players out of the world it is about to
+  delete, and a dead player ignores that — so the loser of a fight would be left lying in a world that
+  stopped existing a tick later. Resolution now forces the respawn first, which fires `PlayerRespawnEvent`
+  while the capture is still intact and puts them back on the exact spot they entered from. (Same shape as
+  the duel bug where losers woke up at their bed.)
+- **A disconnect writes the arena copy to disk.** Paper saves the player's `.dat` right after they quit,
+  and at that moment it holds the copied gear — rejoin and you own two of everything. So a quit overwrites
+  the live inventory with the captured original *before* that write, and deliberately KEEPS the capture so
+  the join handler can finish the location, health and effects properly. The join restore runs on the next
+  tick, not after a second, because every tick holding a copy in the real world is a tick it could be
+  dropped.
+
+Deaths leave no grave (guard added to `GraveService`), drop nothing real, pay no death tax (guard added to
+`GameplayListener`), and never touch the real respawn point. A Colosseum boss death pays no mob money and
+counts toward no kill statistic — without that guard a boss worth a million dollars would *also* pay
+ordinary combat income on the way down.
+
+Rewards are granted only after restoration succeeds. If it fails, nothing is paid and the fee is refunded
+instead: the failure mode is "the player got their money back", never "the player got a prize and lost
+their inventory". Overflow goes to the persistent `/orders` stash rather than onto the floor.
+
+### Crash vs disconnect, without guessing
+
+An ordinary quit is resolved as a **loss the instant it happens**. So a row still `ACTIVE` at boot can only
+mean the process died with the run genuinely live — the system interrupted the player, and the fee comes
+back. No heuristic about who is online, no heartbeat column, no timeout. `recover()` is idempotent, and the
+verifier plants rows in exactly the state a dead process leaves behind and runs it twice.
+
+### Arenas
+
+The duel engine's architecture, and in the places that matter literally the duel engine's code:
+`copyWorldFolder`, `deleteQuietly`, `deleteWithRetry`, `stripIdentity` and `customWorldDir()` in
+`DuelMapService` were opened up to package scope and are called directly. Everything learned the hard way
+about Paper's `<level-name>/dimensions/<ns>/` layout, duplicate-UUID refusals and Windows holding region
+handles after an unload now has exactly one implementation instead of two that can drift.
+
+What is **not** shared is identity. `colo_tpl_*` / `colo_inst_*`, their own snapshot directory, their own
+registry. Editing a Colosseum arena cannot alter a duel map or vice versa; no Colosseum world is ever
+offered to duel matchmaking; and the duel chest-loot roller never sees a Colosseum instance — which matters,
+because it would be a free item printer sitting inside a paid fight.
+
+`ashen_colosseum` was seeded once from the committed `arena100` duel snapshot (a read and a copy out; the
+duel map is not modified) and is its own world from that point on.
+
+Instance preparation is an async folder copy of the immutable snapshot plus sliced chunk loading, 24 chunks
+per tick. Templates are never entered by matchmaking. Orphans are cleaned at boot and swept every 90s.
+
+### Performance, measured
+
+`/ashfall colosseum bench <instances> <seconds>` holds real instances open with a real boss telegraphing in
+each, samples the server's own tick times, and tears it all down. Two concurrent Warden of Cinders
+encounters on staging:
+
+| | Value |
+|---|---|
+| Instance preparation | 516 ms cold single; ~1.28 s wall for two at once (folder copy 48 ms) |
+| Loaded chunks | 93-94 per instance (arena is 64; the rest is Paper's ticket propagation) |
+| Force-loaded chunks | **0** — nothing is ever pinned |
+| Entities per instance | 1 (the boss) plus at most 3 short-lived fireballs |
+| Repeating tasks per encounter | **1** |
+| Worst-case particles/tick per encounter | 66, computed from configuration |
+| Teardown | 82 ms for both worlds; folders gone, 0 leftovers after the sweep |
+| TPS delta under two concurrent encounters | -0.15 |
+
+Every ability is driven by the run's single ticker rather than nested `runTaskLater` calls. That is not
+style: a telegraph scheduled with a delayed task outlives the fight that scheduled it, and an ability
+landing in a world that has already been deleted is exactly the leak this may not have. Cooldowns and
+wind-ups are timestamps; when the run ends its one task is cancelled and there is provably nothing pending.
+
+### Verification
+
+`/ashfall colosseum verify` — **128 checks, 0 failures** on staging. Configuration and boss identity; every
+single-shot money guarantee attempted twice; insufficient funds at the moment of charging; the daily
+allowance including losses and admin tests not consuming it; leaderboard integrity including an admin test
+never reaching it; the full state capture round trip (damaged enchanted tool, full stack, empty slots,
+absorption, flight, velocity, effects); bounded reward tables over 200 rolls; interrupted-run recovery run
+twice for idempotency; instance isolation, two concurrent instances of one arena, boundary rejection, world
+rules, all three bosses spawning and being removed cleanly, deletion, orphan cleanup and the sweep.
+
+Regression, after: `/ashfall selftest` 55 checks with zero failures; `/ashfall duelmap verify` 197 lines,
+no failures; `/ashfall duelmap canary` PASSED including the cross-restart snapshot proof.
+
+**One assertion was wrong and was corrected rather than removed:** Paper hands an unset slot back as
+`ItemStack.empty()`, not `null`, so "empties survive as null" failed on a round trip that was in fact
+perfect. It now asserts what actually matters — the array keeps its length, so nothing shifts index, and an
+empty slot comes back empty rather than holding somebody else's item.
+
+### One bug the automated suite did not catch, and how it was found
+
+The suite passed at 125/125 before this, so the remaining budget went on failure-path work rather than
+features: a fake `colo_inst_*` folder with real region files was planted on disk while the server was down,
+along with a `colosseum_runs` row in exactly the state a dead process leaves behind — `ACTIVE`, charged,
+$500,000. Boot cleaned the orphan folder and refunded the player correctly.
+
+But the `bank_ledger` had no matching row. `refundIfCharged()` (the live path) gave the fee back through
+`refundServerPayment`, which debits the Central Bank; `recover()` (the boot path) credited the player with
+`changeBalance` directly. **A crash mid-encounter refunded the fighter and left the fee sitting in the
+Central Bank as money nobody had paid.** Two implementations of one operation, and the second was wrong.
+
+There is now one `refundFee()` used by both, and a verify check that takes the fee the way a real encounter
+does and asserts the bank is debited by the same amount it credits the player — which is the check that
+would have caught it. `/ashfall colosseum verify` is now **128 checks, 0 failures**.
+
+Worth stating plainly: this was found by simulating the failure on disk, not by reading the code or by
+running the suite. A green suite proves the things it thought to ask about.
+
+### Stability
+
+Fifteen instance create/destroy cycles over five rounds of three concurrent instances: zero leftover
+folders, zero live instance worlds, zero errors in the log, TPS flat at 19.6-19.7 throughout.
+
+A clean `stop` issued with three instances live: all three worlds unloaded and all three folders deleted
+during `onDisable`, none survived. Nothing has to be swept at the next boot, and the boot sweep confirms it.
+
+### What still needs a human
+
+Everything above is asserted without a player. What cannot be, and is the manual acceptance list:
+
+- The feel of each fight in real gear — whether the telegraphs read clearly and the time limits are right.
+- The GUI and confirmation screen as rendered on Bedrock through Geyser.
+- A real death, a real `/colosseum leave`, and a real mid-fight Alt-F4, end to end.
+- A live restart during a committed encounter, to see the refund arrive on rejoin.
+
+### Files, schema and config
+
+New: `ColosseumService`, `ColosseumArenas`, `ColosseumBosses`, `ColosseumVerify`, `colosseum.yml`.
+Changed: `Database` (three tables, accessors, selftest), `DuelMapService` (filesystem primitives opened for
+reuse; no behaviour change), `SMPCore` (service, commands, admin family, autocomplete, help, selftest),
+`SettingsService` (the `COLOSSEUM` confirmation kind), `GameplayListener` and `GraveService` (guards),
+`plugin.yml`, `deploy/manifest.yml`.
+
+Schema, created automatically on boot: `colosseum_runs` (the lifecycle ledger with the compare-and-set
+flags), `colosseum_stats` (per player per boss), `colosseum_state` (pre-entry capture, deliberately its own
+table so a Colosseum bug can never restore somebody into a duel's capture).
+
+Two new deploy artefacts, both now in `deploy/manifest.yml`: `plugins/SMPCore/colosseum.yml` and
+`plugins/SMPCore/colosseum-templates/`. **Neither travels with a jar swap.**
+
+### Commands
+
+Player: `/colosseum` (menu), `/colosseum <boss>`, `/colosseum stats [player]`, `/colosseum top [boss]`,
+`/colosseum leave` (warns once, then forfeits). Permission `smpcore.colosseum`, default true.
+
+Admin, under the existing ADMIN gate: `/ashfall colosseum list|create|enter|exit|save|setspawn|setboss|
+test|instances|drop|orphans|reload|verify|bench`, with live autocomplete for arena ids, boss ids, instance
+world names and spawn roles. `/ashfall help colosseum` prints the whole surface.
+
+---
+
+## Session: 2026-09-02 (part 2) - Prism reset: 36.4 GB to a bounded ~0.2 GB
+
+### What the 36.4 GB actually was
+
+Read-only analysis of the old database before touching it. 92,756,899 rows, 36.39 GB, 14.70 days of data
+(2026-08-18 23:06 to 2026-09-02 15:51), averaging ~421 bytes per row including indexes.
+
+| Action | Rows | Share | Est. size |
+|---|---:|---:|---:|
+| `vehicle-exit` | 30,964,518 | 33.4% | 12.15 GB |
+| `vehicle-ride` | 30,962,708 | 33.4% | 12.15 GB |
+| `entity-death` | 30,044,704 | 32.4% | 11.79 GB |
+| `block-break` | 382,868 | 0.4% | 0.15 GB |
+| `item-dispense` | 161,657 | 0.2% | 0.06 GB |
+| everything else (21 actions) | 240,444 | 0.26% | 0.09 GB |
+
+Top causes: `(none)` 62,950,758 and `fall` 29,705,553. Top affected entity types: `oak_boat` 61,925,505 and
+`creeper` 29,782,010.
+
+**99.1% of the database was one creeper farm** - boats being entered and exited, and creepers hitting the
+bottom of the drop shaft at ~6996,147,6819. Hoppers were never involved: `item-insert` was 28,082 rows in
+fifteen days, `item-remove` 26,564, `item-pickup` 47,859. Together 0.1%.
+
+Measured growth: 6.3M rows/day (2.48 GB/day) lifetime; over the last seven days 3.13M rows/day (1.23 GB/day)
+with a peak day of 8.96M rows (3.51 GB). **A seven-day retention alone would have settled at 8.6 GB, and
+24.6 GB at the peak rate** - which is why retention alone was not the answer.
+
+### What changed
+
+**`plugins/prism/prism.conf`** (backed up first - see below):
+
+- `vehicle-exit: true -> false` and `vehicle-ride: true -> false`. 66.8% of all rows, every one an oak boat
+  in the farm. `vehicle-break` and `vehicle-place` stay ON: those are how a player loses a boat or minecart,
+  which is a real grief report.
+- New filter `ignore-environmental-mob-deaths`, IGNORE, on `actions=[entity-death]` with
+  `named-causes=[cramming, decay, drowning, dryout, fall, "fire tick", lava, suffocation]`.
+
+  Keyed on the CAUSE, not on the mob, and that distinction is the whole point: a creeper a player kills
+  still has a cause player and is still recorded, as are boss kills, named mobs, and anything that matters
+  for a grief or rollback report. Only the 29.7M rows of mobs dying to the farm disappear. `entity-death`
+  itself stays ON - disabling it outright would have thrown away player kills with the farm noise.
+- Retention `before:6w -> before:7d`, nightly cron unchanged.
+
+  Six weeks was never wrong in principle and had simply **never fired**: the oldest data was always younger
+  than the window, so the scheduled purge had deleted nothing in the plugin's entire life while the database
+  grew to 36.4 GB.
+
+**Deliberately left ON**, because they are the audit trail and cost almost nothing: `block-break`,
+`block-place`, `block-form`, `block-harvest`, `block-use`, `item-insert`, `item-remove`, `item-pickup`,
+`item-drop`, `item-destroy`, `item-throw`, `item-trade`, `item-use`, `item-dispense`, `player-death`,
+`entity-death` (player-caused), `entity-place`, `entity-remove`, `sign-edit`, `bucket-fill`, `bucket-empty`,
+`hanging-*`, `vehicle-break`, `vehicle-place`, `raid-trigger`.
+
+### Files deleted
+
+Exactly three paths, all under `plugins/prism/`:
+
+- `prism.db` - 39,078,596,608 bytes (36.39 GB)
+- `prism.db-wal` - already absent (SQLite removes it on a clean close, which also confirmed the shutdown was
+  clean)
+- `prism.db-shm` - already absent, same reason
+
+Nothing else was touched. `prism.conf`, `storage.conf`, `prism.lock`, `libs/`, `locale/`, the plugin jar,
+all worlds, all SMPCore data and every other plugin were left exactly as they were.
+
+Free disk went from **55.2 GB to 91.6 GB**.
+
+Production was already cleanly stopped at 16:09:31 when this began, so no restart announcement was owed and
+none was made. Before deleting, an exclusive open on `prism.db` was taken to prove the JVM had released it.
+
+### Backups
+
+Configuration only - the 36 GB database was deliberately NOT backed up, on instruction:
+
+- `C:\Ashfall-Development\security-backups\prism-config-20260902-162617\prism.conf` and `storage.conf`
+- `config-templates/prism/prism.conf.pre-reset-20260902` and `storage.conf.pre-reset-20260902` (in Git)
+
+### Projection
+
+With the filters applied to the measured historical composition, the surviving traffic is ~1,103,700 rows
+over the 14.70 days analysed:
+
+- **~75,000 rows/day, ~31 MB/day**
+- **seven-day steady state ~525,000 rows, ~0.22 GB**
+- at the *peak* observed day's composition, ~107,000 rows/day -> ~0.31 GB over seven days
+
+That is a ~150x reduction and is predictably bounded: one nightly purge removes roughly a day's worth, far
+inside the existing 5,000-per-batch / 2-second-cycle purge budget.
+
+**No database backend change is needed.** SQLite is entirely comfortable at 0.2-0.3 GB; the 36 GB figure was
+never a backend problem, it was 99% avoidable rows. If the workload ever changes enough to make this
+untrue, that is a separate conversation before anything is installed or migrated.
+
+### Monitoring added
+
+`storage-guard.ps1`, in both server directories, launched by the launchers with `start /b` alongside the
+console guard and freeze watchdog. Every 15 minutes it records Prism's size and free disk to
+`logs/storage-guard.log`, and on a *change* of state it warns in-game over RCON so the alert is noticed
+rather than becoming wallpaper.
+
+| | Warn | Alarm |
+|---|---|---|
+| `prism.db` | 2 GB | 5 GB |
+| free disk | 40 GB | 20 GB |
+
+The 2 GB warning is about ten times the expected steady state - clear of normal variation, and still weeks
+of runway. It writes to a file and never to the console, because console output is exactly what a blocked
+console stalls on (see the 2026-09-01 entry).
+
+### Also fixed
+
+`restart-server.bat` now ends with `exit`. Windows `start` runs a `.bat` through `cmd /K`, which keeps the
+shell open after the script finishes, so every watchdog-driven restart left an idle
+`cmd /K restart-server.bat` window behind permanently. One from the 04:10 restart was still sitting there
+twelve hours later. `exit` (not `exit /b`) terminates it.
+
+### Verification after restart
+
+- Prism created a clean database and loaded the filter: `Loaded filter ignore-environmental-mob-deaths
+  (IGNORE). Total filters: 1`
+- No SQLite or WAL errors. The only ERROR lines in the boot are GrimAC's pre-existing SLF4J notices.
+- `/ashfall selftest` 53/53, zero failures
+- All three supervisors running, exactly one each: console guard, freeze watchdog, storage guard
+- `storage-guard.log`: `OK  prism.db 0 GB  free disk 91.6 GB`
+- Disk 91.6 GB free, up from 55.2 GB
+
+### Non-Git production changes made here
+
+All are host files, all now in `deploy/manifest.yml`:
+
+- `plugins/prism/prism.conf` - actions, filter, retention (config backed up as above)
+- `storage-guard.ps1` - new, both servers
+- `start.bat` / `start-staging.bat` - launch the storage guard
+- `restart-server.bat` - trailing `exit`
+
+---
+
+## Session: 2026-09-02 - Host-wide lag incident: Prism's 36 GB database (read-only audit)
+
+### Confirmed cause
+
+**`plugins/prism/prism.db` is 36.39 GB across 92,756,837 rows in `prism_activities`, on a 475.7 GB disk with
+22.6 GB free.** Production's JVM had written **307.95 GB in the 11 hours** since it started - a sustained
+~8 MB/s of SQLite WAL churn against a 36 GB file. That saturates the laptop's disk, which is why the whole
+machine was slow, not just the server.
+
+Prism's retention is `prism purge start before:6w`, scheduled daily and enabled. The server's data begins
+around 22 July, so **at the time of the incident nothing was yet six weeks old and the purge had never
+deleted a single row.** The database grew unbounded from day one; the retention policy was correct in
+principle and had simply never fired.
+
+What feeds it: `block-break`, `block-place`, `block-form`, `block-harvest`, `block-use`, `entity-death`,
+`entity-remove`, `item-insert`, `item-remove`, `item-pickup`, `item-drop`, `item-destroy`, `item-throw`,
+`item-trade`, `item-use`, `player-death` and more, all `true`. On this server that means every Industrial
+Hopper transfer (nine items a cycle), every stacked-spawner death and every container touch becomes rows.
+
+Compounding it, from the 2026-09-01 watchdog dump: Prism's `EntityDeathListener` constructs a **complete new
+entity, AI `Brain` and all**, for every entity death purely to serialise its NBT
+(`NbtService.processEntityNbt` -> `CraftRegionAccessor.createEntity`). At the observed ~9,700 creeper deaths
+a day that is significant CPU on top of the write volume.
+
+### Why the server looked fine while the machine did not
+
+`tps` reported **20.0 / 20.0 / 20.0** across 1m, 5m and 15m throughout. Prism commits off the main thread, so
+the tick loop never suffered - the damage was entirely in host I/O. That is also why the only genuine lag
+symptom in the logs is a network one:
+
+```
+[15:30:37] MacoCT was kicked due to keepalive timeout!
+[15:30:47] MacoCT lost connection: Timed out
+```
+
+A starved machine cannot service keepalives on time even at 20 TPS.
+
+### The mass kick was NOT lag
+
+Two separate events, neither caused by the database:
+
+- **04:10:11 - a deliberate restart.** `[STDOUT] [org.spigotmc.RestartCommand] Attempting to restart with
+  C:\MinecraftServer\restart-server.bat`, then Asserto and TPKIID `lost connection: Server is restarting`.
+  TPKIID ran `/restart` at 04:10:10 while trying to clear MacoCT's AuthMe IP ban (`/unban macoct` 04:06:04,
+  `/unban ip macoct` 04:06:23 - neither clears an IP tempban; `pardon-ip` does). The server was back at
+  04:10:29.
+- **13:32:44-45 - all three players `lost connection: Disconnected` inside one second.** That reason is a
+  client/network-side drop, not a server kick.
+
+### Did the console/host changes contribute? No - and each is accounted for
+
+| Change | Effect on this incident | Evidence |
+|---|---|---|
+| `console-guard.ps1` | none | running as pid 19884, 92 MB; did not appear anywhere in a live 6-second CPU sample (the only PowerShell above 1% was the tooling host). One WMI query per 5s. |
+| `freeze-watchdog.ps1` | none - **it was not running** | exited 04:23:46 when its console closed. Production has been unwatched since. See below. |
+| `-Dlog4j2.AsyncQueueFullPolicy=Discard` | strictly reduces work | never blocks a producer; cannot add load. |
+| `log-named-deaths: false`, `log-villager-deaths: false` | strictly reduces work | total production `logs/` is 8.1 MB against Prism's 37 GB. |
+| ReplayCore jar moved out of `plugins/` | strictly reduces work | 0 occurrences of `ReplayCore` in the current log. |
+| `restart-script` -> `restart-server.bat` | **positive** | it is what made `/restart` work at 04:10. Under the previous `./start.sh` the isFile() check fails, so that `/restart` would have taken production down permanently instead of for 19 seconds. |
+
+Console state at audit time: window title `Ashfall Concord [PRODUCTION]` with **no `Select ` prefix**, and
+the guard log shows the mode held at `0x89`. No console blockage recurred.
+
+### Other things checked and found clean
+
+- **One** production JVM (34128 wrapper -> 11456, started 04:23:42). No staging server running, so nothing
+  was competing with production. No duplicate servers, no restart loop.
+- No new `hs_err_*`, no heap dumps, no crash reports; the only one on disk is from 2026-08-22.
+- No Paper watchdog events, no `Can't keep up`, no `stopped responding` anywhere today. A thread dump was
+  therefore not taken - at 20 TPS with no watchdog trip there was nothing for it to show.
+- Disk latency at audit time 0.1 ms write / 0.4 ms read, queue length 0 - with zero players online and Prism
+  therefore near-idle. The write volume figure above is what matters, not the instantaneous latency.
+- Pagefile 13.9 GB allocated, 2.8 GB used, 5.4 GB peak. RAM 31.9 GB with 7.8 GB free. Not memory-bound.
+- Running jar confirmed by hash: `plugins/SMPCore.jar` md5 `8e9d293b4d79cc1d5f3a0df46915a035`, identical to
+  the built `SMPCore-1.7.0.jar`.
+
+### Two loose ends found during the audit (not causes, not yet fixed)
+
+1. **Production has no freeze watchdog running.** It exits with its console by design, and the 04:23 restart
+   left it stopped. It restarts with the next server start; until then the 5-minute hang recovery is absent.
+2. **One idle `cmd /K C:\MinecraftServer\restart-server.bat` (pid 31288)** left over from the 04:10 restart.
+   `start` runs a `.bat` under `/K`, which keeps the shell open after the script finishes. Harmless, but it
+   accumulates one per watchdog-driven restart.
+
+### Smallest safe fix
+
+Purge Prism's history. Nothing else needs to change and no code is involved:
+
+```
+prism purge start before:7d --nodefaults
+```
+
+That is the existing, supported mechanism, already scheduled nightly - it has simply never had anything old
+enough to remove. Reclaiming ~36 GB removes both the disk pressure and the I/O cost of writing into a file
+that size. Follow it with a `VACUUM` to return the space to the filesystem, which SQLite does not do on
+delete alone.
+
+If the write rate is still too high afterwards, the next lever is narrowing what Prism records - `item-insert`,
+`item-remove` and `item-pickup` are the ones a hopper-heavy server generates most of - and only then
+shortening the retention window from six weeks.
+
+### Rollback
+
+Nothing was changed during this audit, so there is nothing to roll back. The fix above is reversible in the
+sense that matters: a purge deletes history older than the chosen window and cannot affect live world data,
+player data or the SMPCore database.
+
+---
+
 ## Session: 2026-09-01 (part 2) - Hopper rate, void-world sealing, /ec case, mob-drop shop audit (staging only)
 
 ### A plain hopper must move at a plain hopper's rate

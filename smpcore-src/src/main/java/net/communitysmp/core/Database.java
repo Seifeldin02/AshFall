@@ -205,6 +205,30 @@ final class Database implements AutoCloseable {
             try{s.execute("ALTER TABLE discarded_ledger ADD COLUMN details TEXT NOT NULL DEFAULT ''");}catch(SQLException ignored){}
             s.execute("CREATE TABLE IF NOT EXISTS staff_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_uuid TEXT NOT NULL, player_name TEXT NOT NULL, note TEXT NOT NULL, staff_name TEXT NOT NULL, created_at INTEGER NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS staff_notes_player ON staff_notes(player_uuid,created_at DESC)");
+            /*  COLOSSEUM. Two tables, deliberately separate from the duel arena's own.
+             *
+             *  colosseum_runs is the LIFECYCLE ledger, and it is what makes the money safe. Every flag on it
+             *  answers exactly one question that must never be answered twice: charged (was the fee taken),
+             *  paid (was the prize and loot granted), refunded (was the fee given back), rewarded (does this
+             *  count against the daily cap). A repeated callback, a duplicate death event, a reconnect or a
+             *  restart-recovery pass can all try to resolve the same run -- they read the flag, see the work
+             *  is done, and stop.
+             *
+             *  state is the crash discriminator, and it is why an ordinary disconnect and a server crash can
+             *  be told apart without guessing from whether the player is online. A normal disconnect is
+             *  RESOLVED the instant it happens, as a loss. So a row still ACTIVE at boot can only mean the
+             *  process died with the run genuinely live -- the system interrupted the player, and the fee is
+             *  refunded.
+             *
+             *  colosseum_state is a full copy of the player's pre-entry world: the same shape as arena_state,
+             *  kept as its own table so a Colosseum bug can never restore somebody into a duel's capture or
+             *  vice versa. */
+            s.execute("CREATE TABLE IF NOT EXISTS colosseum_runs (run_id TEXT PRIMARY KEY, player TEXT NOT NULL, player_name TEXT NOT NULL, boss TEXT NOT NULL, arena TEXT NOT NULL, world TEXT, state TEXT NOT NULL, outcome TEXT, fee REAL NOT NULL DEFAULT 0, prize REAL NOT NULL DEFAULT 0, charged INTEGER NOT NULL DEFAULT 0, paid INTEGER NOT NULL DEFAULT 0, refunded INTEGER NOT NULL DEFAULT 0, rewarded INTEGER NOT NULL DEFAULT 0, admin_test INTEGER NOT NULL DEFAULT 0, day TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL DEFAULT 0, ended_at INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0)");
+            s.execute("CREATE INDEX IF NOT EXISTS colosseum_runs_state ON colosseum_runs(state)");
+            s.execute("CREATE INDEX IF NOT EXISTS colosseum_runs_player_day ON colosseum_runs(player,day,rewarded)");
+            s.execute("CREATE TABLE IF NOT EXISTS colosseum_stats (player TEXT NOT NULL, boss TEXT NOT NULL, player_name TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, victories INTEGER NOT NULL DEFAULT 0, losses INTEGER NOT NULL DEFAULT 0, best_ms INTEGER NOT NULL DEFAULT 0, fees_paid REAL NOT NULL DEFAULT 0, cash_won REAL NOT NULL DEFAULT 0, last_victory_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(player,boss))");
+            s.execute("CREATE INDEX IF NOT EXISTS colosseum_stats_boss_best ON colosseum_stats(boss,best_ms)");
+            s.execute("CREATE TABLE IF NOT EXISTS colosseum_state (player TEXT PRIMARY KEY, items BLOB NOT NULL, world TEXT NOT NULL, x REAL, y REAL, z REAL, yaw REAL, pitch REAL, level INTEGER, exp REAL, health REAL, food INTEGER, gamemode TEXT, extra TEXT)");
             // 1.5 removes private container ownership. This table never held items, so dropping it is lossless.
             s.execute("DROP TABLE IF EXISTS private_chests");
         }
@@ -365,6 +389,29 @@ final class Database implements AutoCloseable {
         try(PreparedStatement ps=connection.prepareStatement("SELECT player,balance FROM shard_accounts");ResultSet rs=ps.executeQuery()){
             while(rs.next())map.put(rs.getString("player"),rs.getInt("balance"));
         }catch(SQLException e){throw fail(e);}
+        return map;
+    }
+    /*  THE SIDEBAR'S TWO READS.
+     *
+     *  The sidebar refreshed every online player every two seconds and read each one's balance and shard
+     *  count individually, which is 2N synchronised SQLite round trips per cycle -- and shardBalance() is
+     *  not even read-only: it INSERT OR IGNOREs the account row first, so a full server wrote N rows every
+     *  two seconds for a number nobody had changed. These take the whole online set at once and cost two
+     *  statements per cycle regardless of how many people are on. Names come in already lower-cased by
+     *  CoreUtil.id, which is the same key both tables use. */
+    private static String placeholders(int count){return "?"+",?".repeat(Math.max(0,count-1));}
+    synchronized Map<String,Double> balances(Collection<String> ids){
+        if(ids==null||ids.isEmpty())return Map.of();
+        Map<String,Double> map=new HashMap<>();
+        for(Object[] row:list("SELECT id,balance FROM players WHERE id IN("+placeholders(ids.size())+")",
+                rs->new Object[]{rs.getString(1),rs.getDouble(2)},ids.toArray()))map.put((String)row[0],(Double)row[1]);
+        return map;
+    }
+    synchronized Map<String,Integer> shardBalances(Collection<String> ids){
+        if(ids==null||ids.isEmpty())return Map.of();
+        Map<String,Integer> map=new HashMap<>();
+        for(Object[] row:list("SELECT player,balance FROM shard_accounts WHERE player IN("+placeholders(ids.size())+")",
+                rs->new Object[]{rs.getString(1),rs.getInt(2)},ids.toArray()))map.put((String)row[0],(Integer)row[1]);
         return map;
     }
     synchronized List<StatsRow> topStats(String column,int limit,int offset){if(!Set.of("play_seconds","player_kills","deaths","mob_kills","boss_kills","event_wins","balance").contains(column))throw new IllegalArgumentException("stat");return list("SELECT id,name,play_seconds,player_kills,deaths,mob_kills,boss_kills,event_wins,balance FROM players ORDER BY "+column+" DESC,name LIMIT "+Math.max(1,limit)+" OFFSET "+Math.max(0,offset),Database::mapStats);}
@@ -533,12 +580,72 @@ final class Database implements AutoCloseable {
     synchronized List<AuctionRow> activeAuctions() { expireAuctions(); return list("SELECT * FROM auctions WHERE status='ACTIVE' ORDER BY price ASC, listed ASC LIMIT 200", Database::mapAuction); }
     synchronized AuctionRow auction(long id) { expireAuctions(); return one("SELECT * FROM auctions WHERE id=?", Database::mapAuction, id); }
     synchronized int activeAuctionCount(String seller) { expireAuctions(); return integer("SELECT COUNT(*) FROM auctions WHERE seller=? AND status='ACTIVE'", seller); }
+    /** How many expired listings are sitting in escrow for this seller. Counts rather than materialising
+     *  every row's ItemStack, because the marketplace footer asks on every render. Expiry is still lazy and
+     *  still runs inside the query, exactly as activeAuctionCount does. */
+    synchronized int collectibleCount(String seller) { expireAuctions(); return integer("SELECT COUNT(*) FROM auctions WHERE seller=? AND status='EXPIRED'", seller); }
     synchronized List<AuctionRow> collectibleAuctions(String seller) { expireAuctions(); return list("SELECT * FROM auctions WHERE seller=? AND status='EXPIRED' ORDER BY expires", Database::mapAuction, seller); }
     /** Seller-scoped, unlike activeAuctions() (which caps at 200 rows server-wide, ordered by price) — a
      *  relic listing checked against that global list could be missed entirely if 200 unrelated cheaper
      *  listings exist. Used by RelicService to confirm "is this specific relic actively escrowed". */
     synchronized List<AuctionRow> activeAuctionsBySeller(String seller){expireAuctions();return list("SELECT * FROM auctions WHERE seller=? AND status='ACTIVE' ORDER BY listed",Database::mapAuction,seller);}
     synchronized boolean markAuctionSold(long id, String buyer) { return update("UPDATE auctions SET status='SOLD',buyer=?,sold_at=? WHERE id=? AND status='ACTIVE' AND expires>?", buyer,System.currentTimeMillis(),id,System.currentTimeMillis()) == 1; }
+
+    /*  AN AUCTION SALE, AS ONE COMMIT.
+     *
+     *  It used to be five, in this order: debit the buyer, mark the listing sold, pay the seller, credit
+     *  the fee, put the item in the buyer's inventory. Every gap between them is a state the database can
+     *  be found in after a crash, and each one loses something different:
+     *
+     *      after the debit, before the sale     the buyer paid and the listing is still for sale
+     *      after the sale, before the payout    the buyer paid, the seller never did get paid
+     *      after the payout, before delivery    everyone is paid and the ITEM no longer exists
+     *
+     *  The last one is the worst, because the listing row IS the escrow -- once it reads SOLD there is
+     *  nothing left holding the item, and an inventory write is not a commit.
+     *
+     *  All four money-and-escrow steps now commit together, and the fifth is not a delivery at all: the
+     *  item lands in the buyer's durable claim stash, the same one Colosseum rewards overflow into. Handing
+     *  it to their inventory afterwards is a convenience on top of a record that already exists. A process
+     *  that dies at any point either did none of this or did all of it, and the item is claimable with
+     *  /orders either way.
+     *
+     *  Returns false if the listing was taken first or the buyer cannot afford it, having changed nothing. */
+    synchronized boolean auctionSettle(long id,String buyer,String seller,double price,double tax,ItemStack item,String detail){
+        boolean own=false;java.sql.Savepoint savepoint=null;
+        try{
+            own=connection.getAutoCommit();
+            if(own)connection.setAutoCommit(false);else savepoint=connection.setSavepoint("auction_settle");
+            long now=System.currentTimeMillis();
+            if(update("UPDATE auctions SET status='SOLD',buyer=?,sold_at=? WHERE id=? AND status='ACTIVE' AND expires>?",buyer,now,id,now)!=1){undo(own,savepoint);return false;}
+            if(!changeBalance(buyer,-roundMoney(price))){undo(own,savepoint);return false;}
+            double net=roundMoney(price-tax);
+            if(net>0&&!changeBalance(seller,net))throw new SQLException("auction seller account missing");
+            if(tax>0)creditBankRevenue(roundMoney(tax),"FEE",seller,detail);
+            stashAddItem(buyer,item);
+            if(own)connection.commit();else if(savepoint!=null)connection.releaseSavepoint(savepoint);
+            return true;
+        }catch(Exception e){undoQuietly(own,savepoint);if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
+        finally{if(own)autoCommitQuietly();}
+    }
+
+    /*  The same shape for reclaiming an expired listing.
+     *
+     *  collectAuction() flipped the row to COLLECTED and the caller then added the item to an inventory. A
+     *  crash in between, or an inventory that filled up after the fit check, destroyed the item -- and the
+     *  caller discarded addItem()'s leftovers entirely, so it would not even have known. */
+    synchronized boolean auctionReclaim(long id,String seller,ItemStack item){
+        boolean own=false;java.sql.Savepoint savepoint=null;
+        try{
+            own=connection.getAutoCommit();
+            if(own)connection.setAutoCommit(false);else savepoint=connection.setSavepoint("auction_reclaim");
+            if(update("UPDATE auctions SET status='COLLECTED' WHERE id=? AND seller=? AND status='EXPIRED'",id,seller)!=1){undo(own,savepoint);return false;}
+            stashAddItem(seller,item);
+            if(own)connection.commit();else if(savepoint!=null)connection.releaseSavepoint(savepoint);
+            return true;
+        }catch(Exception e){undoQuietly(own,savepoint);if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
+        finally{if(own)autoCommitQuietly();}
+    }
     synchronized boolean collectAuction(long id, String seller) { return update("UPDATE auctions SET status='COLLECTED' WHERE id=? AND seller=? AND status='EXPIRED'", id, seller) == 1; }
     synchronized boolean cancelAuction(long id, String seller) { return update("UPDATE auctions SET status='EXPIRED',expires=? WHERE id=? AND seller=? AND status='ACTIVE'", System.currentTimeMillis(), id, seller) == 1; }
     synchronized void expireAuctions() { update("UPDATE auctions SET status='EXPIRED' WHERE status='ACTIVE' AND expires<=?", System.currentTimeMillis()); }
@@ -574,6 +681,20 @@ final class Database implements AutoCloseable {
     synchronized RelicLifecycleRow relicLifecycle(String key){return one("SELECT * FROM relics WHERE relic_key=?",Database::mapRelicLifecycle,key);}
     synchronized void confirmRelic(String key,String owner,String ownerName){update("UPDATE relics SET owner=?,owner_name=?,active=1,status='ACTIVE',last_confirmed=?,eligible_at=0 WHERE relic_key=?",owner,ownerName,System.currentTimeMillis(),key);}
     synchronized void markRelicLost(String key,long eligibleAt){update("UPDATE relics SET active=0,status='LOST',last_confirmed=?,eligible_at=? WHERE relic_key=?",System.currentTimeMillis(),eligibleAt,key);}
+    /*  RECLAIMED: taken back on purpose, as opposed to LOST, which means "we believe this was destroyed".
+     *
+     *  The two used to share LOST, and that is what made the inactivity rule do nothing at all. A relic was
+     *  reclaimed on schedule, marked LOST, and then handed straight back the moment its owner logged in --
+     *  because the false-loss recovery correctly reinstates a LOST relic found in its tracked owner's hands.
+     *  Production, 2026-08-29/30:
+     *
+     *    [14:41:22] crown_of_ash reclaimed -- xFPu has not logged in for 7 real days.
+     *    [12:46:53] crown_of_ash reappeared in its tracked owner's hands ...; reinstating rather than removing
+     *
+     *  Seven seconds after he rejoined. Nothing was ever confiscated either, because the reclaim only strips
+     *  the item from ONLINE players and the owner is offline by definition -- that is why it is being
+     *  reclaimed. A separate status is the whole fix: recovery only ever looks at LOST. */
+    synchronized void markRelicReclaimed(String key,long eligibleAt){update("UPDATE relics SET active=0,status='RECLAIMED',last_confirmed=?,eligible_at=? WHERE relic_key=?",System.currentTimeMillis(),eligibleAt,key);}
     synchronized void makeRelicEligible(String key){update("UPDATE relics SET active=0,status='ELIGIBLE',eligible_at=0 WHERE relic_key=?",key);}
     synchronized List<RelicLifecycleRow> relicLifecycles(){return list("SELECT * FROM relics ORDER BY discovered_at",Database::mapRelicLifecycle);}
     synchronized String state(String key) { return scalar("SELECT value FROM state WHERE key=?",key); }
@@ -755,6 +876,146 @@ final class Database implements AutoCloseable {
     }
     /** Drop a single arbitrary item into a player's order-stash (their persistent "claim later" store) -- used
      *  to return escrowed duel items to an OFFLINE owner without losing them. */
+    // ------------------------------------------------------------------ colosseum
+
+    record ColosseumRun(String runId,String player,String playerName,String boss,String arena,String world,
+                        String state,String outcome,double fee,double prize,boolean charged,boolean paid,
+                        boolean refunded,boolean rewarded,boolean adminTest,String day,long startedAt,long endedAt,long durationMs){}
+    record ColosseumStats(String player,String boss,String playerName,int attempts,int victories,int losses,
+                          long bestMs,double feesPaid,double cashWon,long lastVictoryAt){}
+    private static final String COLO_COLUMNS="run_id,player,player_name,boss,arena,world,state,outcome,fee,prize,charged,paid,refunded,rewarded,admin_test,day,started_at,ended_at,duration_ms";
+    private static ColosseumRun mapColosseumRun(ResultSet rs)throws SQLException{
+        return new ColosseumRun(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),
+                rs.getString(7),rs.getString(8),rs.getDouble(9),rs.getDouble(10),rs.getInt(11)!=0,rs.getInt(12)!=0,
+                rs.getInt(13)!=0,rs.getInt(14)!=0,rs.getInt(15)!=0,rs.getString(16),rs.getLong(17),rs.getLong(18),rs.getLong(19));
+    }
+    private static ColosseumStats mapColosseumStats(ResultSet rs)throws SQLException{
+        return new ColosseumStats(rs.getString(1),rs.getString(2),rs.getString(3),rs.getInt(4),rs.getInt(5),rs.getInt(6),rs.getLong(7),rs.getDouble(8),rs.getDouble(9),rs.getLong(10));
+    }
+    private static final String COLO_STAT_COLUMNS="player,boss,player_name,attempts,victories,losses,best_ms,fees_paid,cash_won,last_victory_at";
+
+    synchronized void colosseumRunOpen(String runId,String player,String playerName,String boss,String arena,double fee,double prize,boolean adminTest,String day){
+        update("INSERT OR REPLACE INTO colosseum_runs(run_id,player,player_name,boss,arena,state,fee,prize,admin_test,day,started_at) VALUES(?,?,?,?,?,'PREPARING',?,?,?,?,?)",
+                runId,player,playerName,boss,arena,fee,prize,adminTest?1:0,day,System.currentTimeMillis());
+    }
+    synchronized ColosseumRun colosseumRun(String runId){
+        return one("SELECT "+COLO_COLUMNS+" FROM colosseum_runs WHERE run_id=?",Database::mapColosseumRun,runId);
+    }
+    /** The one unresolved run a player may have. Used to refuse a second entry and to recover after a crash. */
+    synchronized ColosseumRun colosseumOpenRunOf(String player){
+        return one("SELECT "+COLO_COLUMNS+" FROM colosseum_runs WHERE player=? AND state<>'RESOLVED' ORDER BY started_at DESC LIMIT 1",Database::mapColosseumRun,player);
+    }
+    synchronized List<ColosseumRun> colosseumUnresolved(){
+        return list("SELECT "+COLO_COLUMNS+" FROM colosseum_runs WHERE state<>'RESOLVED' ORDER BY started_at",Database::mapColosseumRun);
+    }
+    synchronized void colosseumRunWorld(String runId,String world){update("UPDATE colosseum_runs SET world=? WHERE run_id=?",world,runId);}
+    /** Charging is a COMPARE-AND-SET, not an update: the WHERE clause refuses a second charge outright, so a
+     *  duplicated callback cannot take the fee twice even if it beats the in-memory guard. */
+    synchronized boolean colosseumMarkCharged(String runId){return update("UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0",runId)==1;}
+    /*  THE ENTRY FEE, as one commit.
+     *
+     *  The flag and the money used to be two: mark the run charged, then take the fee. Each half is atomic
+     *  and each half is compare-and-set, and that is still not enough, because the gap between two commits
+     *  is a state the database can be found in. A process that dies in that gap leaves charged=1 with
+     *  nothing debited -- and boot recovery, which refunds any charged run it finds interrupted, would then
+     *  hand back a fee that was never taken and debit the Central Bank to do it. Rare, and it invents money,
+     *  which is the kind of rare that matters.
+     *
+     *  Both halves now commit together or neither does. serverPayment joins the open transaction rather
+     *  than starting its own, so the balance check, the bank credit and the flag are one write. */
+    synchronized boolean colosseumChargeEntry(String runId,String player,double fee,String detail){
+        boolean own=false;java.sql.Savepoint savepoint=null;
+        try{
+            own=connection.getAutoCommit();
+            /** Owns the transaction when there is none, and nests inside one when there is -- so a caller
+             *  that is already mid-transaction (the selftest, for one) still gets all-or-nothing rather
+             *  than leaving the flag set behind a payment that did not happen. */
+            if(own)connection.setAutoCommit(false);else savepoint=connection.setSavepoint("colosseum_charge");
+            if(update("UPDATE colosseum_runs SET charged=1 WHERE run_id=? AND charged=0",runId)!=1){undo(own,savepoint);return false;}
+            if(!serverPayment(player,fee,"FEE",detail)){undo(own,savepoint);return false;}
+            if(own)connection.commit();else if(savepoint!=null)connection.releaseSavepoint(savepoint);
+            return true;
+        }catch(Exception e){undoQuietly(own,savepoint);if(e instanceof RuntimeException runtime)throw runtime;throw new IllegalStateException(e);}
+        finally{if(own)autoCommitQuietly();}
+    }
+    private void undo(boolean own,java.sql.Savepoint savepoint)throws SQLException{
+        if(own)connection.rollback();else if(savepoint!=null)connection.rollback(savepoint);
+    }
+    private void undoQuietly(boolean own,java.sql.Savepoint savepoint){
+        try{undo(own,savepoint);}catch(SQLException ignored){}
+    }
+    synchronized boolean colosseumMarkRefunded(String runId){return update("UPDATE colosseum_runs SET refunded=1 WHERE run_id=? AND charged=1 AND refunded=0",runId)==1;}
+    synchronized boolean colosseumMarkPaid(String runId){return update("UPDATE colosseum_runs SET paid=1 WHERE run_id=? AND paid=0",runId)==1;}
+    synchronized boolean colosseumMarkActive(String runId){return update("UPDATE colosseum_runs SET state='ACTIVE' WHERE run_id=? AND state='PREPARING'",runId)==1;}
+    /** Resolution is also a compare-and-set, and it is the single gate every exit path passes through. */
+    synchronized boolean colosseumResolve(String runId,String outcome,boolean rewarded,long durationMs){
+        return update("UPDATE colosseum_runs SET state='RESOLVED',outcome=?,rewarded=?,ended_at=?,duration_ms=? WHERE run_id=? AND state<>'RESOLVED'",
+                outcome,rewarded?1:0,System.currentTimeMillis(),durationMs,runId)==1;
+    }
+    /** Rewarded victories a player has banked today. Admin tests are excluded at the query, not by the caller. */
+    synchronized int colosseumRewardedToday(String player,String day){
+        return integer("SELECT COUNT(*) FROM colosseum_runs WHERE player=? AND day=? AND rewarded=1 AND admin_test=0",player,day);
+    }
+    synchronized int colosseumRewardedTodayFor(String player,String day,String boss){
+        return integer("SELECT COUNT(*) FROM colosseum_runs WHERE player=? AND day=? AND boss=? AND rewarded=1 AND admin_test=0",player,day,boss);
+    }
+    synchronized ColosseumStats colosseumStats(String player,String boss){
+        return one("SELECT "+COLO_STAT_COLUMNS+" FROM colosseum_stats WHERE player=? AND boss=?",Database::mapColosseumStats,player,boss);
+    }
+    synchronized List<ColosseumStats> colosseumStatsOf(String player){
+        return list("SELECT "+COLO_STAT_COLUMNS+" FROM colosseum_stats WHERE player=?",Database::mapColosseumStats,player);
+    }
+    /** Fastest valid clears of one boss. best_ms is only ever written by a committed, non-test victory, so
+     *  the leaderboard cannot contain an admin test or a recovered crash. */
+    synchronized List<ColosseumStats> colosseumTop(String boss,int limit){
+        return list("SELECT "+COLO_STAT_COLUMNS+" FROM colosseum_stats WHERE boss=? AND best_ms>0 ORDER BY best_ms ASC LIMIT ?",Database::mapColosseumStats,boss,limit);
+    }
+    private void colosseumEnsureStats(String player,String playerName,String boss){
+        update("INSERT OR IGNORE INTO colosseum_stats(player,boss,player_name) VALUES(?,?,?)",player,boss,playerName);
+        update("UPDATE colosseum_stats SET player_name=? WHERE player=? AND boss=?",playerName,player,boss);
+    }
+    synchronized void colosseumStatAttempt(String player,String playerName,String boss,double fee){
+        colosseumEnsureStats(player,playerName,boss);
+        update("UPDATE colosseum_stats SET attempts=attempts+1,fees_paid=fees_paid+? WHERE player=? AND boss=?",fee,player,boss);
+    }
+    /** Only a committed, normally-completed rewarded victory reaches the public numbers. {@code ranked} is
+     *  false for an admin test, which still gets its attempt/victory recorded privately but never a time. */
+    synchronized void colosseumStatVictory(String player,String playerName,String boss,double won,long durationMs,boolean ranked){
+        colosseumEnsureStats(player,playerName,boss);
+        update("UPDATE colosseum_stats SET victories=victories+1,cash_won=cash_won+?,last_victory_at=? WHERE player=? AND boss=?",won,System.currentTimeMillis(),player,boss);
+        if(ranked&&durationMs>0)update("UPDATE colosseum_stats SET best_ms=? WHERE player=? AND boss=? AND (best_ms=0 OR best_ms>?)",durationMs,player,boss,durationMs);
+    }
+    synchronized void colosseumStatLoss(String player,String playerName,String boss){
+        colosseumEnsureStats(player,playerName,boss);
+        update("UPDATE colosseum_stats SET losses=losses+1 WHERE player=? AND boss=?",player,boss);
+    }
+    synchronized void colosseumStateSave(String player,byte[] items,String world,double x,double y,double z,float yaw,float pitch,int level,float exp,double health,int food,String gamemode,String extra){
+        update("INSERT OR REPLACE INTO colosseum_state(player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",player,items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra);
+    }
+    synchronized ArenaState colosseumState(String player){
+        return one("SELECT items,world,x,y,z,yaw,pitch,level,exp,health,food,gamemode,extra FROM colosseum_state WHERE player=?",
+                rs->new ArenaState(rs.getBytes(1),rs.getString(2),rs.getDouble(3),rs.getDouble(4),rs.getDouble(5),rs.getFloat(6),rs.getFloat(7),rs.getInt(8),rs.getFloat(9),rs.getDouble(10),rs.getInt(11),rs.getString(12),rs.getString(13)),player);
+    }
+    synchronized void colosseumStateClear(String player){update("DELETE FROM colosseum_state WHERE player=?",player);}
+    /** Removes the throwaway rows /ashfall colosseum verify writes. A verification run must not leave a
+     *  trace in the ledgers it is verifying -- a leftover row would surface on a leaderboard or in an audit
+     *  as a real encounter. Scoped to the suite's own prefix, which no real player id can match. */
+    synchronized int colosseumPurgeVerifyRows(String prefix){
+        int removed=update("DELETE FROM colosseum_runs WHERE run_id LIKE ? OR player LIKE ?",prefix,prefix);
+        removed+=update("DELETE FROM colosseum_stats WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM colosseum_state WHERE player LIKE ?",prefix);
+        /*  The Shard tables too, because the Colosseum now feeds the SAME allowance world bosses do -- and a
+         *  verification run that left ledger rows behind would both inflate somebody's earned total and,
+         *  worse, make its own next run fail against its own leftovers. */
+        removed+=update("DELETE FROM shard_ledger WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM shard_accounts WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM shard_cooldowns WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM shard_purchases WHERE player LIKE ?",prefix);
+        removed+=update("DELETE FROM players WHERE id LIKE ?",prefix);
+        return removed;
+    }
+    synchronized List<String> colosseumStateOwners(){return list("SELECT player FROM colosseum_state",rs->rs.getString(1));}
+
     synchronized void stashAddItem(String owner,ItemStack item){
         if(item==null||item.getType().isAir())return;
         update("INSERT INTO smp_order_stash(owner,item,created_at) VALUES(?,?,?)",owner,ItemStack.serializeItemsAsBytes(new ItemStack[]{item}),System.currentTimeMillis());
@@ -805,6 +1066,55 @@ final class Database implements AutoCloseable {
             update("INSERT INTO smp_order_stash(owner,item,created_at) VALUES(?,?,?)",owner,ItemStack.serializeItemsAsBytes(new ItemStack[]{stack}),System.currentTimeMillis());
         }
     }
+    /** One thing the stash owes somebody, with the row that owes it. */
+    record StashRow(long id,ItemStack item){}
+
+    /*  READ WITHOUT DELETING.
+     *
+     *  stashTake() below is the old shape: read every row, delete every row, hand the items back to a
+     *  caller who then writes them into an inventory. Three ways that loses somebody's property:
+     *
+     *      the rows are committed gone the instant the read returns, but the inventory holding the items
+     *      is not durable until Paper next writes player data -- which can be minutes away. A crash in
+     *      between destroys every claim with no record anywhere that it existed.
+     *
+     *      it is per-OWNER, so one call takes auction goods, Colosseum loot and order deliveries together.
+     *      An exception on the third item abandons the fourth and fifth, whose rows are already deleted.
+     *
+     *      a full inventory relied on the caller putting the leftovers back. One caller did. One dropped
+     *      them on the floor, where they despawn in five minutes -- or vanish with the world, if the
+     *      player happened to be standing in a disposable arena.
+     *
+     *  Delivery reads with this, writes to the inventory, and only then removes the row it delivered. */
+    synchronized List<StashRow> stashRows(String owner){
+        List<StashRow> out=new ArrayList<>();
+        for(Object[] row:list("SELECT id,item FROM smp_order_stash WHERE owner=? ORDER BY id",
+                rs->new Object[]{rs.getLong(1),rs.getBytes(2)},owner))
+            try{
+                for(ItemStack item:ItemStack.deserializeItemsFromBytes((byte[])row[1]))
+                    if(item!=null&&!item.getType().isAir())out.add(new StashRow((Long)row[0],item));
+            }catch(Throwable ignored){}
+        return out;
+    }
+    /** One claim by id, for the receipt-settling path, which knows the id but not the owner. */
+    synchronized StashRow stashRow(long id){
+        for(Object[] row:list("SELECT id,item FROM smp_order_stash WHERE id=?",
+                rs->new Object[]{rs.getLong(1),rs.getBytes(2)},id))
+            try{
+                for(ItemStack item:ItemStack.deserializeItemsFromBytes((byte[])row[1]))
+                    if(item!=null&&!item.getType().isAir())return new StashRow((Long)row[0],item);
+            }catch(Throwable ignored){}
+        return null;
+    }
+    /** Delivered. Returns false if somebody else already removed it, which is what makes a second
+     *  collection a no-op rather than a second delivery. */
+    synchronized boolean stashRemove(long id){return update("DELETE FROM smp_order_stash WHERE id=?",id)==1;}
+    /** Part of a stack fitted and the rest did not. The row keeps its place in the queue and its id, so a
+     *  half-delivered stack can never be counted as a fresh claim. */
+    synchronized boolean stashShrink(long id,ItemStack remainder){
+        return update("UPDATE smp_order_stash SET item=? WHERE id=?",
+                ItemStack.serializeItemsAsBytes(new ItemStack[]{remainder}),id)==1;
+    }
     synchronized int stashCount(String owner){return integer("SELECT COUNT(*) FROM smp_order_stash WHERE owner=?",owner);}
     synchronized List<ItemStack> stashOf(String owner){
         List<ItemStack> out=new ArrayList<>();
@@ -812,7 +1122,9 @@ final class Database implements AutoCloseable {
             try{for(ItemStack item:ItemStack.deserializeItemsFromBytes(raw))if(item!=null&&!item.getType().isAir())out.add(item);}catch(Throwable ignored){}
         return out;
     }
-    /** Read and delete together, so a stash cannot be collected twice. */
+    /** Read and delete together. Kept for the admin/selftest paths that genuinely want the stash emptied
+     *  in one statement; player-facing delivery goes through stashRows/stashRemove instead, because this
+     *  shape commits the deletion before anything has actually received the items. */
     synchronized List<ItemStack> stashTake(String owner){
         List<ItemStack> out=stashOf(owner);
         update("DELETE FROM smp_order_stash WHERE owner=?",owner);
@@ -1145,8 +1457,116 @@ final class Database implements AutoCloseable {
             List<ItemStack> graveItems=List.of(new ItemStack(org.bukkit.Material.DIAMOND,3),new ItemStack(org.bukkit.Material.IRON_PICKAXE));long grave=createGrave("__selftest_a",UUID.nameUUIDFromBytes("OfflinePlayer:SelfTestA".getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString(),"SelfTestA","SelfTestA",null,null,plugin.getServer().getWorlds().getFirst().getSpawnLocation(),System.currentTimeMillis()+60000,graveItems);if(grave(grave)==null||graveItems(grave).size()!=2)throw new SQLException("grave persistence");saveGraveItems(grave,List.of(new ItemStack(org.bukkit.Material.DIAMOND)));if(graveItems(grave).size()!=1)throw new SQLException("grave partial persistence");saveGraveItems(grave,List.of());if(grave(grave)!=null)throw new SQLException("empty grave cleanup");checks.add("Independent grave/partial-loot/empty cleanup round trip: ok");
             recordEliteSpawn("epic",true);if(eliteSpawnCounts().stream().noneMatch(row->row.tier().equals("epic")&&row.total()>0))throw new SQLException("elite telemetry");checks.add("Elite rarity telemetry round trip: ok");
             saveMerchant(new MerchantRow("__selftest_merchant","SHOP",plugin.getServer().getWorlds().getFirst().getName(),0,64,0,0,0,null));if(merchant("__selftest_merchant")==null)throw new SQLException("merchant round trip");checks.add("Persistent spawn merchant round trip: ok");
-            markRelicLost("__selftest_relic",System.currentTimeMillis()+1000);if(!"LOST".equals(relicLifecycle("__selftest_relic").status()))throw new SQLException("relic lifecycle");checks.add("Relic lifecycle state round trip: ok");
+            markRelicLost("__selftest_relic",System.currentTimeMillis()+1000);if(!"LOST".equals(relicLifecycle("__selftest_relic").status()))throw new SQLException("relic lifecycle");
+            /*  RECLAIMED must be its own state, distinct from LOST.
+             *
+             *  They shared LOST, and the false-loss recovery -- which correctly reinstates a LOST relic found
+             *  in its tracked owner's hands -- therefore cancelled every inactivity reclaim seconds after the
+             *  owner logged back in. If these two ever collapse back into one value, this fails. */
+            markRelicReclaimed("__selftest_relic",System.currentTimeMillis()+1000);
+            if(!"RECLAIMED".equals(relicLifecycle("__selftest_relic").status()))throw new SQLException("relic reclaimed state");
+            if(relicLifecycle("__selftest_relic").active())throw new SQLException("a reclaimed relic must not be active");
+            checks.add("Relic lifecycle state round trip (LOST and RECLAIMED distinct): ok");
             grantServerAdmin("__selftest_admin","SelfTestAdmin");if(!isServerAdmin("__selftest_admin"))throw new SQLException("server admin persistence");checks.add("Console-managed admin persistence: ok");
+            /*  Colosseum: the money flags are compare-and-set, and that is the whole anti-duplication
+             *  guarantee. Asserted directly, because "charge once" is not something a live fight can prove. */
+            colosseumRunOpen("__selftest_run","__selftest_a","SelfTestA","__selftest_boss","__selftest_arena",500000,1000000,false,"__selftest_day");
+            if(!colosseumMarkCharged("__selftest_run")||colosseumMarkCharged("__selftest_run"))throw new SQLException("the entry fee could be charged twice");
+            /*  And the flag never survives a fee that did not: a charge the player cannot afford must leave
+             *  the run exactly as uncharged as it was, or boot recovery will refund money nobody paid. */
+            colosseumRunOpen("__selftest_run_poor","__selftest_a","SelfTestA","__selftest_boss","__selftest_arena",500000,1000000,false,"__selftest_day");
+            double held=player("__selftest_a")==null?0:player("__selftest_a").balance();
+            if(colosseumChargeEntry("__selftest_run_poor","__selftest_a",held+1000000,"COLOSSEUM_ENTRY:selftest"))throw new SQLException("an unaffordable entry fee was accepted");
+            if(colosseumRun("__selftest_run_poor")!=null&&colosseumRun("__selftest_run_poor").charged())throw new SQLException("a failed charge still marked the run charged - recovery would refund a fee nobody paid");
+            if(player("__selftest_a")!=null&&Math.abs(player("__selftest_a").balance()-held)>0.001)throw new SQLException("a failed charge moved money");
+            checks.add("Colosseum entry fee is one commit (flag and money cannot disagree): ok");
+
+            /*  AN AUCTION SALE MOVES EVERYTHING OR NOTHING.
+             *
+             *  The old path was five separate commits ending in an inventory write, and every gap between
+             *  them lost something: a buyer charged for a listing still on sale, a seller never paid for a
+             *  listing marked sold, or -- worst -- everyone paid and the item gone, because the listing row
+             *  IS the escrow and an inventory write is not a commit.
+             *
+             *  Checked here by conservation: what leaves the buyer arrives at the seller and the bank, and
+             *  the item is in a durable stash rather than in an inventory nobody can prove. */
+            /** A second fixture account, because a sale needs two sides. */
+            update("INSERT OR IGNORE INTO players(id,name,balance) VALUES('__selftest_b','SelfTestB',50000)");
+            long lot=createAuction("__selftest_a","SelfTestA",new ItemStack(org.bukkit.Material.DIAMOND,7),1000,System.currentTimeMillis()+600000,0);
+            double buyerBefore=player("__selftest_b").balance();
+            double sellerBefore=player("__selftest_a").balance();
+            double bankAtSale=bank().balance();
+            int stashBefore=stashCount("__selftest_b");
+
+            /** A buyer who cannot afford it must change nothing at all. */
+            if(auctionSettle(lot,"__selftest_b","__selftest_a",buyerBefore+1_000_000,0,new ItemStack(org.bukkit.Material.DIAMOND,7),"selftest"))
+                throw new SQLException("an unaffordable auction purchase was accepted");
+            if(!"ACTIVE".equals(auction(lot).status()))throw new SQLException("a failed purchase consumed the listing");
+            if(Math.abs(player("__selftest_b").balance()-buyerBefore)>0.001)throw new SQLException("a failed purchase moved the buyer's money");
+            if(stashCount("__selftest_b")!=stashBefore)throw new SQLException("a failed purchase still owed the buyer an item");
+
+            /** And a sale that goes through conserves every side of it. */
+            if(!auctionSettle(lot,"__selftest_b","__selftest_a",1000,50,new ItemStack(org.bukkit.Material.DIAMOND,7),"selftest"))
+                throw new SQLException("an affordable auction purchase was refused");
+            if(!"SOLD".equals(auction(lot).status()))throw new SQLException("a completed sale left the listing unsold");
+            if(Math.abs((buyerBefore-player("__selftest_b").balance())-1000)>0.001)throw new SQLException("the buyer was not debited exactly the price");
+            if(Math.abs((player("__selftest_a").balance()-sellerBefore)-950)>0.001)throw new SQLException("the seller was not paid the price minus tax");
+            if(Math.abs((bank().balance()-bankAtSale)-50)>0.001)throw new SQLException("the sale tax did not reach the Central Bank");
+            if(stashCount("__selftest_b")!=stashBefore+1)throw new SQLException("the item was not durably owed to the buyer");
+            /** And it cannot be sold twice. */
+            if(auctionSettle(lot,"__selftest_b","__selftest_a",1000,50,new ItemStack(org.bukkit.Material.DIAMOND,7),"selftest"))
+                throw new SQLException("the same listing could be sold twice");
+            checks.add("Auction sale is one commit (buyer, seller, bank and escrow conserved): ok");
+
+            /** Reclaiming an expired listing owes the item durably rather than trusting an inventory write. */
+            long stale=createAuction("__selftest_a","SelfTestA",new ItemStack(org.bukkit.Material.EMERALD,3),200,System.currentTimeMillis()-1000,0);
+            expireAuctions();
+            int sellerStash=stashCount("__selftest_a");
+            if(!auctionReclaim(stale,"__selftest_a",new ItemStack(org.bukkit.Material.EMERALD,3)))throw new SQLException("an expired listing could not be reclaimed");
+            if(stashCount("__selftest_a")!=sellerStash+1)throw new SQLException("a reclaimed item was not durably owed");
+            if(auctionReclaim(stale,"__selftest_a",new ItemStack(org.bukkit.Material.EMERALD,3)))throw new SQLException("the same listing could be reclaimed twice");
+            checks.add("Expired-listing reclaim is one commit and cannot double-deliver: ok");
+
+            /*  A STASH IS ONLY AS GOOD AS ITS COLLECTION.
+             *
+             *  Settling an auction into a durable stash protects the SALE. It does nothing for the
+             *  delivery, and delivery is where the old code lost things: it deleted every row for the
+             *  owner and then wrote to an inventory that is not durable until Paper next saves the player.
+             *
+             *  These assert the row lifecycle delivery now depends on -- reading does not consume, only
+             *  removal does, removing twice cannot deliver twice, and a stack that only half fitted keeps
+             *  its own row rather than becoming a second claim. */
+            int owedBefore=stashCount("__selftest_b");
+            stashAddItem("__selftest_b",new ItemStack(org.bukkit.Material.DIAMOND,64));
+            List<StashRow> owedRows=stashRows("__selftest_b");
+            if(owedRows.size()!=owedBefore+1)throw new SQLException("the stash did not report everything it owes");
+            if(stashCount("__selftest_b")!=owedBefore+1)throw new SQLException("reading the stash consumed it");
+            StashRow claim=owedRows.get(owedRows.size()-1);
+            if(claim.item().getAmount()!=64)throw new SQLException("a stashed stack came back the wrong size");
+
+            /** Half of it fitted. The rest stays owed, on the same row. */
+            if(!stashShrink(claim.id(),new ItemStack(org.bukkit.Material.DIAMOND,20)))throw new SQLException("a part-delivered stack could not be resized");
+            if(stashCount("__selftest_b")!=owedBefore+1)throw new SQLException("resizing a claim created a second one");
+            List<StashRow> afterShrink=stashRows("__selftest_b");
+            StashRow shrunk=afterShrink.get(afterShrink.size()-1);
+            if(shrunk.id()!=claim.id())throw new SQLException("a part-delivered stack lost its place in the queue");
+            if(shrunk.item().getAmount()!=20)throw new SQLException("a part-delivered stack did not keep the remainder");
+
+            /** And it can be cleared exactly once. */
+            if(!stashRemove(claim.id()))throw new SQLException("a delivered claim could not be cleared");
+            if(stashRemove(claim.id()))throw new SQLException("the same claim could be delivered twice");
+            if(stashCount("__selftest_b")!=owedBefore)throw new SQLException("clearing one claim disturbed the others");
+            checks.add("Claim stash: reading does not consume it, and no claim can be delivered twice: ok");
+            if(!colosseumMarkActive("__selftest_run")||colosseumMarkActive("__selftest_run"))throw new SQLException("a run could be committed twice");
+            if(!colosseumMarkPaid("__selftest_run")||colosseumMarkPaid("__selftest_run"))throw new SQLException("the prize could be paid twice");
+            if(!colosseumResolve("__selftest_run","VICTORY",true,1234)||colosseumResolve("__selftest_run","DEATH",false,1))throw new SQLException("a run could be resolved twice");
+            if(colosseumRewardedToday("__selftest_a","__selftest_day")!=1)throw new SQLException("daily rewarded-victory count");
+            colosseumStatVictory("__selftest_a","SelfTestA","__selftest_boss",1000000,5000,true);
+            colosseumStatVictory("__selftest_a","SelfTestA","__selftest_boss",1000000,9000,true);
+            if(colosseumStats("__selftest_a","__selftest_boss").bestMs()!=5000)throw new SQLException("best completion time kept the slower run");
+            colosseumStatVictory("__selftest_a","SelfTestA","__selftest_boss",0,10,false);
+            if(colosseumStats("__selftest_a","__selftest_boss").bestMs()!=5000)throw new SQLException("an unranked (admin test) run reached the leaderboard");
+            checks.add("Colosseum fee/prize/resolution single-shot guards and leaderboard integrity: ok");
             connection.rollback();checks.add("Test transaction rollback: ok (no test data retained)");
         } catch(Exception e){rollbackQuietly();checks.add("FAILED: "+e.getMessage());}
         finally{autoCommitQuietly();}

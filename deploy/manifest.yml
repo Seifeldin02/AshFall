@@ -70,6 +70,84 @@ sync:
       were built on staging after the 2026-08-17 world clone. Copy the folders.
 
       Do NOT copy duel-templates/__canary; it is a test artefact of /ashfall duelmap canary.
+  - path: plugins/SMPCore/colosseum.yml
+    note: |
+      COLOSSEUM CONFIGURATION (added 2026-09-02). Every value the three Colosseum bosses have -- names,
+      icons, entity types, health, damage, armour, movement, knockback resistance, every ability value and
+      cooldown, time limits, entry fees, cash prizes, reward tables, availability, per-boss daily reward
+      limits and which arena each fights in -- plus the arena registry, the global concurrency limit and the
+      daily rewarded-victory cap.
+
+      A JAR SWAP DOES NOT CARRY THIS. The shipped resource is only written when the file does not already
+      exist, so an existing server keeps whatever it has. Promote the file, then run
+      /ashfall colosseum reload (which also interrupts and refunds any encounter running at that moment).
+
+      The money lives here: economy.daily-rewarded-victories is the brake that stops the Colosseum being an
+      unlimited money printer. At the default fee/prize it caps Colosseum profit at $1,500,000 per player
+      per day. Do not raise it without deciding what that number should be.
+
+      2026-09-03: now SIX bosses, and two keys that a jar swap will not carry and that matter:
+
+        economy.victory-shards (default 3) -- Shards a rewarded victory pays. These come from the SAME
+        ShardService and the SAME daily allowance as world bosses; there is no separate Colosseum shard
+        balance or cap. Raising this does not raise the daily cap, it only changes how fast a player
+        reaches it.
+
+        bosses.<key>.environment (NORMAL | NETHER) -- which world environment that boss's disposable
+        instance is CREATED with. Only emberbound_duelist is NETHER, because a Wither Skeleton is
+        Nether-native and burns in Overworld daylight; the arena, blocks and bounds are identical either
+        way and no Nether terrain is generated. Changing this to NORMAL will make that boss catch fire the
+        moment somebody edits the arena's pinned time of day.
+
+      Each boss also carries strength / weakness / counterplay strings that the GUI prints and the selftest
+      requires to be non-empty, and max-single-hit-percent, which stops one enormous opening blow skipping
+      an encounter's mechanics and announces itself when it fires.
+
+      2026-09-04: the Chainbound Behemoth's charge keys changed shape and a jar swap will not update them.
+      A live colosseum.yml carrying the old block will run a charge that does nothing useful:
+
+        charge.length is now the distance actually RUN, not only the distance drawn. charge.speed is
+        blocks per game tick and a step is twice it (the encounter ticks every 2). probe-distance is gone.
+
+        New and required for the fight to behave: hit-height, step-up, step-down, stuck-grace-steps, and
+        miss-crashes. miss-crashes: true is what makes a dodged charge punishable anywhere in the arena
+        rather than only next to a wall -- turning it off removes the encounter's only real punish window
+        and makes its printed counterplay a lie.
+
+      Copy the shipped colosseum.yml charge block over the live one, then /ashfall reload.
+  - path: plugins/SMPCore/colosseum-templates
+    note: |
+      COMMITTED COLOSSEUM ARENA SNAPSHOTS (added 2026-09-02). Same shape and same rules as duel-templates
+      above -- one folder per arena key, a Paper dimension folder with no level.dat -- and the same
+      consequence if it is missing: /colosseum offers nothing, and /ashfall selftest reports
+      "Colosseum arena snapshots committed: 0/1".
+
+      2026-09-04: a SECOND folder can appear here, named <arena>__nether. It is a DERIVED cache, not a
+      commit: the Overworld snapshot re-shaped for a Nether-environment instance, built automatically the
+      first time a Nether boss is fought and rebuilt whenever the arena is re-committed. An Overworld
+      snapshot cloned straight into a Nether world hands Paper chunks whose light arrays do not fit -- 84
+      "Failed to parse light data" stack traces and a full re-light per instance, measured.
+
+      Safe to delete: it is rebuilt on next use, at the cost of one noisy conversion. Do NOT hand-edit it
+      or treat it as the arena; /ashfall colosseum save <arena> is still the only way to commit a change,
+      and committing drops this copy automatically.
+
+      If a <arena>__nether folder already exists that was built before b498d2b, DELETE IT. The conversion
+      originally only re-shaped the arena's own chunks, which left the world spawn and the lighting ring
+      around the edges in the old shape -- seven chunks that then threw on every instance load afterwards.
+      A snapshot converted by the current build reports zero. Production has never had one, so this only
+      applies to a server that ran an intermediate build.
+
+      DELIBERATELY SEPARATE from duel-templates. The Colosseum arena was seeded once from the committed
+      arena100 duel snapshot and is its own world from that point on; editing one can never alter the other,
+      which is the whole reason for the split.
+
+      Unlike the imported duel maps, this one CAN be regenerated on production from code, because its base
+      is the code-built flat arena rather than a copy of the overworld:
+        /ashfall duelmap build arena100     (only if arena100 is not already committed)
+        /ashfall colosseum create ashen_colosseum
+        /ashfall colosseum save ashen_colosseum
+      Copying the folder is still faster and keeps any hand-built decoration.
   - path: config/paper-world-defaults.yml
     note: |
       Global Paper world defaults; the per-dimension files below OVERRIDE this.
@@ -112,8 +190,63 @@ sync:
       console mode every five seconds, because JLine sets its own mode when Paper initialises the terminal
       (observed: 0x9, extended flags cleared) and nothing re-asserted it afterwards. Logs to
       logs/console-guard.log, never to the console -- writing to the console is the thing being guarded.
+
+      ORPHAN FIX (2026-09-04, staging only so far): the "is my server still running" check asked whether
+      ANY java.exe was running paper.jar, and on this host production always is -- so a staging guard
+      whose console had gone never reached zero and never exited, while GetConsoleMode kept succeeding
+      for an orphan still holding a handle. Every staging restart left one behind, re-asserting console
+      modes every five seconds forever. It now checks the console that launched it, which is what
+      actually identifies which server it belongs to and is the same guard freeze-watchdog.ps1 uses.
+      PRODUCTION'S COPY STILL PREDATES THIS. Promote config-templates/console-guard.ps1 alongside
+      storage-guard.ps1 at the next production restart window.
       start.bat / start-staging.bat must launch it with `start /b`. Verify with an external probe attached to
       the server console: mode must read 0x89 while Java is running.
+  - path: storage-guard.ps1
+    note: |
+      ADDED 2026-09-02 after Prism's database reached 36.4 GB with nothing anywhere reporting it -- the
+      server itself sat at a flawless 20.0 TPS throughout, because Prism commits off the main thread, so
+      every in-game signal said healthy while the host drowned in write I/O.
+
+      ORPHAN FIX (2026-09-04, staging only so far): the loop had no owner check, so every restart left
+      another copy running. Nineteen were polling prism.db and the disk at once on the staging host
+      before this was found. It now exits when the console that launched it is gone, which is the
+      same guard freeze-watchdog.ps1 already had. PRODUCTION'S COPY STILL PREDATES THIS -- its single
+      instance is harmless, but the next production restart will start accumulating them, so promote
+      config-templates/storage-guard.ps1 with the next production restart window.
+
+      2026-09-05: also sliced its fifteen-minute sleep into five-second checks, and both guards now
+      exit with the java process inside their OWN console's tree rather than with the console itself.
+      A conhost stays alive while anything is attached to it, so console-and-guards were each waiting
+      for the other and a restart left the whole set behind. See deploy/PROMOTION_CHECKLIST.md, which
+      covers promoting both scripts and rolling them back independently of the jar.
+
+      Checks plugins/prism/prism.db and free disk every 15 minutes; logs to logs/storage-guard.log and warns
+      in-game over RCON on a CHANGE of state. Warn/alarm: Prism 2/5 GB, free disk 40/20 GB. The 2 GB warning
+      is ~10x the measured post-filter steady state (~0.22 GB over a 7-day window). Launched by the
+      launchers with `start /b`.
+  - path: plugins/prism/prism.conf
+    note: |
+      BOUNDS PRISM'S GROWTH. Do not let these three revert:
+        vehicle-ride / vehicle-exit = false   66.8% of the old 36.4 GB was oak boats in one creeper farm
+        filter ignore-environmental-mob-deaths  IGNORE entity-death whose named-cause is environmental
+                                              (fall/cramming/drowning/...); 32% more of the old database.
+                                              Keyed on CAUSE so player kills and boss kills are still kept.
+        purge before:7d                       was 6w, which had NEVER fired because the data was younger
+                                              than the window the whole time.
+      Everything else stays ON deliberately -- block, container, item, player-death and audit actions cost
+      almost nothing (0.85% of rows combined) and are the entire point of the plugin.
+      Pre-reset copies: config-templates/prism/*.pre-reset-20260902
+  - path: freeze-watchdog.ps1
+    note: |
+      ADDED 2026-09-02. Probes RCON from OUTSIDE the JVM every 30s and, after 10 consecutive unanswered
+      probes (~5 min), calls restart-server.bat and kills the JVM. This is the layer that bounds ANY hang --
+      deadlock, plugin loop, GC spiral, blocked console -- to minutes rather than hours. RCON is the probe
+      because answering it requires the main thread; a bare TCP connect stayed up all through the
+      2026-08-31 outage. Launched by start.bat / start-staging.bat with `start /b`.
+
+      KNOWN BEHAVIOUR: it exits with its console, so it is absent until the next server start. Verified end
+      to end on staging by suspending the JVM with NtSuspendProcess: detected, killed and restarted with no
+      human involved.
   - path: restart-server.bat
     note: |
       ADDED 2026-09-01. spigot.yml settings.restart-script now points at this file by ABSOLUTE path; it used
@@ -162,8 +295,21 @@ jar_versions:
     contains: "b140"
 
 env:
+  - path: launch-via-conhost.bat
+    note: |
+      The visible-console launcher, in BOTH server directories, each cd-ing to its own. Every path inside it
+      must stay ABSOLUTE (%~dp0-derived). It used a relative script name for years, worked fine from a normal
+      console, and failed silently the first time restart-server.bat called it -- the recovery child inherits
+      the JVM environment, and NoDefaultCurrentDirectoryInExePath alone makes cmd answer "not recognized"
+      with the file sitting right there. A repo copy of the shape is in config-templates/.
   - path: start.bat
     note: |
+      JVM FLAGS ARE LOAD-BEARING, not tuning. -Dlog4j2.AsyncQueueFullPolicy=Discard and
+      -Dlog4j2.DiscardThreshold=ERROR are the fix for the 2026-08-31 console stall: Paper wraps the file and
+      console appenders in ONE Log4j AsyncAppender, and the DEFAULT full-queue policy makes the producer --
+      the server thread -- block until there is room. Discard drops log lines instead. A launcher that loses
+      these flags re-opens a 22-hour outage. Verified present on production 2026-09-02.
+
       Production launcher. Differs from staging by heap and by filename (staging uses start-staging.bat), so
       it is never copied -- but BOTH must invoke disable-quickedit.ps1 before the JVM and launch
       console-guard.ps1 with `start /b` alongside it. A launcher missing the guard is how the 2026-08-31
@@ -182,6 +328,30 @@ env:
 # Artifacts that exist ONLY on staging and must never be copied to production, but still have to be
 # tracked -- their absence on production is correct, while their absence on STAGING is a fault.
 staging_only:
+  - path: testing/harness/harness.ini
+    repo_relative: true
+    note: |
+      REAL-GAME TEST HARNESS ENDPOINT (added 2026-09-04). Lives in the REPOSITORY working copy, not on
+      either server, and is git-ignored on purpose: it holds the staging RCON password and a throwaway
+      test-account password. It does not travel with a clone and must never be committed or created on
+      production.
+
+      Anyone running testing/harness/run.py creates it from harness.ini.example first. There is no default
+      endpoint and no fallback -- guard.py refuses ports 25565 and 25575, the production hostnames, a blank
+      password and the real administrator account names before a socket is opened, and that refusal is not
+      configurable. Verify with `python testing/harness/test_guard.py`, which needs no server.
+
+      The test account (AshfallProbe by default) lives in the staging AuthMe database, which is also not
+      tracked. Create it on a fresh staging server with `authme register <name> <throwaway-password>`. It
+      must NOT be added to trusted-admin.accounts: scenarios needing operator grant and revoke it
+      themselves, and one asserts the account is an ordinary player first, because admin-only testing is
+      what hid the /colosseum leave bug.
+
+      The `stash` scenario grants operator for exactly one console call (`ashfall stash <player> grant`) and
+      revokes it in a finally. It deliberately does not use an admin "wipe the stash" verb to reset itself --
+      it drains through the player's own /orders screens instead, because anything that can delete a player's
+      unclaimed property from the console is a worse thing to own than a slightly longer test.
+
   - path: start-staging.bat
     note: |
       Staging launcher. Same two requirements as production's start.bat: invoke disable-quickedit.ps1 before

@@ -20,13 +20,44 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class CoreUtil {
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE ASHFALL MESSAGE VOCABULARY
+     *
+     *  Every player-facing line on this server passes through msg() or error() -- about 1,350 call sites --
+     *  so the look of the whole server is decided here rather than in any of them. See UI_STYLE_GUIDE.md
+     *  for the rules; the short version:
+     *
+     *    A marker, not a brand.   Every message used to open with the word "Ashfall". Repeated 1,350 times
+     *                             that stops being identity and becomes margin noise -- the relic list
+     *                             printed it five times down the left-hand side. One coloured mark says the
+     *                             same thing in one character, and its colour is what tells you whether to
+     *                             care.
+     *
+     *    Colour means one thing.  Grey is body. White is a value worth reading. Ember is Ashfall and money.
+     *                             Green happened, yellow needs attention, red did not happen. Nothing else.
+     *
+     *    Errors are not red walls. error() used to paint the whole line red, brand included. Red is for the
+     *                             mark; the sentence stays readable, and the way out of the problem goes
+     *                             quietly underneath it.
+     *
+     *  The marker glyph is the one the old prefix already used, so it is known to render on both clients.
+     *  No new font, no resource pack, nothing exotic. */
+    static final String MARK = "›";
+    static final String DOT = "\u00b7";
+    /** Ember: the one brand colour. Headings, money, the sidebar title. */
+    static final net.kyori.adventure.text.format.TextColor EMBER = net.kyori.adventure.text.format.TextColor.color(0xE0A24B);
+    static final String C_EMBER = "§6", C_TEXT = "§f", C_BODY = "§7", C_MUTE = "§8";
+    static final String C_GOOD = "§a", C_WARN = "§e", C_BAD = "§c";
+
     static final Component PREFIX = Component.text("Ashfall ", NamedTextColor.GOLD).append(Component.text("› ",NamedTextColor.DARK_GRAY));
     private static final DecimalFormat MONEY = new DecimalFormat("#,##0.##");
     private CoreUtil() {}
     static String id(String name){return name.toLowerCase(Locale.ROOT);}
     static String id(Player p){return id(p.getName());}
-    static String money(double amount){return "$"+MONEY.format(amount);}
-    static String compactMoney(double amount){return "$"+compact(amount);}
+    /** The sign goes in front of the symbol. "$-8,000,000" is not how anybody writes a loss, and the
+     *  Colosseum totals line printed exactly that. */
+    static String money(double amount){return (amount<0?"-$":"$")+MONEY.format(Math.abs(amount));}
+    static String compactMoney(double amount){return (amount<0?"-$":"$")+compact(Math.abs(amount));}
     /** The one compact-number formatter. Everything that abbreviates a number goes through this, so
      *  billions read as b and millions as m everywhere at once rather than per screen -- the leaderboards
      *  used to say "bil" and the scoreboard "B" for the same value. */
@@ -36,8 +67,42 @@ final class CoreUtil {
         String pattern=absolute>=100?"0":absolute>=10?"0.#":"0.##";
         return new DecimalFormat(pattern).format(value)+suffixes[suffix];
     }
-    static void msg(CommandSender sender,String text){sender.sendMessage(ChatColor.GOLD+"Ashfall "+ChatColor.DARK_GRAY+"› "+ChatColor.RESET+text);}
-    static void error(CommandSender sender,String text){sender.sendMessage(ChatColor.RED+"Ashfall › "+text);}
+    /** Neutral information -- the overwhelming majority of what the server says. */
+    static void msg(CommandSender sender,String text){sender.sendMessage(C_MUTE+MARK+" "+C_BODY+text);}
+    /** It worked, and something moved because of it. */
+    static void ok(CommandSender sender,String text){sender.sendMessage(C_GOOD+MARK+" "+C_TEXT+text);}
+    /** Worth noticing before it becomes a problem: a cost, a countdown, a limit being approached. */
+    static void warn(CommandSender sender,String text){sender.sendMessage(C_WARN+MARK+" "+C_TEXT+text);}
+    /** It did not happen, and this is why. */
+    static void error(CommandSender sender,String text){sender.sendMessage(C_BAD+MARK+" "+C_TEXT+text);}
+    /** The same, with the way out underneath it. */
+    static void error(CommandSender sender,String problem,String next){
+        sender.sendMessage(C_BAD+MARK+" "+C_TEXT+problem);
+        if(next!=null&&!next.isBlank())sender.sendMessage("  "+C_MUTE+next);
+    }
+    /** Opens a block of related lines -- one heading, then items, instead of a prefix down the margin. */
+    static void heading(CommandSender sender,String title){sender.sendMessage(C_EMBER+title);}
+    static void heading(CommandSender sender,String title,String detail){
+        sender.sendMessage(C_EMBER+title+(detail==null||detail.isBlank()?"":C_MUTE+"  "+detail));
+    }
+    /** A line inside a heading's block. */
+    static void item(CommandSender sender,String text){sender.sendMessage("  "+C_MUTE+DOT+" "+C_BODY+text);}
+    /** A labelled value: the label recedes, the value does not. */
+    static void field(CommandSender sender,String label,String value){
+        sender.sendMessage("  "+C_BODY+label+" "+C_TEXT+value);
+    }
+    /** A quiet line under something else: how to continue, or what a number means. */
+    static void hint(CommandSender sender,String text){sender.sendMessage("  "+C_MUTE+text);}
+
+    /*  Untrusted text on its way into a message.
+     *
+     *  Nicknames, faction names and tags, listing titles and anything else a player chose are data, not
+     *  formatting. A name carrying a section sign would otherwise recolour or hide the rest of the line it
+     *  appears in -- including the part that says what something costs. */
+    static String safe(String text){
+        if(text==null)return "";
+        return text.replace('§','?');
+    }
     static boolean finitePositive(double d){return Double.isFinite(d)&&d>0;}
     private static final Pattern MONEY_INPUT=Pattern.compile("^\\$?([0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(k|m|mil|b)?$",Pattern.CASE_INSENSITIVE);
     private static final BigDecimal MAX_MONEY_INPUT=new BigDecimal("1000000000000000");
@@ -86,7 +151,192 @@ final class CoreUtil {
         return result.toString();
     }
     static ItemStack named(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));if(lore!=null)meta.lore(lore.stream().map(s->Component.text(s,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
-    static boolean give(Player p,ItemStack item){Map<Integer,ItemStack> left=p.getInventory().addItem(item);left.values().forEach(i->p.getWorld().dropItemNaturally(p.getLocation(),i));return left.isEmpty();}
+
+    /*  ---------------------------------------------------------------------------------------------------
+     *  HOW WIDE A LINE ACTUALLY IS
+     *
+     *  Minecraft's font is not fixed-width, and the sidebar is sized by whatever its widest line renders to,
+     *  so counting characters gets the composition wrong in both directions: "Illicit" is seven characters
+     *  and 26 pixels, "MMMMMMM" is seven characters and 42. The sidebar was budgeted in characters, so one
+     *  line of ordinary text could quietly set the width for all fifteen and leave the rest half empty.
+     *
+     *  These are the advances from the vanilla ASCII page -- 6 pixels for most glyphs (5 drawn plus 1 of
+     *  spacing), the narrow handful listed below, and one extra pixel per character while bold. Section
+     *  codes cost nothing because they are not drawn. Anything outside ASCII falls back to 6, which is the
+     *  common case in the unicode page and errs towards reserving too much rather than too little. */
+    private static final String W2="!,.:;i|'", W3="l`", W4=" I[]t", W5="\"()*<>fk{}", W7="@~";
+    static int charWidth(char c){
+        return W2.indexOf(c)>=0?2:W3.indexOf(c)>=0?3:W4.indexOf(c)>=0?4:W5.indexOf(c)>=0?5:W7.indexOf(c)>=0?7:6;
+    }
+    /** Rendered width of a legacy-coloured string in pixels, colour codes excluded. */
+    static int width(String text){
+        if(text==null)return 0;
+        int total=0;boolean bold=false;
+        for(int i=0;i<text.length();i++){
+            char c=text.charAt(i);
+            if(c=='§'&&i+1<text.length()){
+                char code=Character.toLowerCase(text.charAt(++i));
+                if(code=='l')bold=true;
+                else if(code=='r'||(code>='0'&&code<='9')||(code>='a'&&code<='f'))bold=false;
+                continue;
+            }
+            total+=charWidth(c)+(bold?1:0);
+        }
+        return total;
+    }
+    /** Cuts a string down to a pixel budget, carrying every colour code it passes so the tail cannot come
+     *  out in the wrong colour, and marking the cut so a shortened name is never mistaken for a whole one.
+     *  At least one visible character always survives: an ellipsis on its own says nothing at all. */
+    static String fit(String text,int pixels){
+        if(text==null)return "";
+        if(width(text)<=pixels)return text;
+        int ellipsis=charWidth('…');
+        StringBuilder out=new StringBuilder();int used=0,kept=0;
+        for(int i=0;i<text.length();i++){
+            char c=text.charAt(i);
+            if(c=='§'&&i+1<text.length()){out.append(c).append(text.charAt(++i));continue;}
+            int w=charWidth(c);
+            if(kept>0&&used+w+ellipsis>pixels)break;
+            out.append(c);used+=w;kept++;
+        }
+        return out.append('…').toString();
+    }
+    /** Pads with spaces until the string reaches a pixel column, so a label column lines up under a
+     *  proportional font rather than under a character count. A space is four pixels, so the column lands
+     *  within three of the target -- half a character, against the two or three a count can drift. */
+    static String padTo(String text,int pixels){
+        StringBuilder out=new StringBuilder(text);
+        while(width(out.toString())<pixels)out.append(' ');
+        return out.toString();
+    }
+
+    /*  ---------------------------------------------------------------------------------------------------
+     *  THE ASHFALL MENU VOCABULARY
+     *
+     *  Chest icons had exactly one style -- a gold name over grey lore -- from named() above and from eight
+     *  verbatim private copies of it scattered through the services. Everything looked equally important and
+     *  equally clickable, so a screen could not say "this does something", "this is only information",
+     *  "this is switched on" or "you cannot do this yet". It could only say all four the same way.
+     *
+     *  Six roles, and the colour carries the whole signal:
+     *
+     *      heading   ember       what this screen is, or the thing being confirmed. Never clickable.
+     *      action    white       something you can do right now.
+     *      info      grey        information; clicking does nothing and it does not pretend otherwise.
+     *      state     green/red   a switch, showing the state it is in now.
+     *      blocked   dark grey   present so the option stays discoverable, with a red line saying in words
+     *                            why it will not work -- instead of failing silently when clicked.
+     *      danger    red         spends money, deletes something, or cannot be undone.
+     *
+     *  CONFIRM AND CANCEL HAVE FIXED SIDES, and that is why this block exists at all. The universal
+     *  confirmation dialog put Cancel at 11 and Confirm at 15. The Bank's repayment dialog, the Ender Chest
+     *  upgrade and the Orders escrow dialog put Confirm at 11 and Cancel at 15 -- mirrored. A player who
+     *  learned where Cancel lives from the dialog they see most would press Confirm on a loan repayment
+     *  while meaning to back out. Nobody had to move an icon for that; the layouts drifted apart one screen
+     *  at a time. Both sides are named constants now, and every dialog reads the names. */
+    static final class Menu {
+        private Menu(){}
+        /** The 27-slot confirmation dialog. Cancel is always left, confirm is always right, everywhere. */
+        static final int SUBJECT=13, CANCEL=11, CONFIRM=15;
+        /** The bottom row of a 27-slot screen. */
+        static final int BACK_SMALL=22;
+        /** The bottom row of a 54-slot browse screen. */
+        static final int PREV=45, SEARCH=47, BACK=49, SORT=51, NEXT=53;
+        /** The 54-slot sell basket: fill the top, read the total, confirm on the right. The ordinary shop
+         *  and the spawner shop had landed on the same three numbers independently; they share them now. */
+        static final int SELL_CANCEL=47, SELL_TOTAL=49, SELL_CONFIRM=51;
+
+        private static final net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer LEGACY =
+                net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection();
+
+        /** Legacy colour codes render, and italics are forced off, so a line reads the same on Java and
+         *  through Geyser on Bedrock. A lore line that brings no colour of its own is body text. */
+        static ItemStack of(Material material,String name,List<String> lore){
+            ItemStack item=new ItemStack(material);
+            ItemMeta meta=item.getItemMeta();
+            meta.displayName(line(name));
+            if(lore!=null)meta.lore(lore.stream().map(text->line(text.indexOf('§')<0?C_BODY+text:text)).toList());
+            item.setItemMeta(meta);
+            return item;
+        }
+        private static Component line(String text){
+            return LEGACY.deserialize(text).decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC,false);
+        }
+        static ItemStack heading(Material m,String name,List<String> lore){return of(m,C_EMBER+name,lore);}
+        static ItemStack action(Material m,String name,List<String> lore){return of(m,C_TEXT+name,lore);}
+        static ItemStack info(Material m,String name,List<String> lore){return of(m,C_BODY+name,lore);}
+        static ItemStack danger(Material m,String name,List<String> lore){return of(m,C_BAD+name,lore);}
+
+        /** A switch that shows the state it is in, not the state it would move to -- the old bare "ON"/"OFF"
+         *  lore line was ambiguous about which of the two it meant. */
+        static ItemStack state(Material m,String name,boolean on,String detail){
+            List<String> lore=new ArrayList<>();
+            lore.add(on?C_GOOD+"On":C_BAD+"Off");
+            if(detail!=null&&!detail.isBlank())lore.add(detail);
+            lore.add(C_MUTE+"Click to turn it "+(on?"off":"on")+".");
+            return of(m,(on?C_TEXT:C_BODY)+name,lore);
+        }
+        /** Kept on screen, greyed, with the reason underneath. An option that silently does nothing when
+         *  clicked teaches a player that the menu is broken. */
+        static ItemStack blocked(Material m,String name,String reason,List<String> lore){
+            List<String> full=new ArrayList<>();
+            if(lore!=null)full.addAll(lore);
+            full.add(C_BAD+"Unavailable "+C_BODY+reason);
+            return of(m,C_MUTE+name,full);
+        }
+        static ItemStack confirm(String what,List<String> detail){
+            List<String> lore=new ArrayList<>();
+            if(detail!=null)lore.addAll(detail);
+            return of(Material.LIME_CONCRETE,C_GOOD+"Confirm"+(what==null||what.isBlank()?"":C_BODY+"  "+what),lore);
+        }
+        static ItemStack cancel(String detail){
+            return of(Material.RED_CONCRETE,C_BAD+"Cancel",
+                    List.of(detail==null||detail.isBlank()?"Nothing is charged.":detail));
+        }
+        static ItemStack back(String where){
+            return of(Material.ARROW,C_BODY+"Back",where==null||where.isBlank()?List.of():List.of(where));
+        }
+        /** Page arrows that say whether there IS another page, rather than two identical arrows either side
+         *  of a screen that will not move when you click them. */
+        static ItemStack page(int page,int pages,boolean forward){
+            boolean can=forward?page+1<pages:page>0;
+            return of(can?Material.ARROW:Material.GRAY_DYE,
+                    (can?C_TEXT:C_MUTE)+(forward?"Next":"Previous"),
+                    List.of(C_BODY+"Page "+C_TEXT+(page+1)+C_BODY+" of "+C_TEXT+pages,
+                            can?C_MUTE+"Click to go "+(forward?"forward.":"back.")
+                               :C_MUTE+(forward?"This is the last page.":"This is the first page.")));
+        }
+        /** Nothing here yet -- and what to do about it. An empty screen with no explanation is the most
+         *  common way a menu fails, and every list on this server needs one of these. */
+        static ItemStack nothing(String what,List<String> how){
+            return of(Material.LIGHT_GRAY_STAINED_GLASS_PANE,C_BODY+what,how);
+        }
+        /** THE FOOTER BAND of a 54-slot browse screen: the tail of the fifth row and the whole sixth, which
+         *  is where PREV, SEARCH, BACK, SORT and NEXT live. Painted before the buttons go in, so a screen
+         *  with fewer of them has the same shape as one with all of them rather than three holes in the
+         *  middle -- and so the boundary between what is for sale and what is a control is drawn once, in
+         *  the same place, on every shop. */
+        static void footer(org.bukkit.inventory.Inventory inv){
+            ItemStack pane=of(Material.GRAY_STAINED_GLASS_PANE,"",null);
+            for(int slot=43;slot<inv.getSize();slot++)inv.setItem(slot,pane);
+        }
+    }
+
+    /*  HANDS AN ITEM OVER WITHOUT CONSUMING THE CALLER'S COPY.
+     *
+     *  Inventory#addItem writes the remainder back into the stack it is given: a stack that fits entirely
+     *  comes back with amount 0, and a stack that half fits comes back holding only the half that did not.
+     *  Callers do not expect that -- the spawner payout counted `returned += item.getAmount()` immediately
+     *  after handing the item over and therefore counted zero, and the merchant read the scroll it had
+     *  just sold to decide what to announce.
+     *
+     *  Giving addItem a clone costs one object and makes every one of the ninety-odd call sites safe by
+     *  construction, including the ones nobody has written yet. */
+    static boolean give(Player p,ItemStack item){
+        Map<Integer,ItemStack> left=p.getInventory().addItem(item.clone());
+        left.values().forEach(i->p.getWorld().dropItemNaturally(p.getLocation(),i));
+        return left.isEmpty();
+    }
     static String ipHash(Player p){try{String ip=p.getAddress()==null?"unknown":p.getAddress().getAddress().getHostAddress();byte[] h=MessageDigest.getInstance("SHA-256").digest(ip.getBytes(StandardCharsets.UTF_8));return HexFormat.of().formatHex(h,0,12);}catch(Exception e){return "unknown";}}
     static boolean unsafeSurface(Block b){Material m=b.getType();return !m.isSolid()||m==Material.MAGMA_BLOCK||m==Material.CACTUS||m==Material.FIRE||m==Material.SOUL_FIRE||m.name().contains("LEAVES");}
     static Location findSafe(World world,int x,int z){Block top=world.getHighestBlockAt(x,z,HeightMap.MOTION_BLOCKING_NO_LEAVES);if(unsafeSurface(top)||top.isLiquid())return null;Biome biome=top.getBiome();String bn=biome.getKey().getKey();if(bn.contains("ocean")||bn.contains("river"))return null;Location l=top.getLocation().add(0.5,1,0.5);if(!l.getBlock().isPassable()||!l.clone().add(0,1,0).getBlock().isPassable())return null;return l;}

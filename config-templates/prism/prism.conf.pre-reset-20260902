@@ -1,0 +1,769 @@
+# Actions are in-game events/changes that Prism can record data for.
+# Some are purely informational, some can be reversed/restored.
+# Disabling any here will completely prevent prism from recording them.
+# Actions that are disabled by default may need some consideration/filters
+# before enabling them. Blanket-enabling everything is a recipe for
+# exponential database growth.
+actions {
+    # bed-enter is when a player or entity gets into bed.
+    bed-enter=false
+    # block-break is when a player or entity destroys a block (except from burn/explode).
+    block-break=true
+    # block-fade is when a block fades - melting snow, etc.
+    block-fade=false
+    # block-form is when a block forms - concrete, snow, etc.
+    block-form=true
+    # block-harvest is when a player harvests a block without breaking it (sweet berries).
+    block-harvest=true
+    # block-ignite is when a block is lit on fire.
+    # Note: Fire spreads to other blocks (block-spread). This records an initial ignition.
+    block-ignite=false
+    # block-place is when a player or entity places a block.
+    block-place=true
+    # block-shift is when a piston pushes or pulls a block.
+    # It's disabled by default because these are difficult to rollback
+    # and can become extremely spammy due to redstone contraptions.
+    # It WILL record dragon egg breaks even if block-shift is disabled.
+    block-shift=false
+    # block-spread is when a block spreads to a new block. Fire, mushrooms, etc.
+    # This event can produce a lot of data. There's a lot of natural gen you may
+    # wish to ignore. For example, vine/cave_vines all produce spread events
+    # as they grow, and grass blocks as it's spreads to dirt.
+    # A filter to ignore those is strongly recommended if you enable this.
+    block-spread=false
+    # block-use is when a player uses a block (buttons, doors, anvil, enchanting table, etc).
+    block-use=true
+    # bonemeal-use is when a player uses bonemeal on a block (grown trees/grass/flowers are block-place).
+    bonemeal-use=false
+    # bucket-empty is when a player places a block by emptying a bucket.
+    bucket-empty=true
+    # bucket-fill is when a player removes a block by filling a bucket.
+    bucket-fill=true
+    # entity-death is when a non-player entity dies.
+    entity-death=true
+    # entity-dye is when a player dyes an entity.
+    entity-dye=false
+    # entity-eat is when an entity eats a block and changes it.
+    entity-eat=false
+    # entity-leash is when a player leashes an entity.
+    entity-leash=false
+    # entity-place is when a player places an armor stand or end crystal.
+    entity-place=true
+    # entity-remove is when a player collects an entity, like fish with a water bucket.
+    entity-remove=true
+    # entity-rename is when a player renames an entity using a nametag.
+    entity-rename=true
+    # entity-ride is when a player rides an entity.
+    entity-ride=false
+    # entity-shear is when a player shears an entity.
+    entity-shear=false
+    # entity-transform is for villager healing, tadpoles to frogs, etc.
+    entity-transform=false
+    # entity-unleash is when a player or natural cause unleashes an entity.
+    entity-unleash=true
+    # firework-launch is when a player launches a firework rocket.
+    firework-launch=false
+    # fluid-flow tracks the flow of water and lava. Even when this is false,
+    # prism will record blocks broken by either.
+    # We very strongly recommend leaving this false and using
+    # a drain command instead. This produces an insane amount of activity data.
+    fluid-flow=false
+    # hanging-break is when an item frame or painting is broken/detached.
+    # This event will operate if block-break is false, even for detachments.
+    hanging-break=true
+    # hanging-place is when an item frame or painting is hung up.
+    hanging-place=true
+    # hopper-insert is when a hopper inserts an item into an inventory.
+    # This event is aggregated. See the docs for more details.
+    # If NOT using event aggregation, these can become massive database spam from farms.
+    # We *strongly* recommend using robust inventory/land protection plugins instead.
+    hopper-insert=false
+    # hopper-remove is when a hopper removes an item from an inventory.
+    # This event is aggregated. See the docs for more details.
+    # If NOT using event aggregation, these can become massive database spam from farms.
+    # We *strongly* recommend using robust inventory/land protection plugins instead.
+    hopper-remove=false
+    # inventory-open is when a player opens an inventory (chest, furnace, etc).
+    # Item inserts or removes are tracked separately.
+    inventory-open=false
+    # item-despawn is when an item entity naturally despawns from age (5 minutes by default).
+    # Note: this toggle currently has no effect. Only airtagged items are logged for this event,
+    # and they are always logged. Full toggle support will be implemented in the future.
+    item-despawn=false
+    # item-destroy is when an item entity is destroyed by the environment - lava, fire,
+    # cactus, the void, or an explosion.
+    # Note: this toggle currently has no effect. Only airtagged items are logged for this event,
+    # and they are always logged. Full toggle support will be implemented in the future.
+    item-destroy=true
+    # item-dispense is when a block dispenses an item.
+    # This event is aggregated. See the docs for more details.
+    item-dispense=true
+    # item-drop is when a player or block drops an item on the ground.
+    item-drop=true
+    # item-insert is when a player or block inserts an item into an inventory.
+    item-insert=true
+    # item-pickup is when a player or entity picks up an item from the ground.
+    item-pickup=true
+    # item-remove is when a player or block removes an item from an inventory.
+    item-remove=true
+    # item-rotate is when a player rotates an item inside an item frame.
+    item-rotate=false
+    # item-throw is when a player throws an item.
+    item-throw=true
+    # item-trade is when a player trades with a villager or wandering trader.
+    item-trade=true
+    # item-use is when a player uses an item.
+    item-use=true
+    # player-chat is when a player tries to submit a chat message.
+    player-chat=false
+    # player-command is when a player tries to use a command.
+    player-command=false
+    # player-death is when a player dies.
+    player-death=true
+    # player-join is when a player connects to the server.
+    player-join=false
+    # player-quit is when a player disconnects from the server.
+    player-quit=false
+    # player-teleport is when a player teleports.
+    player-teleport=false
+    # raid-trigger is when a player triggers a raid.
+    raid-trigger=true
+    # sign-edit is when a player edits the text on a sign.
+    sign-edit=true
+    # vehicle-break is when something breaks a boat or minecart.
+    vehicle-break=true
+    # vehicle-exit is when an entity exits a boat or minecart.
+    vehicle-exit=true
+    # vehicle-place is when a player places a boat or minecart.
+    vehicle-place=true
+    # vehicle-ride is when an entity enters a boat or minecart.
+    vehicle-ride=true
+    # worldedit-break is when a block is removed via WorldEdit.
+    # Requires WorldEdit to be installed.
+    worldedit-break=false
+    # worldedit-place is when a block is placed via WorldEdit.
+    # Requires WorldEdit to be installed.
+    worldedit-place=false
+    # xp-pickup is when a player picks up XP orbs.
+    xp-pickup=false
+}
+# Activities represent an action, location, cause, timestamp, etc.
+activities {
+    # Whether to ignore recording activities for players in creative.
+    # For finer control, you may also create a filter.
+    ignore-creative=false
+    # Commands that may contain sensitive data when tracking player-command.
+    # Matches the beginning of a command string. Do not include the forward-slash.
+    sensitive-commands=[
+        l,
+        login,
+        reg,
+        register,
+        changepassword,
+        changepw,
+        unreg,
+        unregister
+    ]
+    # Pattern used to format absolute timestamps shown in lookup results.
+    # Follows the java.time.format.DateTimeFormatter pattern syntax.
+    # Rendered in the server's local time zone.
+    timestamp-format="yyyy-MM-dd HH:mm:ss"
+}
+# Restrict which items players are allowed to airtag.
+airtags {
+    # The number of airtags a player may own when they have no prism.command.airtags.limit.<n>
+    # permission node. Set to -1 for unlimited.
+    default-limit=-1
+    # Item tags whose members may be airtagged.
+    tags=[
+        "minecraft:swords",
+        "minecraft:axes",
+        "minecraft:pickaxes",
+        "minecraft:shovels",
+        "minecraft:hoes",
+        "minecraft:head_armor",
+        "minecraft:chest_armor",
+        "minecraft:leg_armor",
+        "minecraft:foot_armor"
+    ]
+    # Materials that may be airtagged.
+    materials=[
+        elytra,
+        "totem_of_undying",
+        trident,
+        mace,
+        shield,
+        bow,
+        crossbow,
+        "fishing_rod",
+        "enchanted_golden_apple",
+        "nether_star"
+    ]
+}
+alerts {
+    # Do not alert for players in creative.
+    ignore-creative=true
+    # Hide alerts from a player if they both trigger and receive alerts.
+    ignore-self=false
+    # Set a maximum number of times a player can trigger a specific alert within a short period.
+    max-alerts-per-event=5
+    block-break-alerts {
+        # Enable or disable all alerts of this type.
+        enabled=true
+        # Set the maximum light level that triggers the alert.
+        max-light-level=100
+        # Set the minimum light level that triggers the alert.
+        min-light-level=0
+        alerts=[
+            {
+                # Limit how many neighboring blocks are scanned.
+                max-scan-count=20
+                # The CSS hex color to use for the alert message.
+                hex-color="#aa00aa"
+                materials=[
+                    "ancient_debris"
+                ]
+            },
+            {
+                # Limit how many neighboring blocks are scanned.
+                max-scan-count=150
+                block-tags=[
+                    "minecraft:copper_ores"
+                ]
+                # The CSS hex color to use for the alert message.
+                hex-color="#c1765a"
+            },
+            {
+                # Limit how many neighboring blocks are scanned.
+                max-scan-count=30
+                block-tags=[
+                    "minecraft:diamond_ores"
+                ]
+                # The CSS hex color to use for the alert message.
+                hex-color="#04babd"
+            },
+            {
+                # Limit how many neighboring blocks are scanned.
+                max-scan-count=20
+                block-tags=[
+                    "minecraft:emerald_ores"
+                ]
+                # The CSS hex color to use for the alert message.
+                hex-color="#21bf60"
+            },
+            {
+                # Limit how many neighboring blocks are scanned.
+                max-scan-count=30
+                block-tags=[
+                    "minecraft:gold_ores"
+                ]
+                # The CSS hex color to use for the alert message.
+                hex-color="#ffe17d"
+            },
+            {
+                # Limit how many neighboring blocks are scanned.
+                max-scan-count=150
+                block-tags=[
+                    "minecraft:iron_ores"
+                ]
+                # The CSS hex color to use for the alert message.
+                hex-color="#d6d6d6"
+            },
+            {
+                # Limit how many neighboring blocks are scanned.
+                max-scan-count=20
+                block-tags=[
+                    "minecraft:lapis_ores"
+                ]
+                # The CSS hex color to use for the alert message.
+                hex-color="#0670cc"
+            }
+        ]
+    }
+    block-place-alerts {
+        # Enable or disable all alerts of this type.
+        enabled=true
+        alerts=[
+            {
+                # The CSS hex color to use for the alert message.
+                hex-color="#fc2150"
+                materials=[
+                    bedrock,
+                    lava,
+                    tnt
+                ]
+            }
+        ]
+    }
+    item-use-alerts {
+        # Enable or disable all alerts of this type.
+        enabled=true
+        alerts=[
+            {
+                # The CSS hex color to use for the alert message.
+                hex-color="#fc2150"
+                materials=[
+                    "flint_and_steel",
+                    "lava_bucket"
+                ]
+            }
+        ]
+    }
+}
+# Configure automatic rollback.
+auto-rollback {
+    # Enable automatic rollback when a player is banned.
+    enabled=false
+    time-parameter="3d"
+}
+# Configure how Prism caches data. Probably best to leave
+# these settings alone unless you have specific reasons to change them.
+cache {
+    # Enable stats recording. Ideally not used on live servers.
+    record-stats=false
+    # Cache settings for alerts.
+    alerts {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=5
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=1000
+    }
+    # Cache settings for alerted vein locations.
+    alerted-locations {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=5
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=1000
+    }
+    # Activity queries (lookups) are cached so that they can be re-used or paginated.
+    lookup-expiration {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=5
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=3
+    }
+    # Cache settings for default entity nbt data.
+    nbt-entity-defaults {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=15
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=200
+    }
+    # Cache settings for action key/primary keys.
+    pk-cache-action-key {
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=100
+    }
+    # Cache settings for block data/primary keys.
+    pk-cache-block-data {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=15
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=500
+    }
+    # Cache settings for entity types/primary keys.
+    pk-cache-entity-type {
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=200
+    }
+    # Cache settings for item data/primary keys.
+    pk-cache-item-data {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=15
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=1000
+    }
+    # Cache settings for named causes/primary keys.
+    pk-cache-named-cause {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=15
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=200
+    }
+    # Cache settings for players/primary keys.
+    pk-cache-player {
+        # Set a length of time (since last access) until entries are evicted.
+        expires-after-access {
+            # The duration value.
+            duration=15
+            # The duration time unit.
+            time-unit=MINUTES
+        }
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=100
+    }
+    # Cache settings for world/primary keys.
+    pk-cache-world {
+        # The max size of this cache.
+        # Data will be evicted if the cache size reaches this limit.
+        max-size=20
+    }
+}
+commands {
+    # Allow Minecraft tags in tag parameters. The list is long and often
+    # includes tags unlikely to be useful. We instead recommend using
+    # the tag whitelist option to reduce the list to something useful.
+    # Note: disabling this overrides the tag whitelist.
+    allow-minecraft-tags=true
+    # Enable the block tag whitelist. If disabled, values will be ignored.
+    block-tag-whitelist-enabled=false
+    # Define block tags allowed in the btag parameter (and auto-suggestions).
+    # These must include the tag namespace, e.g. `minecraft:dirt`, but can
+    # include any tag - even custom ones.
+    # https://minecraft.wiki/w/Block_tag_(Java_Edition)
+    # Note: All Minecraft tags will be excluded if `allowMinecraftTags` is false.
+    block-tag-whitelist=[
+        "minecraft:coal_ores",
+        "minecraft:copper_ores",
+        "minecraft:crops",
+        "minecraft:diamond_ores",
+        "minecraft:emerald_ores",
+        "minecraft:gold_ores",
+        "minecraft:iron_ores",
+        "minecraft:lapis_ores",
+        "minecraft:logs_that_burn",
+        "minecraft:beacon_base_blocks",
+        "minecraft:mineable/axe",
+        "minecraft:mineable/hoe",
+        "minecraft:mineable/pickaxe",
+        "minecraft:mineable/shovel",
+        "minecraft:redstone_ores",
+        "prism:all_ores"
+    ]
+    # Enable the entity type tag whitelist. If disabled, values will be ignored.
+    entity-type-tag-whitelist-enabled=false
+    # Define entity type tags allowed in the btag parameter (and auto-suggestions).
+    # These must include the tag namespace, e.g. `minecraft:aquatic`, but can
+    # include any tag - even custom ones.
+    # https://minecraft.wiki/w/Entity_type_tag_(Java_Edition)
+    # Note: All Minecraft tags will be excluded if `allowMinecraftTags` is false.
+    entity-type-tag-whitelist=[]
+    # Enable the item tag whitelist. If disabled, values will be ignored.
+    item-tag-whitelist-enabled=false
+    # Define item tags allowed in the btag parameter (and auto-suggestions).
+    # These must include the tag namespace, e.g. `minecraft:dirt`, but can
+    # include any tag - even custom ones.
+    # https://minecraft.wiki/w/Item_tag_(Java_Edition)
+    # Note: All Minecraft tags will be excluded if `allowMinecraftTags` is false.
+    item-tag-whitelist=[
+        "minecraft:axes",
+        "minecraft:beacon_payment_item",
+        "minecraft:bundles",
+        "minecraft:chest_armor",
+        "minecraft:coal_ores",
+        "minecraft:copper_ores",
+        "minecraft:diamond_ores",
+        "minecraft:emerald_ores",
+        "minecraft:foot_armor",
+        "minecraft:gold_ores",
+        "minecraft:head_armor",
+        "minecraft:hoes",
+        "minecraft:iron_ores",
+        "minecraft:lapis_ores",
+        "minecraft:leg_armor",
+        "minecraft:pickaxes",
+        "minecraft:redstone_ores",
+        "minecraft:shovels",
+        "prism:all_armor",
+        "prism:all_ores"
+    ]
+}
+# Enable plugin debug mode. Produces extra logging to help diagnose issues.
+debug=false
+# Enable filter debug mode. Logs details about every event and filter matching.
+debug-filters=false
+defaults {
+    # The default radius for the drain command.
+    drain-radius=5
+    # The default radius for the extinguish command.
+    extinguish-radius=5
+    # The default locale for plugin messages. Messages given to players
+    # will use their client locale settings.
+    default-locale="en_US"
+    # Base default parameters applied to every query command (lookups, rollbacks,
+    # restores, etc.). Per-command sections below are merged on top of these.
+    # Leave empty for none.
+    parameters {
+        r="32"
+        since="3d"
+    }
+    # Base default flags applied to every query command. Per-command sections below
+    # are merged on top of these. Leave empty for none.
+    flags {}
+    # Default parameters and flags for the lookup command, merged over the base.
+    lookup {
+        # Default parameters for this command. Leave empty for none.
+        parameters {}
+        # Default flags for this command. Leave empty for none.
+        flags {}
+    }
+    # Default parameters and flags for the near command, merged over the base.
+    near {
+        # Default parameters for this command. Leave empty for none.
+        parameters {}
+        # Default flags for this command. Leave empty for none.
+        flags {}
+    }
+    # Default parameters and flags for wands, split by wand category, merged over the base.
+    wand {
+        # Default parameters and flags for inspection wands.
+        inspect {
+            # Default parameters for this command. Leave empty for none.
+            parameters {}
+            # Default flags for this command. Leave empty for none.
+            flags {}
+        }
+        # Default parameters and flags for modification (rollback/restore) wands.
+        modify {
+            # Default parameters for this command. Leave empty for none.
+            parameters {}
+            # Default flags for this command. Leave empty for none.
+            flags {}
+        }
+    }
+    # Default parameters and flags for the modification commands (rollback, restore,
+    # preview), merged over the base.
+    modifications {
+        # Default parameters for this command. Leave empty for none.
+        parameters {}
+        # Default flags for this command. Leave empty for none.
+        flags {}
+    }
+    # Sets the default radius to use when searching for nearby activity.
+    near-radius=5
+    # Limits how many results are shown "per page" when doing lookups.
+    per-page=10
+}
+# Filters allow fine-grained control over what prism records.
+# Please see https://docs.prism-mc.org/configs/filters/
+filters=[]
+# How filters are evaluated.
+# ORDERED (default): filters are evaluated top to bottom and the first one whose
+# conditions match decides the outcome. This lets an ALLOW filter create an exception
+# to a later IGNORE filter. Anything matching no filter is recorded.
+# GROUPED: all IGNORE filters are checked first, then ALLOW filters. If any ALLOW filter
+# exists, anything not explicitly allowed is denied. Use this for whitelist-style setups.
+filter-mode=ORDERED
+# Optional, permission-gated limits on query parameter values (e.g. cap the
+# radius, restrict which worlds/actions may be queried). Each entry is tied
+# to a custom permission node and only applies to players who hold it.
+# Leave empty for no limits.
+limits=[]
+# Configure rules for modifications (rollbacks/restores).
+modifications {
+    # List materials that should be excluded from modifications.
+    block-blacklist=[
+        bedrock,
+        fire,
+        lava,
+        tnt
+    ]
+    # Whether to allow neighbor physics, light updates, and tile-tick scheduling
+    # when applying rollback/restore block changes. Setting to false suppresses
+    # cascading effects (sand falling, water flowing, redstone propagating) so a
+    # restored snapshot is not altered after the fact, and can drastically reduce
+    # TPS impact on large operations. Override per-command with --physics true/false.
+    apply-physics=true
+    # Batch size used when cancelling a preview. The original query is
+    # re-streamed so the player can be shown live block data without
+    # retaining state snapshots in memory; larger values mean fewer
+    # database round-trips at the cost of more transient heap per batch.
+    cancel-preview-batch-size=10000
+    # When enabled, various processes dispatch /spark heapdump commands.
+    # 
+    # REQUIRES the Spark plugin to be installed. Otherwise, command is
+    # silently rejected. Every call writes a multi-MB .hprof file.
+    debug-memory=false
+    # Enables draining lava from the modification area.
+    drain-lava=true
+    # List entities that should be excluded from modifications.
+    entity-blacklist=[
+        creeper,
+        "tnt_minecart",
+        wither
+    ]
+    # Hard limit on the number of modifications a single rollback/restore
+    # operation can query. Activities are streamed in batches so memory stays
+    # bounded regardless of size, but the cap still guards against runaway
+    # operations from overly broad queries. Set to 0 for unlimited (not recommended).
+    max-per-operation=1000000
+    # Set a maximum number of modifications per task. Splitting up world changes
+    # can help avoid overloading individual ticks and causing lag.
+    # This can also reduce client lag as fewer changes are sent to clients at once.
+    max-per-task=1000
+    # The max length of any dimension of the query bounding box used for
+    # pre/post-modification operations. Larger values affect performance
+    # because a r:1000 query would produce a 2000 block circle and prism
+    # would scan all blocks in that range for the drain lava and other
+    # pre/post-modification operations.
+    # 
+    max-query-bounding-box-length=200
+    # Teleport entities out of the way.
+    move-entities=true
+    # Percentage step between progress messages sent to the owner during a
+    # rollback/restore/preview. With 5, the owner sees at most 19 updates
+    # (5%, 10%, ..., 95%) before the completion message.
+    progress-report-step-percent=5
+    # Minimum queue size before progress messages are sent to the owner during a
+    # rollback/restore/preview. Smaller queues finish quickly enough that progress
+    # reporting is just noise.
+    progress-report-threshold=5000
+    # A list of (typically unsafe) blocks to remove before a modification occurs.
+    remove-blocks=[
+        tnt,
+        fire
+    ]
+    # Enables clearing item/xp drops from a modification area.
+    remove-drops=true
+    # The delay in ticks between modification tasks.
+    task-delay=5
+}
+purges {
+    # Set the maximum number of records to delete in each "purge batch".
+    # Deleting records often locks every affected row which can block other
+    # queries or new data waiting for insert. If purging is causing performance
+    # issues or errors in the console, lower this value.
+    # Please see https://docs.prism-mc.org/features/purges/ for more.
+    # 
+    limit=5000
+    # Configure the delay between purge cycles. Adding a delay helps break up
+    # the purge queries over time, which helps avoid purges dominating the db.
+    # 
+    cycle-delay {
+        # The duration value.
+        duration=2
+        # The duration time unit.
+        time-unit=SECONDS
+    }
+    command-schedules=[
+        {
+            # The command to be executed.
+            # Commands will be executed by the console and will effectively have OP permissions.
+            # The default command will purge all records more than six weeks old.
+            command="prism purge start before:6w --nodefaults"
+            # Configure the execution time(s) of this command using cron syntax.
+            # Here is a good crontab generator: https://www.freeformatter.com/cron-expression-generator-quartz.html
+            # Times are always based on the timezone of the machine the server is running on.
+            # The below example will run every day at midnight.
+            cron="0 0 0 ? * * *"
+            # Toggle command schedule. When disabled, it will never run.
+            enabled=true
+        }
+    ]
+}
+recording {
+    # The delay (in ticks) between queued data being commit to the DB.
+    delay=10
+    # Max seconds to spend draining the queue on shutdown. Set to 0 to disable.
+    # Any services with stall detection will assume the server is frozen and may
+    # attempt to kill the process. The longer the queue drain timeout is, the more
+    # likely that may be. That may cause more harm than good.
+    drain-timeout-seconds=10
+    # Maximum number of activities that can be queued in memory. Acts as a safety cap
+    # to prevent out-of-memory errors when the database can't keep up. Activities that
+    # exceed this limit are dropped. Set to 0 for unlimited (not recommended).
+    queue-max-capacity=100000
+    # Number of parallel recording tasks that can drain the queue concurrently.
+    # Higher values drain the queue faster but use more database connections.
+    # Only increase this if your database server can handle additional concurrent
+    # connections. Most shared database hosts should leave this at 1. Max: 4.
+    parallelism=1
+    # When enabled, certain high-frequency actions (e.g. hopper-insert, hopper-remove)
+    # are aggregated into a single record per location/item type. This dramatically
+    # reduces database writes for automated systems like hopper farms.
+    aggregate-activities=true
+    # How long (in ticks) aggregatable activities are held before being flushed to the
+    # database. Longer intervals aggregate more events into fewer records but delay when
+    # they appear in lookups. Default is 520 ticks (26 seconds), just above the time for
+    # a hopper to move a full stack of 64 items.
+    aggregation-interval=520
+    # Write-ahead log mode for activity queue persistence. If the database is unavailable
+    # during shutdown, uncommitted activities are saved to a local WAL file and replayed
+    # on next startup.
+    # Options:
+    #   disabled  - No WAL (default)
+    #   on-demand - Only writes to WAL on database failure or shutdown with a remaining queue.
+    #               Zero overhead during normal operation. WAL data is discarded after crashes
+    #               since the world state may have reverted to the last auto-save.
+    #   always    - Continuously writes all activities to WAL as they enter the queue.
+    #               Provides crash recovery by replaying uncommitted entries even after an
+    #               unclean shutdown. Adds constant disk I/O.
+    wal-mode=disabled
+    # How often (in milliseconds) the WAL buffer is flushed to disk. Only applies when
+    # walMode is "always". Lower values reduce potential data loss but increase disk I/O.
+    # Default is 1000ms (1 second).
+    wal-flush-interval-ms=1000
+}
+# Configure the embedded web server for browser-based activity queries.
+web {
+    # Master switch for the embedded web server feature. When false, the web server cannot run
+    # and the "prism web start" command is refused.
+    enabled=false
+    # Automatically start the embedded web server when the plugin loads. Requires enabled to be
+    # true. The "prism web start" and "prism web stop" commands can control it at runtime.
+    auto-start=false
+    # The port the web server listens on.
+    port=4040
+    # The network interface the web server binds to. Use "0.0.0.0" to listen on all interfaces,
+    # or "127.0.0.1" to restrict access to the local machine (e.g. when behind a reverse proxy).
+    bind-address="0.0.0.0"
+    # API key for authenticating web requests. Set this to a secure random value before enabling.
+    api-key=""
+    # Maximum number of results returned per query.
+    max-results=1000
+    # The default time range applied to activity queries when the user has not supplied a "since"
+    # filter. Accepts a relative time string (e.g. "3d", "12h", "1w"). Constraining the default
+    # query to a recent window lets it scan far fewer rows. Leave empty to apply no default range
+    # (not recommended on large databases).
+    default-activity-range="3d"
+    # The base path the web UI and API are served under. Leave empty to serve from the domain
+    # root. Set this (e.g. "/prism") to host behind a reverse proxy on a sub-path. When set, the
+    # proxy must forward the full path WITHOUT stripping the prefix (in Caddy use "handle", not
+    # "handle_path"; in nginx do not rewrite the path).
+    base-path=""
+}

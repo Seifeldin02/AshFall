@@ -1,0 +1,12 @@
+# Holds the staging RCON password and the test account's password. Never commit a filled-in copy.
+harness.ini
+
+# Per-run artefacts from the client: chat captures, position traces, logs, command queues.
+bot_*.log
+bot_*.status
+bot_*.cmd
+bot_*.cmd.taken
+chat_*.txt
+trace_*.csv
+ui_*.txt
+__pycache__/

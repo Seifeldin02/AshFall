@@ -91,12 +91,34 @@ final class TeleportService {
     private void instant(Player player,Location destination,String label,Player observer){cancel(player,null);Location origin=player.getLocation().clone();player.teleportAsync(destination).thenAccept(ok->{if(!ok){CoreUtil.error(player,"Teleport failed; try again.");return;}recordBackOrigin(player,origin);player.playSound(player.getLocation(),Sound.ENTITY_ENDERMAN_TELEPORT,.7f,1.25f);CoreUtil.msg(player,"Teleported instantly to "+label+".");if(observer!=null&&observer.isOnline()){observer.playSound(observer.getLocation(),Sound.ENTITY_ENDERMAN_TELEPORT,.7f,.75f);CoreUtil.msg(observer,plugin.nicknames().displayName(player)+" arrived.");}});}
     /** Overwritten by whichever happens most recently — a successful teleport or a death — so /back always
      *  returns to "wherever you were right before you ended up here", matching either meaning at once. */
-    private void recordBackOrigin(Player player,Location origin){if(origin!=null&&origin.getWorld()!=null)backLocations.put(player.getUniqueId(),origin.clone());}
+    /*  Never a disposable world.
+     *
+     *  onDeath records where you died, and dying happens inside Colosseum instances, duel instances, event
+     *  arenas and void worlds -- worlds that are deleted minutes later. Keeping that Location pinned the
+     *  unloaded world object in memory for as long as the player stayed in this map, and made /back a
+     *  teleport into somewhere that no longer exists (Location.getWorld() throws for an unloaded world
+     *  rather than returning null, so it was not even a clean failure). Neither is worth recording: the
+     *  place you want to go back to is never the arena you just died in. */
+    private void recordBackOrigin(Player player,Location origin){
+        if(!backWorthy(origin))return;
+        backLocations.put(player.getUniqueId(),origin.clone());
+    }
+    /** The rule itself, package-visible so the verifier asserts the real one rather than a copy of it. */
+    boolean backWorthy(Location origin){
+        if(origin==null)return false;
+        World world;
+        try{world=origin.getWorld();}catch(RuntimeException unloaded){return false;}
+        return world!=null&&!plugin.isDisposableWorld(world);
+    }
     /** Admin-only recall command. Reversible: teleporting back also records where you just were, so a
      *  second /back returns to the spot you left. */
     boolean back(Player player){
         Location origin=backLocations.get(player.getUniqueId());
-        if(origin==null||origin.getWorld()==null){CoreUtil.error(player,"No previous location recorded.");return true;}
+        /** A world can still be unloaded between recording and using, and asking a Location for one that is
+         *  gone throws. Treated as "no previous location", which is what it is. */
+        World world=null;
+        if(origin!=null)try{world=origin.getWorld();}catch(RuntimeException unloaded){backLocations.remove(player.getUniqueId());}
+        if(origin==null||world==null){CoreUtil.error(player,"No previous location recorded.");return true;}
         instant(player,origin,"your previous location",null);
         return true;
     }

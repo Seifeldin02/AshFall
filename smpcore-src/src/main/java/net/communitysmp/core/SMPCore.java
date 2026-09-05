@@ -19,7 +19,7 @@ import java.time.Instant;
 import java.util.*;
 
 public final class SMPCore extends JavaPlugin implements CommandExecutor,TabCompleter {
-    private Database db;private DuelMapService duelMaps;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private VoidWorldService voidWorlds;private DiscardedVaultService vault;private ArenaService arena;private SpawnerShopService spawnerShop;private SpectacleService spectacle;private PacketNametagService packetNametags;
+    private Database db;private DuelMapService duelMaps;private CoreEconomy economy;private BankService bank;private TeleportService teleports;private FactionService factions;private ShopService shop;private AuctionService auctions;private ProgressService progress;private RelicService relics;private BossEventService bosses;private BountyService bounties;private SpawnerService spawners;private SpawnClaimService spawnClaims;private EnderChestService enderChests;private NetWorthService netWorth;private MerchantService merchants;private VillagerCapsuleService capsules;private GraveService graves;private BulletinService bulletin;private UIService ui;private TabIntegration tabIntegration;private GuideService guides;private MessagingService messaging;private SettingsService settings;private AccountService account;private RegistrationService registration;private ConfirmationService confirmations;private ShardService shards;private MarketplaceService marketplace;private WeeklyDragonService weeklyDragon;private VillagerDiscountService villagerDiscounts;private WorldBorderService worldBorders;private GrimCompatibility grimCompatibility;private NicknameService nicknames;private TrustedAdminService trustedAdmins;private AdminToolsService adminTools;private DiscordReminderService discordReminders;private OrdersService ordersService;private AfkService afk;private PunishmentService punishments;private ReplayIntegration replay;private ObsidianDurabilityService obsidian;private IpBanService ipBans;private MonumentService monuments;private ModerationService moderation;private TradeTaxService tradeTax;private TaskMasterService taskMaster;private IndustrialHopperService industrialHoppers;private VoidWorldService voidWorlds;private DiscardedVaultService vault;private ArenaService arena;private ColosseumService colosseum;private SpawnerShopService spawnerShop;private SpectacleService spectacle;private PacketNametagService packetNametags;
     private final Map<UUID,Long> feedbackCooldowns=new HashMap<>();
     Database db(){return db;} UIService ui(){return ui;} ProgressService progress(){return progress;} TeleportService teleports(){return teleports;} SpawnClaimService spawnClaims(){return spawnClaims;}EnderChestService enderChests(){return enderChests;}NetWorthService netWorth(){return netWorth;}BankService bank(){return bank;}VillagerCapsuleService capsules(){return capsules;}FactionService factions(){return factions;}BossEventService bosses(){return bosses;}MessagingService messaging(){return messaging;}GraveService graves(){return graves;}BulletinService bulletin(){return bulletin;}SettingsService settings(){return settings;}AccountService account(){return account;}RegistrationService registration(){return registration;}ConfirmationService confirmations(){return confirmations;}ShardService shards(){return shards;}MarketplaceService marketplace(){return marketplace;}WeeklyDragonService weeklyDragon(){return weeklyDragon;}VillagerDiscountService villagerDiscounts(){return villagerDiscounts;}SpawnerService spawners(){return spawners;}NicknameService nicknames(){return nicknames;}TabIntegration tab(){return tabIntegration;}AfkService afk(){return afk;}RelicService relics(){return relics;}AdminToolsService adminTools(){return adminTools;}PunishmentService punishments(){return punishments;}ReplayIntegration replay(){return replay;}TrustedAdminService trustedAdmins(){return trustedAdmins;}IpBanService ipBans(){return ipBans;}ModerationService moderation(){return moderation;}PacketNametagService packetNametags(){return packetNametags;}
     OrdersService orders(){return ordersService;}
@@ -29,10 +29,25 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
 
     DiscardedVaultService vault(){return vault;}
     ArenaService arena(){return arena;}
+    ColosseumService colosseum(){return colosseum;}
     DuelMapService duelMaps(){return duelMaps;}
     ShopService shop(){return shop;} SpawnerShopService spawnerShop(){return spawnerShop;} SpectacleService spectacle(){return spectacle;}
     double creditEarned(String player,double amount,String detail){if(amount<=0)return 0;if(bank==null){db.changeBalance(player,amount);return amount;}return bank.creditEarned(player,amount,detail);}
     boolean isAdmin(Player p){return trustedAdmins!=null&&trustedAdmins.isAdmin(p);}
+    /*  A world that exists only for as long as the thing happening inside it.
+     *
+     *  Colosseum instances, duel instances, event arenas and void worlds are all created, used and deleted.
+     *  Nothing outside them may keep a Location that points into one: a Location holds its World, so a
+     *  single cached one keeps the whole unloaded world object -- and everything it still references --
+     *  alive for as long as the cache does. It is also a destination that no longer exists, and asking a
+     *  Location for an unloaded world THROWS rather than returning null. */
+    boolean isDisposableWorld(org.bukkit.World world){
+        if(world==null)return false;
+        if(colosseum!=null&&colosseum.isColosseumWorld(world))return true;
+        if(duelMaps!=null&&duelMaps.isInstance(world))return true;
+        if(voidWorlds!=null&&voidWorlds.isVoidWorld(world))return true;
+        return arena!=null&&arena.isArenaWorld(world);
+    }
     boolean privileged(Player p){return isAdmin(p)&&(p.getGameMode()==GameMode.CREATIVE||p.getGameMode()==GameMode.SPECTATOR);}
     String roleName(Player p){return isAdmin(p)?"ADMIN":"MEMBER";}
     boolean isTeleporting(Player p){return teleports!=null&&teleports.isPending(p);}
@@ -52,7 +67,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             org.bukkit.plugin.Plugin target=getServer().getPluginManager().getPlugin(name);
             if(target!=null&&target.isEnabled()){getServer().getPluginManager().disablePlugin(target);getLogger().info("Disabled "+name+" per config (integrations.disabled-plugins).");}
         }
-        for(String resource:List.of("shop.yml","bosses.yml","events.yml","relics.yml","shards.yml"))
+        for(String resource:List.of("shop.yml","bosses.yml","events.yml","relics.yml","shards.yml","colosseum.yml"))
             if(!new File(getDataFolder(),resource).exists())saveResource(resource,false);
         db=new Database(this);
         try{db.open();}catch(SQLException e){getLogger().severe("SMPCore cannot open SQLite: "+e.getMessage());getServer().getPluginManager().disablePlugin(this);return;}
@@ -65,7 +80,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         bounties=new BountyService(this,factions);spawners=new SpawnerService(this,factions);netWorth=new NetWorthService(this,factions,shop,spawners);
         merchants=new MerchantService(this,shop,auctions,bosses,bank);capsules=new VillagerCapsuleService(this,factions,spawnClaims,merchants);
         settings=new SettingsService(this);account=new AccountService(this);registration=new RegistrationService(this);confirmations=new ConfirmationService(this);shards=new ShardService(this);marketplace=new MarketplaceService(this,shop,auctions,shards);
-        spectacle=new SpectacleService(this);tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);spawnerShop=new SpawnerShopService(this);getServer().getPluginManager().registerEvents(spawnerShop,this);duelMaps=new DuelMapService(this);getServer().getPluginManager().registerEvents(duelMaps,this);arena=new ArenaService(this);getServer().getPluginManager().registerEvents(arena,this);voidWorlds=new VoidWorldService(this);getServer().getPluginManager().registerEvents(voidWorlds,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
+        spectacle=new SpectacleService(this);tradeTax=new TradeTaxService(this);taskMaster=new TaskMasterService(this);getServer().getPluginManager().registerEvents(taskMaster,this);industrialHoppers=new IndustrialHopperService(this);getServer().getPluginManager().registerEvents(industrialHoppers,this);vault=new DiscardedVaultService(this);getServer().getPluginManager().registerEvents(vault,this);spawnerShop=new SpawnerShopService(this);getServer().getPluginManager().registerEvents(spawnerShop,this);duelMaps=new DuelMapService(this);getServer().getPluginManager().registerEvents(duelMaps,this);arena=new ArenaService(this);getServer().getPluginManager().registerEvents(arena,this);colosseum=new ColosseumService(this);getServer().getPluginManager().registerEvents(colosseum,this);voidWorlds=new VoidWorldService(this);getServer().getPluginManager().registerEvents(voidWorlds,this);packetNametags=new PacketNametagService(this);spawners.startConsolidation();weeklyDragon=new WeeklyDragonService(this);graves=new GraveService(this);bulletin=new BulletinService(this);guides=new GuideService(this);messaging=new MessagingService(this);obsidian=new ObsidianDurabilityService(this,factions);
         villagerDiscounts=new VillagerDiscountService(this);
         worldBorders=new WorldBorderService(this);
         for(World world:getServer().getWorlds())try{world.setGameRule(GameRule.LOCATOR_BAR,false);}catch(Throwable ignored){}
@@ -73,6 +88,10 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         adminTools=new AdminToolsService(this);discordReminders=new DiscordReminderService(this);ordersService=new OrdersService(this);afk=new AfkService(this);punishments=new PunishmentService(this);ipBans=new IpBanService(this);monuments=new MonumentService(this);moderation=new ModerationService(this);
         getServer().getPluginManager().registerEvents(new GameplayListener(this,factions,teleports,shop,auctions,bosses,bounties,relics,progress,spawners,spawnClaims,netWorth,merchants,capsules,graves,obsidian),this);
         getServer().getPluginManager().registerEvents(trustedAdmins,this);
+        /** Orphan sweep and interrupted-run recovery: both need a live server, so neither belongs in the
+         *  service constructor. Anything left ACTIVE in colosseum_runs at this point is a fight the process
+         *  died in the middle of, and its entry fee goes back. */
+        colosseum.start();
         for(Listener listener:List.of(packetNametags,enderChests,bank,settings,account,confirmations,shards,marketplace,graves,bulletin,guides,progress,netWorth,villagerDiscounts,nicknames,adminTools,ordersService,relics,spawnClaims,afk,bounties,ipBans))
             getServer().getPluginManager().registerEvents(listener,this);
         if(getServer().getPluginManager().isPluginEnabled("GrimAC"))grimCompatibility=new GrimCompatibility(this);
@@ -87,13 +106,271 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         org.bukkit.permissions.Permission banBroadcast=getServer().getPluginManager().getPermission("punisherx.see.ban");
         if(banBroadcast!=null)banBroadcast.setDefault(org.bukkit.permissions.PermissionDefault.TRUE);
         replay=new ReplayIntegration(this);
-        for(String name:List.of("f","balance","pay","home","sethome","delhome","renamehome","homes","buyhome","tpa","tpahere","tpaccept","tpdeny","spawn","rtp","back","msg","reply","shop","luxuryshop","shardshop","settings","ah","bounty","bounties","events","relics","leaderboards","guide","smphelp","role","sidebar","feedback","stats","progress","history","graves","enderchest","ashfall","nickname","discord","admin","shout","afk","myorders")){
+        for(String name:List.of("f","balance","pay","home","sethome","delhome","renamehome","homes","buyhome","tpa","tpahere","tpaccept","tpdeny","spawn","rtp","back","msg","reply","shop","luxuryshop","shardshop","settings","ah","bounty","bounties","events","relics","leaderboards","guide","smphelp","role","sidebar","feedback","stats","progress","history","graves","enderchest","ashfall","nickname","discord","admin","shout","afk","myorders","colosseum")){
             PluginCommand command=getCommand(name);if(command!=null){command.setExecutor(this);command.setTabCompleter(this);}
         }
         applyCommandFeedbackPolicy();
         getLogger().info("SMPCore 1.7.0 enabled: marketplace, accessibility settings, shards, faction relations and weekly Dragon are ready.");
     }
-    @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(voidWorlds!=null)voidWorlds.shutdown();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(spectacle!=null)spectacle.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
+    /*  DELIVERING WHAT THE STASH OWES, WITHOUT LOSING IT ON THE WAY.
+     *
+     *  Two stores that cannot share a transaction: a SQLite row, and a player inventory that is only
+     *  durable once Paper writes it to disk. Something has to happen first, and whichever it is decides
+     *  which way a crash in the middle goes.
+     *
+     *  It used to delete first, which fails towards LOSS: the row is gone, the item is in an inventory
+     *  that has not been saved, and a crash takes it with no record that anybody was owed anything.
+     *
+     *  It now goes the other way round, per item:
+     *
+     *      1. read the row, leave it alone
+     *      2. put the item in the inventory; whatever does not fit stays in the row, resized
+     *      3. flush the player to disk, so what we just handed over is actually durable
+     *      4. only then delete the rows we delivered
+     *
+     *  A crash before (3) leaves every row claimable and nothing durable -- correct. A crash between (3)
+     *  and (4) leaves an item that IS durable and a row that still says it is owed, so it can be claimed
+     *  once more: one DELETE against a local file wide, and only on an abrupt kill. That is the residual,
+     *  it is documented, and it fails towards the player rather than away from them.
+     *
+     *  Collecting twice on purpose still cannot duplicate anything, because step 4 already removed the row
+     *  and stashRemove reports whether it was the one that removed it.
+     *
+     *  Returns how many claims are still outstanding, which is normally a full inventory. */
+    /*  ================================================================================================
+     *  DELIVERING A CLAIM ACROSS TWO STORES THAT CANNOT SHARE A TRANSACTION.
+     *
+     *  A claim lives in SQLite. The inventory it is delivered into lives in playerdata, which Paper writes
+     *  as a separate file. One of them has to be written first, and whichever it is decides what a crash
+     *  in the gap costs.
+     *
+     *      delete the row first    the row is gone, the item is in an unsaved inventory:  LOSS
+     *      save the player first   the item is durable, the row still says it is owed:    DUPLICATE
+     *
+     *  The previous pass chose the second and documented the duplicate as a residual. It is not a residual
+     *  any more, because the choice was a false one: the two stores cannot share a transaction, but the
+     *  RECEIPT can share a transaction with the inventory.
+     *
+     *  A player's PersistentDataContainer is serialised into the same <uuid>.dat that carries their
+     *  Inventory, written by one PlayerDataStorage.save() to a temporary file and renamed into place. So a
+     *  note saying "row 41 was delivered" written into the PDC before that save either persists WITH the
+     *  items or not at all. That is the atomic boundary this needs, and it already exists.
+     *
+     *  THE PROTOCOL, per collection:
+     *
+     *      1. reconcile()  -- settle any receipts left behind by an earlier crash
+     *      2. read the rows; do not touch them
+     *      3. for each row: add to the inventory, and write a receipt recording the row id and exactly
+     *         how much of it did NOT fit
+     *      4. saveData()   -- inventory and receipts become durable together, or neither does
+     *      5. apply the receipts to the database: delete what fully fitted, shrink what partly fitted
+     *      6. clear the receipts
+     *
+     *  WHERE A CRASH LANDS:
+     *
+     *      before 4    nothing durable, no receipt, rows untouched.        Nothing happened.
+     *      between 4   items durable, receipts durable, rows still there.  reconcile() applies the
+     *      and 5       receipts on the next join: delete/shrink, no second delivery.
+     *      during 5    some rows applied, the rest still carry receipts.   reconcile() finishes them.
+     *      between 5   receipts durable, rows already gone.                reconcile() clears them.
+     *      and 6
+     *
+     *  Every one of those is idempotent, so running recovery twice does nothing the second time.
+     *
+     *  WHY NOTHING CAN SLIP BETWEEN 3 AND 4: steps 2-6 run inside a single server tick. Paper's periodic
+     *  player save runs in the tick loop, not concurrently, so it cannot land in the middle and make an
+     *  item durable behind a receipt's back. Anything that made this asynchronous would break it.
+     *
+     *  WHY A RECEIPT CANNOT BE READ AS THE WRONG CLAIM: smp_order_stash uses INTEGER PRIMARY KEY
+     *  AUTOINCREMENT, which SQLite guarantees never reuses a rowid. A receipt for id 41 can only ever mean
+     *  the claim that was id 41. */
+    /*  EVERY INVENTORY INSERTION PATH IN THIS PLUGIN, AUDITED 2026-09-04.
+     *
+     *  Inventory#addItem rewrites the stack it is handed -- but ONLY when the insertion is partially
+     *  accepted. A stack that is placed, merged whole, or refused outright comes back untouched. That is
+     *  asserted by inventorySelfTest() below rather than believed, because I had it wrong twice.
+     *
+     *  A caller is therefore wrong if it reuses, compares, persists or logs that stack afterwards AND can
+     *  ever meet a nearly-full inventory. Twenty-three call sites; the ones that could are listed first,
+     *  and the rest are recorded so the next reader does not have to work it out again.
+     *
+     *      WRONG, now fixed
+     *        SMPCore.deliverStash       compared the leftover against the stack that HAD BECOME the leftover,
+     *                                   so a partial delivery read as "nothing fitted", the row stayed at
+     *                                   full size, and the part that arrived would be handed out again
+     *        SpawnerService payout      `returned += item.getAmount()` after CoreUtil.give undercounts the
+     *                                   "N unsold items delivered" line whenever the inventory is nearly full
+     *
+     *      FRAGILE RATHER THAN WRONG, hardened anyway by cloning inside CoreUtil.give
+     *        MerchantService x2         reads the scroll it has just sold to decide what to announce. Only
+     *                                   the amount is rewritten and it reads meta, so it works today -- and
+     *                                   it is exactly the shape that stops working
+     *
+     *      SAFE, and why
+     *        CoreUtil.give              clones now, which covers every one of its ninety-odd callers
+     *        ColosseumService.giveOrStash / ArenaService.giveOrStash   use the returned leftover, never the input
+     *        ShopService.buy            counts from a separate `amount`, never from the stack
+     *        OrdersService.deliver      subtracts from `remaining` BEFORE handing the stack over
+     *        OrdersService.returnInserted / GraveService.syncCompass / ShardService kit fill  do not reuse it
+     *        ArenaService kit fills     kitHotbar/kitExtra build fresh stacks per call, so nothing is shared
+     *        IndustrialHopper x7        every one moves a `piece = item.clone()` and counts a saved `take`
+     *        DuelMapService.put         loot placement; the caller does not read the stack afterwards
+     *
+     *  ColosseumService also had a separate duplication: an offline winner's loot was stashed by
+     *  giveOrStash AND again by the branch that followed it. */
+    static final String STASH_RECEIPT_KEY="stash_receipts";
+
+    private org.bukkit.NamespacedKey receiptKey(){return new org.bukkit.NamespacedKey(this,STASH_RECEIPT_KEY);}
+
+    /** "id:remaining" pairs. remaining 0 means the whole row was taken. */
+    private java.util.LinkedHashMap<Long,Integer> readReceipts(Player player){
+        java.util.LinkedHashMap<Long,Integer> out=new java.util.LinkedHashMap<>();
+        String raw=player.getPersistentDataContainer().get(receiptKey(),org.bukkit.persistence.PersistentDataType.STRING);
+        if(raw==null||raw.isBlank())return out;
+        for(String part:raw.split(",")){
+            int colon=part.indexOf(':');
+            if(colon<=0)continue;
+            try{out.put(Long.parseLong(part.substring(0,colon).trim()),Integer.parseInt(part.substring(colon+1).trim()));}
+            catch(NumberFormatException ignored){}
+        }
+        return out;
+    }
+    private void writeReceipts(Player player,java.util.Map<Long,Integer> receipts){
+        if(receipts.isEmpty()){player.getPersistentDataContainer().remove(receiptKey());return;}
+        StringBuilder text=new StringBuilder();
+        for(java.util.Map.Entry<Long,Integer> entry:receipts.entrySet()){
+            if(text.length()>0)text.append(',');
+            text.append(entry.getKey()).append(':').append(entry.getValue());
+        }
+        player.getPersistentDataContainer().set(receiptKey(),org.bukkit.persistence.PersistentDataType.STRING,text.toString());
+    }
+
+    /*  Settle receipts from a delivery whose database half never happened.
+     *
+     *  A receipt means the items ARE in a saved inventory. So the row must be applied, never re-delivered.
+     *  Runs on join and at the start of every collection; doing it twice is a no-op both times. */
+    int reconcileStash(Player player){
+        java.util.LinkedHashMap<Long,Integer> receipts=readReceipts(player);
+        if(receipts.isEmpty())return 0;
+        int settled=0;
+        for(java.util.Map.Entry<Long,Integer> entry:receipts.entrySet()){
+            long id=entry.getKey();
+            int remaining=Math.max(0,entry.getValue());
+            try{
+                if(remaining<=0){if(db.stashRemove(id))settled++;}
+                else{
+                    Database.StashRow row=db.stashRow(id);
+                    /*  The row may already be the right size if the crash landed after the shrink. Only
+                     *  shrink when it is still the pre-delivery size, so this cannot cut it twice. */
+                    if(row!=null&&row.item().getAmount()>remaining){
+                        org.bukkit.inventory.ItemStack rest=row.item().clone();
+                        rest.setAmount(remaining);
+                        if(db.stashShrink(id,rest))settled++;
+                    }
+                }
+            }catch(Throwable failure){
+                getLogger().warning("Could not settle claim receipt "+id+" for "+player.getName()+": "+failure);
+            }
+        }
+        writeReceipts(player,java.util.Map.of());
+        if(settled>0)getLogger().info("[stash] settled "+settled+" claim receipt(s) for "+player.getName()
+                +" left behind by an interrupted delivery.");
+        return settled;
+    }
+
+    /** Set by the failure-injection command only. Aborts a delivery at a named boundary so the recovery
+     *  path can be exercised for real instead of argued about. Never set in normal operation. */
+    volatile String stashFailPoint=null;
+
+    private void maybeFail(String point){
+        if(point.equals(stashFailPoint)){stashFailPoint=null;throw new IllegalStateException("injected stash failure at "+point);}
+    }
+
+    /*  Returns how many claims are still outstanding -- normally a full inventory. */
+    int deliverStash(Player player){
+        reconcileStash(player);
+        /*  A disposable world's inventory IS the disposable part: Colosseum arenas and void worlds swap the
+         *  real one out on entry and restore it on exit, so anything handed over inside is discarded when
+         *  the instance is torn down. The claim stays where it is, and says why. */
+        if(isDisposableWorld(player.getWorld())){
+            CoreUtil.warn(player,"Claims cannot be collected in here — anything handed over would be left behind when this world closes.");
+            CoreUtil.hint(player,"Leave first, then collect. Nothing expires.");
+            return db.stashCount(CoreUtil.id(player));
+        }
+        java.util.List<Database.StashRow> owed=db.stashRows(CoreUtil.id(player));
+        if(owed.isEmpty())return 0;
+
+        java.util.LinkedHashMap<Long,Integer> receipts=new java.util.LinkedHashMap<>();
+        /*  Exactly what went into the inventory, kept so it can come back out.
+         *
+         *  Without this, a failed save leaves the items sitting in a live inventory that nobody has
+         *  recorded -- and Paper saves that inventory when the player next quits. The claim row is still
+         *  there, so they would be paid a second time. Adding to an inventory is not a commit, and the
+         *  only way to make it behave like one is to be able to undo it. */
+        java.util.List<org.bukkit.inventory.ItemStack> handedOver=new java.util.ArrayList<>();
+        int left=0;
+        for(Database.StashRow row:owed){
+            /*  addItem writes the remainder back into the stack it is handed, so the amount owed is read
+             *  first and the stack itself is a clone -- the row's copy stays pristine for the failure path. */
+            int wanted=row.item().getAmount();
+            org.bukkit.inventory.ItemStack giving=row.item().clone();
+            java.util.Collection<org.bukkit.inventory.ItemStack> over;
+            try{over=player.getInventory().addItem(giving).values();}
+            catch(Throwable failure){
+                /*  One unreadable claim must not swallow the rest. Its row is untouched and everything
+                 *  after it still gets its turn. */
+                getLogger().warning("Stash row "+row.id()+" for "+player.getName()+" could not be delivered: "+failure);
+                left++;continue;
+            }
+            int remaining=over.isEmpty()?0:over.iterator().next().getAmount();
+            if(remaining>=wanted){left++;continue;}          // nothing fitted; no receipt, no change
+            receipts.put(row.id(),remaining);
+            org.bukkit.inventory.ItemStack taken=row.item().clone();
+            taken.setAmount(wanted-remaining);
+            handedOver.add(taken);
+            if(remaining>0)left++;
+        }
+        if(receipts.isEmpty())return left;
+
+        /*  THE ATOMIC BOUNDARY. The receipts go into the same NBT document as the items they record. */
+        writeReceipts(player,receipts);
+        try{maybeFail("before-save");player.saveData();}
+        catch(Throwable failure){
+            /*  The save did not happen, so neither did the receipts -- and the items must not be left in a
+             *  live inventory that the next quit would persist behind the claim's back. Everything this
+             *  call put in comes straight back out, the receipts go, and every row is untouched. */
+            for(org.bukkit.inventory.ItemStack taken:handedOver)player.getInventory().removeItem(taken);
+            writeReceipts(player,java.util.Map.of());
+            getLogger().severe("Could not persist a claim delivery for "+player.getName()
+                    +"; "+handedOver.size()+" item(s) were taken back and nothing was consumed: "+failure);
+            return db.stashCount(CoreUtil.id(player));
+        }
+        maybeFail("after-save");
+
+        for(java.util.Map.Entry<Long,Integer> entry:receipts.entrySet()){
+            long id=entry.getKey();
+            int remaining=entry.getValue();
+            try{
+                if(remaining<=0)db.stashRemove(id);
+                else{
+                    Database.StashRow row=db.stashRow(id);
+                    if(row!=null&&row.item().getAmount()>remaining){
+                        org.bukkit.inventory.ItemStack rest=row.item().clone();
+                        rest.setAmount(remaining);
+                        db.stashShrink(id,rest);
+                    }
+                }
+            }catch(Throwable failure){
+                /*  Left as a receipt. reconcile() will finish it on the next join. */
+                getLogger().warning("Claim "+id+" was delivered but its row could not be updated: "+failure);
+            }
+        }
+        maybeFail("after-apply");
+        writeReceipts(player,java.util.Map.of());
+        return left;
+    }
+
+    @Override public void onDisable(){if(bosses!=null)bosses.reconcileForcedChunks();if(enderChests!=null)enderChests.shutdown();if(spawnClaims!=null)spawnClaims.shutdown();if(discordReminders!=null)discordReminders.shutdown();if(adminTools!=null)adminTools.shutdown();if(trustedAdmins!=null)trustedAdmins.shutdown();if(grimCompatibility!=null)grimCompatibility.shutdown();if(tabIntegration!=null)tabIntegration.shutdown();if(teleports!=null)teleports.shutdown();if(ui!=null)ui.shutdown();if(bulletin!=null)bulletin.shutdown();if(graves!=null)graves.shutdown();if(obsidian!=null)obsidian.shutdown();if(weeklyDragon!=null)weeklyDragon.shutdown();if(spawners!=null){spawners.stopConsolidation();spawners.shutdown();}if(shards!=null)shards.shutdown();if(settings!=null)settings.shutdown();if(afk!=null)afk.shutdown();if(factions!=null)factions.shutdown();if(netWorth!=null)netWorth.shutdown();if(bosses!=null)bosses.shutdown();if(relics!=null)relics.shutdown();if(progress!=null)progress.shutdown();if(tradeTax!=null)tradeTax.shutdown();if(ordersService!=null)ordersService.shutdown();if(taskMaster!=null)taskMaster.end();if(voidWorlds!=null)voidWorlds.shutdown();if(industrialHoppers!=null)industrialHoppers.shutdown();if(vault!=null)vault.shutdown();if(arena!=null)arena.shutdown();if(colosseum!=null)colosseum.shutdown();if(spectacle!=null)spectacle.shutdown();if(packetNametags!=null)packetNametags.shutdown();if(db!=null)db.close();}
 
     /*  The player-facing half of the temporary event worlds.
      *
@@ -177,7 +454,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         return true;
     }
 
-    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("fly"))return flyCommand(sender,args);if(name.equals("flyspeed"))return flySpeedCommand(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(name.equals("voidworld"))return voidWorldCommand(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"duel"->duel(p,args);case"duels"->duels(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"spawnershop"->{spawnerShop.open(p);yield true;}case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
+    @Override public boolean onCommand(CommandSender sender,Command command,String label,String[] args){String name=command.getName().toLowerCase(Locale.ROOT);if(name.equals("admin"))return consoleAdmin(sender,args);if(name.equals("fly"))return flyCommand(sender,args);if(name.equals("flyspeed"))return flySpeedCommand(sender,args);if(name.equals("ashfall"))return admin(sender,args);if(name.equals("shout"))return shout(sender,args);if(name.equals("voidworld"))return voidWorldCommand(sender,args);if(!(sender instanceof Player p)){CoreUtil.error(sender,"This command requires a player.");return true;}db.ensurePlayer(CoreUtil.id(p),p.getName(),getConfig().getDouble("starting-balance",250));shards.activity(p);return switch(name){case"f"->factions.command(p,args);case"balance"->{CoreUtil.msg(p,"Balance: "+CoreUtil.money(db.player(CoreUtil.id(p)).balance()));yield true;}case"pay"->pay(p,args);case"home"->teleports.homeCommand(p,args);case"sethome"->teleports.setPersonalHome(p,args.length>0?args[0]:"home");case"delhome"->teleports.deletePersonalHome(p,args.length>0?args[0]:"home");case"renamehome"->{if(args.length<2){CoreUtil.error(p,"Usage: /renamehome <old> <new>");yield true;}yield teleports.renamePersonalHome(p,args[0],args[1]);}case"buyhome"->teleports.buyPersonalHome(p,args.length>0&&args[0].equalsIgnoreCase("confirm"));case"tpa"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpa <player>");else teleports.tpa(p,args[0]);yield true;}case"tpahere"->{if(args.length<1)CoreUtil.error(p,"Usage: /tpahere <player>");else teleports.tpahere(p,args[0]);yield true;}case"tpaccept"->teleports.accept(p);case"tpdeny"->teleports.deny(p);case"spawn"->{teleports.warmup(p,teleports.spawn(),"server spawn");yield true;}case"rtp"->{if(args.length>0&&args[0].equalsIgnoreCase("queue")){yield teleports.toggleRtpQueue(p);}yield teleports.rtp(p);}case"msg"->messaging.message(p,args);case"reply"->messaging.reply(p,args);case"colosseum"->colosseum.command(p,args);case"duel"->duel(p,args);case"duels"->duels(p,args);case"orders"->{ordersService.openPublic(p);yield true;}case"order"->{ordersService.openPick(p,1,null);yield true;}case"shop"->shop.command(p,args);case"spawnershop"->{spawnerShop.open(p);yield true;}case"luxuryshop"->{marketplace.open(p,MarketplaceService.Section.LUXURY);yield true;}case"shardshop"->{marketplace.open(p,MarketplaceService.Section.SHARDS);yield true;}case"settings"->settings.command(p,args);case"ah"->auctions.command(p,args);case"bounty"->{if(args.length<2)CoreUtil.error(p,"Usage: /bounty <player> <amount>");else bounties.place(p,args[0],CoreUtil.parseMoney(args[1]));yield true;}case"bounties"->{bounties.list(p);yield true;}case"events"->{eventCommand(p,args);yield true;}case"relics"->{if(args.length>0&&args[0].equalsIgnoreCase("trace")){if(args.length<2)CoreUtil.error(p,"Usage: /relics trace <relic key>");else relics.trace(p,args[1]);}else relics.list(p);yield true;}case"leaderboards"->{leaderboards(p,args);yield true;}case"guide"->guides.command(p,args);case"rules"->guides.rulesCommand(p,args);case"smphelp"->{playerHelp(p);yield true;}case"role"->{CoreUtil.msg(p,"Your Ashfall role is "+roleName(p)+".");yield true;}case"sidebar"->progress.toggleSidebar(p);case"feedback"->{feedback(p,args);yield true;}case"stats"->progress.stats(p,args.length>0?args[0]:null);case"progress"->progress.show(p);case"history"->{int page=parsePage(args);progress.history(p,false,page);yield true;}case"homes"->teleports.listPersonalHomes(p,args.length>0&&args[0].equalsIgnoreCase("locate"));case"graves"->graves.command(p);case"enderchest"->enderChests.command(p,args);case"nickname"->nicknames.command(p,args);case"discord"->{p.sendMessage("§9Discord: §b§nhttps://discord.gg/G2FfuXjz8");yield true;}case"afk"->{boolean now=afk.toggle(p);CoreUtil.msg(p,now?"You are now AFK.":"Welcome back — no longer AFK.");yield true;}case"back"->{if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /back.");yield true;}yield teleports.back(p);}case"kit"->{
                 if(!isAdmin(p)){CoreUtil.error(p,"Only staff may use /kit.");yield true;}
                 if(args.length<1||!args[0].equalsIgnoreCase("test")){CoreUtil.error(p,"Usage: /kit test [player]");yield true;}
                 /** Admin-only in both forms; the optional target lets staff outfit someone else for a
@@ -417,11 +694,29 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String column=switch(type){case"bosses"->"boss_kills";case"kills"->"player_kills";case"deaths"->"deaths";case"mobs"->"mob_kills";case"events"->"event_wins";case"playtime"->"play_seconds";default->"balance";};
         List<Database.StatsRow> rows=db.topStats(column,size,from);
         if(rows.isEmpty()){CoreUtil.msg(p,"No entries on this page.");return;}
-        int i=from+1;for(Database.StatsRow row:rows){String value=switch(column){case"balance"->CoreUtil.money(row.balance());case"play_seconds"->row.playSeconds()/3600+"h "+row.playSeconds()%3600/60+"m";case"player_kills"->row.playerKills()+" kills";case"deaths"->row.deaths()+" deaths";case"mob_kills"->row.mobKills()+" mobs";case"boss_kills"->row.bossKills()+" bosses";default->row.eventWins()+" wins";};CoreUtil.msg(p,(i++)+". "+nicknames.displayName(row.name())+" — "+value);}
+        int i=from+1;for(Database.StatsRow row:rows){String value=switch(column){case"balance"->CoreUtil.money(row.balance());case"play_seconds"->row.playSeconds()/3600+"h "+row.playSeconds()%3600/60+"m";case"player_kills"->row.playerKills()+" kills";case"deaths"->row.deaths()+" deaths";case"mob_kills"->row.mobKills()+" mobs";case"boss_kills"->row.bossKills()+" bosses";default->row.eventWins()+" wins";};CoreUtil.item(p,(i++)+". "+CoreUtil.safe(nicknames.displayName(row.name()))+"  "+CoreUtil.C_TEXT+value);}
     }
 
     void giveGuide(Player p){guides.giveBoth(p);}
-    private void playerHelp(Player p){p.sendMessage("§6§lASHFALL");p.sendMessage("§eFactions: §f/f create, /f claim, /f relations, /f expand, /f <player>");p.sendMessage("§eEconomy: §f/balance, /pay, /bounty, /bounties");p.sendMessage("§eMarketplace: §f/shop, /ah, /luxuryshop, /shardshop, /orders, /myorders");p.sendMessage("§eTravel: §f/home, /tpa, /spawn, /rtp, /rtp queue");p.sendMessage("§eSocial: §f/msg, /r, /trade, /feedback");p.sendMessage("§eMore: §f/settings, /events, /progress, /stats, /graves, /enderchest, /guide, /afk");}
+    /*  The command index.
+     *
+     *  Was a bold all-caps banner over seven yellow labels. Yellow is the server's "pay attention" colour
+     *  and this screen is a reference -- every line shouting is every line being ignored. Ember heading,
+     *  receding labels, commands in white where the eye actually needs to land. */
+    private void playerHelp(Player p){
+        CoreUtil.heading(p,"Ashfall","commands");
+        helpRow(p,"Factions","/f create, /f claim, /f relations, /f expand, /f <player>");
+        helpRow(p,"Economy","/balance, /pay, /bounty, /bounties");
+        helpRow(p,"Marketplace","/shop, /ah, /luxuryshop, /shardshop, /orders");
+        helpRow(p,"Travel","/home, /tpa, /spawn, /rtp");
+        helpRow(p,"Social","/msg, /r, /trade, /feedback");
+        helpRow(p,"Combat","/duel, /colosseum");
+        helpRow(p,"More","/settings, /events, /progress, /stats, /graves, /enderchest, /guide, /afk");
+        CoreUtil.hint(p,"/guide walks through any of these in detail.");
+    }
+    private void helpRow(Player p,String label,String commands){
+        p.sendMessage("  §8"+label+" §7"+commands);
+    }
 
     private boolean admin(CommandSender sender,String[] args){
         if(sender instanceof Player p&&!isAdmin(p)){CoreUtil.error(sender,"Only the configured ADMIN account can use SMPCore administration.");return true;}
@@ -435,7 +730,13 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                      *  Follows the conventions the rest of /ashfall uses: a verb as args[1], the subject as
                      *  args[2], every branch answers the sender, and every verb is offered by tab complete.
                      *  `enter` is player-only because it moves somebody; the rest work from console. */
-                    if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close> [name]");return true;}
+                    if(args.length>=2&&args[1].equalsIgnoreCase("verify")){
+                        if(!testGate(sender,"voidworld verify"))return true;
+                        CoreUtil.msg(sender,"Verifying the void world entry/exit lifecycle:");
+                        for(String line:voidWorlds.verify())CoreUtil.msg(sender,line);
+                        return true;
+                    }
+                    if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall voidworld <create|enter|exit|list|delete|open|close|verify> [name]");return true;}
                     String verb=args[1].toLowerCase(Locale.ROOT);
                     if(verb.equals("list")){
                         java.util.List<String> labels=voidWorlds.labels();
@@ -512,11 +813,11 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                             line->{CoreUtil.msg(sender,"  "+line);getLogger().info("[IH-live] "+line);});
                     return true;
                 }
-                if(args.length>=2&&args[1].equalsIgnoreCase("verify")){CoreUtil.msg(sender,"Verifying Industrial Hopper parity against a live rig:");for(String line:new IndustrialHopperVerify(this,industrialHoppers).run())CoreUtil.msg(sender,"  "+line);return true;}if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
+                if(args.length>=2&&args[1].equalsIgnoreCase("verify")){if(!testGate(sender,"hopper verify"))return true;CoreUtil.msg(sender,"Verifying Industrial Hopper parity against a live rig:");for(String line:new IndustrialHopperVerify(this,industrialHoppers).run())CoreUtil.msg(sender,"  "+line);return true;}if(args.length>=5&&args[1].equalsIgnoreCase("rig")){org.bukkit.World rw=sender instanceof Player rp?rp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.rig(rw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("count")){org.bukkit.World cw=sender instanceof Player cp?cp.getWorld():getServer().getWorlds().get(0);CoreUtil.msg(sender,industrialHoppers.count(cw,Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));return true;}if(args.length>=5&&args[1].equalsIgnoreCase("create")){org.bukkit.World w=sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0);boolean made=industrialHoppers.install(w.getBlockAt(Integer.parseInt(args[2]),Integer.parseInt(args[3]),Integer.parseInt(args[4])));CoreUtil.msg(sender,made?"Industrial Hopper installed.":"That block is not a hopper.");return true;}if(args.length>=4){org.bukkit.World world=args.length>4?getServer().getWorld(args[4]):(sender instanceof Player hp?hp.getWorld():getServer().getWorlds().get(0));if(world==null){CoreUtil.error(sender,"Unknown world.");return true;}try{CoreUtil.msg(sender,industrialHoppers.describe(world,Integer.parseInt(args[1]),Integer.parseInt(args[2]),Integer.parseInt(args[3])));}catch(NumberFormatException e){CoreUtil.error(sender,"Usage: /ashfall hopper <x> <y> <z> [world]");}}else{java.util.List<String> all=industrialHoppers.describeAll();CoreUtil.msg(sender,"Industrial hoppers in memory: "+all.size());for(String line:all)CoreUtil.msg(sender,"  "+line);}}
                 case"vault"->{int page=1;if(args.length>1)try{page=Math.max(1,Integer.parseInt(args[1]));}catch(NumberFormatException ignored){}CoreUtil.msg(sender,vault.summaryLine());vault.show(sender,page);}
                 case"balance"->adminBalance(sender,args);
                 case"boss"->adminBoss(sender,args);
-                case"duelmap"->adminDuelMap(sender,args);case"spawnershop"->CoreUtil.msg(sender,spawnerShop.describeStock());
+                case"colosseum"->adminColosseum(sender,args);case"duelmap"->adminDuelMap(sender,args);case"spawnershop"->CoreUtil.msg(sender,spawnerShop.describeStock());
                 case"elite"->adminElite(sender,args);
                 case"event"->adminEvent(sender,args);
                 case"merchant"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run merchant commands in game.");return true;}merchants.command(p,args);}
@@ -539,6 +840,8 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"border"->adminBorder(sender,args);
                 case"reload"->{reloadConfig();shop.reload();relics.reload();bosses.reload();shards.reload();factions.refreshClaims();worldBorders.apply();CoreUtil.msg(sender,"Safe SMPCore YAML reloaded.");}
                 case"debug"->{CoreUtil.msg(sender,"Paper "+getServer().getMinecraftVersion()+" | Players "+db.topStats("balance").size()+" ranking rows | Factions "+db.factions().size());CoreUtil.msg(sender,"Vault "+economy.getName()+" | Event "+bosses.uiEventLine()+" | DB migration 1.7.0 active");}
+                case"lease"->adminLease(sender,args);   /* staging test coordination; see testGate */
+                case"stash"->adminStash(sender,args);
                 case"selftest"->selfTest(sender);
                 case"vanish"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run this in game.");return true;}boolean now=adminTools.toggleVanish(p);CoreUtil.msg(sender,"Vanish "+(now?"enabled":"disabled")+".");}
                 case"spectate"->{if(!(sender instanceof Player p)){CoreUtil.error(sender,"Run this in game.");return true;}if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall spectate <player>");return true;}Player target=getServer().getPlayerExact(args[1]);if(target==null){CoreUtil.error(sender,"That player is not online.");return true;}adminTools.spectate(p,target);CoreUtil.msg(sender,"Spectating "+target.getName()+". Use /ashfall unspectate to return.");}
@@ -569,6 +872,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         s.sendMessage(ChatColor.GOLD+""+ChatColor.BOLD+"ASHFALL ADMIN");
         adminCategory(s,"Economy","/ashfall balance, /ashfall bank, /ashfall economy report, /ashfall shard");
         adminCategory(s,"Events & Bosses","/ashfall event, /ashfall boss, /ashfall elite");
+        adminCategory(s,"Arenas","/ashfall duelmap, /ashfall colosseum");
         adminCategory(s,"Factions & Spawn","/ashfall faction, /ashfall spawnclaim");
         adminCategory(s,"Merchants","/ashfall merchant");
         adminCategory(s,"Bulletin","/ashfall bulletin");
@@ -599,10 +903,65 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             case"feedback"->feedbackHelp(s);
             case"relics","relic"->relicHelp(s);
             case"bounty","bounties"->bountyHelp(s);
-            case"maintenance","debug"->adminCommands(s,"Debug / Maintenance","/ashfall border status","/ashfall border apply","/ashfall border restore","/ashfall setspawn","/ashfall reload","/ashfall debug","/ashfall selftest","/ashfall grave repair");
+            case"arenas","colosseum"->colosseumHelp(s);
+            case"voidworld","voidworlds"->voidWorldHelp(s);
+            case"duelmap","duelmaps"->adminCommands(s,"Duel Maps","/ashfall duelmap <"+String.join("|",DUELMAP_SUBS)+">",
+                "  build/import/save commit a template; test/dryrun/loot clone one; drop removes an instance.",
+                "  canary = template persistence proof, verify = full pipeline.");
+            case"maintenance","debug"->adminCommands(s,"Debug / Maintenance","/ashfall border status","/ashfall border apply","/ashfall border restore","/ashfall setspawn","/ashfall reload","/ashfall debug","/ashfall selftest","/ashfall grave repair",
+                    "/ashfall lease status                            who is running staging tests, and what is live",
+                    "/ashfall lease acquire <purpose> [seconds]       take the exclusive test window",
+                    "/ashfall lease release                           give it back",
+                    "/ashfall lease break                             take it from a crashed holder",
+                    "/ashfall stash <player>                          what the claim stash owes somebody",
+                    "/ashfall stash <player> receipts                 undelivered claim receipts in their playerdata",
+                    "/ashfall stash <player> reconcile                settle those receipts now",
+                    "/ashfall stash <player> fail <boundary>          abort the next delivery, to exercise recovery");
             default->adminHelp(s);
         }
     }
+    /** The Colosseum admin surface, in the order an arena is actually brought up: make it, build it,
+     *  commit it, test it, then keep an eye on what it is running. */
+    private void voidWorldHelp(CommandSender s){
+        adminCommands(s,"Event (Void) Worlds",
+            "/voidworld enter|exit|list                       the player-facing verbs",
+            "/ashfall voidworld create|delete <name>          admin only",
+            "/ashfall voidworld open|close <name>             a closed world is admin-only to ENTER",
+            "/ashfall voidworld verify                        the entry/exit lifecycle suite",
+            "",
+            "Crossing INTO a void world by any route -- the command, /tp, an admin teleport, another",
+            "plugin -- captures the player's real state from where they came FROM, once, and isolates",
+            "them. Crossing back out restores only after they are verifiably outside, and the snapshot",
+            "is not deleted until that succeeds. A failed exit keeps the session intact.");
+    }
+
+    private void colosseumHelp(CommandSender s){
+        adminCommands(s,"Boss Colosseum",
+            "/ashfall colosseum list                          arenas, bosses, stats and snapshot state",
+            "/ashfall colosseum create <arena>                open (or seed) the build workspace",
+            "/ashfall colosseum enter <arena>                 teleport in to build it (creative)",
+            "/ashfall colosseum setspawn <arena> <player|boss|spectator>",
+            "/ashfall colosseum setboss <arena> <boss>        move a boss to another arena",
+            "/ashfall colosseum save <arena>                  commit it; future encounters clone this",
+            "/ashfall colosseum exit                          back where you came from",
+            "/ashfall colosseum test <boss>                   a REAL encounter, free: no charge, no prize,",
+            "                                                 no reward table, no allowance, no leaderboard",
+            "/ashfall colosseum instances                     live encounters, worlds, chunks, prep times",
+            "/ashfall colosseum drop <instance-world>         end one (interrupts and REFUNDS its fighter)",
+            "/ashfall colosseum orphans                       remove leftover instance worlds",
+            "/ashfall colosseum reload                        reload colosseum.yml (refunds live encounters)",
+            "/ashfall colosseum verify                        the full automated suite",
+            "/ashfall colosseum bench <instances> <seconds>   measure what concurrency costs this server",
+            "",
+            "Player side: /colosseum, /colosseum stats [player], /colosseum top [boss], /colosseum leave.",
+            "",
+            "Six bosses, one shared limit of 3 rewarded victories per player per Riyadh day.",
+            "Each declares environment: NORMAL or NETHER -- the instance is CREATED in that",
+            "environment (same arena, same blocks; no Nether terrain is generated).",
+            "A rewarded win also pays Shards from the SAME daily allowance as world bosses.",
+            "Every boss value lives in plugins/SMPCore/colosseum.yml -- nothing is compiled in.");
+    }
+
     private void eventHelp(CommandSender s){adminCommands(s,"Events","/ashfall event resource","/ashfall event elitehunt","/ashfall event taskmaster","/ashfall event worldboss","/ashfall event stop");}
     private void bossHelp(CommandSender s){adminCommands(s,"World Boss","/ashfall boss spawn [ashen|iron|piglin]","/ashfall boss here [ashen|iron|piglin]","/ashfall boss despawn");}
     private void eliteHelp(CommandSender s){adminCommands(s,"Powered Mobs","/ashfall elite <uncommon|rare|epic|legendary|miniboss> [mob] [here | <x> <y> <z>]","  mob optional (e.g. wither_skeleton, blaze); location optional -> random if omitted","/ashfall elite legendary blaze here","/ashfall elite epic 100 64 -200","/ashfall elite stats");}
@@ -761,6 +1120,16 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     /** Which duel maps a match could actually be sent to right now. A map with no committed snapshot is not
      *  a failure -- it just has not been built yet -- but it is the single most useful thing to see in a
      *  selftest, because it is exactly what stops the duel flow reaching a player. */
+    /** Which Colosseum arenas an encounter could actually be sent to right now. An arena with no committed
+     *  snapshot is not a failure -- it just has not been built -- but it is exactly what stops /colosseum
+     *  reaching a player, so it belongs in the selftest readout rather than in a support ticket. */
+    private String colosseumSnapshotStatus(){
+        if(colosseum==null)return "unavailable";
+        List<String> missing=new ArrayList<>();
+        int total=0;
+        for(ColosseumArenas.Arena a:colosseum.arenas().arenas()){total++;if(!colosseum.arenas().hasSnapshot(a))missing.add(a.key());}
+        return (total-missing.size())+"/"+total+(missing.isEmpty()?" (all playable)":" - not yet built: "+String.join(", ",missing));
+    }
     private String duelMapSnapshotStatus(){
         if(duelMaps==null)return "unavailable";
         List<String> missing=new ArrayList<>();
@@ -856,6 +1225,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 });
             }
             case"canary"->{
+                if(!testGate(sender,"duelmap canary"))return;
                 CoreUtil.msg(sender,"Duel template persistence canary - building, saving, unloading, reloading and cloning:");
                 for(String line:new DuelMapCanary(this,svc).run())CoreUtil.msg(sender,"  "+line);
             }
@@ -920,6 +1290,162 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         }
     }
 
+    // ------------------------------------------------------------------ colosseum
+
+    /** Every /ashfall colosseum subcommand, in the order help prints them. Single source of truth for the
+     *  help text, the tab completion and the unknown-subcommand reply, so the three cannot drift. */
+    private static final List<String> COLOSSEUM_SUBS=List.of("list","create","enter","exit","save","setspawn",
+        "setboss","test","instances","drop","orphans","reload","verify","bench");
+
+    private final Map<String,org.bukkit.Location> colosseumReturn=new java.util.concurrent.ConcurrentHashMap<>();
+
+    private void colosseumUsage(CommandSender sender,String sub,String what){
+        CoreUtil.error(sender,"Usage: /ashfall colosseum "+sub+" <"+what+">");
+        if(what.startsWith("arena"))CoreUtil.msg(sender,"Arenas: "+String.join(", ",colosseum.arenas().arenaKeys()));
+        else if(what.startsWith("boss"))CoreUtil.msg(sender,"Bosses: "+String.join(", ",colosseum.bosses().keys()));
+        else if(what.startsWith("instance")){
+            List<String> live=colosseum.arenas().instanceNames();
+            CoreUtil.msg(sender,"Live instances: "+(live.isEmpty()?"none":String.join(", ",live)));
+        }
+    }
+
+    /** /ashfall colosseum ... -- arena maintenance with the same commit guarantees as duel maps: a write
+     *  barrier that actually flushes, a validated temporary snapshot, an atomic publish, and the previous
+     *  good snapshot preserved on any failure. */
+    private void adminColosseum(CommandSender sender,String[] args){
+        if(colosseum==null){CoreUtil.error(sender,"The Colosseum is unavailable.");return;}
+        ColosseumArenas svc=colosseum.arenas();
+        String sub=args.length>1?args[1].toLowerCase(Locale.ROOT):"list";
+        switch(sub){
+            case"list"->{
+                CoreUtil.msg(sender,"Colosseum arenas:");
+                for(ColosseumArenas.Arena a:svc.arenas())
+                    CoreUtil.msg(sender,"  "+a.key()+" - "+a.name()+" world="+a.templateWorld()
+                        +(getServer().getWorld(a.templateWorld())!=null?" (loaded)":" (not loaded)")
+                        +(svc.hasSnapshot(a)?" [committed: "+svc.describeSnapshot(a)+"]":" [NOT COMMITTED - encounters cannot use it]"));
+                CoreUtil.msg(sender,"Colosseum bosses:");
+                for(ColosseumBosses.BossDef d:colosseum.bosses().all())
+                    CoreUtil.msg(sender,"  "+d.key()+" - "+d.name()+" ["+d.style()+"/"+d.difficulty()+"] arena="+d.arena()
+                        +" hp="+(long)d.health()+" dmg="+d.damage()+" limit="+ColosseumService.timeText(d.timeLimitSeconds())
+                        +" fee="+CoreUtil.money(d.entryFee())+" prize="+CoreUtil.money(d.cashPrize())
+                        +(d.available()?"":" [CLOSED]"));
+                CoreUtil.msg(sender,"Snapshots live in "+svc.snapshotRoot().getAbsolutePath());
+            }
+            case"create"->{
+                ColosseumArenas.Arena a=args.length>2?svc.arena(args[2]):null;
+                if(a==null){colosseumUsage(sender,"create","arena");return;}
+                CoreUtil.msg(sender,"Opening the "+a.name()+" workspace - this can take a few seconds...");
+                org.bukkit.World w=svc.workspace(a,line->CoreUtil.msg(sender,"  "+line));
+                if(w==null){CoreUtil.error(sender,"Could not create that workspace.");return;}
+                CoreUtil.msg(sender,"Template world "+w.getName()+" is ready. Build it, then /ashfall colosseum save "+a.key()+".");
+                if(!svc.hasSnapshot(a))CoreUtil.msg(sender,"It has no committed snapshot yet, so encounters cannot use it until you save.");
+            }
+            case"enter"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                ColosseumArenas.Arena a=args.length>2?svc.arena(args[2]):null;
+                if(a==null){colosseumUsage(sender,"enter","arena");return;}
+                org.bukkit.World w=svc.workspace(a,line->CoreUtil.msg(p,"  "+line));
+                if(w==null){CoreUtil.error(sender,"Could not open that workspace.");return;}
+                if(!svc.holdsArena(w,a)){
+                    CoreUtil.error(sender,a.name()+" has no arena in its workspace and nothing to rebuild it from.");
+                    CoreUtil.msg(sender,"Its base template is '"+a.baseTemplate()+"'; commit that duel map first, or build this one by hand.");
+                }
+                colosseumReturn.put(p.getUniqueId().toString(),p.getLocation());
+                p.teleport(a.playerSpawn(w));
+                p.setGameMode(org.bukkit.GameMode.CREATIVE);
+                CoreUtil.msg(p,"Editing "+a.name()+". /ashfall colosseum save "+a.key()+" commits it; /ashfall colosseum exit returns you.");
+            }
+            case"exit"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                org.bukkit.Location back=colosseumReturn.remove(p.getUniqueId().toString());
+                p.teleport(back!=null?back:getServer().getWorlds().get(0).getSpawnLocation());
+                CoreUtil.msg(p,"Left the Colosseum template.");
+            }
+            case"save"->{
+                ColosseumArenas.Arena a=args.length>2?svc.arena(args[2]):null;
+                if(a==null){colosseumUsage(sender,"save","arena");return;}
+                CoreUtil.msg(sender,svc.commitTemplate(a));
+            }
+            case"setspawn"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only.");return;}
+                if(args.length<4){colosseumUsage(sender,"setspawn","arena> <player|boss|spectator");return;}
+                ColosseumArenas.Arena a=svc.arena(args[2]);
+                if(a==null){colosseumUsage(sender,"setspawn","arena");return;}
+                String which=args[3].toLowerCase(Locale.ROOT);
+                String field=switch(which){case"player"->"player-spawn";case"boss"->"boss-spawn";case"spectator"->"spectator";default->null;};
+                if(field==null){colosseumUsage(sender,"setspawn","arena> <player|boss|spectator");return;}
+                org.bukkit.Location at=p.getLocation();
+                if(!writeColosseumConfig("arenas."+a.key()+"."+field,List.of(round2(at.getX()),round2(at.getY()),round2(at.getZ())))){
+                    CoreUtil.error(sender,"Could not write colosseum.yml.");return;}
+                colosseum.reload();
+                CoreUtil.msg(p,"Set the "+which+" spawn for "+a.name()+" to "+fmt(at)+".");
+            }
+            case"setboss"->{
+                if(args.length<4){colosseumUsage(sender,"setboss","arena> <boss");return;}
+                ColosseumArenas.Arena a=svc.arena(args[2]);
+                ColosseumBosses.BossDef d=colosseum.bosses().boss(args[3]);
+                if(a==null){colosseumUsage(sender,"setboss","arena");return;}
+                if(d==null){colosseumUsage(sender,"setboss","boss");return;}
+                if(!writeColosseumConfig("bosses."+d.key()+".arena",a.key())){CoreUtil.error(sender,"Could not write colosseum.yml.");return;}
+                colosseum.reload();
+                CoreUtil.msg(sender,d.name()+" now fights in "+a.name()+".");
+            }
+            case"test"->{
+                if(!(sender instanceof Player p)){CoreUtil.error(sender,"Players only - an admin test is a real encounter.");return;}
+                ColosseumBosses.BossDef d=args.length>2?colosseum.bosses().boss(args[2]):null;
+                if(d==null){colosseumUsage(sender,"test","boss");return;}
+                CoreUtil.msg(sender,"Admin test: a real instance and a real fight, with NO charge, NO prize, NO reward table, no daily allowance used and no leaderboard entry.");
+                colosseum.challenge(p,d.key(),true);
+            }
+            case"instances"->{for(String line:colosseum.instanceReport())CoreUtil.msg(sender,line);}
+            case"bench"->{
+                int count=args.length>2?parseIntOr(args[2],2):2,seconds=args.length>3?parseIntOr(args[3],20):20;
+                /** Results arrive over the following seconds, by which time an RCON caller has already been
+                 *  disconnected -- so every line goes to the log as well as to whoever asked. */
+                colosseum.bench(count,seconds,line->{CoreUtil.msg(sender,line);getLogger().info("[colosseum-bench] "+line);});
+            }
+            case"drop"->{
+                if(args.length<3){colosseumUsage(sender,"drop","instance-world");return;}
+                CoreUtil.msg(sender,colosseum.dropInstance(args[2]));
+            }
+            case"orphans"->CoreUtil.msg(sender,"Removed "+svc.cleanupOrphans()+" orphaned Colosseum instance(s); swept "+svc.sweepDetached()+" detached folder(s).");
+            case"reload"->{
+                int ended=colosseum.interruptAll("configuration reload");
+                colosseum.reload();
+                CoreUtil.msg(sender,"Colosseum configuration reloaded ("+colosseum.arenas().arenas().size()+" arena(s), "
+                    +colosseum.bosses().all().size()+" boss(es))"+(ended>0?"; "+ended+" running encounter(s) were interrupted and refunded.":"."));
+            }
+            case"verify"->{
+                if(!testGate(sender,"colosseum verify"))return;
+                CoreUtil.msg(sender,"Verifying the Colosseum end to end - this creates and destroys its own instances:");
+                new ColosseumVerify(this,colosseum).run(line->CoreUtil.msg(sender,"  "+line));
+            }
+            default->{
+                if(args.length>1)CoreUtil.error(sender,"Unknown subcommand '"+args[1]+"'.");
+                CoreUtil.msg(sender,"COLOSSEUM - /ashfall colosseum <"+String.join("|",COLOSSEUM_SUBS)+">");
+                CoreUtil.msg(sender,"  create/enter/save build and commit an arena; test runs a free real encounter.");
+                CoreUtil.msg(sender,"  instances/drop/orphans manage live worlds; verify is the full automated suite.");
+                CoreUtil.msg(sender,"  bench <instances> <seconds> measures what concurrent encounters cost this server.");
+                CoreUtil.msg(sender,"  Arenas: "+String.join(", ",colosseum.arenas().arenaKeys())+" | Bosses: "+String.join(", ",colosseum.bosses().keys()));
+            }
+        }
+    }
+
+    /** colosseum.yml is not the plugin's main config, so it is loaded, edited and written back explicitly.
+     *  Comments in the file are lost on a write, which is why only setspawn/setboss do it -- everything else
+     *  is edited by hand. */
+    private static int parseIntOr(String value,int fallback){try{return Integer.parseInt(value);}catch(NumberFormatException e){return fallback;}}
+
+    private boolean writeColosseumConfig(String path,Object value){
+        try{
+            java.io.File file=new java.io.File(getDataFolder(),"colosseum.yml");
+            org.bukkit.configuration.file.YamlConfiguration yaml=org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file);
+            yaml.set(path,value);
+            yaml.save(file);
+            return true;
+        }catch(java.io.IOException error){getLogger().warning("Could not write colosseum.yml: "+error.getMessage());return false;}
+    }
+
     private void adminElite(CommandSender s,String[] args){
         if(args.length<2){eliteHelp(s);return;}
         String tier=args[1].toLowerCase(Locale.ROOT);
@@ -942,7 +1468,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
     private void adminFeedback(CommandSender s,String[] args){if(args.length<2){feedbackHelp(s);return;}String action=args[1].toLowerCase(Locale.ROOT);if(action.equals("notify")){if(!(s instanceof Player p)||args.length<3||!List.of("on","off").contains(args[2].toLowerCase(Locale.ROOT))){CoreUtil.error(s,"Usage: /smp feedback notify <on|off>");return;}boolean enabled=args[2].equalsIgnoreCase("on");db.preference(CoreUtil.id(p),"feedback_notify",Boolean.toString(enabled));CoreUtil.msg(s,"Feedback notifications "+(enabled?"enabled":"disabled")+".");return;}if(action.equals("list")){String status=args.length>2&&!args[2].equalsIgnoreCase("all")?args[2].toUpperCase(Locale.ROOT):"";for(Database.FeedbackRow row:db.feedback(status,20))CoreUtil.msg(s,"#"+row.id()+" ["+row.status()+"] "+row.playerName()+" • "+trim(row.message(),70));return;}if(!List.of("view","done","reopen","delete").contains(action)){CoreUtil.error(s,"Unknown feedback action. Use /smp feedback for options.");return;}if(args.length<3){CoreUtil.error(s,"Feedback ID required for '"+action+"'.");return;}long id=Long.parseLong(args[2]);Database.FeedbackRow row=db.feedback(id);if(row==null){CoreUtil.error(s,"Feedback not found.");return;}switch(action){case"view"->{CoreUtil.msg(s,"#"+row.id()+" ["+row.status()+"] "+row.playerName()+" • "+Instant.ofEpochMilli(row.createdAt()));s.sendMessage(row.message());}case"done"->{db.feedbackStatus(id,"DONE");CoreUtil.msg(s,"Feedback #"+id+" marked DONE.");}case"reopen"->{db.feedbackStatus(id,"OPEN");CoreUtil.msg(s,"Feedback #"+id+" reopened.");}case"delete"->{db.deleteFeedback(id);CoreUtil.msg(s,"Feedback #"+id+" permanently deleted.");}}}
 
     private void economyReport(CommandSender s,String[] args){if(args.length<2||!args[1].equalsIgnoreCase("report")){adminCommands(s,"Economy","/smp economy report");return;}long now=System.currentTimeMillis();economyWindow(s,"24 hours",db.economyTotals(now-86400000L));economyWindow(s,"7 days",db.economyTotals(now-604800000L));Database.BankRow treasury=bank.treasury();CoreUtil.msg(s,"Central Bank: "+CoreUtil.money(treasury.balance())+" | fees "+CoreUtil.money(treasury.feeRevenue())+" | server payments "+CoreUtil.money(treasury.sinkRevenue())+" | shop payouts "+CoreUtil.money(treasury.shopPayouts())+" | interest "+CoreUtil.money(treasury.interestRevenue()));List<Database.StatsRow> rich=db.topStats("balance");if(!rich.isEmpty())CoreUtil.msg(s,"Richest player: "+rich.getFirst().name()+" "+CoreUtil.money(rich.getFirst().balance()));List<NetWorthService.Row> factions=netWorth.rankings();if(!factions.isEmpty())CoreUtil.msg(s,"Top faction net worth: "+factions.getFirst().name()+" "+CoreUtil.money(factions.getFirst().value()));db.pruneEconomy(now-7776000000L);}
-    private void economyWindow(CommandSender s,String label,List<Database.EconomyTotal> totals){Map<String,Double> m=new HashMap<>();for(Database.EconomyTotal total:totals)m.put(total.category(),total.amount());double normal=m.getOrDefault("MOB_NORMAL",0.0),elite=m.getOrDefault("ELITE",0.0)+m.getOrDefault("BOSS",0.0),milestones=m.getOrDefault("MILESTONE",0.0)+m.getOrDefault("EVENT",0.0),selling=m.getOrDefault("SHOP_SELL",0.0),removed=Math.max(0,-m.entrySet().stream().filter(e->e.getValue()<0).mapToDouble(Map.Entry::getValue).sum()),net=m.values().stream().mapToDouble(Double::doubleValue).sum();if(Math.abs(net)<.0001)net=0;s.sendMessage("§6§lECONOMY • "+label);s.sendMessage("§7Normal mobs: §a"+CoreUtil.money(normal)+"  §7Elites/bosses: §a"+CoreUtil.money(elite));s.sendMessage("§7Milestones/events: §a"+CoreUtil.money(milestones)+"  §7Shop selling: §a"+CoreUtil.money(selling));s.sendMessage("§7Removed: §c"+CoreUtil.money(removed)+"  §7Net creation: "+(net>=0?"§a":"§c")+CoreUtil.money(net));}
+    private void economyWindow(CommandSender s,String label,List<Database.EconomyTotal> totals){Map<String,Double> m=new HashMap<>();for(Database.EconomyTotal total:totals)m.put(total.category(),total.amount());double normal=m.getOrDefault("MOB_NORMAL",0.0),elite=m.getOrDefault("ELITE",0.0)+m.getOrDefault("BOSS",0.0),milestones=m.getOrDefault("MILESTONE",0.0)+m.getOrDefault("EVENT",0.0),selling=m.getOrDefault("SHOP_SELL",0.0),removed=Math.max(0,-m.entrySet().stream().filter(e->e.getValue()<0).mapToDouble(Map.Entry::getValue).sum()),net=m.values().stream().mapToDouble(Double::doubleValue).sum();if(Math.abs(net)<.0001)net=0;CoreUtil.heading(s,"Economy",label);s.sendMessage("§7Normal mobs: §a"+CoreUtil.money(normal)+"  §7Elites/bosses: §a"+CoreUtil.money(elite));s.sendMessage("§7Milestones/events: §a"+CoreUtil.money(milestones)+"  §7Shop selling: §a"+CoreUtil.money(selling));s.sendMessage("§7Removed: §c"+CoreUtil.money(removed)+"  §7Net creation: "+(net>=0?"§a":"§c")+CoreUtil.money(net));}
     private void adminRelic(CommandSender s,String[] args){
         if(args.length<2){relicHelp(s);return;}
         if(args[1].equalsIgnoreCase("remove")){if(args.length<3){CoreUtil.error(s,"Usage: /smp relic remove <key>");return;}if(relics.remove(args[2]))CoreUtil.msg(s,"Relic removed from circulation — it will resurface naturally in "+relics.lostReentryDays()+" days, same as any other lost relic.");else CoreUtil.error(s,"Relic not found.");return;}
@@ -1006,7 +1532,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         List<Database.HomeRow> homes=db.homes(target.id(),"PERSONAL");
         if(homes.isEmpty()){CoreUtil.msg(s,target.name()+" has no personal homes set.");return;}
         CoreUtil.msg(s,target.name()+"'s homes:");
-        for(Database.HomeRow home:homes){Location l=home.location();String where=l.getWorld()==null?"unknown world":l.getWorld().getName()+" "+l.getBlockX()+", "+l.getBlockY()+", "+l.getBlockZ();CoreUtil.msg(s,"• "+home.name()+" — "+where);}
+        for(Database.HomeRow home:homes){Location l=home.location();String where=l.getWorld()==null?"unknown world":l.getWorld().getName()+" "+l.getBlockX()+", "+l.getBlockY()+", "+l.getBlockZ();CoreUtil.item(s,CoreUtil.safe(home.name())+"  "+CoreUtil.C_MUTE+where);}
     }
     private void adminFactionInfo(CommandSender s,String[] args){
         if(args.length<2){CoreUtil.error(s,"Usage: /ashfall factioninfo <player>");return;}
@@ -1018,7 +1544,304 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         String claimInfo=claim==null?"none":claim.size()+"x"+claim.size()+" | center "+((claim.minX()+claim.maxX())/2)+", "+((claim.minZ()+claim.maxZ())/2)+" | bounds X "+claim.minX()+".."+claim.maxX()+", Z "+claim.minZ()+".."+claim.maxZ();
         CoreUtil.msg(s,target.name()+" — "+f.name()+" ["+f.tag()+"] | members="+String.join(",",db.factionMembers(f.id()))+" | bank="+CoreUtil.money(f.balance())+" | claim="+claimInfo+" | net-worth="+CoreUtil.money(netWorth.value(f.id())));
     }
-    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
+    /*  THE CLAIM STASH, FROM THE OUTSIDE.
+     *
+     *  Auction purchases, expired listings and Colosseum reward overflow all land here when they cannot go
+     *  straight into an inventory, and until now nothing could see them: it is a table of serialised item
+     *  blobs. "I bought something and never got it" had no answer that was not a database client.
+     *
+     *  Read-only apart from `grant`, which exists so the delivery path can be exercised against a live
+     *  player -- a full inventory, a second collection, a restart in the middle -- rather than only against
+     *  the row lifecycle in the selftest. It is operator-gated and written to the audit trail like every
+     *  other admin action that creates something. */
+    /*  ================================================================================================
+     *  THE STAGING TEST LEASE.
+     *
+     *  /ashfall colosseum verify reported three failures on 2026-09-04, and every one of them was true at
+     *  the moment it looked: a harness scenario had an encounter running, and the verifier's "no scheduled
+     *  task survives its encounter" check found a scheduled task, belonging to somebody else's encounter.
+     *  Re-run on a quiet server it was 278/0.
+     *
+     *  A verifier that fails because something else is legitimately happening is worse than one that does
+     *  not run: it teaches whoever reads it to discount failures. So the destructive suites take an
+     *  exclusive lease, and refuse -- BEFORE touching anything -- when they cannot have it, naming what is
+     *  in the way.
+     *
+     *  What is deliberately NOT gated: /ashfall selftest (one transaction, rolled back) and
+     *  /ashfall duelmap verify (reads the registry). Read-only work should not queue behind a lease.
+     *
+     *  A crashed holder cannot keep it: the lease carries an expiry and an expired one is simply taken.
+     *  Nothing here ever cancels a real player's encounter to make room for a test. */
+    record TestLease(String owner,String purpose,long expiresAt){
+        boolean expired(){return System.currentTimeMillis()>expiresAt;}
+        long secondsLeft(){return Math.max(0,(expiresAt-System.currentTimeMillis())/1000);}
+    }
+    private static final String LEASE_STATE="staging_test_lease";
+
+    TestLease testLease(){
+        String raw=db.state(LEASE_STATE);
+        if(raw==null||raw.isBlank())return null;
+        String[] parts=raw.split("\\|",3);
+        if(parts.length<3)return null;
+        try{
+            TestLease lease=new TestLease(parts[0],parts[1],Long.parseLong(parts[2]));
+            return lease.expired()?null:lease;
+        }catch(NumberFormatException e){return null;}
+    }
+    boolean testLeaseAcquire(String owner,String purpose,long ttlSeconds){
+        TestLease held=testLease();
+        if(held!=null&&!held.owner().equalsIgnoreCase(owner))return false;
+        long ttl=Math.max(30,Math.min(3600,ttlSeconds));
+        db.state(LEASE_STATE,owner+"|"+purpose.replace('|','/')+"|"+(System.currentTimeMillis()+ttl*1000L));
+        return true;
+    }
+    boolean testLeaseRelease(String owner){
+        TestLease held=testLease();
+        if(held!=null&&!held.owner().equalsIgnoreCase(owner))return false;
+        db.state(LEASE_STATE,"");
+        return true;
+    }
+
+    /*  Everything that would make a destructive suite unsafe or unreliable right now, in words.
+     *
+     *  Deliberately reports rather than resolves. "Somebody is fighting a boss" is a reason to come back
+     *  later, never a reason to end their encounter. */
+    java.util.List<String> stagingActivity(String requester){
+        java.util.List<String> busy=new java.util.ArrayList<>();
+        java.util.List<String> others=new java.util.ArrayList<>();
+        for(Player online:getServer().getOnlinePlayers())
+            if(requester==null||!online.getName().equalsIgnoreCase(requester))others.add(online.getName());
+        if(!others.isEmpty())busy.add(others.size()+" other player"+(others.size()==1?"":"s")+" online: "+String.join(", ",others));
+        if(colosseum!=null&&colosseum.liveRunCount()>0)
+            busy.add(colosseum.liveRunCount()+" Colosseum encounter(s) running");
+        if(arena!=null&&arena.liveDuelCount()>0)
+            busy.add(arena.liveDuelCount()+" duel(s) in progress");
+        return busy;
+    }
+
+    /** Returns true when the suite may proceed. Otherwise it has already told the sender why, and nothing
+     *  has been touched. */
+    boolean testGate(CommandSender sender,String suite){
+        String requester=sender.getName();
+        TestLease held=testLease();
+        if(held!=null&&!held.owner().equalsIgnoreCase(requester)){
+            CoreUtil.error(sender,"The staging test lease is held by "+held.owner()+" for "+held.purpose()+".",
+                    "It frees itself in "+held.secondsLeft()+"s, or /ashfall lease break to take it.");
+            return false;
+        }
+        java.util.List<String> busy=stagingActivity(requester);
+        if(!busy.isEmpty()&&held==null){
+            CoreUtil.error(sender,suite+" would not be reliable right now, so it has not run.","Nothing was changed.");
+            for(String line:busy)CoreUtil.item(sender,line);
+            CoreUtil.hint(sender,"Take the lease first if this is a deliberate test window: /ashfall lease acquire "+suite);
+            return false;
+        }
+        return true;
+    }
+
+    private void adminLease(CommandSender sender,String[] args){
+        String verb=args.length>1?args[1].toLowerCase(Locale.ROOT):"status";
+        TestLease held=testLease();
+        switch(verb){
+            case"acquire"->{
+                /*  An explicit holder, because every RCON caller is CONSOLE: without it the harness and a
+                 *  person running a suite from the console are indistinguishable, which is exactly the
+                 *  collision this lease exists to stop. */
+                String holder=args.length>2?args[2]:sender.getName();
+                String purpose=args.length>3?String.join(" ",java.util.Arrays.copyOfRange(args,3,args.length)):"staging tests";
+                long ttl=900;
+                if(args.length>4)try{ttl=Long.parseLong(args[args.length-1]);purpose=String.join(" ",java.util.Arrays.copyOfRange(args,3,args.length-1));}catch(NumberFormatException ignored){}
+                if(!testLeaseAcquire(holder,purpose,ttl)){
+                    TestLease other=testLease();
+                    CoreUtil.error(sender,"Held by "+(other==null?"somebody":other.owner())+" for "+(other==null?"?":other.purpose())+".",
+                            other==null?null:"Free in "+other.secondsLeft()+"s.");
+                    return;
+                }
+                TestLease now=testLease();
+                CoreUtil.ok(sender,"Lease held by "+holder+" for "+(now==null?ttl:now.secondsLeft())+"s \u2014 "+purpose+".");
+                java.util.List<String> busy=stagingActivity(sender.getName());
+                if(!busy.isEmpty()){
+                    CoreUtil.warn(sender,"Live activity the suites will not wait for:");
+                    for(String line:busy)CoreUtil.item(sender,line);
+                }
+            }
+            case"release"->{
+                String holder=args.length>2?args[2]:sender.getName();
+                if(!testLeaseRelease(holder)){
+                    CoreUtil.error(sender,"That lease belongs to "+(held==null?"nobody":held.owner())+".");return;
+                }
+                CoreUtil.ok(sender,"Lease released.");
+            }
+            case"break"->{
+                db.state(LEASE_STATE,"");
+                db.logAudit(sender.getName(),"TEST_LEASE_BREAK",held==null?"none":held.owner()+" / "+held.purpose());
+                CoreUtil.ok(sender,held==null?"There was no lease to break.":"Took the lease from "+held.owner()+".");
+            }
+            default->{
+                if(held==null)CoreUtil.field(sender,"Test lease","free");
+                else CoreUtil.field(sender,"Test lease",held.owner()+" \u00b7 "+held.purpose()+" \u00b7 "+held.secondsLeft()+"s left");
+                /*  You are identified by the name the server knows you as, which for an RCON caller is
+                 *  "Rcon" and not "CONSOLE". Taking the lease under any other name locks you out of your
+                 *  own suites, so the name is on the screen rather than left to be discovered. */
+                CoreUtil.field(sender,"You are",sender.getName());
+                java.util.List<String> busy=stagingActivity(null);
+                if(busy.isEmpty())CoreUtil.hint(sender,"Nothing is running; the destructive suites are safe.");
+                else for(String line:busy)CoreUtil.item(sender,line);
+            }
+        }
+    }
+
+    private void adminStash(CommandSender sender,String[] args){
+        if(args.length<2){CoreUtil.error(sender,"Usage: /ashfall stash <player> [grant <material> <count>]");return;}
+        String who=CoreUtil.id(args[1]);
+        if(args.length>=4&&args[2].equalsIgnoreCase("fail")){
+            /*  Aborts the next delivery at a named persistence boundary, so the crash windows can be
+             *  entered on purpose. Operator-gated, audited, and cleared the moment it fires. */
+            String point=args[3].toLowerCase(Locale.ROOT);
+            if(!java.util.Set.of("before-save","after-save","after-apply","off").contains(point)){
+                CoreUtil.error(sender,"Boundaries: before-save, after-save, after-apply, off.");return;
+            }
+            stashFailPoint="off".equals(point)?null:point;
+            db.logAudit(sender.getName(),"STASH_FAIL_POINT",point);
+            CoreUtil.ok(sender,stashFailPoint==null?"Failure injection off.":"The next claim delivery will abort at "+point+".");
+            return;
+        }
+        if(args.length>=3&&args[2].equalsIgnoreCase("reconcile")){
+            Player target=getServer().getPlayerExact(args[1]);
+            if(target==null){CoreUtil.error(sender,"That player is not online.");return;}
+            CoreUtil.ok(sender,"Settled "+reconcileStash(target)+" claim receipt(s) for "+target.getName()+".");
+            return;
+        }
+        if(args.length>=3&&args[2].equalsIgnoreCase("receipts")){
+            Player target=getServer().getPlayerExact(args[1]);
+            if(target==null){CoreUtil.error(sender,"That player is not online.");return;}
+            String raw=target.getPersistentDataContainer().get(new org.bukkit.NamespacedKey(this,STASH_RECEIPT_KEY),
+                    org.bukkit.persistence.PersistentDataType.STRING);
+            CoreUtil.field(sender,"Receipts",raw==null||raw.isBlank()?"none":raw);
+            return;
+        }
+        if(args.length>=5&&args[2].equalsIgnoreCase("grant")){
+            org.bukkit.Material material=org.bukkit.Material.matchMaterial(args[3]);
+            if(material==null||material.isAir()){CoreUtil.error(sender,"No such item: "+CoreUtil.safe(args[3]));return;}
+            int count;
+            try{count=Math.max(1,Math.min(material.getMaxStackSize(),Integer.parseInt(args[4])));}
+            catch(NumberFormatException e){CoreUtil.error(sender,"That is not a number.");return;}
+            db.stashAddItem(who,new org.bukkit.inventory.ItemStack(material,count));
+            db.logAudit(sender.getName(),"STASH_GRANT",args[1]+" "+material+" x"+count);
+            CoreUtil.ok(sender,"Owed "+args[1]+" "+count+"x "+CoreUtil.pretty(material.name())+".");
+            return;
+        }
+        java.util.List<Database.StashRow> owed=db.stashRows(who);
+        CoreUtil.heading(sender,"Claim stash",args[1]+" · "+owed.size()+" waiting");
+        if(owed.isEmpty()){CoreUtil.hint(sender,"Nothing is owed to this player.");return;}
+        for(Database.StashRow row:owed)
+            CoreUtil.item(sender,"#"+row.id()+"  "+row.item().getAmount()+"x "+CoreUtil.pretty(row.item().getType().name()));
+        CoreUtil.hint(sender,"Delivered when they use /orders, with room to receive it.");
+    }
+
+    /*  WHAT addItem ACTUALLY DOES, pinned.
+     *
+     *  Every bug in the audit above came from one undocumented behaviour, so it is asserted here rather
+     *  than described: exactly enough room, no room, room for part of a stack, room split across slots, and
+     *  a round trip through the stash's own serialisation with every kind of item data attached. */
+    String inventorySelfTest(){
+        try{
+            org.bukkit.inventory.Inventory scratch=getServer().createInventory(null,27);
+
+            /*  WHAT addItem ACTUALLY DOES ON THIS PAPER BUILD, asserted rather than assumed.
+             *
+             *  I asserted in an earlier pass that addItem always writes the remainder back into the stack it
+             *  is handed. It does not, and the truth is worse: on this build the argument survives being
+             *  PLACED in a free slot, MERGED entirely into a partial stack, and REFUSED outright -- and is
+             *  overwritten with the remainder only when the insertion is PARTIALLY accepted.
+             *
+             *  So the one case that mutates is the one nobody reaches while testing, because it needs an
+             *  inventory that is nearly, but not quite, full. That is how the delivery path came to compare
+             *  the leftover against a stack that had by then BECOME the leftover -- a partial delivery read
+             *  as "nothing fitted", the row was left at full size, and the part that did arrive would have
+             *  been handed out again.
+             *
+             *  The delivery path is written not to care which is true: it hands addItem a clone and reads
+             *  only the map it returns. That is the one report that is correct under both contracts. */
+            ItemStack placed=new ItemStack(Material.DIAMOND,64);
+            if(!scratch.addItem(placed).isEmpty())return "an empty inventory refused a full stack";
+            if(placed.getAmount()!=64)return "placing into a free slot changed the caller's stack";
+            if(scratch.getItem(0).getAmount()!=64)return "the placed stack did not arrive whole";
+
+            /** Merged entirely into an existing partial stack. */
+            scratch.clear();
+            scratch.setItem(0,new ItemStack(Material.DIAMOND,40));
+            ItemStack merged=new ItemStack(Material.DIAMOND,20);
+            if(!scratch.addItem(merged).isEmpty())return "a stack that fits by merging was refused";
+            if(scratch.getItem(0).getAmount()!=60)return "the merge did not land in the partial stack";
+            if(merged.getAmount()!=20)return "merging changed the caller's stack";
+
+            /** No room at all: the map reports the whole amount back. */
+            scratch.clear();
+            for(int slot=0;slot<27;slot++)scratch.setItem(slot,new ItemStack(Material.STONE,64));
+            ItemStack refused=new ItemStack(Material.DIAMOND,16);
+            java.util.Map<Integer,ItemStack> back=scratch.addItem(refused);
+            if(back.size()!=1||back.values().iterator().next().getAmount()!=16)return "a full inventory did not report the whole stack back";
+            if(refused.getAmount()!=16)return "a refused stack was modified";
+
+            /** Room for only part of it: the map reports exactly the remainder. */
+            scratch.clear();
+            for(int slot=0;slot<26;slot++)scratch.setItem(slot,new ItemStack(Material.STONE,64));
+            scratch.setItem(26,new ItemStack(Material.DIAMOND,60));
+            ItemStack partial=new ItemStack(Material.DIAMOND,10);
+            java.util.Map<Integer,ItemStack> rest=scratch.addItem(partial);
+            if(rest.size()!=1||rest.values().iterator().next().getAmount()!=6)return "a partial fit did not report the exact remainder";
+            if(scratch.getItem(26).getAmount()!=64)return "a partial fit did not fill the slot it topped up";
+            /*  THE ONE THAT MUTATES. Asserted in the direction it actually goes, so a future Paper that
+             *  stops doing this fails here loudly instead of quietly changing what callers can rely on. */
+            if(partial.getAmount()!=6)return "a partial fit no longer rewrites the caller's stack (contract changed)";
+
+            /** Split across several slots: partials topped up first, then a free slot. */
+            scratch.clear();
+            scratch.setItem(0,new ItemStack(Material.DIAMOND,60));
+            scratch.setItem(1,new ItemStack(Material.DIAMOND,60));
+            ItemStack wide=new ItemStack(Material.DIAMOND,64);
+            if(!scratch.addItem(wide).isEmpty())return "a stack that fits across three slots was refused";
+            if(scratch.getItem(0).getAmount()!=64||scratch.getItem(1).getAmount()!=64||scratch.getItem(2).getAmount()!=56)
+                return "a split insertion did not distribute correctly";
+            /** Two partial merges then a placement, so the argument carries the tail that was placed. */
+            if(wide.getAmount()!=56)return "a split insertion left the caller's stack in an unexpected state";
+
+            /** The stack sizes a claim actually carries. */
+            for(int size:new int[]{64,16,1}){
+                scratch.clear();
+                ItemStack one=new ItemStack(Material.COOKED_BEEF,size);
+                if(!scratch.addItem(one).isEmpty())return "an empty inventory refused a stack of "+size;
+                if(scratch.getItem(0).getAmount()!=size)return "a stack of "+size+" did not arrive whole";
+            }
+
+            /*  And a claim keeps every piece of item data across the stash's own serialisation, which is
+             *  what a claim row physically is. */
+            ItemStack fancy=new ItemStack(Material.DIAMOND_SWORD);
+            org.bukkit.inventory.meta.ItemMeta meta=fancy.getItemMeta();
+            meta.displayName(net.kyori.adventure.text.Component.text("Test Blade"));
+            meta.lore(java.util.List.of(net.kyori.adventure.text.Component.text("a line of lore")));
+            meta.addEnchant(org.bukkit.enchantments.Enchantment.SHARPNESS,4,true);
+            ((org.bukkit.inventory.meta.Damageable)meta).setDamage(37);
+            meta.getPersistentDataContainer().set(new org.bukkit.NamespacedKey(this,"selftest_marker"),
+                    org.bukkit.persistence.PersistentDataType.STRING,"kept");
+            fancy.setItemMeta(meta);
+            ItemStack[] round=ItemStack.deserializeItemsFromBytes(ItemStack.serializeItemsAsBytes(new ItemStack[]{fancy}));
+            if(round.length!=1||round[0]==null)return "a serialised claim came back as nothing";
+            if(!round[0].isSimilar(fancy))return "a serialised claim came back as a different item";
+            org.bukkit.inventory.meta.ItemMeta kept=round[0].getItemMeta();
+            if(kept.getEnchantLevel(org.bukkit.enchantments.Enchantment.SHARPNESS)!=4)return "an enchantment was lost in the claim stash";
+            if(((org.bukkit.inventory.meta.Damageable)kept).getDamage()!=37)return "durability was lost in the claim stash";
+            if(!"kept".equals(kept.getPersistentDataContainer().get(new org.bukkit.NamespacedKey(this,"selftest_marker"),
+                    org.bukkit.persistence.PersistentDataType.STRING)))return "PDC data was lost in the claim stash";
+            return null;
+        }catch(Throwable failure){
+            getLogger().warning("inventory self test could not run: "+failure);
+            return "threw "+failure;
+        }
+    }
+
+    private void selfTest(CommandSender s){CoreUtil.msg(s,"Running non-destructive migration and persistence tests...");for(String result:db.selfTest())CoreUtil.msg(s,result);List<Integer> sizes=getConfig().getIntegerList("claims.sizes"),costs=getConfig().getIntegerList("claims.expansion-costs");boolean ok=sizes.size()==6&&costs.size()==5&&CoreUtil.compact(2590).length()<=5&&getConfig().getDouble("merchants.shop.buy-multiplier",1)<1&&getConfig().getDouble("merchants.shop.sell-multiplier",1)>1&&getConfig().getDouble("mob-money.minimum-multiplier",0)>.0&&getConfig().getDouble("spawner-breaking.money-reward",0)==25&&getConfig().getInt("spawner-breaking.exp-max",0)>=getConfig().getInt("spawner-breaking.exp-min",1)&&getConfig().getInt("auctions.max-active-per-player",0)==30&&getConfig().getDouble("bank.loans.daily-interest-percent",0)>0&&getConfig().getDouble("bank.loans.overdue-garnish-percent",0)>0&&getConfig().getDouble("bank.loans.maximum-limit",-1)==0&&getConfig().getInt("homes.personal.upgrades.10",0)==50000000&&getConfig().getLong("graves.lifetime-hours",0)==48&&getConfig().getDouble("performance.world-borders.sizes.overworld",0)==225000&&getConfig().getDouble("performance.world-borders.sizes.nether",0)==57000&&getConfig().getDouble("performance.world-borders.sizes.end",0)==175000&&getConfig().getDouble("progression.vanguard-economic-target",0)==250000&&getConfig().getDouble("pay.tax-percent",-1)>=0&&getConfig().getDouble("progression.rank-rewards.VANGUARD",0)==250000;for(int i=1;i<sizes.size();i++)ok&=sizes.get(i)>sizes.get(i-1);for(int i=1;i<costs.size();i++)ok&=costs.get(i)>costs.get(i-1);CoreUtil.msg(s,"Claim/economy/bank/auction/home/border configuration: "+(ok?"ok":"FAILED"));String inventoryResult=inventorySelfTest();CoreUtil.msg(s,"Inventory insertion semantics (exact/none/partial/split/64,16,1) and claim item fidelity: "+(inventoryResult==null?"ok":"FAILED at "+inventoryResult));String sidebarResult=ui.selfTest();CoreUtil.msg(s,"Sidebar rendered width, label column and blank rows: "+(sidebarResult==null?"ok":"FAILED: "+sidebarResult));String navResult=marketplace.navigationSelfTest();CoreUtil.msg(s,"Shop navigation ring (five sections, one footer, both directions): "+(navResult==null?"ok":"FAILED: "+navResult));CoreUtil.msg(s,"Money parser, smart combat links and guide selection: "+(CoreUtil.moneyParserSelfTest()&&teleports.combatSelfTest()&&guides.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Chat combining-mark (zalgo) sanitization: "+(CoreUtil.combiningMarkSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Seven-rank requirement progression: "+(progress.rankSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shop, Dragon Egg and Villager Capsule checks: "+(shop.selfTest()&&capsules.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Raw/cooked crafting-tax band (10-15%): "+(shop.craftingTaxSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Bow recipe pricing and no-profit-loop: "+(shop.bowRecipeSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Damaged-gear opt-in (enchanted bows refused): "+(shop.damagedOptInSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked-mob conservation (money, items, XP, split): "+(ShopService.bulkSelfTest()&&SpawnerService.bulkPlanSelfTest()&&spawners.bulkSplitSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Void event world naming and sanitisation: "+(voidWorlds.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Stacked/recovery spawner checks: "+(spawners.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Shared boss participant scaling/health-percent math: "+(bosses.scalingSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Boss reward split (single participant takes the whole pool): "+(bosses.rewardSplitSelfTest()?"ok":"FAILED")); CoreUtil.msg(s,"Celebration particle data and durations: "+(spectacle.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Boss/elite health-safety clamp: "+(bosses.bossHealthSafetySelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"World-boss rebalance/soft-enrage configuration: "+(bosses.worldBossRebalanceSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Epic/Legendary rarity, scaling and phase configuration: "+(bosses.eliteTierSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Active-play event tiers/protected buffer/effect sanitation: "+(bosses.eventTimingSelfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Marketplace, settings, shards and weekly Dragon: "+(marketplace.selfTest()&&settings.selfTest()&&shards.selfTest()&&weeklyDragon.selfTest()&&relics.upgradeSelfTest()&&taskMaster.selfTest()&&industrialHoppers.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Discarded-item vault eligibility guards: "+(vault.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Orders identity, catalogue and spawner typing: "+(ordersService.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Arena kit parity, three-stage setup and pari-mutuel arithmetic: "+(arena.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel map registry, break rules, spawn facing and trial-key restriction: "+(duelMaps.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Spawner Shop pricing order, rounding and deficit surcharge: "+(spawnerShop.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Duel template snapshots committed: "+duelMapSnapshotStatus());CoreUtil.msg(s,"Colosseum arenas, boss identities, economy and daily cap: "+(colosseum.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Colosseum arena snapshots committed: "+colosseumSnapshotStatus());CoreUtil.msg(s,"Live bulletin configuration: "+(bulletin.selfTest()?"ok":"FAILED"));CoreUtil.msg(s,"Punishment tier configuration: "+(punishments.selfTest()?"ok":"FAILED"));String old=db.state("selftest_1_7_0_restart");db.state("selftest_1_7_0_restart",Long.toString(System.currentTimeMillis()));CoreUtil.msg(s,"1.7.0 restart marker: "+(old==null?"created; run after restart":"read previous value successfully"));}
 
     /** /duel <player|accept|decline|kit|series|stake|confirm|bet|watch|status|cancel> */
     /** /duels -- where each piece of a duel kit sits when the match starts. A standing preference, so it
@@ -1154,8 +1977,32 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
             if(args.length==4&&sub.equals("setspawn"))return filter(args[3],List.of("p1","p2","spectator"));
             return List.of();
         }
+        /** /ashfall colosseum ... completes from the LIVE registry and world list, exactly like duel maps.
+         *  The whole /ashfall tree is already gated above, so being here means the sender may run these. */
+        if(name.equals("ashfall")&&args.length>=2&&args[0].equalsIgnoreCase("colosseum")){
+            if(colosseum==null)return List.of();
+            if(args.length==2)return filter(args[1],COLOSSEUM_SUBS);
+            String sub=args[1].toLowerCase(Locale.ROOT);
+            if(args.length==3)return switch(sub){
+                case"create","enter","save","setspawn","setboss"->filter(args[2],colosseum.arenas().arenaKeys());
+                case"test"->filter(args[2],colosseum.completableBosses(true));
+                case"drop"->filter(args[2],colosseum.arenas().instanceNames());
+                case"bench"->filter(args[2],List.of("1","2","3","4"));
+                default->List.of();
+            };
+            if(args.length==4&&sub.equals("setspawn"))return filter(args[3],List.of("player","boss","spectator"));
+            if(args.length==4&&sub.equals("setboss"))return filter(args[3],colosseum.completableBosses(true));
+            if(args.length==4&&sub.equals("bench"))return filter(args[3],List.of("10","20","30","60"));
+            return List.of();
+        }
         if(name.equals("ashfall")&&args.length==2&&args[0].equalsIgnoreCase("hopper"))
             return filter(args[1],List.of("verify","rig","count","create"));
+        if(name.equals("colosseum")&&args.length==2){
+            String verb=args[0].toLowerCase(Locale.ROOT);
+            if(verb.equals("stats"))return publicOnlineNames(sender,args[1]);
+            if(verb.equals("top"))return filter(args[1],colosseum.completableBosses(true));
+            return List.of();
+        }
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("invite"))return publicOnlineNames(sender,args[1]);
         if(name.equals("f")&&args.length==2&&args[0].equalsIgnoreCase("locate")&&sender instanceof Player p)return filter(args[1],getServer().getOnlinePlayers().stream().filter(target->!target.equals(p)&&factions.friendly(p,target)).map(nicknames::displayName).toList());
         if(name.equals("f")&&args.length==2&&Set.of("ally","truce","storage","info").contains(args[0].toLowerCase(Locale.ROOT))){
@@ -1172,7 +2019,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("buyhome")&&args.length==1)return filter(args[0],List.of("confirm"));
         if(name.equals("homes")&&args.length==1)return filter(args[0],List.of("locate"));
         if(name.equals("relics")&&args.length==2&&args[0].equalsIgnoreCase("trace")&&sender instanceof Player p)return filter(args[1],db.relicLifecycles().stream().filter(row->"ACTIVE".equals(row.status())&&row.owner().equals(CoreUtil.id(p))).map(Database.RelicLifecycleRow::key).toList());
-        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper","duelmap","spawnershop","voidworld"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
+        if(args.length==1)return switch(name){case"f"->{List<String> options=new ArrayList<>(List.of("create","claim","unclaim","borders","networth","leaderboard","relations","ally","truce","storage","invite","accept","kick","leader","coleader","leave","disband","info","tag","deposit","withdraw","expand","sethome","home","homes","delhome","buyhome","history","locate"));options.addAll(publicOnlineNames(sender,""));yield filter(args[0],options);}case"shop"->filter(args[0],List.of("luxury","buy","sell","sellall"));case"settings"->filter(args[0],List.of("account","confirmations"));case"ah"->filter(args[0],List.of("sell","collect","cancel"));case"enderchest"->filter(args[0],sender instanceof Player viewer&&isAdmin(viewer)?List.of("upgrade","page","inspect"):List.of("upgrade","page"));case"events"->filter(args[0],List.of("track"));case"guide","rules"->filter(args[0],List.of("English","العربية"));case"leaderboards"->filter(args[0],List.of("money","networth","factions","bosses","kills","deaths","mobs","bounties","events","playtime"));case"relics"->filter(args[0],List.of("trace"));case"colosseum"->{List<String> options=new ArrayList<>(List.of("stats","top","leave","list"));options.addAll(colosseum.completableBosses(sender instanceof Player cp&&isAdmin(cp)));yield filter(args[0],options);}case"ashfall"->filter(args[0],List.of("help","balance","economy","bank","boss","elite","event","merchant","bulletin","feedback","faction","spawnclaim","relic","grave","border","setspawn","reload","debug","selftest","vanish","spectate","unspectate","audit","shard","progressrepair","cooldowns","bounty","dragon","replay","chatlog","dmlog","factionchatlog","lastloc","homes","factioninfo","ipban","monument","moderation","vault","hopper","duelmap","colosseum","spawnershop","voidworld"));case"nickname"->filter(args[0],List.of("random","off"));default->List.of();};
         if(name.equals("shop")&&args.length==2&&(args[0].equalsIgnoreCase("buy")||args[0].equalsIgnoreCase("sell")))return shop.itemNames(args[0].equalsIgnoreCase("sell"),args[1]);
         if(name.equals("shop")&&args.length==2&&args[0].equalsIgnoreCase("sellall"))return filter(args[1],List.of("chest"));
         if(name.equals("f")&&args.length==2&&(args[0].equalsIgnoreCase("home")||args[0].equalsIgnoreCase("delhome"))&&sender instanceof Player p){Database.FactionRow faction=db.factionOf(CoreUtil.id(p));return faction==null?List.of():filter(args[1],db.homes(Long.toString(faction.id()),"FACTION").stream().map(Database.HomeRow::name).toList());}
@@ -1184,13 +2031,15 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
         if(name.equals("events")&&args.length==2&&args[0].equalsIgnoreCase("track"))return filter(args[1],List.of("on","off"));
         if(name.equals("ashfall")&&args.length==2){
             return switch(args[0].toLowerCase(Locale.ROOT)){
-                case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","maintenance"));
+                case"help"->filter(args[1],List.of("economy","events","factions","merchants","feedback","relics","arenas","colosseum","duelmap","voidworld","maintenance"));
                 case"balance"->filter(args[1],List.of("set","add","take"));
                 case"bank"->filter(args[1],List.of("add","remove","set"));
                 case"boss"->filter(args[1],List.of("spawn","here","despawn"));
                 case"elite"->filter(args[1],List.of("stats","uncommon","rare","epic","legendary","miniboss"));
                 case"event"->filter(args[1],List.of("resource","elitehunt","taskmaster","worldboss","stop"));
-                case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete","open","close"));
+                case"lease"->filter(args[1],List.of("status","acquire","release","break"));
+                case"stash"->filter(args[1],getServer().getOnlinePlayers().stream().map(Player::getName).toList());
+                case"voidworld"->filter(args[1],List.of("create","enter","exit","list","delete","open","close","verify"));
                 case"hopper"->filter(args[1],List.of("verify","livesuite","live","watch","create","rig","count"));
                 case"economy"->filter(args[1],List.of("report"));
                 case"feedback"->filter(args[1],List.of("notify","list","view","done","reopen","delete"));
@@ -1208,6 +2057,7 @@ public final class SMPCore extends JavaPlugin implements CommandExecutor,TabComp
                 case"ipban"->filter(args[1],List.of("ban","unban","duration","list"));
                 case"monument"->filter(args[1],List.of("list","locate","tp","register","inspect","remove","rename","snapshot","restore","refill","history","reconstruct","revamp","prism","help"));
                 case"moderation"->filter(args[1],List.of("view","duration","revoke","note","notes"));
+                case"colosseum"->filter(args[1],COLOSSEUM_SUBS);
                 default->List.of();
             };
         }

@@ -408,7 +408,15 @@ final class OrdersService implements Listener {
         holder.inv.setItem(10, CoreUtil.named(Material.COMPASS, "Browse & fulfil orders", List.of("See every open buy order", "Deliver items and get paid")));
         holder.inv.setItem(11, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order", "Browse by category")));
         holder.inv.setItem(13, CoreUtil.named(Material.CHEST, "My active orders", List.of(active + " active", "Cancel and refund")));
-        holder.inv.setItem(15, CoreUtil.named(Material.ENDER_CHEST, "Claim deliveries", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting", "Collect what sellers delivered")));
+        int waiting = db.stashCount(CoreUtil.id(player));
+        holder.inv.setItem(15, waiting > 0
+                ? CoreUtil.Menu.action(Material.ENDER_CHEST, "Claim deliveries", List.of(
+                        CoreUtil.C_TEXT + waiting + CoreUtil.C_BODY + " stack" + (waiting == 1 ? "" : "s") + " waiting for you",
+                        "Auction purchases, expired listings and rewards that",
+                        "would not fit at the time.",
+                        CoreUtil.C_MUTE + "Nothing here expires."))
+                : CoreUtil.Menu.info(Material.ENDER_CHEST, "Claim deliveries", List.of(
+                        CoreUtil.C_MUTE + "Nothing is waiting for you.")));
         holder.inv.setItem(16, CoreUtil.named(Material.BOOK, "Order history", List.of("Completed, cancelled, expired", "Hide entries you are done with")));
         player.openInventory(holder.inv);
     }
@@ -465,7 +473,15 @@ final class OrdersService implements Listener {
         inv.setItem(45, CoreUtil.named(Material.COMPASS, "Search", List.of(search == null ? "Showing everything" : "Showing: " + search, "Click to search")));
         inv.setItem(47, CoreUtil.named(Material.WRITABLE_BOOK, "Create an order", List.of("Place a new buy order")));
         inv.setItem(49, CoreUtil.named(Material.CHEST, "Your orders", List.of("Active orders and history")));
-        inv.setItem(51, CoreUtil.named(Material.ENDER_CHEST, "Claim deliveries", List.of(db.stashCount(CoreUtil.id(player)) + " stack(s) waiting")));
+        /*  The one a player actually reaches -- /orders opens this board, not the hub. It said
+         *  "0 stack(s) waiting" and looked as clickable as everything else beside it. */
+        int waiting = db.stashCount(CoreUtil.id(player));
+        inv.setItem(ORD_CLAIM, waiting > 0
+                ? CoreUtil.Menu.action(Material.ENDER_CHEST, "Claim deliveries", List.of(
+                        CoreUtil.C_TEXT + waiting + CoreUtil.C_BODY + " stack" + (waiting == 1 ? "" : "s") + " waiting for you",
+                        CoreUtil.C_MUTE + "Nothing in here expires."))
+                : CoreUtil.Menu.info(Material.ENDER_CHEST, "Claim deliveries", List.of(
+                        CoreUtil.C_MUTE + "Nothing is waiting for you.")));
         inv.setItem(53, CoreUtil.named(Material.PAPER, "Page " + page, List.of(rows.size() + " open order(s)")));
         pageNav(inv, page, rows.size());
         player.openInventory(inv);
@@ -737,11 +753,24 @@ final class OrdersService implements Listener {
 
     void openStash(Player player) {
         List<ItemStack> stash = db.stashOf(CoreUtil.id(player));
-        Inventory inv = open(player, Screen.STASH, 1, null, 0, "Orders • Stash", 54);
+        Inventory inv = open(player, Screen.STASH, 1, null, 0, "Claims waiting", 54);
         for (int i = 0; i < Math.min(45, stash.size()); i++) inv.setItem(i, stash.get(i));
         for (int slot = 45; slot < 54; slot++) if (inv.getItem(slot) == null) inv.setItem(slot, filler());
-        inv.setItem(45, CoreUtil.named(Material.ARROW, "Back", List.of("Public orders")));
-        inv.setItem(49, CoreUtil.named(Material.HOPPER, "Collect everything", List.of(stash.size() + " stack(s)")));
+        inv.setItem(ORD_BACK, CoreUtil.Menu.back("Back to the order board."));
+        /*  Collection can legitimately deliver only part of what is owed now -- a full inventory keeps the
+         *  rest of the claim rather than dropping it on the floor -- so the button says what will happen
+         *  and the screen has something to say when there is nothing left. */
+        if (stash.isEmpty()) {
+            inv.setItem(22, CoreUtil.Menu.nothing("Nothing is waiting for you", List.of(
+                    "Auction purchases, expired listings and rewards that",
+                    "would not fit at the time all end up here.",
+                    CoreUtil.C_MUTE + "Nothing in here expires or is lost on a restart.")));
+            inv.setItem(ORD_MINE, CoreUtil.Menu.blocked(Material.HOPPER, "Collect", "there is nothing to collect.", List.of()));
+        } else {
+            inv.setItem(ORD_MINE, CoreUtil.Menu.action(Material.HOPPER, "Collect everything", List.of(
+                    CoreUtil.C_TEXT + stash.size() + CoreUtil.C_BODY + " stack" + (stash.size() == 1 ? "" : "s"),
+                    CoreUtil.C_MUTE + "Whatever will not fit stays here.")));
+        }
         player.openInventory(inv);
     }
 
@@ -791,12 +820,12 @@ final class OrdersService implements Listener {
         switch (holder.screen) {
             case PUBLIC -> {
                 switch (slot) {
-                    case 45 -> { askSearch(player, holder); return; }
-                    case 47 -> { openPick(player, 1, null); return; }
-                    case 49 -> { openMine(player, 1); return; }
-                    case 51 -> { openStash(player); return; }
-                    case 46 -> { openPublic(player, Math.max(1, holder.page - 1), holder.search); return; }
-                    case 52 -> { openPublic(player, holder.page + 1, holder.search); return; }
+                    case ORD_SEARCH -> { askSearch(player, holder); return; }
+                    case ORD_CREATE -> { openPick(player, 1, null); return; }
+                    case ORD_MINE -> { openMine(player, 1); return; }
+                    case ORD_CLAIM -> { openStash(player); return; }
+                    case ORD_PREV -> { openPublic(player, Math.max(1, holder.page - 1), holder.search); return; }
+                    case ORD_NEXT -> { openPublic(player, holder.page + 1, holder.search); return; }
                     default -> { }
                 }
             }
@@ -819,13 +848,13 @@ final class OrdersService implements Listener {
             }
             case ENCHANT -> { handleEnchantClick(player, event, slot); return; }
             case STASH -> {
-                if (slot == 45) { openPublic(player); return; }
-                if (slot == 49) { collect(player); return; }
+                if (slot == ORD_BACK) { openPublic(player); return; }
+                if (slot == ORD_MINE) { collect(player); return; }
             }
             case MINE, HISTORY -> {
-                if (slot == 45) { openPublic(player); return; }
-                if (slot == 46) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
-                if (slot == 52) { reopen(player, holder, holder.page + 1); return; }
+                if (slot == ORD_BACK) { openPublic(player); return; }
+                if (slot == ORD_PREV) { reopen(player, holder, Math.max(1, holder.page - 1)); return; }
+                if (slot == ORD_NEXT) { reopen(player, holder, holder.page + 1); return; }
             }
             default -> { }
         }
@@ -907,9 +936,24 @@ final class OrdersService implements Listener {
         });
     }
 
+    private static Component orderLine(String text) {
+        return net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection()
+                .deserialize(text).decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC, false);
+    }
+
     private int parsePositive(String text, int fallback) {
         try { return Integer.parseInt(text.trim().replace(",", "")); } catch (NumberFormatException error) { return fallback; }
     }
+
+    /*  THE ORDERS FOOTER, by name.
+     *
+     *  Orders uses its own bottom row -- Back at 45, paging at 46 and 52, the claim button at 51 -- rather
+     *  than the 45/49/53 the marketplace family uses. It is internally consistent across all six of its
+     *  screens and its stash screen needs 49 for Collect, so it is named where it is rather than moved:
+     *  half-migrating a footer is how a Back button ends up cancelling an order. The divergence is recorded
+     *  in UI_STYLE_GUIDE.md. */
+    private static final int ORD_BACK = 45, ORD_PREV = 46, ORD_SEARCH = 45, ORD_CREATE = 47,
+            ORD_MINE = 49, ORD_CLAIM = 51, ORD_NEXT = 52;
 
     private void confirm(Player player, Draft draft) {
         double total = draft.amount * draft.unit;
@@ -917,14 +961,19 @@ final class OrdersService implements Listener {
         ItemStack icon = canonical(draft.key);
         if (icon != null) {
             ItemMeta meta = icon.getItemMeta();
-            meta.displayName(Component.text(draft.amount + "x " + display(draft.key), NamedTextColor.GOLD));
-            meta.lore(List.of(Component.text(CoreUtil.money(draft.unit) + " each", NamedTextColor.GRAY),
-                    Component.text("Total held in escrow: " + CoreUtil.money(total), NamedTextColor.YELLOW)));
+            meta.displayName(Component.text(draft.amount + "x " + display(draft.key), CoreUtil.EMBER)
+                    .decoration(net.kyori.adventure.text.format.TextDecoration.ITALIC, false));
+            meta.lore(java.util.List.of(
+                    orderLine(CoreUtil.C_BODY + "Paying " + CoreUtil.C_TEXT + CoreUtil.money(draft.unit) + CoreUtil.C_BODY + " each"),
+                    orderLine(CoreUtil.C_BODY + "Escrow " + CoreUtil.C_EMBER + CoreUtil.money(total)),
+                    orderLine(CoreUtil.C_MUTE + "Held until somebody fills it, or you cancel the order.")));
             icon.setItemMeta(meta);
-            inv.setItem(13, icon);
+            inv.setItem(CoreUtil.Menu.SUBJECT, icon);
         }
-        inv.setItem(11, CoreUtil.named(Material.LIME_CONCRETE, "Confirm", List.of("Pays " + CoreUtil.money(total) + " into escrow now")));
-        inv.setItem(15, CoreUtil.named(Material.RED_CONCRETE, "Cancel", List.of()));
+        inv.setItem(CoreUtil.Menu.CANCEL, CoreUtil.Menu.cancel("Nothing is charged and no order is created."));
+        inv.setItem(CoreUtil.Menu.CONFIRM, CoreUtil.Menu.confirm(CoreUtil.money(total), List.of(
+                CoreUtil.C_BODY + "Leaves your balance now and waits in escrow.",
+                CoreUtil.C_MUTE + "Cancelling the order later refunds whatever is left.")));
         player.openInventory(inv);
         prompts.remove(player.getUniqueId());
     }
@@ -949,8 +998,8 @@ final class OrdersService implements Listener {
         if (!(event.getWhoClicked() instanceof Player player)) return;
         Draft draft = drafts.get(player.getUniqueId());
         if (draft == null) { player.closeInventory(); return; }
-        if (event.getRawSlot() == 11) { create(player, draft); player.closeInventory(); }
-        else if (event.getRawSlot() == 15) { drafts.remove(player.getUniqueId()); player.closeInventory(); CoreUtil.msg(player, "Cancelled."); }
+        if (event.getRawSlot() == CoreUtil.Menu.CONFIRM) { create(player, draft); player.closeInventory(); }
+        else if (event.getRawSlot() == CoreUtil.Menu.CANCEL) { drafts.remove(player.getUniqueId()); player.closeInventory(); CoreUtil.msg(player, "Cancelled."); }
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -1073,13 +1122,20 @@ final class OrdersService implements Listener {
         }
     }
 
+    /*  This used to take the whole stash and then CoreUtil.give() it, which drops what will not fit on
+     *  the ground -- five minutes from despawning, or gone entirely if the player happened to be standing
+     *  in a Colosseum arena or a void world when they collected. Nothing leaves the stash now until it is
+     *  somewhere that survives a restart. */
     private void collect(Player player) {
-        List<ItemStack> stash = db.stashTake(CoreUtil.id(player));
-        if (stash.isEmpty()) { CoreUtil.error(player, "Your stash is empty."); return; }
-        int total = 0;
-        for (ItemStack item : stash) { CoreUtil.give(player, item); total += item.getAmount(); }
-        CoreUtil.msg(player, "Collected " + total + " item(s) from your order stash.");
-        player.closeInventory();
+        int before = db.stashCount(CoreUtil.id(player));
+        if (before == 0) { CoreUtil.msg(player, "Nothing is waiting for you."); return; }
+        int left = plugin.deliverStash(player);
+        int taken = before - left;
+        if (taken > 0) CoreUtil.ok(player, "Collected " + taken + " item stack" + (taken == 1 ? "" : "s") + ".");
+        if (left > 0) {
+            CoreUtil.warn(player, left + " stack" + (left == 1 ? "" : "s") + " would not fit. Make room and collect again — nothing is lost.");
+            openStash(player);
+        } else player.closeInventory();
     }
 
     /** No join handler here on purpose. GameplayListener already calls loginSummary once per join, and

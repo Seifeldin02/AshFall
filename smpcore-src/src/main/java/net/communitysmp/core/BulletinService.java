@@ -116,7 +116,7 @@ final class BulletinService implements Listener {
         };
     }
     void commandHelp(org.bukkit.command.CommandSender sender){
-        sender.sendMessage("§6§lBulletins §7(independent floating holograms)");
+        CoreUtil.heading(sender,"Bulletins","independent floating holograms");
         sender.sendMessage("§7  §f/ashfall bulletin place <stats|players|factions|bounties|all>");
         sender.sendMessage("§7  §f/ashfall bulletin move <name>   §7— re-place it where you stand");
         sender.sendMessage("§7  §f/ashfall bulletin remove <name|all>");
@@ -395,7 +395,7 @@ final class BulletinService implements Listener {
         refresh();
     }
     boolean selfTest(){return plugin.getConfig().getLong("bulletin.refresh-seconds",40)>=30&&BlockFace.values().length>=6;}
-    private ItemStack item(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));meta.lore(lore.stream().map(line->Component.text(line,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
+    private ItemStack item(Material material,String name,List<String> lore){return CoreUtil.Menu.action(material,name,lore);}
     private String shorten(String value,int max){return value.length()<=max?value:value.substring(0,max-1)+"…";}
     private float yaw(BlockFace face){return switch(face){case NORTH->180;case SOUTH->0;case EAST->-90;case WEST->90;default->0;};}
     private float pitch(BlockFace face){return face==BlockFace.UP?-90:face==BlockFace.DOWN?90:0;}

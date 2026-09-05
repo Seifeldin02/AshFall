@@ -1869,45 +1869,54 @@ final class ArenaService implements Listener {
         Duel duel = duelOf(player);
         if (duel == null) return;
         Menu menu = new Menu("setup", duel.id);
-        menu.inv = plugin.getServer().createInventory(menu, 45, Component.text("Duel setup", NamedTextColor.DARK_AQUA));
+        menu.inv = plugin.getServer().createInventory(menu, 45, Component.text("Duel setup \u2014 Kit (1/3)", NamedTextColor.DARK_AQUA));
         /** A clear banner up top showing the currently selected kit, so it is obvious at a glance. */
-        menu.inv.setItem(4, glow(icon(duel.kit.icon(), "Kit: " + duel.kit.label(), List.of(duel.kit.blurb(), "Best of " + duel.bestOf))));
-        int[] kitSlots = {10, 12, 14, 16};
+        menu.inv.setItem(SETUP_BANNER, glow(CoreUtil.Menu.heading(duel.kit.icon(), duel.kit.label(), List.of(
+                duel.kit.blurb(),
+                CoreUtil.C_BODY + "Best of " + CoreUtil.C_TEXT + duel.bestOf,
+                CoreUtil.C_MUTE + "Pick a kit and a series length, then confirm."))));
         Kit[] kits = Kit.values();
         for (int i = 0; i < kits.length; i++) {
             boolean sel = duel.kit == kits[i];
-            ItemStack ico = icon(kits[i].icon(), (sel ? "\u2714 SELECTED \u2014 " : "") + kits[i].label(), List.of(kits[i].blurb(), sel ? "This kit is selected" : "Click to pick this kit"));
+            /*  Chosen reads as chosen through colour and the glow, rather than by shouting SELECTED in
+             *  capitals ahead of the name -- which pushed the kit's own name off to the right. */
+            ItemStack ico = CoreUtil.Menu.of(kits[i].icon(), (sel ? CoreUtil.C_EMBER : CoreUtil.C_BODY) + kits[i].label(),
+                    List.of(kits[i].blurb(), sel ? CoreUtil.C_GOOD + "Chosen" : CoreUtil.C_MUTE + "Click to pick this kit."));
             if (sel) glow(ico);
-            menu.inv.setItem(kitSlots[i], ico);
+            menu.inv.setItem(KIT_SLOTS[i], ico);
         }
-        menu.inv.setItem(20, icon(duel.bestOf == 1 ? Material.LIME_DYE : Material.GRAY_DYE, "Best of 1", List.of(duel.bestOf == 1 ? "Selected" : "Click")));
-        menu.inv.setItem(24, icon(duel.bestOf == 3 ? Material.LIME_DYE : Material.GRAY_DYE, "Best of 3", List.of(duel.bestOf == 3 ? "Selected" : "Click")));
+        menu.inv.setItem(SERIES_ONE, seriesIcon(duel, 1, "One round decides it."));
+        menu.inv.setItem(SERIES_THREE, seriesIcon(duel, 3, "First to two rounds wins."));
         double mine = duel.stakes.getOrDefault(CoreUtil.id(player), 0d);
         /** Stakes are set right here in the GUI, not only via chat: a row of - / + buttons around the
          *  current figure. Independent per player and clamped to what they can afford. */
-        menu.inv.setItem(29, icon(Material.RED_STAINED_GLASS_PANE, "- 10,000", List.of("Lower your stake")));
-        menu.inv.setItem(30, icon(Material.PINK_STAINED_GLASS_PANE, "- 1,000", List.of("Lower your stake")));
-        menu.inv.setItem(31, icon(Material.GOLD_INGOT, "Your stake: " + CoreUtil.money(mine),
-                List.of("Buttons on the left lower, right raise", "Stakes need not match; $0 is allowed", "Shift-click to clear")));
-        menu.inv.setItem(32, icon(Material.LIME_STAINED_GLASS_PANE, "+ 1,000", List.of("Raise your stake")));
-        menu.inv.setItem(33, icon(Material.GREEN_STAINED_GLASS_PANE, "+ 10,000", List.of("Raise your stake")));
-        menu.inv.setItem(34, icon(Material.EMERALD_BLOCK, "+ 100,000", List.of("Raise your stake")));
+        menu.inv.setItem(STAKE_DOWN_BIG, stakeStep(Material.RED_STAINED_GLASS_PANE, -10000, mine));
+        menu.inv.setItem(STAKE_DOWN, stakeStep(Material.PINK_STAINED_GLASS_PANE, -1000, mine));
+        menu.inv.setItem(STAKE_SHOW, CoreUtil.Menu.heading(Material.GOLD_INGOT, "Your stake  " + CoreUtil.money(mine), List.of(
+                CoreUtil.C_BODY + "Lose the duel and it goes to your opponent.",
+                CoreUtil.C_MUTE + "Left lowers, right raises. The two stakes need not match.",
+                CoreUtil.C_MUTE + "Shift-click here to clear it.")));
+        menu.inv.setItem(STAKE_UP, stakeStep(Material.LIME_STAINED_GLASS_PANE, 1000, mine));
+        menu.inv.setItem(STAKE_UP_BIG, stakeStep(Material.GREEN_STAINED_GLASS_PANE, 10000, mine));
+        menu.inv.setItem(STAKE_UP_HUGE, stakeStep(Material.EMERALD_BLOCK, 100000, mine));
         String meId = CoreUtil.id(player), themId = duel.other(meId);
         String meName = meId.equals(duel.a) ? duel.aName : duel.bName, themName = meId.equals(duel.a) ? duel.bName : duel.aName;
         boolean ready = duel.confirmed.contains(meId);
         /** Rendered from THIS player's perspective: "You" is always the viewer, whichever side they are. */
         int wagered = loadWager(duel, meId).size(), theirWager = loadWager(duel, themId).size();
         String themWagerName = meId.equals(duel.a) ? duel.bName : duel.aName;
-        menu.inv.setItem(42, icon(Material.CHEST, "Wager items" + (wagered > 0 ? " (" + wagered + ")" : ""), List.of(
-                "Put items in to wager them", "Winner takes BOTH sides' wagered items",
-                "You staged: " + wagered + "   " + themWagerName + ": " + theirWager,
-                "Separate from the money stake above")));
-        menu.inv.setItem(43, icon(Material.SPYGLASS, "View " + themWagerName + "'s wager", List.of(
-                theirWager > 0 ? theirWager + " stack(s) staged" : "Nothing staged yet", "Click to inspect what they staked")));
-        menu.inv.setItem(40, icon(ready ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE, ready ? "Confirmed — waiting for opponent…" : "Confirm", List.of(
-                "You: " + meName + "  " + CoreUtil.money(duel.stakes.getOrDefault(meId, 0d)) + (ready ? "  (ready)" : ""),
-                "Them: " + themName + "  " + CoreUtil.money(duel.stakes.getOrDefault(themId, 0d)) + (duel.confirmed.contains(themId) ? "  (ready)" : ""),
-                "Kit " + duel.kit.label() + " · Best of " + duel.bestOf)));
+        menu.inv.setItem(WAGER_OPEN, CoreUtil.Menu.action(Material.CHEST, "Wager items", List.of(
+                CoreUtil.C_BODY + "You " + CoreUtil.C_TEXT + wagered + CoreUtil.C_BODY + "  \u00b7  "
+                        + themWagerName + " " + CoreUtil.C_TEXT + theirWager,
+                CoreUtil.C_WARN + "Winner takes both sides' wagered items.",
+                CoreUtil.C_MUTE + "Separate from the money stake above.")));
+        menu.inv.setItem(WAGER_PEEK, theirWager > 0
+                ? CoreUtil.Menu.action(Material.SPYGLASS, "What " + themWagerName + " has staked", List.of(
+                        CoreUtil.C_TEXT + theirWager + CoreUtil.C_BODY + " stack" + (theirWager == 1 ? "" : "s"),
+                        CoreUtil.C_MUTE + "View only. Nothing can be taken out of it."))
+                : CoreUtil.Menu.info(Material.SPYGLASS, "What " + themWagerName + " has staked", List.of(
+                        CoreUtil.C_MUTE + "Nothing yet.")));
+        stageFooter(menu, duel, player, "Confirm the kit and stake");
         transition(player, () -> player.openInventory(menu.inv));
     }
 
@@ -1923,19 +1932,19 @@ final class ArenaService implements Listener {
         List<DuelMapService.DuelMap> maps = availableMaps();
         menu.inv.setItem(4, icon(Material.FILLED_MAP, "Choose the arena",
                 List.of("Kit: " + duel.kit.label() + " · Best of " + duel.bestOf, "Every kit can use every map.")));
-        int[] slots = {10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25};
+        int[] slots = MAP_SLOTS;
         for (int i = 0; i < maps.size() && i < slots.length; i++) {
             DuelMapService.DuelMap map = maps.get(i);
             boolean picked = map.key().equals(duel.mapKey);
-            ItemStack ico = icon(mapIcon(map), (picked ? "✔ SELECTED — " : "") + map.name(), List.of(
+            ItemStack ico = CoreUtil.Menu.of(mapIcon(map), (picked ? CoreUtil.C_EMBER : CoreUtil.C_BODY) + map.name(), List.of(
                     map.rule() == DuelMapService.BreakRule.PLACED_ONLY
                             ? "Only blocks placed this match can be broken"
                             : "Fully breakable, explosions included",
-                    picked ? "This map is selected" : "Click to pick this map"));
+                    picked ? CoreUtil.C_GOOD + "Chosen" : CoreUtil.C_MUTE + "Click to pick this map."));
             if (picked) glow(ico);
             menu.inv.setItem(slots[i], ico);
         }
-        if (maps.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, "No maps are ready",
+        if (maps.isEmpty()) menu.inv.setItem(22, CoreUtil.Menu.nothing("No maps are ready",
                 List.of("An admin must build and save a duel map", "before matches can be played on one.")));
         DuelMapService.DuelMap chosen = selectedMap(duel);
         stageFooter(menu, duel, player, chosen == null ? "Pick a map first" : "Confirm " + chosen.name());
@@ -1967,11 +1976,10 @@ final class ArenaService implements Listener {
                 "Map: " + (map == null ? "none" : map.name()),
                 "Best of " + duel.bestOf,
                 "Your stake: " + CoreUtil.money(duel.stakes.getOrDefault(CoreUtil.id(player), 0d)))));
-        menu.inv.setItem(22, glow(icon(duel.visibility ? Material.GLOW_INK_SAC : Material.INK_SAC,
-                "Visibility Effects: " + (duel.visibility ? "ON" : "OFF"), List.of(
-                duel.visibility ? "Both duellists glow and keep Night Vision" : "Neither effect is forced on anybody",
-                duel.visibility ? "for the whole duel, whatever your /settings say" : "You each keep whatever you already had",
-                "Click to turn " + (duel.visibility ? "OFF" : "ON")))));
+        menu.inv.setItem(OPTION_VISIBILITY, glow(CoreUtil.Menu.state(
+                duel.visibility ? Material.GLOW_INK_SAC : Material.INK_SAC, "Visibility effects", duel.visibility,
+                duel.visibility ? "Both of you glow and keep Night Vision, whatever your settings say."
+                                : "Neither effect is forced; you each keep what you had.")));
         stageFooter(menu, duel, player, "Confirm and start the duel");
         transition(player, () -> player.openInventory(menu.inv));
     }
@@ -1982,14 +1990,25 @@ final class ArenaService implements Listener {
         String meId = CoreUtil.id(player), themId = duel.other(meId);
         String meName = meId.equals(duel.a) ? duel.aName : duel.bName, themName = meId.equals(duel.a) ? duel.bName : duel.aName;
         boolean ready = duel.confirmed.contains(meId);
-        menu.inv.setItem(36, icon(Material.ARROW, "Back", List.of("Return to " + duel.stage.previous().label(),
-                "Both confirmations are cleared")));
-        menu.inv.setItem(44, icon(Material.BARRIER, "Cancel duel", List.of("Calls the whole thing off", "Nothing has been charged yet")));
-        menu.inv.setItem(40, icon(ready ? Material.YELLOW_CONCRETE : Material.LIME_CONCRETE,
-                ready ? "Confirmed — waiting for " + themName + "…" : confirmHint, List.of(
-                meName + ": " + (ready ? "READY" : "not ready"),
-                themName + ": " + (duel.confirmed.contains(themId) ? "READY" : "not ready"),
-                "Stage " + (duel.stage.ordinal() + 1) + " of 3")));
+        menu.inv.setItem(STAGE_BACK, duel.stage.ordinal() == 0
+                ? CoreUtil.Menu.blocked(Material.ARROW, "Back", "this is the first stage.", List.of())
+                : CoreUtil.Menu.back("Back to " + duel.stage.previous().label() + ". Both confirmations clear."));
+        menu.inv.setItem(STAGE_CANCEL, CoreUtil.Menu.danger(Material.BARRIER, "Cancel the duel", List.of(
+                "Calls the whole thing off for both of you.",
+                CoreUtil.C_MUTE + "Nothing has been charged, and staged items come back.")));
+/*  Selected and confirmed were run together in one label. Yellow means you have agreed and are
+         *  waiting; green means it is your turn. Both names and both states are on the icon, so neither
+         *  player has to ask the other whether they have pressed it yet. */
+        boolean theirs = duel.confirmed.contains(themId);
+        menu.inv.setItem(STAGE_CONFIRM, ready
+                ? CoreUtil.Menu.of(Material.YELLOW_CONCRETE, CoreUtil.C_WARN + "Waiting for " + themName, List.of(
+                        CoreUtil.C_GOOD + meName + " ready",
+                        theirs ? CoreUtil.C_GOOD + themName + " ready" : CoreUtil.C_BODY + themName + " has not confirmed yet",
+                        CoreUtil.C_MUTE + "Stage " + (duel.stage.ordinal() + 1) + " of 3"))
+                : CoreUtil.Menu.confirm(confirmHint, List.of(
+                        CoreUtil.C_BODY + meName + " not ready",
+                        theirs ? CoreUtil.C_GOOD + themName + " ready and waiting" : CoreUtil.C_BODY + themName + " not ready",
+                        CoreUtil.C_MUTE + "Stage " + (duel.stage.ordinal() + 1) + " of 3")));
     }
 
     /** Closing a setup screen by hand IS a cancel, at every stage, and goes through exactly the same path
@@ -2097,40 +2116,42 @@ final class ArenaService implements Listener {
             case "setup" -> {
                 Kit[] kits = Kit.values();
                 int[] kitSlots = {10, 12, 14, 16};
-                for (int i = 0; i < kits.length; i++) if (slot == kitSlots[i]) { setKit(player, kits[i].name()); return; }
+                for (int i = 0; i < kits.length; i++) if (slot == KIT_SLOTS[i]) { setKit(player, kits[i].name()); return; }
                 switch (slot) {
-                    case 20 -> setSeries(player, 1);
-                    case 24 -> setSeries(player, 3);
-                    case 29 -> adjustStake(player, -10000);
-                    case 30 -> adjustStake(player, -1000);
-                    case 31 -> { if (event.isShiftClick()) setStakeSilent(player, 0); }
-                    case 32 -> adjustStake(player, 1000);
-                    case 33 -> adjustStake(player, 10000);
-                    case 34 -> adjustStake(player, 100000);
-                    case 40 -> { transition(player, player::closeInventory); confirm(player); }
-                    case 42 -> openWagerBox(player);
-                    case 43 -> openOpponentWager(player);
+                    case SERIES_ONE -> setSeries(player, 1);
+                    case SERIES_THREE -> setSeries(player, 3);
+                    case STAKE_DOWN_BIG -> adjustStake(player, -10000);
+                    case STAKE_DOWN -> adjustStake(player, -1000);
+                    case STAKE_SHOW -> { if (event.isShiftClick()) setStakeSilent(player, 0); }
+                    case STAKE_UP -> adjustStake(player, 1000);
+                    case STAKE_UP_BIG -> adjustStake(player, 10000);
+                    case STAKE_UP_HUGE -> adjustStake(player, 100000);
+                    case STAGE_CONFIRM -> { transition(player, player::closeInventory); confirm(player); }
+                    case WAGER_OPEN -> openWagerBox(player);
+                    case WAGER_PEEK -> openOpponentWager(player);
+                    /*  Stage one had neither of these: closing the window was the only way out of the
+                     *  first screen, and closing a setup screen is a forfeit. */
+                    case STAGE_CANCEL -> { transition(player, player::closeInventory); forfeit(player); }
                     default -> { }
                 }
             }
             case "map" -> {
                 List<DuelMapService.DuelMap> options = availableMaps();
-                int[] mapSlots = {10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25};
-                for (int i = 0; i < options.size() && i < mapSlots.length; i++)
-                    if (slot == mapSlots[i]) { setMap(player, options.get(i).key()); return; }
+                for (int i = 0; i < options.size() && i < MAP_SLOTS.length; i++)
+                    if (slot == MAP_SLOTS[i]) { setMap(player, options.get(i).key()); return; }
                 switch (slot) {
-                    case 36 -> back(player);
-                    case 40 -> confirm(player);
-                    case 44 -> { transition(player, player::closeInventory); forfeit(player); }
+                    case STAGE_BACK -> back(player);
+                    case STAGE_CONFIRM -> confirm(player);
+                    case STAGE_CANCEL -> { transition(player, player::closeInventory); forfeit(player); }
                     default -> { }
                 }
             }
             case "options" -> {
                 switch (slot) {
-                    case 22 -> toggleVisibility(player);
-                    case 36 -> back(player);
-                    case 40 -> confirm(player);
-                    case 44 -> { transition(player, player::closeInventory); forfeit(player); }
+                    case OPTION_VISIBILITY -> toggleVisibility(player);
+                    case STAGE_BACK -> back(player);
+                    case STAGE_CONFIRM -> confirm(player);
+                    case STAGE_CANCEL -> { transition(player, player::closeInventory); forfeit(player); }
                     default -> { }
                 }
             }
@@ -2218,7 +2239,8 @@ final class ArenaService implements Listener {
         for (int i = 0; i < items.size() && i < 45; i++) menu.inv.setItem(i, items.get(i));
         for (int slot = 45; slot < 54; slot++) menu.inv.setItem(slot, filler());
         menu.inv.setItem(49, icon(Material.ARROW, "Back", List.of("Duel setup")));
-        if (items.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, themName + " has not wagered anything", List.of()));
+        if (items.isEmpty()) menu.inv.setItem(22, CoreUtil.Menu.nothing(themName + " has not wagered anything",
+                List.of("Nothing is staked on their side yet.")));
         transition(player, () -> player.openInventory(menu.inv));
     }
 
@@ -2249,7 +2271,8 @@ final class ArenaService implements Listener {
             box.setItem(53, icon(Material.SPYGLASS, "+" + (theirs.size() - shown) + " more stack(s)",
                     List.of("Click to see " + themName + "'s full wager", "Unconfirmed items are returned")));
         else if (theirs.isEmpty())
-            box.setItem(WAGER_VIEW + 4, icon(Material.BARRIER, themName + " has not wagered anything", List.of("Nothing staked on their side yet")));
+            box.setItem(WAGER_VIEW + 4, CoreUtil.Menu.nothing(themName + " has not wagered anything",
+                    List.of("Nothing is staked on their side yet.")));
         box.setItem(35, icon(Material.SHIELD, themName + "'s wager", List.of("Shown in the bottom two rows", "View only \u2014 " + theirs.size() + " stack(s)")));
     }
 
@@ -2310,6 +2333,38 @@ final class ArenaService implements Listener {
         if (remaining == moving.getAmount()) { actionbar(player, "The staging area is full \u2014 Confirm what is there first."); sound(player, "error"); return; }
         if (remaining <= 0) event.setCurrentItem(null);
         else { ItemStack left = moving.clone(); left.setAmount(remaining); event.setCurrentItem(left); }
+    }
+
+    /*  THE DUEL SETUP SCREENS, by name.
+     *
+     *  Each of these numbers appeared in a builder and again in the click handler. Nothing moves -- the
+     *  layout was already clear, and the wager slots below have their own constants and a self test -- the
+     *  numbers are simply written once so the two halves cannot drift apart. */
+    private static final int[] KIT_SLOTS = {10, 12, 14, 16};
+    private static final int[] MAP_SLOTS = {10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25};
+    private static final int SETUP_BANNER = 4, SERIES_ONE = 20, SERIES_THREE = 24;
+    private static final int STAKE_DOWN_BIG = 29, STAKE_DOWN = 30, STAKE_SHOW = 31,
+            STAKE_UP = 32, STAKE_UP_BIG = 33, STAKE_UP_HUGE = 34;
+    private static final int WAGER_OPEN = 42, WAGER_PEEK = 43;
+    private static final int STAGE_BACK = 36, STAGE_CONFIRM = 40, STAGE_CANCEL = 44;
+    private static final int OPTION_VISIBILITY = 22;
+
+    /** A series length, shown as the choice it is rather than as the bare word "Selected". */
+    private ItemStack seriesIcon(Duel duel, int rounds, String detail) {
+        boolean chosen = duel.bestOf == rounds;
+        return CoreUtil.Menu.of(chosen ? Material.LIME_DYE : Material.GRAY_DYE,
+                (chosen ? CoreUtil.C_EMBER : CoreUtil.C_BODY) + "Best of " + rounds,
+                List.of(detail, chosen ? CoreUtil.C_GOOD + "Chosen" : CoreUtil.C_MUTE + "Click to pick this."));
+    }
+
+    /** A stake step that says what it would leave the stake at, and greys out when it cannot move. */
+    private ItemStack stakeStep(Material material, int delta, double current) {
+        double after = Math.max(0, current + delta);
+        if (Math.abs(after - current) < 0.0001) return CoreUtil.Menu.blocked(Material.GRAY_STAINED_GLASS_PANE,
+                (delta < 0 ? "Lower" : "Raise") + " the stake", "your stake is already nothing.", List.of());
+        return CoreUtil.Menu.of(material, CoreUtil.C_TEXT + (delta < 0 ? "Lower by " : "Raise by ")
+                        + CoreUtil.money(Math.abs(delta)),
+                List.of(CoreUtil.C_BODY + "Stake becomes " + CoreUtil.C_EMBER + CoreUtil.money(after)));
     }
 
     private void openWagerBox(Player player) {
@@ -2446,6 +2501,10 @@ final class ArenaService implements Listener {
         }
     }
 
+    /** How many duels are live right now. Read by the staging test lease, which refuses to run a
+     *  destructive suite while real matches are in progress. */
+    int liveDuelCount() { return duels.size(); }
+
     private Duel find(int id) { return duels.stream().filter(d -> d.id == id).findFirst().orElse(null); }
 
     /** Every current match, clickable to open its spectator/betting window. */
@@ -2466,7 +2525,9 @@ final class ArenaService implements Listener {
             card.setItemMeta(meta);
             menu.inv.setItem(slot++, card);
         }
-        if (duels.isEmpty()) menu.inv.setItem(22, icon(Material.BARRIER, "No matches right now", List.of("Challenge someone with /duel <player>")));
+        if (duels.isEmpty()) menu.inv.setItem(22, CoreUtil.Menu.nothing("No matches right now", List.of(
+                "Nobody is duelling at the moment.",
+                CoreUtil.C_TEXT + "/duel <player>" + CoreUtil.C_BODY + " to challenge somebody.")));
         transition(player, () -> player.openInventory(menu.inv));
     }
 
@@ -2514,7 +2575,9 @@ final class ArenaService implements Listener {
             menu.inv.setItem(38, icon(Material.EMERALD, "Confirm " + scopeLabel + " wager", List.of("Backing " + (st[0] == 0 ? duel.aName : st[0] == 1 ? duel.bName : "nobody yet"),
                     "Amount " + CoreUtil.money(st[1]), "On: " + scopeLabel, "Changing this scope refunds the old wager")));
         } else {
-            menu.inv.setItem(31, icon(Material.BARRIER, "Betting is closed", List.of("Opens again at the next round's ready-gate")));
+            menu.inv.setItem(31, CoreUtil.Menu.blocked(Material.BARRIER, "Betting", "the round is under way.",
+                    List.of("It opens again when both duellists ready up",
+                            "for the next round.")));
         }
         List<Wager> mineAll = new ArrayList<>();
         for (Wager w : duel.wagers) if (w.player().equals(id)) mineAll.add(w);

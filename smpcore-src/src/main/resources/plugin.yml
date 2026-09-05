@@ -8,6 +8,10 @@ depend: [Vault, WorldEdit]
 softdepend: [packetevents, AuthMe, floodgate, Geyser-Spigot, TAB, SkinsRestorer, GrimAC, Nicked, ReplayCore, PunisherX, Prism]
 loadbefore: [DonutOrders]
 commands:
+  colosseum:
+    description: Pay to fight a solo Colosseum boss in a private arena
+    usage: /colosseum [boss|stats|top|leave|list]
+    permission: smpcore.colosseum
   duel:
     description: Challenge somebody to a wagered 1v1
     usage: /duel <player>
@@ -153,6 +157,9 @@ permissions:
     default: op
   smpcore.play:
     description: Normal SMPCore gameplay
+    default: true
+  smpcore.colosseum:
+    description: Enter the Colosseum and view its menu, stats and leaderboards
     default: true
   smpcore.voidworld.enter:
     description: Enter a temporary event world that an administrator has opened

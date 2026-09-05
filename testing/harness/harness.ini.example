@@ -1,0 +1,18 @@
+; Ashfall real-game test harness -- endpoint configuration.
+;
+; Copy this file to harness.ini and fill it in. harness.ini is git-ignored because it holds passwords,
+; and it must only ever point at a STAGING server: the harness spends money, starts paid encounters,
+; kills the account it controls and deletes worlds.
+;
+; guard.py refuses ports 25565 and 25575 outright. That refusal is not configurable.
+
+[staging]
+host = 127.0.0.1
+port = 25566
+rcon_port = 25576
+rcon_password = PUT-YOUR-STAGING-RCON-PASSWORD-HERE
+
+; A dedicated test account. NOT a real administrator, and not an account anybody plays on.
+; It is an ordinary player by default; scenarios that need operator grant it and revoke it themselves.
+account = AshfallProbe
+account_password = PUT-A-THROWAWAY-PASSWORD-HERE

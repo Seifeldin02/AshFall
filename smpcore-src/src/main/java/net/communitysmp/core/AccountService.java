@@ -65,7 +65,7 @@ final class AccountService implements Listener {
                     nativeCommand("Delete Registration","settings native account delete",NamedTextColor.RED),
                     nativeCommand("Back to Settings","settings native",NamedTextColor.GRAY));
             Dialog dialog=Dialog.create(builder->builder.empty()
-                    .base(DialogBase.builder(Component.text("ACCOUNT",NamedTextColor.GOLD)).canCloseWithEscape(true).pause(false).build())
+                    .base(DialogBase.builder(Component.text("Account",CoreUtil.EMBER)).canCloseWithEscape(true).pause(false).build())
                     .type(DialogType.multiAction(buttons,null,1)));
             player.showDialog(dialog);
         }catch(Throwable ignored){open(player);}
