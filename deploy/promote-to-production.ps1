@@ -150,6 +150,13 @@ try {
             Copy-Item $dst (Join-Path $backupDir ($artifact -replace '\\', '-')) -Recurse -Force
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+        # A directory copied onto an EXISTING directory of the same name goes INSIDE it. The second
+        # promotion of the day produced colosseum-templates\colosseum-templates -- a complete, unused
+        # duplicate of both arenas, which check_deploy caught and nothing else would have. Clearing the
+        # destination first makes a re-run idempotent, which a promotion script has to be.
+        if ((Test-Path $src -PathType Container) -and (Test-Path $dst)) {
+            Remove-Item $dst -Recurse -Force
+        }
         Copy-Item -Path $src -Destination $dst -Recurse -Force
         Write-Host "  promoted $artifact" -ForegroundColor Green
     }
