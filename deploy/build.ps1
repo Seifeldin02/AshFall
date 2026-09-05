@@ -64,7 +64,18 @@ foreach ($jar in $thirdPartyJars) {
 Write-Host "Building with Maven ..." -ForegroundColor Cyan
 Push-Location $srcDir
 try {
-    & mvn -q clean package
+    # Maven's JVM prints its restricted-method warnings to stderr, and with $ErrorActionPreference = 'Stop'
+    # PowerShell 5.1 turns any stderr from a native command into a terminating NativeCommandError -- so a
+    # build that succeeded reported itself as a failure the moment the JDK started warning about
+    # java.lang.System::load. The exit code is the only thing that says whether Maven worked.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & mvn -q clean package
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Maven build failed (exit code $LASTEXITCODE)"
     }
