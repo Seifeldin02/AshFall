@@ -446,6 +446,14 @@ class Bot(object):
                 if best is None:
                     self.note('no tracked entity to interact with')
                 else:
+                    #  BOTH packets, in the order a real client sends them.
+                    #
+                    #  A vanilla right-click on an entity sends INTERACT_AT (with the point on the hitbox
+                    #  that was hit) and then INTERACT. Sending only the second is a shape no real client
+                    #  produces, and GrimAC drops it without a word: accepted by us, gone by the time the
+                    #  plugin would have seen it, nothing in any log to say so.
+                    self.send(0x16, varint(best) + varint(2) + struct.pack('>fff', 0.0, 1.0, 0.0)
+                              + varint(0) + bytes([0]))
                     self.send(0x16, varint(best) + varint(0) + varint(0) + bytes([0]))
                     self.note('interacted with entity %d, %.1f blocks away' % (best, best_gap ** 0.5))
             elif line == 'close':

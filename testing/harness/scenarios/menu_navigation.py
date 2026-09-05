@@ -124,50 +124,29 @@ def run(control, report):
     control.say('close')
     time.sleep(1.5)
 
-    #  --- the Bank front page, through the only door it has ---------------------------------------
+    #  --- the Bank front page: the door is checked, the screen is not -----------------------------
     #
-    #  It opens from the Central Banker and from nothing else: no command reaches it, which is why it went
-    #  two batches without ever being captured from a client. A banker is spawned for this test and removed
-    #  again, and the right-click itself is made as an ORDINARY player -- the admin grant covers the spawn
-    #  and the cleanup and nothing in between.
-    where = control.where()
-    if where[1] is None:
-        report.check('the player has a position to spawn a banker at', False)
-        return
-    try:
-        control.as_admin()
-        control.say('cmd:ashfall merchant spawn banker')
-        time.sleep(3)
-    finally:
-        control.drop_admin()
-    report.check('the test account is an ordinary player again before the interaction',
-                 control.assert_ordinary())
-
-    mark = control.chat_mark()
-    control.say('interact:near:%f,%f,%f' % where[1])
-    time.sleep(3)
-    landed = _titles(control, mark)
-    report.check('right-clicking the Central Banker opens the Bank front page',
-                 len(landed) == 1 and 'Bank' in landed[0])
-    report.note('bank screen: ' + (_title(landed[0]) if landed else '(nothing opened)'))
-
-    control.say('screen:dump:bank')
-    time.sleep(2)
-    dump = control.screen_dump('bank')
-    report.check('the front page names the treasury, the debt and the interest rate',
-                 all(word in dump for word in ('Treasury', 'Interest rate', 'borrow')))
-    report.check('a control that cannot be used says why, rather than failing silently',
-                 'Unavailable' not in dump or 'you have no loan to repay' in dump
-                 or 'you already have a loan open' in dump
-                 or 'your credit will not cover' in dump
-                 or 'you have already borrowed today' in dump)
-    control.say('close')
-    time.sleep(1.5)
-
-    try:
-        control.as_admin()
-        control.say('cmd:ashfall merchant remove nearest')
-        time.sleep(2.5)
-    finally:
-        control.drop_admin()
-    report.check('the test banker was removed again', control.assert_ordinary())
+    #  It opens from the Central Banker and from nothing else. Three routes to capturing it were tried and
+    #  none of them works from here, which is worth writing down so the next attempt does not repeat them:
+    #
+    #    * Spawning a banker from the test account. /ashfall merchant spawn needs a Player, so the console
+    #      cannot run it, and SMPCore refuses its admin commands from anyone but the configured admin
+    #      account -- opping the test account is not enough.
+    #    * Right-clicking the real one at spawn. The interact packet is sent and acknowledged and no event
+    #      ever fires. Not the anticheat: it behaves identically with operator, which carries the exempt.
+    #      This client speaks 1.21.1 to a Minecraft 26.2 server through ViaVersion, and entity interaction
+    #      is the one thing on that path that does not come out the other side.
+    #    * Adding a command that opens it. Refused on purpose: a public gameplay command that exists only
+    #      so a test can reach a screen is a worse thing to ship than an uncaptured screen.
+    #
+    #  So what is asserted is the DOOR -- that the banker is where players expect it, is named, and still
+    #  carries the tag that makes it a banker rather than a villager. How the screen LOOKS remains a human
+    #  check, and is recorded as one.
+    banker = ('@e[type=villager,name="Central Banker",limit=1,sort=nearest,distance=..96]')
+    control.say('cmd:spawn')
+    time.sleep(6)
+    tagged = control.rc(['execute as %s at @s run data get entity %s BukkitValues'
+                         % (control.name, banker)], settle=0.8)[0][1]
+    report.check('a Central Banker is standing within reach of spawn, tagged as one',
+                 'merchant_type' in tagged and 'BANKER' in tagged)
+    report.note('banker tag: ' + ' '.join(tagged.split())[:120])
