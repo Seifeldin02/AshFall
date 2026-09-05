@@ -317,6 +317,19 @@ class Bot(object):
                 self.sidebar.pop(owner, None)
                 self.sidebar_events.append(('reset', owner, 0))
                 return True
+        #  ...and it can be ABSENT, which is the form that actually arrives.
+        #
+        #  Bukkit's resetScores(entry) clears the entry from every objective at once, so the server sends
+        #  the packet with no objective name at all -- owner, then a single zero byte. Reading only the
+        #  present form meant every removal was invisible here, and a panel that had dropped a row still
+        #  looked like it was holding it: two Balance rows, one of them from four seconds ago.
+        #
+        #  Requiring the owner to be a row we are already holding is what keeps this from matching any
+        #  other packet that happens to start with a string and end in a zero.
+        if at + 1 == len(payload) and payload[at] == 0 and owner in self.sidebar:
+            self.sidebar.pop(owner, None)
+            self.sidebar_events.append(('reset', owner, 0))
+            return True
         return False
 
     def sidebar_rows(self):
