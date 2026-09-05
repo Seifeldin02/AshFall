@@ -88,6 +88,30 @@ balance was being read with `ashfall balance <player>`, which is the admin ADJUS
 usage line that compares equal to itself. A check that cannot fail is worse than no check, because it is
 still counted.
 
+### Found by promoting it: tell() called itself
+
+Eight minutes after the promotion, with a real player in the first Colosseum encounter anybody has ever
+fought on this server, production's log started repeating `Task #4798 generated an exception` —
+`StackOverflowError` at `ColosseumBosses.tell`, one frame, forever:
+
+    private static void tell(Player player, String message) {
+        if (player != null && player.isOnline()) tell(player, message);
+    }
+
+Nine narration sites, every one of them an overflow on the server thread the moment a real player was on
+the other end, abandoning that tick's boss mechanics. It shipped in `785f784` and survived every suite on
+both servers, and the reason is written in the comment directly above it: the method exists to tolerate
+having nobody to narrate to, and the verifier drives all of those mechanics with `player == null` precisely
+so it can assert a ward caps at three without a person present. The guard short-circuited; the recursion
+was never reached. 54 colosseum checks passed while the only path that mattered threw.
+
+Fixed forward rather than rolled back — a one-line call to the narration it was always meant to reach —
+and production restarted a second time. `testing/selfcall_check.py` now looks for the shape across the
+source, because it is invisible to review and the compiler is content with it: a one-line method calling
+itself with its own parameters, in order, unchanged. Overloads are the correct version of the same shape
+and there are forty here; they change the argument list, which is the entire difference. String literals
+are stripped first, or `Database.state()` reports itself for the SQL it runs.
+
 ### The Bank front page, and why it is still not captured
 
 It opens from the Central Banker and from nothing else. Three routes were tried:
