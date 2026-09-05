@@ -1502,7 +1502,19 @@ final class ColosseumBosses {
      *  half-resolved. And the verifier drives these same mechanics with no player at all, which is the only
      *  way to assert that a ward really caps at three or that an interrupt fires at exactly its threshold
      *  -- so every message here has to be optional, not load-bearing. */
-    private static void tell(Player player, String message) { if (player != null && player.isOnline()) tell(player, message); }
+    /*  IT CALLED ITSELF.
+     *
+     *  Nine narration sites, every one of them a StackOverflowError the moment a real player was on the
+     *  other end. The comment above is why it survived: this method exists to tolerate having nobody to
+     *  narrate to, and the verifier drives every one of these mechanics with `player == null` precisely so
+     *  it can assert that a ward caps at three without a person present. That short-circuit made the whole
+     *  suite pass while the only path that matters -- a live player inside an encounter -- threw on the
+     *  server thread and abandoned that tick's mechanics.
+     *
+     *  Found in production's log eight minutes after promotion, during the first real encounter anybody has
+     *  ever fought here, and not one moment before. A wrapper named after the thing it wraps is how this
+     *  happens: `tell` was meant to reach CoreUtil's narration and reached itself instead. */
+    private static void tell(Player player, String message) { if (player != null && player.isOnline()) CoreUtil.msg(player, message); }
 
     private static void bar(Player player, String message, NamedTextColor colour) {
         if (player != null && player.isOnline()) player.sendActionBar(Component.text(message, colour));
