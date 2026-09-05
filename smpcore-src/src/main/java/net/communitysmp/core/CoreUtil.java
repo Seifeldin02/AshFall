@@ -153,6 +153,64 @@ final class CoreUtil {
     static ItemStack named(Material material,String name,List<String> lore){ItemStack item=new ItemStack(material);ItemMeta meta=item.getItemMeta();meta.displayName(Component.text(name,NamedTextColor.GOLD));if(lore!=null)meta.lore(lore.stream().map(s->Component.text(s,NamedTextColor.GRAY)).toList());item.setItemMeta(meta);return item;}
 
     /*  ---------------------------------------------------------------------------------------------------
+     *  HOW WIDE A LINE ACTUALLY IS
+     *
+     *  Minecraft's font is not fixed-width, and the sidebar is sized by whatever its widest line renders to,
+     *  so counting characters gets the composition wrong in both directions: "Illicit" is seven characters
+     *  and 26 pixels, "MMMMMMM" is seven characters and 42. The sidebar was budgeted in characters, so one
+     *  line of ordinary text could quietly set the width for all fifteen and leave the rest half empty.
+     *
+     *  These are the advances from the vanilla ASCII page -- 6 pixels for most glyphs (5 drawn plus 1 of
+     *  spacing), the narrow handful listed below, and one extra pixel per character while bold. Section
+     *  codes cost nothing because they are not drawn. Anything outside ASCII falls back to 6, which is the
+     *  common case in the unicode page and errs towards reserving too much rather than too little. */
+    private static final String W2="!,.:;i|'", W3="l`", W4=" I[]t", W5="\"()*<>fk{}", W7="@~";
+    static int charWidth(char c){
+        return W2.indexOf(c)>=0?2:W3.indexOf(c)>=0?3:W4.indexOf(c)>=0?4:W5.indexOf(c)>=0?5:W7.indexOf(c)>=0?7:6;
+    }
+    /** Rendered width of a legacy-coloured string in pixels, colour codes excluded. */
+    static int width(String text){
+        if(text==null)return 0;
+        int total=0;boolean bold=false;
+        for(int i=0;i<text.length();i++){
+            char c=text.charAt(i);
+            if(c=='§'&&i+1<text.length()){
+                char code=Character.toLowerCase(text.charAt(++i));
+                if(code=='l')bold=true;
+                else if(code=='r'||(code>='0'&&code<='9')||(code>='a'&&code<='f'))bold=false;
+                continue;
+            }
+            total+=charWidth(c)+(bold?1:0);
+        }
+        return total;
+    }
+    /** Cuts a string down to a pixel budget, carrying every colour code it passes so the tail cannot come
+     *  out in the wrong colour, and marking the cut so a shortened name is never mistaken for a whole one.
+     *  At least one visible character always survives: an ellipsis on its own says nothing at all. */
+    static String fit(String text,int pixels){
+        if(text==null)return "";
+        if(width(text)<=pixels)return text;
+        int ellipsis=charWidth('…');
+        StringBuilder out=new StringBuilder();int used=0,kept=0;
+        for(int i=0;i<text.length();i++){
+            char c=text.charAt(i);
+            if(c=='§'&&i+1<text.length()){out.append(c).append(text.charAt(++i));continue;}
+            int w=charWidth(c);
+            if(kept>0&&used+w+ellipsis>pixels)break;
+            out.append(c);used+=w;kept++;
+        }
+        return out.append('…').toString();
+    }
+    /** Pads with spaces until the string reaches a pixel column, so a label column lines up under a
+     *  proportional font rather than under a character count. A space is four pixels, so the column lands
+     *  within three of the target -- half a character, against the two or three a count can drift. */
+    static String padTo(String text,int pixels){
+        StringBuilder out=new StringBuilder(text);
+        while(width(out.toString())<pixels)out.append(' ');
+        return out.toString();
+    }
+
+    /*  ---------------------------------------------------------------------------------------------------
      *  THE ASHFALL MENU VOCABULARY
      *
      *  Chest icons had exactly one style -- a gold name over grey lore -- from named() above and from eight
@@ -252,6 +310,15 @@ final class CoreUtil {
          *  common way a menu fails, and every list on this server needs one of these. */
         static ItemStack nothing(String what,List<String> how){
             return of(Material.LIGHT_GRAY_STAINED_GLASS_PANE,C_BODY+what,how);
+        }
+        /** THE FOOTER BAND of a 54-slot browse screen: the tail of the fifth row and the whole sixth, which
+         *  is where PREV, SEARCH, BACK, SORT and NEXT live. Painted before the buttons go in, so a screen
+         *  with fewer of them has the same shape as one with all of them rather than three holes in the
+         *  middle -- and so the boundary between what is for sale and what is a control is drawn once, in
+         *  the same place, on every shop. */
+        static void footer(org.bukkit.inventory.Inventory inv){
+            ItemStack pane=of(Material.GRAY_STAINED_GLASS_PANE,"",null);
+            for(int slot=43;slot<inv.getSize();slot++)inv.setItem(slot,pane);
         }
     }
 

@@ -78,6 +78,8 @@ class Bot(object):
         self.chat_decode_warned = False
         self.window = 0
         self.last_screen = b''
+        self.sidebar = {}
+        self.sidebar_events = []
         self.state_id = 0
         self.entities = {}
         self.trace = []
@@ -250,6 +252,8 @@ class Bot(object):
         elif packet_id == 0x12:                                 # container close
             self.window = 0
             self.note('screen closed by the server')
+        elif self._sidebar(payload):
+            pass
         elif packet_id in self.chat_ids:
             try:
                 line = nbtchat.render(payload)
@@ -263,6 +267,61 @@ class Bot(object):
         elif b'BOTCHK' in payload:
             self.chat_ids.add(packet_id)
             self.note('chat packet identified as 0x%02x' % packet_id)
+
+    #  ---------------------------------------------------------------- the sidebar
+    #
+    #  Read the way the client reads it, not the way the server believes it sent it.
+    #
+    #  ClientboundSetScorePacket is  String owner, String objective, VarInt value, ...  and
+    #  ClientboundResetScorePacket is  String owner, Optional<String> objective.  Both begin with the row's
+    #  own text and name the objective immediately after it, so matching on the objective NAME identifies
+    #  them without a packet id -- which is the same reason the chat id is discovered rather than written
+    #  down: one protocol bump and a hard-coded id silently stops seeing anything, and a test that sees
+    #  nothing passes.
+    OBJECTIVE = 'smpui'
+
+    def _string_at(self, payload, at):
+        #  _read_varint returns (None, offset) when it runs off the end, so the guard has to be an identity
+        #  check before it is a range check -- `None < 0` is a TypeError, and this runs on every packet.
+        length, at = self._read_varint(payload, at)
+        if length is None or length < 0 or length > 512 or at + length > len(payload):
+            return None, at
+        try:
+            return payload[at:at + length].decode('utf-8'), at + length
+        except UnicodeDecodeError:
+            return None, at
+
+    def _sidebar(self, payload):
+        """True when this payload was a sidebar row arriving or leaving. Records it either way."""
+        try:
+            return self._sidebar_unguarded(payload)
+        except (ValueError, IndexError, struct.error):
+            #  This speculatively parses EVERY packet, chunk data included. A malformed read here means
+            #  "not a score packet", never a dead client.
+            return False
+
+    def _sidebar_unguarded(self, payload):
+        owner, at = self._string_at(payload, 0)
+        if owner is None:
+            return False
+        objective, after = self._string_at(payload, at)
+        if objective == self.OBJECTIVE:
+            value, _ = self._read_varint(payload, after)
+            self.sidebar[owner] = value
+            self.sidebar_events.append(('set', owner, value))
+            return True
+        #  Reset carries the objective behind an Optional, so it sits one byte further along.
+        if at < len(payload) and payload[at] == 1:
+            objective, _ = self._string_at(payload, at + 1)
+            if objective == self.OBJECTIVE:
+                self.sidebar.pop(owner, None)
+                self.sidebar_events.append(('reset', owner, 0))
+                return True
+        return False
+
+    def sidebar_rows(self):
+        """The panel as it currently stands, top row first -- highest score is drawn at the top."""
+        return [row for row, _ in sorted(self.sidebar.items(), key=lambda kv: -kv[1])]
 
     def record(self, eid):
         """Ground truth at the resolution a real client sees it: every position packet, as it arrives.
@@ -339,6 +398,21 @@ class Bot(object):
                     f.write(readable(self.last_screen))
                     f.write(chr(10))
                 self.note('wrote %d bytes of screen content to ui_%s.txt' % (len(self.last_screen), name))
+            elif line.startswith('sidebar:dump'):
+                name = line.split(':', 2)[2] if line.count(':') > 1 else 'sidebar'
+                with io.open('ui_%s.txt' % name, 'w', encoding='utf-8') as f:
+                    for row in self.sidebar_rows():
+                        f.write(row)
+                        f.write(chr(10))
+                self.note('wrote %d sidebar rows to ui_%s.txt' % (len(self.sidebar), name))
+            elif line == 'sidebar:reset':
+                self.sidebar_events = []
+                self.note('sidebar packet counter reset')
+            elif line.startswith('sidebar:count'):
+                name = line.split(':', 2)[2] if line.count(':') > 1 else 'sidebarcount'
+                with io.open('ui_%s.txt' % name, 'w', encoding='utf-8') as f:
+                    f.write(str(len(self.sidebar_events)) + chr(10))
+                self.note('sidebar row packets since reset: %d' % len(self.sidebar_events))
             elif line == 'close':
                 self.send(0x0F, varint(self.window))
                 self.note('closed window %d' % self.window)

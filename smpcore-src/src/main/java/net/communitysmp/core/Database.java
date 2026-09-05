@@ -391,6 +391,29 @@ final class Database implements AutoCloseable {
         }catch(SQLException e){throw fail(e);}
         return map;
     }
+    /*  THE SIDEBAR'S TWO READS.
+     *
+     *  The sidebar refreshed every online player every two seconds and read each one's balance and shard
+     *  count individually, which is 2N synchronised SQLite round trips per cycle -- and shardBalance() is
+     *  not even read-only: it INSERT OR IGNOREs the account row first, so a full server wrote N rows every
+     *  two seconds for a number nobody had changed. These take the whole online set at once and cost two
+     *  statements per cycle regardless of how many people are on. Names come in already lower-cased by
+     *  CoreUtil.id, which is the same key both tables use. */
+    private static String placeholders(int count){return "?"+",?".repeat(Math.max(0,count-1));}
+    synchronized Map<String,Double> balances(Collection<String> ids){
+        if(ids==null||ids.isEmpty())return Map.of();
+        Map<String,Double> map=new HashMap<>();
+        for(Object[] row:list("SELECT id,balance FROM players WHERE id IN("+placeholders(ids.size())+")",
+                rs->new Object[]{rs.getString(1),rs.getDouble(2)},ids.toArray()))map.put((String)row[0],(Double)row[1]);
+        return map;
+    }
+    synchronized Map<String,Integer> shardBalances(Collection<String> ids){
+        if(ids==null||ids.isEmpty())return Map.of();
+        Map<String,Integer> map=new HashMap<>();
+        for(Object[] row:list("SELECT player,balance FROM shard_accounts WHERE player IN("+placeholders(ids.size())+")",
+                rs->new Object[]{rs.getString(1),rs.getInt(2)},ids.toArray()))map.put((String)row[0],(Integer)row[1]);
+        return map;
+    }
     synchronized List<StatsRow> topStats(String column,int limit,int offset){if(!Set.of("play_seconds","player_kills","deaths","mob_kills","boss_kills","event_wins","balance").contains(column))throw new IllegalArgumentException("stat");return list("SELECT id,name,play_seconds,player_kills,deaths,mob_kills,boss_kills,event_wins,balance FROM players ORDER BY "+column+" DESC,name LIMIT "+Math.max(1,limit)+" OFFSET "+Math.max(0,offset),Database::mapStats);}
     private final Map<String,Map<String,String>> preferenceCache = new HashMap<>();
     synchronized String preference(String player,String key){

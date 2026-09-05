@@ -35,7 +35,40 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 final class MarketplaceService implements Listener {
-    enum Section { SHOP, AUCTION, LUXURY, SHARDS, SPAWNERS }
+    /*  THE FIVE SHOPS ARE ONE RING, AND THE RING IS DECLARED ONCE.
+     *
+     *  Four of them are sections of this screen and the fifth is its own; that is an implementation detail
+     *  the player should never be able to feel. They could feel it. Leaving the Spawner Shop you got a
+     *  two-line button naming the next stop and nothing else, with a sound; coming back the other way you
+     *  got the whole ring with your position marked, in silence. Same journey, two designs.
+     *
+     *  Declaration order IS the ring order, and the icon and the name live on the constant, so no screen can
+     *  draw the Auction House with a different chest or call the Shard Shop something else. Nothing persists
+     *  an ordinal -- preferences are keyed by name() -- so the order is free to describe the ring. */
+    enum Section {
+        SHOP(Material.EMERALD,"Normal Shop"),
+        LUXURY(Material.AMETHYST_SHARD,"Luxury Shop"),
+        SHARDS(Material.ECHO_SHARD,"Shard Shop"),
+        AUCTION(Material.CHEST,"Auction House"),
+        SPAWNERS(Material.SPAWNER,"Spawner Shop");
+        final Material icon;final String label;
+        Section(Material icon,String label){this.icon=icon;this.label=label;}
+        Section next(){Section[] all=values();return all[(ordinal()+1)%all.length];}
+    }
+
+    /** The one switch button. Both shop screens build it here, so the icon, the wording, the order and the
+     *  mark on the section you are already in cannot drift apart again. */
+    static ItemStack switchButton(Section current){
+        List<String> ring=new ArrayList<>();
+        ring.add(CoreUtil.C_BODY+"Next: "+CoreUtil.C_TEXT+current.next().label);
+        ring.add("");
+        Section each=current;
+        do{
+            ring.add(each==current?CoreUtil.C_EMBER+CoreUtil.MARK+" "+each.label:CoreUtil.C_MUTE+"  "+each.label);
+            each=each.next();
+        }while(each!=current);
+        return CoreUtil.Menu.action(current.next().icon,"Switch section",ring);
+    }
     /** IN_STOCK filters the shop down to what it can actually sell right now, which only means anything
      *  since the shop became finite. It is a filter as well as an order: browsing a wall of out-of-stock
      *  entries is the main annoyance of a player-supplied shop. */
@@ -80,13 +113,22 @@ final class MarketplaceService implements Listener {
 
     private void render(Player player,Session session){
         View view=session.view();Holder holder=new Holder(player.getUniqueId(),session.section);
-        String title=switch(session.section){case SHOP->view.merchant?"Merchant Market":"Marketplace • Shop";case AUCTION->view.merchant?"Auctioneer":"Marketplace • Auction";case SPAWNERS->"Marketplace • Spawners";case LUXURY->"Marketplace • Luxury";case SHARDS->"Marketplace • Shards";};
-        Inventory inv=plugin.getServer().createInventory(holder,54,Component.text(title,session.section==Section.SHARDS?NamedTextColor.DARK_AQUA:NamedTextColor.DARK_GREEN));
+        /*  The title is the section's own name, which is also what the ring calls it and what the player
+         *  would say out loud. It used to be "Marketplace • Shop" over a button that offered to switch to the
+         *  "Normal Shop", next to a Spawner Shop whose title carried no "Marketplace" at all -- three names
+         *  for one family of screens. The merchant variants keep their own names because they really are
+         *  different screens: the prices are not the same. */
+        String title=view.merchant?switch(session.section){case AUCTION->"Auctioneer";default->"Merchant Market";}:session.section.label;
+        Inventory inv=plugin.getServer().createInventory(holder,54,Component.text(title,CoreUtil.EMBER));
         int total=switch(session.section){/** SPAWNERS is handed off by switchSection and never rendered here; the branch exists only so the
          *  switch stays exhaustive if anything ever routes one in. */
         case SPAWNERS->0;case SHOP,LUXURY->renderShop(player,inv,holder,view,session.section==Section.LUXURY);case AUCTION->renderAuctions(player,inv,holder,view);case SHARDS->renderShards(player,inv,holder,view);};
         int pages=Math.max(1,(total+PAGE_SIZE-1)/PAGE_SIZE),requestedPage=view.page;view.page=Math.max(0,Math.min(view.page,pages-1));
         if(requestedPage!=view.page){render(player,session);return;}
+        /*  The footer band is painted before anything is put in it, so all five shops have the same shape
+         *  whether or not that particular section has something to put in every slot. The Luxury shelf used
+         *  to show three empty holes exactly where the Shop showed three buttons. */
+        CoreUtil.Menu.footer(inv);
         if(session.section==Section.SHOP){
             inv.setItem(ACT_LEFT,CoreUtil.Menu.action(Material.HOPPER,"Sell basket",List.of(
                     "Put items in, see what they are worth, then confirm.")));
@@ -107,6 +149,14 @@ final class MarketplaceService implements Listener {
                             CoreUtil.C_MUTE+"Anything that will not fit stays claimable."))
                     :CoreUtil.Menu.info(Material.HOPPER,"Collect expired listings",List.of(
                             CoreUtil.C_MUTE+"Nothing of yours has expired.")));
+        }else if(session.section==Section.SHARDS){
+            /*  Drawn here with the other footer contents rather than inside renderShards, because the band
+             *  is painted first now and would otherwise cover it. It is information, so it is styled as
+             *  information -- it used to be a white action name on a redstone block, which reads as a button
+             *  that does nothing when you click it. */
+            inv.setItem(ACT_MID,CoreUtil.Menu.info(Material.ECHO_SHARD,"Your Shards",List.of(
+                    CoreUtil.C_TEXT+shards.balance(player)+CoreUtil.C_BODY+" Shards",
+                    CoreUtil.C_MUTE+"Earned by playing. Spent here.")));
         }
         /*  Both arrows used to be ARROW, both said "Page 1 / 4", and neither said whether it would move.
          *  On page one, Previous looked exactly as live as Next and did nothing when clicked. */
@@ -116,17 +166,7 @@ final class MarketplaceService implements Listener {
         /*  It said where the one button would take you, never where you already were, and there are five
          *  sections in the ring -- so "Switch to Luxury Shop" left you counting clicks to reach the Shard
          *  Shop. The whole ring is written out, with the section you are in marked. */
-        Section next=nextSection(session.section);
-        List<String> ring=new ArrayList<>();
-        ring.add(CoreUtil.C_BODY+"Next: "+CoreUtil.C_TEXT+sectionName(next));
-        ring.add("");
-        Section each=session.section;
-        do{
-            ring.add(each==session.section?CoreUtil.C_EMBER+CoreUtil.MARK+" "+sectionName(each)
-                                          :CoreUtil.C_MUTE+"  "+sectionName(each));
-            each=nextSection(each);
-        }while(each!=session.section);
-        inv.setItem(CoreUtil.Menu.BACK,CoreUtil.Menu.action(sectionIcon(next),"Switch section",ring));
+        inv.setItem(CoreUtil.Menu.BACK,switchButton(session.section));
         /*  Was a HOPPER, which is also the sell basket AND the collect button on the same screen. */
         inv.setItem(CoreUtil.Menu.SORT,CoreUtil.Menu.action(Material.COMPARATOR,"Sort",List.of(
                 CoreUtil.C_TEXT+sortName(view.sort),CoreUtil.C_MUTE+"Click to cycle.")));
@@ -200,7 +240,6 @@ final class MarketplaceService implements Listener {
         for(int index=start,slot=0;index<rows.size()&&slot<PAGE_SIZE;index++,slot++){
             ShardService.Stock row=rows.get(index);int remaining=shards.remaining(player,row);ItemStack icon=shards.displayItem(row);ItemMeta meta=icon.getItemMeta();List<Component> lore=meta.hasLore()?new ArrayList<>(meta.lore()):new ArrayList<>();lore.add(Component.text("Price: "+row.price()+" Shards",NamedTextColor.AQUA));if(row.limit()>0)lore.add(Component.text(remaining+" remaining this "+("LIFETIME".equalsIgnoreCase(row.period())?"account":row.period().toLowerCase(Locale.ROOT)),NamedTextColor.GRAY));meta.lore(lore);icon.setItemMeta(meta);inv.setItem(slot,icon);holder.items.put(slot,new ItemRef(null,null,row.key()));
         }
-        inv.setItem(44,button(Material.REDSTONE_BLOCK,"Your Shards",List.of(Integer.toString(shards.balance(player)))));
         return total;
     }
 
@@ -214,14 +253,16 @@ final class MarketplaceService implements Listener {
             case ACT_LEFT->{if(session.section==Section.SHOP)shop.openSellBasket(player,view.merchant);else if(session.section==Section.AUCTION)prompt(player,InputType.LIST_PRICE);}
             case ACT_MID->{if(session.section==Section.AUCTION)auctions.collect(player);}
             case ACT_RIGHT->{if(session.section==Section.SHOP)shop.requestQuickSell(player,view.merchant,()->render(player,session));}
-            case CoreUtil.Menu.PREV->{if(view.page>0){view.page--;render(player,session);}}
-            case CoreUtil.Menu.SEARCH->openFilters(player,session);
-            case CoreUtil.Menu.BACK->switchSection(player,session,nextSection(session.section),false);
-            case CoreUtil.Menu.SORT->{view.sort=Sort.values()[(view.sort.ordinal()+1)%Sort.values().length];view.page=0;savePreference(player,session.section,"sort",view.sort.name());render(player,session);}
+            /*  The same four cues the Spawner Shop already played. This screen was silent, so paging felt
+             *  different depending on which of the five shops you happened to be in. */
+            case CoreUtil.Menu.PREV->{if(view.page>0){plugin.settings().uiSound(player,"page");view.page--;render(player,session);}}
+            case CoreUtil.Menu.SEARCH->{plugin.settings().uiSound(player,"select");openFilters(player,session);}
+            case CoreUtil.Menu.BACK->{plugin.settings().uiSound(player,"select");switchSection(player,session,session.section.next());}
+            case CoreUtil.Menu.SORT->{plugin.settings().uiSound(player,"select");view.sort=Sort.values()[(view.sort.ordinal()+1)%Sort.values().length];view.page=0;savePreference(player,session.section,"sort",view.sort.name());render(player,session);}
             /*  render() already clamps an over-large page and redraws, so clicking Next on the last page
              *  was harmless -- but it also rebuilt the whole screen for nothing, and the arrow that did it
              *  now says plainly that there is nowhere to go. */
-            case CoreUtil.Menu.NEXT->{view.page++;render(player,session);}
+            case CoreUtil.Menu.NEXT->{plugin.settings().uiSound(player,"page");view.page++;render(player,session);}
             default->{}
         }
     }
@@ -251,12 +292,27 @@ final class MarketplaceService implements Listener {
         }
     }
 
-    private void switchSection(Player player,Session session,Section section,boolean merchant){
-        /** The Spawner Shop is the one section that is not a Material-priced row list, so it hands off to its
-         *  own screen instead of rendering here. It carries the same switcher onward, which is what keeps all
-         *  five shops one cycle rather than four plus an outlier. */
+    private void switchSection(Player player,Session session,Section section){
+        openSection(player,section);
+        if(section!=Section.SPAWNERS)return;
+        /*  Leaving for a screen this class does not own: drop the merchant pricing and the search with it,
+         *  so coming back round the ring lands on a clean Normal Shop rather than on a stale filter from
+         *  three sections ago. */
+        session.section=Section.SHOP;resetSearch(session.view());session.view().merchant=false;
+    }
+
+    /*  EVERY ROUTE BETWEEN THE FIVE SHOPS GOES THROUGH HERE, IN BOTH DIRECTIONS.
+     *
+     *  The Spawner Shop is the one section that is not a Material-priced row list, so it hands off to its own
+     *  screen instead of rendering here -- and that hand-off is the only thing that made the ring asymmetric.
+     *  Naming it once means "open the Spawner Shop" is the same act whether it came from the ring, from
+     *  /shop spawners, or from the Spawner Shop's own switch button coming back the other way. */
+    void openSection(Player player,Section section){
         if(section==Section.SPAWNERS){plugin.spawnerShop().open(player);return;}
-        session.section=section;resetSearch(session.view());session.view().merchant=merchant;render(player,session);}
+        Session session=sessions.computeIfAbsent(player.getUniqueId(),id->new Session());
+        if(!session.loaded)loadPreferences(player,session);
+        session.section=section;resetSearch(session.view());session.view().merchant=false;render(player,session);
+    }
     private void openFilters(Player player,Session session){
         Inventory inv=plugin.getServer().createInventory(new FilterHolder(player.getUniqueId(),session.section),45,Component.text("Marketplace Filters",NamedTextColor.DARK_GRAY));
         inv.setItem(10,button(Material.BARRIER,"All Categories",List.of()));
@@ -386,9 +442,6 @@ final class MarketplaceService implements Listener {
     }
     boolean selfTest(){return PAGE_SIZE==43&&Section.values().length==5&&Sort.values().length==6&&new View().sort==Sort.STOCK&&shop.entries(false).stream().noneMatch(entry->entry.getValue().buy()<entry.getValue().sell());}
     private void resetSearch(View view){view.query="";view.seller="";view.page=0;}
-    private Section nextSection(Section section){return switch(section){case SHOP->Section.LUXURY;case LUXURY->Section.SHARDS;case SHARDS->Section.AUCTION;case AUCTION->Section.SPAWNERS;case SPAWNERS->Section.SHOP;};}
-    private String sectionName(Section section){return switch(section){case SHOP->"Normal Shop";case LUXURY->"Luxury Shop";case SHARDS->"Shard Shop";case AUCTION->"Auction House";case SPAWNERS->"Spawner Shop";};}
-    private Material sectionIcon(Section section){return switch(section){case SHOP->Material.EMERALD;case LUXURY->Material.AMETHYST_SHARD;case SHARDS->Material.ECHO_SHARD;case AUCTION->Material.CHEST;case SPAWNERS->Material.SPAWNER;};}
     private String sortName(Sort sort){return switch(sort){case STOCK->"In Stock First";case CATEGORY->"Category";case CHEAPEST->"Cheapest";case EXPENSIVE->"Most Expensive";case NAME->"Name A–Z";case IN_STOCK->"In Stock Only";};}
     /** Every list screen needs one of these: what would be here, and what to do about it. */
     private String emptyTitle(Section section,View view){
@@ -412,6 +465,35 @@ final class MarketplaceService implements Listener {
         return List.of(CoreUtil.C_MUTE+"Try again later.");
     }
     private List<String> filterLore(View view){List<String> lore=new ArrayList<>();lore.add("Category: "+CoreUtil.pretty(view.category));if(!view.query.isBlank())lore.add("Item: "+view.query);if(!view.seller.isBlank())lore.add("Seller: "+view.seller);return lore;}
-    private ItemStack nav(Material material,String name,boolean selected){return button(selected?Material.LIME_STAINED_GLASS_PANE:material,name,List.of(selected?"Current section":"Open section"));}
     private ItemStack button(Material material,String name,List<String> lore){return CoreUtil.Menu.action(material,name,lore);}
+
+    /** The ring has to be a ring, the five destinations have to be five distinct things, and both screens
+     *  have to lay their footers out identically -- including the number of item slots above it, which is
+     *  what decides whether a button lands on top of something for sale. */
+    String navigationSelfTest(){
+        Section start=Section.SHOP,each=start;int steps=0;
+        EnumSet<Section> seen=EnumSet.noneOf(Section.class);
+        do{
+            if(!seen.add(each))return "the ring revisits "+each+" before closing";
+            each=each.next();
+        }while(each!=start&&++steps<10);
+        if(seen.size()!=Section.values().length)return "the ring reaches "+seen.size()+" of "+Section.values().length+" sections";
+        Set<Material> icons=new HashSet<>();Set<String> labels=new HashSet<>();
+        for(Section section:Section.values()){
+            if(!icons.add(section.icon))return section+" shares an icon with another section";
+            if(!labels.add(section.label))return section+" shares a name with another section";
+        }
+        for(Section section:Section.values()){
+            List<net.kyori.adventure.text.Component> lore=switchButton(section).getItemMeta().lore();
+            if(lore==null||lore.size()!=Section.values().length+2)return "the switch button for "+section+" does not list the whole ring";
+            long marked=lore.stream().map(line->PlainTextComponentSerializer.plainText().serialize(line))
+                    .filter(line->line.startsWith(CoreUtil.MARK)).count();
+            if(marked!=1)return "the switch button for "+section+" marks "+marked+" current sections";
+        }
+        if(SpawnerShopService.PAGE_SIZE!=PAGE_SIZE)
+            return "the Spawner Shop shows "+SpawnerShopService.PAGE_SIZE+" rows where the other shops show "+PAGE_SIZE+", so its footer sits on top of stock";
+        if(ACT_LEFT!=43||ACT_MID!=44||ACT_RIGHT!=46)return "the section actions moved out of the footer band";
+        if(CoreUtil.Menu.BACK<=ACT_RIGHT||CoreUtil.Menu.NEXT!=53)return "the shared footer slots no longer bound the band";
+        return null;
+    }
 }

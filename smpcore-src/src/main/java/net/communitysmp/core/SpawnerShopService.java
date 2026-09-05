@@ -48,7 +48,16 @@ import java.util.Map;
  *  as part of the shop family, and /shop links straight to it. */
 final class SpawnerShopService implements Listener {
 
-    private static final int PAGE_SIZE = 45;
+    /*  43, THE SAME AS EVERY OTHER SHOP -- AND IT WAS NOT.
+     *
+     *  It was 45, so the grid ran to slot 44 while the footer's Sell button was written into 43. On a
+     *  page with more than 43 kinds of spawner in stock, the 44th was drawn under a button and its slot
+     *  was claimed by the sell basket before the click ever reached the buy path: a stock row that could
+     *  be seen and not bought. Nobody had hit it because the recovery list has never been that long. */
+    static final int PAGE_SIZE = 43;
+    /** The sell basket shares the footer band with the paging and the switch, so it is named alongside them
+     *  rather than written as a bare 43 in two places that have to agree. */
+    private static final int SELL = 43;
 
     /** Sort options, mirroring the marketplace's own cycle. */
     enum Sort {
@@ -179,8 +188,8 @@ final class SpawnerShopService implements Listener {
         Holder holder = new Holder(shown, sort);
         views.put(CoreUtil.id(player), holder);
         Inventory inv = plugin.getServer().createInventory(holder, 54,
-                Component.text("Spawner Shop", NamedTextColor.DARK_PURPLE));
-        for (int slot = PAGE_SIZE; slot < 54; slot++) inv.setItem(slot, filler());
+                Component.text(MarketplaceService.Section.SPAWNERS.label, CoreUtil.EMBER));
+        CoreUtil.Menu.footer(inv);
         for (int index = shown * PAGE_SIZE, slot = 0; index < rows.size() && slot < PAGE_SIZE; index++, slot++)
             inv.setItem(slot, icon(rows.get(index).getKey(), rows.get(index).getValue()));
         if (rows.isEmpty()) inv.setItem(22, CoreUtil.Menu.nothing("Nothing in stock",
@@ -190,12 +199,13 @@ final class SpawnerShopService implements Listener {
         /*  A disabled arrow used to be an ARROW named " " with no lore at all -- a blank icon that looked
          *  like a rendering fault. */
         inv.setItem(CoreUtil.Menu.PREV, CoreUtil.Menu.page(shown, pages, false));
-        inv.setItem(CoreUtil.Menu.BACK, CoreUtil.Menu.action(Material.EMERALD, "Switch section", List.of(
-                CoreUtil.C_BODY + "Next: " + CoreUtil.C_TEXT + "Normal Shop",
-                CoreUtil.C_MUTE + "Cycles on through the shops.")));
+        /*  The same button the other four shops draw, from the same builder: the whole ring, the section
+         *  you are in marked, and the next one's own icon on the front. This screen used to write its own
+         *  two-line version that named the next stop and nothing else. */
+        inv.setItem(CoreUtil.Menu.BACK, MarketplaceService.switchButton(MarketplaceService.Section.SPAWNERS));
         /** Same slots the rest of the shop family uses: 43 sell basket, 49 switch, 51 sort, 45/53 paging.
          *  The switch and the sort were the wrong way round against every other shop screen. */
-        inv.setItem(43, CoreUtil.Menu.action(Material.HOPPER, "Sell spawners", List.of(
+        inv.setItem(SELL, CoreUtil.Menu.action(Material.HOPPER, "Sell spawners", List.of(
                 "Opens a sale basket, the same as /shop.",
                 "Drop spawners in and confirm.",
                 CoreUtil.C_MUTE + "Pays a fifth of the buy price.")));
@@ -251,8 +261,6 @@ final class SpawnerShopService implements Listener {
         return item;
     }
 
-    private ItemStack filler() { return CoreUtil.named(Material.GRAY_STAINED_GLASS_PANE, " ", List.of()); }
-
     // ------------------------------------------------------------------ buying
 
     @EventHandler public void click(InventoryClickEvent event) {
@@ -260,11 +268,14 @@ final class SpawnerShopService implements Listener {
         event.setCancelled(true);
         if (!(event.getWhoClicked() instanceof Player player)) return;
         int slot = event.getRawSlot();
-        if (slot == 45) { if (holder.page() > 0) { plugin.settings().uiSound(player, "page"); open(player, holder.page() - 1, holder.sort()); } return; }
-        if (slot == 53) { plugin.settings().uiSound(player, "page"); open(player, holder.page() + 1, holder.sort()); return; }
+        if (slot == CoreUtil.Menu.PREV) { if (holder.page() > 0) { plugin.settings().uiSound(player, "page"); open(player, holder.page() - 1, holder.sort()); } return; }
+        if (slot == CoreUtil.Menu.NEXT) { plugin.settings().uiSound(player, "page"); open(player, holder.page() + 1, holder.sort()); return; }
         if (slot == CoreUtil.Menu.SORT) { plugin.settings().uiSound(player, "select"); open(player, 0, holder.sort().next()); return; }
-        if (slot == 49) { plugin.settings().uiSound(player, "back"); plugin.shop().open(player); return; }
-        if (slot == 43) { plugin.settings().uiSound(player, "select"); openSellBasket(player); return; }
+        /*  "select", not "back": this is not a Back button, and the bass note the other cues use for going
+         *  backwards said it was. It goes ON round the ring, through the same opener every other route
+         *  uses, so arriving at the Normal Shop from here is the same act as arriving from anywhere else. */
+        if (slot == CoreUtil.Menu.BACK) { plugin.settings().uiSound(player, "select"); plugin.marketplace().openSection(player, MarketplaceService.Section.SPAWNERS.next()); return; }
+        if (slot == SELL) { plugin.settings().uiSound(player, "select"); openSellBasket(player); return; }
         if (slot < 0 || slot >= PAGE_SIZE) return;
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || clicked.getType() != Material.SPAWNER) return;
