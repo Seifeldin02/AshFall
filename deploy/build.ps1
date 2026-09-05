@@ -45,7 +45,15 @@ foreach ($jar in $thirdPartyJars) {
     $dest = Join-Path $repoRoot $jar.Rel
     $src  = Join-Path $SourceServer $jar.Src
     if (-not (Test-Path $src)) {
-        throw "Required third-party jar not found: $src`nThis file is not committed to git (it's a third-party binary) and must exist on the source server."
+        # A jar that is gone from the SOURCE but already cached here is not an error. ReplayCore is the
+        # case this exists for: it was physically removed from production on purpose (2026-09-02) and must
+        # stay removed, but pom.xml still compiles against its API, so the cached copy is what builds. A
+        # jar that is missing in BOTH places is still fatal -- that one really would build the wrong thing.
+        if (Test-Path $dest) {
+            Write-Host "  kept    $($jar.Rel)  (absent from $SourceServer; using the copy already here)" -ForegroundColor DarkYellow
+            continue
+        }
+        throw "Required third-party jar not found: $src`nThis file is not committed to git (it's a third-party binary) and must exist on the source server or already be staged in the repo."
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     Copy-Item -Path $src -Destination $dest -Force
