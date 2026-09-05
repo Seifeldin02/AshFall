@@ -5,6 +5,111 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-05 (later) — The sidebar was budgeted in characters, and one shop was not in the ring
+
+Built and tested on staging, then merged to `main` and promoted to production with an announced restart.
+
+### A panel is as wide as its widest row
+
+The sidebar bounded its names with `trim(name, 16)`, which bounds nothing the client cares about.
+Minecraft's font is not fixed-width: sixteen characters is 96 pixels of "Illicit Ember" and 112 of
+"MMMMMMMMMMMMMMMM", so one ordinary line decided the width of the whole panel and the other fourteen sat
+in the empty half it left behind. That is the whole of "the spacing is off" — it is a measurable claim.
+
+`CoreUtil.width()` now knows what a string renders to (the vanilla ASCII advances, the narrow glyphs, bold,
+and section codes costing nothing), `fit()` cuts to a pixel budget carrying the colour codes with it, and
+`padTo()` makes the label column a pixel column rather than a character count — "Balance" and "Shards"
+differ by three pixels, which is most of a space.
+
+Every row now fits 104 pixels. The composition changed with it:
+
+* The three standings at the bottom were six rows: a short grey header, then a value. Half of them were
+  two words in a panel sized for sixteen characters, which is where most of the empty space came from. The
+  number moves up onto the label row where it fills it, the name it belongs to keeps the row underneath,
+  and a standing with nothing to show collapses to one row instead of a header over "none".
+* The leading blank row is gone. Nothing chose it; it was the separator before a section that had been
+  removed, and it pushed everything down by one.
+* Blank separators are bare colour codes — unique (scoreboard rows are keyed by their own text), invisible,
+  and genuinely zero-width. The old space padding made a "blank" row twelve pixels wide.
+* "Bounty" appeared twice meaning two different things. Yours is what you are: `Wanted`.
+* The event block is two rows when the name and the countdown fit on one and three when they do not, rather
+  than three always. Cutting the name to make room for the timer would be the wrong trade.
+
+### 150 packets for a number that never changed
+
+Same workload against both builds — one player standing still, six balance changes four seconds apart,
+counted at the client from real scoreboard packets:
+
+| | rows | row packets | per change |
+|---|---:|---:|---:|
+| before | 11 | 150 | 25.0 |
+| after | 9 | 1 | 0.2 |
+
+The old code reset every row and re-added every row whenever any single one differed, so it repainted the
+whole panel because a balance had moved by $137 — and in that run the *printed* value never changed once,
+because it is compacted. Rows are diffed now: still present and still in the same position means untouched.
+A change that is actually visible costs two packets, a reset and a set, which is the whole cost. (The 150
+undercounts the old build: its reset packets were not being recorded at all, which is a harness bug fixed
+in the same batch — Bukkit's `resetScores(entry)` sends the form with no objective name, and the sniffer
+only read the form that carries one.)
+
+The refresh also stopped reading the database per player. Balance and shards were two synchronised SQLite
+round trips per online player every two seconds — and `shardBalance()` is not read-only, it INSERT OR
+IGNOREs the account row first, so a full server wrote N rows every two seconds for a number nobody had
+changed. Two statements per cycle now, whatever the population.
+
+And five maps in `GameplayListener` were never removed from: `chatStates`, `lastCommand`, `lastCommandAt`,
+`lastCommands`, `commandViolations`, all keyed by player UUID, all holding an entry for every account that
+had joined since the last restart. They are short-lived rate limiting; nothing in them means anything once
+the player is gone, and keeping it would make a returning player inherit a spam counter from hours ago.
+
+### Four shops and an outlier
+
+Leaving the Spawner Shop did not look or behave like arriving at it, and the reason is that four of the
+five are sections of one class and the fifth is its own. That is an implementation detail the player should
+never be able to feel, and they could: a two-line switch button naming the next stop against the whole ring
+with your position marked; the going-backwards bass note on a button that goes forwards; a grey pane border
+on one screen and bare slots on the other; and 45 item slots where the others have 43 — which put the Sell
+button on top of the 44th spawner in stock, drawn and unclickable, its slot claimed by the click handler
+before the buy path ever saw it. Nobody had hit it because the recovery list has never been that long.
+
+The ring is declared once now, on the `Section` enum, with the icon and the name on the constant.
+`switchButton()` draws it and `openSection()` opens it, in both directions. Titles are the section names in
+one colour — "Marketplace • Shop" over a button offering the "Normal Shop", next to a Spawner Shop carrying
+no "Marketplace" at all, was three names for one family. `Menu.footer()` paints the band before anything
+goes in it, so the Luxury shelf stops showing three empty holes where the Shop shows three buttons. The
+shard balance was a white action name on a redstone block; it is information and now looks like it.
+
+`shop-navigation` walks all twenty routes from all five starting points and reads the balance and a marked
+inventory either side of the whole matrix. Two of its assertions were wrong on the first run and both are
+worth remembering: a burst of clicks cannot open five screens, because every click after the first
+addresses a window that no longer exists — asserting otherwise is asserting a protocol violation; and the
+balance was being read with `ashfall balance <player>`, which is the admin ADJUST command and answers a
+usage line that compares equal to itself. A check that cannot fail is worse than no check, because it is
+still counted.
+
+### The Bank front page, and why it is still not captured
+
+It opens from the Central Banker and from nothing else. Three routes were tried:
+
+* **Spawn a banker from the test account.** `/ashfall merchant spawn` needs a Player, so the console cannot
+  run it, and SMPCore refuses admin commands from anyone but the *configured admin account* — opping the
+  test account is not enough.
+* **Right-click the real one at spawn.** The harness client can send the interact packets now, and it does:
+  `INTERACT_AT` with the hit point then `INTERACT`, standing two blocks back and facing it. They are
+  acknowledged and no event fires. Not the anticheat — identical with operator, which carries the exempt.
+  This client speaks protocol 767 to a Minecraft 26.2 server through ViaVersion, and entity interaction is
+  the one thing on that path that does not survive.
+* **Add a command that opens it.** Refused. A public gameplay command that exists only so a test can reach
+  a screen is a worse thing to ship than an uncaptured screen.
+
+So the door is asserted — a Central Banker within reach of spawn, still carrying the tag that makes it one
+— and the screen's appearance stays a human check. The page itself was read and changed: its title joins
+the one colour the rest of the family uses and drops the brand off the front, and a lore line that read the
+player's row twice on every open now reads it once.
+
+---
+
 ## Session: 2026-09-05 — The claim boundary closed, addItem pinned, and a lease so tests stop lying
 
 Staging only. No production file, process, configuration, database, console or restart was touched.

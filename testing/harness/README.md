@@ -75,6 +75,8 @@ next one still gets a clean session. Exit status is non-zero if anything failed.
 | `inventory` | Full slot/id/count conservation across death mid-encounter, an attempted second encounter, and a disconnect. |
 | `menu-navigation` | Where a click actually lands: the settings preference band never opens a screen or moves the player, each door opens the screen it is drawn as, Back returns, the marketplace section ring advances one step per click, the first page has nowhere to go back to, a closed menu can be clicked without disconnecting anybody, and repeated clicks on one control do one thing repeatedly. |
 | `stash-crash` | Claim delivery aborted at each persistence boundary on purpose, then recovered. Opens the player's own `<uuid>.dat` and checks the receipt is in the same file as the items it records, which is the whole basis of the design. Includes the partial fit -- built by exact slot, not hoped for. |
+| `shop-navigation` | Every route between the five shops, in both directions. The ring advances one step per click from all five starting points, each shop opens directly to itself, the footer sits in the same slots on every screen, and the balance and a marked inventory are read either side of the whole matrix -- navigation that charges money is the one bug here that must never ship. |
+| `sidebar` | The panel as the client receives it, from real scoreboard packets: no row over the pixel budget, no blank row at either end, no two together, no stale row left behind when an event ends, and an idle panel sending nothing. Carries its own copy of the font width table so a mistake in `CoreUtil`'s cannot agree with itself. |
 | `stash` | The durable claim stash from the collection side: a full inventory holds the claim rather than consuming it, making room delivers exactly what was owed, and collecting again delivers nothing. Drains through the player's own screens first, so it never needs a console command that can delete somebody's unclaimed property. |
 
 ## What it is not
@@ -99,6 +101,8 @@ Scenarios drive the client by queueing lines (`control.say(...)`):
 | `respawn` | respawn after death |
 | `trace:start` / `trace:dump` | record entity positions, then write `trace_<name>.csv` |
 | `chat:start` / `chat:dump` | record chat as rendered, then write `chat_<name>.txt` |
+| `interact:near:<x>,<y>,<z>` | right-click the tracked entity nearest that point (see the caveat below) |
+| `sidebar:dump:<name>` / `sidebar:count:<name>` / `sidebar:reset` | write the sidebar rows, or the number of row packets since the reset, to `ui_<name>.txt` |
 | `quit` | disconnect cleanly |
 
 ### Capturing what a screen actually looked like
@@ -109,6 +113,39 @@ was handed rather than what the source says was meant -- which is the difference
 rendered result and judging raw colour codes. `Control.screen_dump(name)` reads it back.
 
 It is a capture, not an assertion, and it says nothing about whether the result looks good.
+
+### Reading the sidebar
+
+`sidebar:dump:<name>` writes the rows the client is currently holding, top first, to `ui_<name>.txt`.
+They are collected from real `set_score` / `reset_score` packets, identified by the **objective name**
+rather than by a packet id -- one protocol bump and a hard-coded id silently stops seeing anything, and a
+test that sees nothing passes.
+
+Two forms of the reset packet exist and both matter: Bukkit's `resetScores(entry)` clears the entry from
+every objective at once and sends it with **no** objective name. Reading only the form that carries one
+makes every removal invisible, which looks exactly like a panel holding stale rows.
+
+`sidebar:count:<name>` writes how many row packets have arrived since `sidebar:reset`. That is the number
+that showed the pre-2026-09-05 sidebar sending 150 packets for a printed value that never changed.
+
+### Right-clicking an entity, and where it stops working
+
+`interact:near:x,y,z` sends the two packets a real client sends for a right-click -- `INTERACT_AT` with the
+hit point, then `INTERACT` -- to the tracked entity nearest that position. Nearest-to-a-point rather than
+"the one that just appeared", because mobs spawn while a test runs.
+
+**It does not currently reach the server.** The packet is sent and acknowledged, no event fires, and it
+behaves identically with operator, so it is not the anticheat. This client speaks protocol 767 (1.21.1) to
+a Minecraft 26.2 server through ViaVersion, and entity interaction is the one thing on that path that does
+not come out the other side. This is why the Bank front page -- which opens from the Central Banker and
+from nothing else -- has never been captured from a client. `menu-navigation` asserts the door instead: that
+a Central Banker is standing within reach of spawn and still carries the tag that makes it one.
+
+The other two routes were tried and are dead ends worth not repeating: `/ashfall merchant spawn` needs a
+Player so the console cannot run it, and SMPCore refuses admin commands from anyone but the configured
+admin account -- opping the test account is not enough. Adding a command that opens the screen was refused
+on purpose: a public gameplay command that exists only so a test can reach a screen is a worse thing to
+ship than an uncaptured screen.
 
 ### The staging test lease
 

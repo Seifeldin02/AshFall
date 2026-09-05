@@ -22,7 +22,13 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Commit,
-    [string]$ProductionRoot = 'C:\MinecraftServer'
+    [string]$ProductionRoot = 'C:\MinecraftServer',
+    # Where the manifest's `sync:` artifacts are promoted FROM. Staging is the reference for those, and
+    # check_deploy.py compares production against it.
+    [string]$StagingRoot = 'C:\MinecraftServer-Staging',
+    # Skips the typed confirmation. For a promotion the owner has already authorised in writing, and for
+    # any caller with no console to type into -- Read-Host reads EOF there and the script aborts.
+    [switch]$Yes
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,10 +50,12 @@ try {
     }
 
     Write-Host "About to promote commit $resolvedShort (confirmed on main) to PRODUCTION at $ProductionRoot" -ForegroundColor Yellow
-    $confirm = Read-Host "Type YES to continue"
-    if ($confirm -ne 'YES') {
-        Write-Host "Aborted. Nothing was changed." -ForegroundColor Yellow
-        return
+    if (-not $Yes) {
+        $confirm = Read-Host "Type YES to continue"
+        if ($confirm -ne 'YES') {
+            Write-Host "Aborted. Nothing was changed." -ForegroundColor Yellow
+            return
+        }
     }
 
     # --- Back up current production jar + plugin configs ------------------
@@ -56,10 +64,19 @@ try {
     New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 
     $prodPlugins = Join-Path $ProductionRoot 'plugins'
-    $existingJar = Get-ChildItem $prodPlugins -Filter 'SMPCore-*.jar' -ErrorAction SilentlyContinue | Select-Object -First 1
+    # 'SMPCore*.jar', NOT 'SMPCore-*.jar'. The jar production actually runs is called SMPCore.jar, with no
+    # version in the name, so the old filter matched nothing: it backed nothing up, removed nothing, and
+    # then copied SMPCore-1.7.0.jar in ALONGSIDE the one already there. Two SMPCore jars in one plugins
+    # folder is a coin toss over which Paper loads, and the losing side is invisible -- the plugin still
+    # enables, and still reports itself as enabled.
+    $existingJars = @(Get-ChildItem $prodPlugins -Filter 'SMPCore*.jar' -ErrorAction SilentlyContinue)
+    $existingJar = $existingJars | Select-Object -First 1
+    if ($existingJars.Count -gt 1) {
+        throw "Production already has $($existingJars.Count) SMPCore jars: $($existingJars.Name -join ', '). Which one is running is a guess. Resolve that by hand before promoting."
+    }
     if ($existingJar) {
         Copy-Item $existingJar.FullName (Join-Path $backupDir $existingJar.Name) -Force
-        Write-Host "Backed up current production jar: $($existingJar.Name)" -ForegroundColor Green
+        Write-Host "Backed up current production jar: $($existingJar.Name) (sha256 $((Get-FileHash $existingJar.FullName -Algorithm SHA256).Hash))" -ForegroundColor Green
     }
     else {
         Write-Host "No existing SMPCore jar found in production plugins (first deploy?)." -ForegroundColor Yellow
@@ -88,16 +105,60 @@ try {
         throw "Build did not produce a jar. Production was NOT modified."
     }
 
-    # --- Deploy ONLY the jar --------------------------------------------
-    Get-ChildItem $prodPlugins -Filter 'SMPCore-*.jar' -ErrorAction SilentlyContinue |
-        Remove-Item -Force
-    $destJar = Join-Path $prodPlugins (Split-Path -Leaf $builtJarPath)
+    # --- Clear plugins/update/ ------------------------------------------
+    # Paper applies whatever is in here on the next boot, overwriting what was just deployed, and the
+    # server reports the plugin as enabled either way. A stale jar sitting here is how a promotion
+    # silently does not happen.
+    $updateDir = Join-Path $prodPlugins 'update'
+    if (Test-Path $updateDir) {
+        foreach ($file in @(Get-ChildItem $updateDir -File -ErrorAction SilentlyContinue)) {
+            Copy-Item $file.FullName (Join-Path $backupDir "update-$($file.Name)") -Force
+            Remove-Item $file.FullName -Force
+            Write-Host "Cleared stale plugins/update/$($file.Name) (backed up first)" -ForegroundColor Yellow
+        }
+    }
+
+    # --- Deploy the jar, under the name production already uses ---------
+    # Keeping the existing filename means nothing else on that server has to learn a new one, and
+    # check_deploy.py's "exactly one SMPCore*.jar" stays true by construction rather than by luck.
+    $destName = if ($existingJar) { $existingJar.Name } else { Split-Path -Leaf $builtJarPath }
+    $existingJars | Remove-Item -Force -ErrorAction SilentlyContinue
+    $destJar = Join-Path $prodPlugins $destName
     Copy-Item -Path $builtJarPath -Destination $destJar -Force
+    $destHash = (Get-FileHash $destJar -Algorithm SHA256).Hash
+    Write-Host "Deployed jar sha256 $destHash" -ForegroundColor Green
+
+    # --- Deploy the manifest artifacts a jar swap does not carry --------
+    # colosseum.yml is only written by the plugin when it does not already exist; the arena snapshots are
+    # what an encounter clones its instance from; the two supervisor scripts are only re-read when they
+    # are relaunched. None of them ride along with the jar. Every one is backed up before it is replaced.
+    #
+    # They come from STAGING, not from the repo, because staging is what deploy/manifest.yml calls the
+    # reference for a `sync:` path and therefore what check_deploy.py compares production against. Taking
+    # them from anywhere else can leave the checker red after a promotion that looked like it worked.
+    $artifacts = @(
+        'plugins\SMPCore\colosseum.yml'
+        'plugins\SMPCore\colosseum-templates'
+        'console-guard.ps1'
+        'storage-guard.ps1'
+    )
+    foreach ($artifact in $artifacts) {
+        $src = Join-Path $StagingRoot $artifact
+        if (-not (Test-Path $src)) { throw "Manifest artifact missing from staging: $src" }
+        $dst = Join-Path $ProductionRoot $artifact
+        if (Test-Path $dst) {
+            Copy-Item $dst (Join-Path $backupDir ($artifact -replace '\\', '-')) -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+        Copy-Item -Path $src -Destination $dst -Recurse -Force
+        Write-Host "  promoted $artifact" -ForegroundColor Green
+    }
 
     $marker = Join-Path $ProductionRoot 'DEPLOYED_COMMIT.txt'
     @"
 commit=$resolved
-jar=$(Split-Path -Leaf $builtJarPath)
+jar=$destName
+sha256=$destHash
 promoted_at=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
 backup=$backupDir
 "@ | Set-Content -Path $marker -Encoding utf8

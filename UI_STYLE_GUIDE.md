@@ -149,6 +149,35 @@ the builder, in the click handler and in the verifier; change all three together
 perform a purchase. `testing/harness/run.py menu-navigation` exercises the screens through a real client
 and asserts where each click actually lands.
 
+### The shop ring, and the footer band
+
+Five screens are one family, and four of them are sections of a single class while the fifth is its own.
+That is an implementation detail; the player must never be able to feel it. They could — the Spawner Shop
+drew its own two-line switch button, played the going-backwards sound for a button that goes forwards, and
+showed 45 item slots where the others show 43, which put its Sell button on top of the 44th thing for sale.
+
+* **The ring is declared once**, on `MarketplaceService.Section`, and the declaration ORDER is the ring
+  order. The icon and the display name live on the constant, so no screen can call the Shard Shop something
+  else or draw the Auction House with a different chest.
+* **One builder draws the switch button**: `MarketplaceService.switchButton(current)`. It lists the whole
+  ring with the section you are in marked, and wears the *next* section's icon.
+* **One opener**: `MarketplaceService.openSection(player, section)`. Every route between the five goes
+  through it in both directions, so "open the Spawner Shop" is the same act from the ring, from
+  `/spawnershop`, and from the Spawner Shop's own button coming back round.
+* **The footer band is painted first.** `CoreUtil.Menu.footer(inv)` fills slot 43 to the end of a 54-slot
+  screen before any button goes into it, so a section with fewer controls has the same shape as one with
+  all of them instead of holes where the others have buttons.
+* **The title is the section's own name**, in ember, on all five. "Marketplace • Shop" over a button
+  offering to switch to the "Normal Shop", next to a Spawner Shop with no "Marketplace" at all, was three
+  names for one family of screens.
+* **Navigation changes nothing.** No route between two shops may move money, items, stock or a selection.
+  `run.py shop-navigation` walks the whole matrix from every starting point and reads the balance either
+  side of it.
+
+A burst of clicks on a control that opens a new screen is honoured **once**: every click after the first
+carries the window id of a screen that no longer exists, and the server ignores it. That is the safe
+behaviour, and a test asserting five screens from five rapid clicks is asserting a protocol violation.
+
 ### Known divergence
 
 `OrdersService` uses its own footer grammar (Back at 45, paging at 46/52) across all six of its screens. It
@@ -156,7 +185,39 @@ is internally consistent and its stash screen needs 49 for Collect, so it is lef
 than half-migrated. If it is ever unified, the whole file moves at once, with its click handler and the
 harness scenario.
 
-## 8. Action bars, boss bars and titles
+## 8. The sidebar
+
+The sidebar is on screen permanently, so it sets the tone for everything else and its composition is worth
+more care than a menu nobody has open for more than a minute.
+
+**It is exactly as wide as its widest row.** Budgeting it in characters does not bound anything, because
+Minecraft's font is not fixed-width: sixteen characters is 96 pixels of "Illicit Ember" and 112 of
+"MMMMMMMMMMMMMMMM". `CoreUtil.width(text)` gives the rendered width in pixels — the vanilla ASCII advances,
+the narrow glyphs, bold, and section codes costing nothing — and `CoreUtil.fit(text, pixels)` cuts to it,
+carrying the colour codes so the tail cannot come out the wrong colour and marking the cut so a shortened
+name is never mistaken for a whole one.
+
+* **One budget, every row.** 104 pixels, about seventeen average characters. A name that will not fit is
+  cut; the full text stays a command away rather than making the panel permanently wider for everybody.
+* **Never truncate a number.** Balances, timers and counts are compacted (`$12.3M`, `2h 14m`), never cut.
+  Only names are fitted.
+* **Label columns are pixel columns.** `CoreUtil.padTo(text, pixels)` — padding two labels to the same
+  character count lines their values up only by luck.
+* **Blank rows are separators, and nothing else.** No leading blank, no trailing blank, never two in a row.
+  A separator is a bare colour code: unique (scoreboard rows are keyed by their own text), invisible, and
+  genuinely zero-width. Padding with spaces makes a "blank" row twelve pixels wide.
+* **A standing with nothing to show collapses.** One row saying so, not a header over an empty value.
+* **Ember is for the live event or world boss, and nothing else.** Labels recede in grey, values are white.
+* **Rows are diffed, never torn down.** Resetting every row and re-adding every row because one number
+  changed is thirty packets and a full client repaint. Rows still present and still in the same position
+  are left alone; rows that are gone are reset by name, which is what stops a finished event leaving its
+  block and its separator behind.
+* **Do not read the database per player per refresh.** The whole online set in one statement, or nothing.
+
+`run.py sidebar` reads the panel from real scoreboard packets and carries its own copy of the width table,
+so a mistake in `CoreUtil`'s cannot quietly agree with itself.
+
+## 9. Action bars, boss bars and titles
 
 * The action bar is for *transient state*: a countdown, a warning, a target's health. Never for something
   the player needs to be able to scroll back to.
