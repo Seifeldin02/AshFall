@@ -5,6 +5,82 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-12 — A name parsed as a UUID, and a map walked while it changed
+
+Both of these were already in production, both were already observed in its log, and neither was a theory.
+
+### The line that ate an inventory
+
+On 2026-09-06 MacoCT logged in dead, with no grave and no items. The chain, from the log:
+
+    MacoCT lost connection: Disconnected
+    MacoCT tried to escape the fight with Brangar13 and paid the price.
+    Could not pass event PlayerDeathEvent to SMPCore v1.7.0
+    java.lang.IllegalArgumentException: Invalid UUID string: brangar13
+        at BountyService.finalizeAutoApprove(BountyService.java:118)
+        at GameplayListener.death(GameplayListener.java:207)
+        at CraftLivingEntity.setHealth(...)
+        at GameplayListener.quit(GameplayListener.java:180)
+
+He was combat-tagged with an AFK bot parked in his own faction base, disconnected, and the anti-combat-log
+rule killed him for it. He had a bounty, so the kill opened a claim, and the claim auto-approved — and
+`finalizeAutoApprove` ended with:
+
+    Player killerOnline = plugin.getServer().getPlayer(UUID.fromString(row.killer()));
+
+`row.killer()` is `CoreUtil.id(killer)`: a lower-cased NAME, which is what every id column in this schema
+holds. `UUID.fromString("brangar13")` throws, the exception unwound `PlayerDeathEvent`, and the last thing
+that handler does is create the grave. Vanilla had already put his inventory on the floor, so it lay there
+unrecorded and despawned five minutes later.
+
+**Why it survived so long: the money moves first.** The payout, the tax and the APPROVED row all commit
+before that line, so from the economy's side the claim looked flawless — the ledger, the bank ledger and
+`bounty_claims_pending` all agreed it had worked. Only the grave was missing, and nothing connected a
+missing grave to a bounty claim. A second site, the ReplayCore poll at line 91, has the same mistake and
+only throws where ReplayCore is installed, which production is not.
+
+Fixed by looking the killer up by the name the row actually stores, and by threading the victim's real UUID
+down from the one call site that has a `Player` in hand instead of trying to rebuild it from an id string.
+
+The items were reconstructed from Prism's stored NBT — 39 stacks, enchantments, trims, custom names and the
+SMPCore progression tags intact — and handed back as summoned item entities, which carry the stored NBT
+verbatim where a `/give` would need every component hand-translated and would quietly drop one.
+
+### A map walked while the loop body changed it
+
+`IndustrialHopperService.sweep` iterated `bays.values()` with an Iterator and removed through it. Correct
+right up until something inside the body touches the map, and plenty can: `pushToFacing` can target another
+Industrial Hopper and register its bay, `collectItems` absorbs item entities, `spill` and `closeViewers`
+both run listeners. Production threw `ConcurrentModificationException` there at 06:20:10 on 2026-09-05,
+which abandoned that tick's sweep for every hopper after the one in hand.
+
+It iterates a snapshot of the keys now and removes by key, which costs one small array per tick and makes
+the loop indifferent to whatever the body does. The chunk-unload loop beside it got the same treatment for
+the same reason — `closeViewers` fires `InventoryCloseEvent`, and a listener reached from there has no
+obligation to leave the map alone.
+
+### The lint
+
+`testing/selfcall_check.py` now looks for two shapes, and both of them have shipped to production and cost
+somebody an inventory: a one-line method that calls itself with its own arguments unchanged, and
+`UUID.fromString` applied to something that looks like one of this codebase's id strings. Both are accepted
+by the compiler and invisible to review. The second check needed two passes to be worth having — matching
+only paren-free arguments found `UUID.fromString(victimId)` and missed `UUID.fromString(row.killer())`,
+which is the one that actually fired.
+
+### What was looked at and deliberately left alone
+
+Production idles at 0.7–3.0 ms MSPT and holds 20 TPS, so there is no hot spot to chase. The per-tick
+`RelicService.anchorTick` already returns immediately when nothing is armed, and its defensive copy of the
+anchor map is the same pattern just installed in the hopper sweep — removing it to save twenty small
+allocations a second would reintroduce the bug being fixed one file over.
+
+`RelicService`'s per-player cooldown maps look like the unbounded growth closed in `GameplayListener` last
+week and are not: clearing `cooldownReady` on quit would let a player reset a relic cooldown by relogging.
+Checked rather than tidied.
+
+---
+
 ## Session: 2026-09-05 (later) — The sidebar was budgeted in characters, and one shop was not in the ring
 
 Built and tested on staging, then merged to `main` and promoted to production with an announced restart.
