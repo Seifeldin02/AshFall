@@ -85,8 +85,44 @@ def offences(path):
     return found
 
 
+#  A NAME IS NOT A UUID, and the compiler cannot tell you so.
+#
+#  `CoreUtil.id(player)` is a lower-cased name and it is what every id column in this schema holds. Passing
+#  one to UUID.fromString throws IllegalArgumentException at runtime and nowhere earlier, and on 2026-09-06
+#  two of them in BountyService did exactly that from inside PlayerDeathEvent -- which unwound the handler
+#  before it could create the victim's grave, so a player's whole inventory hit the ground unrecorded and
+#  despawned. The money had already moved, so every ledger said the claim had worked.
+#
+#  Only flags an argument that looks like one of this codebase's id strings. A real UUID variable, a
+#  getUniqueId() call or a literal is left alone.
+#  One level of nested parentheses, because the argument is usually a getter: `row.killer()`. Matching only
+#  paren-free arguments found one of the two real cases and missed the one that actually fired.
+UUID_PARSE = re.compile(r'UUID\.fromString\(\s*((?:[^()]|\([^()]*\))*?)\s*\)')
+ID_SHAPED = re.compile(r'\b(id|Id|killer|target|owner|hunter|victimId|player)\b')
+UUID_SHAPED = re.compile(r'getUniqueId|[Uu]uid|UUID|"[0-9a-fA-F]{8}-')
+
+
+def uuid_offences(path):
+    found = []
+    for number, line in enumerate(io.open(path, encoding='utf-8'), 1):
+        for match in UUID_PARSE.finditer(line):
+            argument = match.group(1)
+            if UUID_SHAPED.search(argument):
+                continue
+            if ID_SHAPED.search(argument):
+                found.append((number, line.strip(), argument))
+    return found
+
+
 def main():
     total = 0
+    for name in sorted(os.listdir(SOURCE)):
+        if not name.endswith('.java'):
+            continue
+        for number, text, argument in uuid_offences(os.path.join(SOURCE, name)):
+            total += 1
+            print('%s:%d  UUID.fromString(%s) -- that looks like an id string, not a UUID' % (name, number, argument))
+            print('   ' + text[:160])
     for name in sorted(os.listdir(SOURCE)):
         if not name.endswith('.java'):
             continue
@@ -96,11 +132,10 @@ def main():
             print('   ' + text[:160])
     if total:
         print('')
-        print('%d method(s) call themselves with their own arguments unchanged.' % total)
-        print('That is unconditional recursion, not an overload. It will overflow the stack the first time')
-        print('the guard in front of it lets anything through.')
+        print('%d finding(s). Both shapes this checks for are invisible to review and accepted by the' % total)
+        print('compiler, and both have shipped to production and cost a player their inventory.')
         return 1
-    print('no method calls itself with its own arguments unchanged')
+    print('no self-recursive one-liners, and no id string parsed as a UUID')
     return 0
 
 

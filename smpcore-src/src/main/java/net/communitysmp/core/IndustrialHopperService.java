@@ -302,13 +302,16 @@ final class IndustrialHopperService implements Listener {
     @EventHandler public void chunkUnload(ChunkUnloadEvent event) {
         if (bays.isEmpty()) return;
         Chunk chunk = event.getChunk();
-        for (Iterator<Bay> it = bays.values().iterator(); it.hasNext(); ) {
-            Bay bay = it.next();
+        //  Snapshot for the same reason sweep() does: closeViewers fires InventoryCloseEvent, and a listener
+        //  reached from there has no obligation to leave this map alone while we are walking it.
+        for (String key : bays.keySet().toArray(new String[0])) {
+            Bay bay = bays.get(key);
+            if (bay == null) continue;
             if (bay.at.getBlockX() >> 4 != chunk.getX() || bay.at.getBlockZ() >> 4 != chunk.getZ()) continue;
             if (!chunk.getWorld().getName().equals(bay.worldName)) continue;
             flush(bay);
             closeViewers(bay);
-            it.remove();
+            bays.remove(key);
         }
     }
 
@@ -875,16 +878,28 @@ final class IndustrialHopperService implements Listener {
         }, 1L, 1L);
     }
 
+    /*  ITERATES A SNAPSHOT OF THE KEYS, NOT THE LIVE MAP.
+     *
+     *  This used to walk bays.values() with an Iterator and remove through it -- correct right up until
+     *  something INSIDE the loop body touches the map, and plenty can: pushToFacing can target another
+     *  Industrial Hopper and register its bay, collectItems absorbs item entities, and spill and
+     *  closeViewers both run listeners. Any of those is a structural modification, and the next it.next()
+     *  throws ConcurrentModificationException -- observed on production at 06:20:10 on 2026-09-05, which
+     *  abandoned that tick's sweep for every hopper after the one being handled.
+     *
+     *  Copying the keys costs one small array per tick and makes the loop indifferent to what the body does
+     *  to the map. A bay removed mid-sweep is skipped by the null check; one added mid-sweep waits a tick. */
     private void sweep() {
         if (bays.isEmpty()) return;
         int budget = Math.max(1, plugin.getConfig().getInt("industrial-hopper.items-per-tick", 9));
-        for (Iterator<Bay> it = bays.values().iterator(); it.hasNext(); ) {
-            Bay bay = it.next();
+        for (String key : bays.keySet().toArray(new String[0])) {
+            Bay bay = bays.get(key);
+            if (bay == null) continue;
             /** Resolved by NAME: an unloaded world makes the Location's own accessor throw, not return
              *  null, so this guard has to avoid it entirely. There is nowhere to drop the contents of a
              *  hopper whose world is gone, so the bay is simply released. */
             World world = worldOf(bay);
-            if (world == null) { closeViewers(bay); it.remove(); continue; }
+            if (world == null) { closeViewers(bay); bays.remove(key); continue; }
             if (!world.isChunkLoaded(bay.at.getBlockX() >> 4, bay.at.getBlockZ() >> 4)) continue;
             Block block = bay.at.getBlock();
             if (block.getType() != Material.HOPPER || !(block.getState(false) instanceof TileState tile)
@@ -893,7 +908,7 @@ final class IndustrialHopperService implements Listener {
                  *  Give the contents back to the world rather than deleting them, and stop owning it. */
                 spill(bay);
                 closeViewers(bay);
-                it.remove();
+                bays.remove(key);
                 continue;
             }
             /** Redstone lock, read from the block's own vanilla `enabled` state rather than re-derived

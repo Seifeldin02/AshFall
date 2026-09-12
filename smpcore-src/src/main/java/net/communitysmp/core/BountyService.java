@@ -76,7 +76,7 @@ final class BountyService implements Listener {
         }else{
             CoreUtil.msg(killer,"Your bounty claim on "+plugin.nicknames().displayName(victim)+" ("+CoreUtil.money(bounty.amount())+") is being verified and will pay out shortly.");
         }
-        attachReplayThenResolve(id,target,needsAdminReview);
+        attachReplayThenResolve(id,victim.getUniqueId(),needsAdminReview);
         return deathAwarded;
     }
     /** Every bounty claim briefly holds for a ReplayCore kill-replay attach attempt before an
@@ -86,9 +86,15 @@ final class BountyService implements Listener {
      *  time an admin opens the GUI. If ReplayCore isn't installed/enabled at all (not merely "this one clip
      *  failed"), this resolves immediately instead of waiting on a dependency that isn't part of this
      *  deployment. */
-    private void attachReplayThenResolve(long claimId,String victimId,boolean needsAdminReview){
+    /*  TAKES THE VICTIM'S ACTUAL UUID, because it never had one to parse.
+     *
+     *  This was handed `target` -- CoreUtil.id(victim), a lower-cased NAME -- and called UUID.fromString
+     *  on it. "macoct" is not a UUID, so any bounty claim reaching here on a server WITH ReplayCore threw
+     *  straight out of PlayerDeathEvent. The UUID is on the victim at the one call site; deriving it from
+     *  an id string was never going to work. Same mistake, same day, as finalizeAutoApprove below. */
+    private void attachReplayThenResolve(long claimId,java.util.UUID victim,boolean needsAdminReview){
         if(!plugin.replay().available()){if(!needsAdminReview)finalizeAutoApprove(claimId);return;}
-        pollForReplay(claimId,java.util.UUID.fromString(victimId),needsAdminReview,0);
+        pollForReplay(claimId,victim,needsAdminReview,0);
     }
     private void pollForReplay(long claimId,java.util.UUID victim,boolean needsAdminReview,int attempt){
         plugin.getServer().getScheduler().runTaskLater(plugin,()->{
@@ -115,7 +121,21 @@ final class BountyService implements Listener {
         if(row.tax()>0)plugin.bank().creditFee(row.tax(),row.killer(),"BOUNTY_CLAIM_TAX");
         if(payout>0)plugin.creditEarned(row.killer(),payout,"BOUNTY_CLAIM");
         db.resolvePendingClaim(claimId,"APPROVED","SYSTEM");db.clearBountyContributions(row.target());
-        Player killerOnline=plugin.getServer().getPlayer(java.util.UUID.fromString(row.killer()));
+        /*  THE LINE THAT COST SOMEBODY THEIR INVENTORY.
+         *
+         *  row.killer() is CoreUtil.id(killer) -- a lower-cased NAME -- and this called UUID.fromString on
+         *  it. Every auto-approved bounty claim therefore threw IllegalArgumentException, and because the
+         *  claim is finalised from inside PlayerDeathEvent the exception unwound the whole handler: the very
+         *  last thing that handler does is create the grave, so the victim's items were left on the ground
+         *  with nothing recording them and despawned five minutes later.
+         *
+         *  It survived because the money moves BEFORE this line. The payout, the tax and the APPROVED row
+         *  all committed, so from the economy's side the claim looked like it had worked perfectly; only the
+         *  grave was missing, and nothing connected the two. Reported live on 2026-09-06.
+         *
+         *  Looked up by name, which is what the row actually holds. */
+        Player killerOnline=plugin.getServer().getPlayerExact(row.killerName());
+        if(killerOnline==null)killerOnline=plugin.getServer().getPlayerExact(row.killer());
         if(killerOnline!=null)plugin.progress().bountyClaimed(killerOnline,row.targetName(),row.amount());
         plugin.getServer().broadcastMessage("§4☠ "+row.killerName()+" claimed "+CoreUtil.money(payout)+" from the bounty on "+row.targetName()+".");
     }
