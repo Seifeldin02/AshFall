@@ -5,6 +5,70 @@ Newest first. Updating this is part of finishing a change, not an afterthought �
 
 ---
 
+## Session: 2026-09-22 — 25,078 item entities in one chunk, and the restart loop that followed
+
+Production hung, Paper's watchdog killed it, `restart-on-crash` brought it back, and it hung again. Three
+restarts in fifty minutes before it was caught.
+
+### What the watchdog was looking at
+
+    [19:48:42] The server has not responded for 10 seconds! Creating thread dump
+        it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap.get
+        net.minecraft.world.item.ItemInstance.getMaxStackSize
+        net.minecraft.world.entity.item.ItemEntity.isMergable
+        net.minecraft.world.entity.item.ItemEntity.mergeWithNeighbours   <-- here
+        net.minecraft.world.level.Level.getEntitiesOfClass
+        net.minecraft.world.entity.item.ItemEntity.tick
+
+Every item entity, every tick, scans its neighbours to see what it can merge with. That is fine for a
+handful and quadratic for a pile. The shutdown sequence named the pile on its way out:
+
+    Saving oversized chunk [436, 428] (1258453 bytes) to the_nether/entities/c.436.428.mcc
+
+Reading that file offline: **25,078 item entities in one chunk — 24,216 gunpowder, 649 TNT, 190 magma
+cream.** A creeper farm's output. The last thing anybody did before the hang was `/home netherroof`, which
+loaded it.
+
+**Why it accumulated rather than despawning:** items in an UNLOADED chunk do not tick, so they never age
+out. Every visit ticked them briefly, the chunk unloaded, and the pile froze in place until the next visit.
+It had been growing for days — 1.17 MB at 19:16, 1.26 MB by 19:50.
+
+### Two config values let it happen
+
+* `spigot.yml` → `merge-radius.item` was **0.5**, against Spigot's default of 2.5. Drops barely merged, so a
+  farm produced thousands of separate entities instead of stacks. Now 2.5.
+* `config/paper-world-defaults.yml` → `entity-per-chunk-save-limit` had **no `item` entry**, so a chunk
+  could carry unlimited items across a save. Now capped at 1024.
+
+### The cleanup had to be offline, and that is the part worth remembering
+
+The obvious move — `/kill @e[type=item]` — does not work. Merely `forceload`-ing that chunk stalled the
+server for **61.8 seconds** and the watchdog killed it mid-command. Worse, the forceload persisted, which
+would have hung it on every subsequent boot.
+
+So: break the loop first (rename `restart-server.bat` so `restart-on-crash` has nothing to launch), bring
+the server down, and repair the chunk on disk.
+
+`scratchpad/fix_itempile.py` does a full NBT round trip rather than a byte hack, because the chunk was not
+only junk. It also held a nether star, nine ancient debris, seven echo shards, two enchanted books, an end
+crystal and an enchanted golden apple. Only entities that are bulk farm output AND carry no custom name,
+lore, enchantment or SMPCore PDC are dropped; the rewrite is re-parsed and verified before it is written,
+and the original is backed up first.
+
+    1,208,408 bytes -> 2,002 bytes      25,072 entities -> 23
+
+After the restart the chunk loads at 0.5 ms and the server idles at 0.1 ms MSPT. No oversized entity chunk
+remains in any dimension.
+
+### Not an SMPCore bug
+
+Nothing here was plugin code. It is worth writing down anyway, because the failure mode is invisible until
+it is fatal: nothing warns that a chunk is accumulating items, the server looks perfectly healthy at 20 TPS
+right up until somebody walks into the chunk, and `restart-on-crash` turns one hang into a loop that hides
+the original cause behind a fresh, clean-looking log.
+
+---
+
 ## Session: 2026-09-12 — A name parsed as a UUID, and a map walked while it changed
 
 Both of these were already in production, both were already observed in its log, and neither was a theory.
